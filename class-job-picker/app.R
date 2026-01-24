@@ -1,0 +1,589 @@
+library(shiny)
+library(googlesheets4)
+library(dplyr)
+library(jsonlite)
+library(lubridate)
+
+# shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/intro-econ/tools/class-job-picker", port = 3838, host = "127.0.0.1")
+
+# ----------------------------
+# CONFIG
+# ----------------------------
+# Put your Google Sheet ID here (the long string in the URL)
+SHEET_ID <- "1zXqPsAdhl-tb24LOmbxGAfuE3WfZL9yMdCHcua7toV4"
+
+# Path to service account JSON (recommended)
+SERVICE_JSON <- Sys.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+# Default job list (edit as you like)
+DEFAULT_JOBS <- read_sheet(SHEET_ID, sheet = "state", col_types = "c") %>% pull(job) %>% unique() %>% sort()
+
+# ----------------------------
+# AUTH
+# ----------------------------
+gs4_deauth() # important: we are NOT using interactive user auth
+gs4_auth(path = SERVICE_JSON)
+
+# ----------------------------
+# SHEET HELPERS
+# ----------------------------
+read_roster <- function(section_id) {
+  df <- read_sheet(SHEET_ID, sheet = "roster", col_types = "cc")
+  df %>%
+    filter(section == as.character(section_id)) %>%
+    pull(name) %>%
+    unique() %>%
+    sort()
+}
+
+read_state <- function(section_id,job_id=NULL) {
+  if (is.null(job_id)) {
+    return(read_sheet(SHEET_ID, sheet = "state", col_types = "ccccc") %>%
+    mutate(
+      section = trimws(as.character(.data$section)),
+      job     = trimws(as.character(.data$job))
+    ) %>%
+    filter(.data$section == trimws(as.character(section_id))))
+  }
+  else {
+  read_sheet(SHEET_ID, sheet = "state", col_types = "ccccc") %>%
+    mutate(
+      section = trimws(as.character(.data$section)),
+      job     = trimws(as.character(.data$job))
+    ) %>%
+    filter(.data$section == trimws(as.character(section_id)) & .data$job == trimws(as.character(job_id)))
+  }
+}
+
+write_state_job <- function(section_id, job_id, cycle_id_new, bag, last_updated = Sys.time()) {
+  st <- read_sheet(SHEET_ID, sheet = "state", col_types = "ccccc") %>%
+    mutate(
+      section = trimws(as.character(section)),
+      job = trimws(as.character(job))
+    )
+
+  section_id <- trimws(as.character(section_id))
+  job_id <- trimws(as.character(job_id))
+  cycle_id_new <- as.integer(cycle_id_new)
+  bag_json_new <- toJSON(bag, auto_unbox = TRUE)
+
+  st2 <- st %>%
+    mutate(
+      cycle_id = ifelse(.data$section == section_id & .data$job == job_id, as.character(cycle_id_new), .data$cycle_id),
+      bag_json = ifelse(.data$section == section_id & .data$job == job_id, bag_json_new, .data$bag_json),
+      last_updated = ifelse(.data$section == section_id & .data$job == job_id, as.character(last_updated), .data$last_updated)
+    )
+
+  sheet_write(st2, ss = SHEET_ID, sheet = "state")
+}
+
+append_log <- function(rows_df) {
+  # rows_df must have columns: ts,date,section,job,name,cycle_id
+  # We append by reading and writing; for small classes this is fine.
+  # (If this gets big, we can switch to a Sheets append API or use a separate database.)
+  log_df <- read_sheet(SHEET_ID, sheet = "log", col_types = "cccccc")
+  out <- bind_rows(log_df, rows_df)
+  sheet_write(out, ss = SHEET_ID, sheet = "log")
+}
+
+parse_bag <- function(bag_json) {
+  if (is.na(bag_json) || bag_json == "" || bag_json == "[]") return(character(0))
+  fromJSON(bag_json)
+}
+
+# ----------------------------
+# CORE LOGIC
+# ----------------------------
+ensure_bag_job <- function(section_id, job_id) {
+
+  job_id <- trimws(as.character(job_id))
+  if (is.na(job_id) || job_id == "") stop("ensure_bag_job called with empty job. section_id=", section_id, " job=", job_id)
+
+  roster <- read_roster(section_id)
+  st <- read_state(section_id, job_id)
+
+  cycle_id <- suppressWarnings(as.integer(st$cycle_id[[1]]))
+  if (is.na(cycle_id)) cycle_id <- 1
+
+  bag <- parse_bag(st$bag_json[[1]])
+
+  # Keep bag aligned to roster (handles roster edits)
+  bag <- bag[bag %in% roster]
+
+  if (length(bag) == 0) {
+    cycle_id <- cycle_id + 1
+    bag <- sample(roster, size = length(roster), replace = FALSE)
+    write_state_job(section_id, job_id, cycle_id, bag)
+  }
+
+  list(roster = roster, cycle_id = cycle_id, bag = bag)
+}
+
+draw_jobs_day <- function(section_id, jobs) {
+
+  roster <- read_roster(section_id)
+  state  <- read_state(section_id)
+
+  picked_today <- character(0)
+  assignments  <- setNames(character(length(jobs)), jobs)
+  state_updates <- list()
+
+  for (j in jobs) {
+    row <- state[state$job == j, ]
+
+    bag <- parse_bag(row$bag_json)
+    bag <- bag[bag %in% roster]
+
+    if (length(bag) == 0) {
+      bag <- sample(roster, length(roster))
+      cycle_id <- as.integer(row$cycle_id) + 1
+    } else {
+      cycle_id <- as.integer(row$cycle_id)
+    }
+
+    avail <- setdiff(bag, picked_today)
+    if (length(avail) == 0) stop("No eligible student for job: ", j, " in section: ", section_id)
+
+    nm <- sample(avail, 1)
+    assignments[j] <- nm
+    picked_today <- c(picked_today, nm)
+
+    state_updates[[j]] <- list(
+      cycle_id = cycle_id,
+      new_bag  = setdiff(bag, nm)
+    )
+  }
+
+  list(assignments = assignments, state_updates = state_updates)
+}
+
+# NOTE: inconsistent naming 'ensure_bag' vs 'ensure_bag_job' below:
+redraw_one <- function(section_id, current_assignments, job_to_redraw) {
+  info <- ensure_bag_job(section_id, job_to_redraw)
+  roster <- read_roster(section_id)
+  bag <- info$bag
+
+  taken_today <- unname(current_assignments)
+  taken_today <- taken_today[!is.na(taken_today)]
+
+  # Available = bag excluding those already assigned today
+  available <- setdiff(bag, taken_today)
+
+  if (length(available) == 0) {
+    # try refilling cycle (without committing)
+    info2 <- ensure_bag_job(section_id, job_to_redraw)
+    bag <- info2$bag
+    available <- setdiff(bag, taken_today)
+  }
+
+  if (length(available) == 0) stop("No one left to redraw from (bag exhausted).")
+
+  new_name <- sample(available, 1)
+  current_assignments[[job_to_redraw]] <- new_name
+
+  list(assignments = current_assignments, roster = roster, cycle_id = info$cycle_id, bag = bag)
+}
+
+commit_jobs_day <- function(section_id, date, result) {
+
+  state <- read_state(section_id)
+
+  for (j in names(result$state_updates)) {
+    upd <- result$state_updates[[j]]
+    idx <- state$job == j
+
+    state$cycle_id[idx] <- as.character(upd$cycle_id)
+    state$bag_json[idx] <- jsonlite::toJSON(upd$new_bag, auto_unbox = TRUE)
+    state$last_updated[idx] <- as.character(Sys.time())
+  }
+
+  sheet_write(state, ss = SHEET_ID, sheet = "state")
+
+  rows <- tibble(
+    ts = as.character(Sys.time()),
+    date = as.character(date),
+    section = as.character(section_id),
+    job = names(result$assignments),
+    name = unname(result$assignments),
+    cycle_id = NA_character_
+  )
+
+  append_log(rows)
+}
+
+clear_log <- function(today_only = FALSE, section_id = NULL, date = Sys.Date()) {
+  if (today_only) {
+    lg <- read_sheet(SHEET_ID, sheet = "log", col_types = "cccccc")
+    date <- as.character(date)
+    if (!is.null(section_id)) section_id <- as.character(section_id)
+
+    lg2 <- lg %>%
+      filter(!(date == !!date & (is.null(section_id) | section == !!section_id)))
+
+    sheet_write(lg2, ss = SHEET_ID, sheet = "log")
+    return()
+  }
+  empty <- tibble(
+    ts = character(),
+    date = character(),
+    section = character(),
+    job = character(),
+    name = character(),
+    cycle_id = character()
+  )
+  sheet_write(empty, ss = SHEET_ID, sheet = "log")
+}
+
+reset_bag <- function(section_id) {
+  st <- read_sheet(SHEET_ID, sheet="state", col_types="cccc") %>%
+    mutate(section = trimws(as.character(section)))
+  section_id <- trimws(as.character(section_id))
+
+  st2 <- st %>%
+    mutate(
+      bag_json = ifelse(.data$section == section_id, "[]", .data$bag_json),
+      last_updated = ifelse(.data$section == section_id, as.character(Sys.time()), .data$last_updated)
+    )
+  sheet_write(st2, ss=SHEET_ID, sheet="state")
+}
+
+# ----------------------------
+# UI
+# ----------------------------
+ui <- fluidPage(
+  tags$head(tags$style(HTML("
+    .panel { background: #fff; border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin-top: 10px; }
+    .bigbtn button { font-size: 16px; padding: 10px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
+  "))),
+  titlePanel("Class Jobs Console"),
+
+  fluidRow(
+    column(
+      4,
+      div(class="panel",
+          selectInput("section", "Section", choices = c("51", "52"), selected = "51"),
+          dateInput("date", "Class date", value = Sys.Date()),
+          checkboxGroupInput("jobs_selected", "Select job(s)", choices = DEFAULT_JOBS, selected = DEFAULT_JOBS),
+          div(class="bigbtn",
+              actionButton("draw", "Draw jobs for today"),
+              actionButton("commit", "Commit revealed assignments"),
+          ),
+          actionButton("refresh", "Refresh from sheet"),
+            div(class="panel",
+            h4("Admin"),
+            actionButton("admin_clear_log", "CLEAR log tab (danger)"),
+            checkboxInput("admin_confirm", "I understand this deletes data", value = FALSE),
+            checkboxInput("admin_today_only", "Clear only today's data", value = FALSE),
+            actionButton("admin_reset_bag", "RESET bag (danger)")
+        ),
+      )
+    ),
+    column(
+      8,
+      div(class="panel",
+        fluidRow(
+          column(6,
+            h4("Draft (not yet committed)"),
+            tableOutput("assignTable"),
+          ),
+          column(6,
+            uiOutput("redrawUI"),
+          ),
+          column(6,
+            uiOutput("coldUI"),
+          ),
+        )
+      ),
+      div(class="panel",
+        h4("Cold call (one at a time)"),
+        fluidRow(
+          column(6,
+            numericInput("n_cold", "Number of cold calls to draw", value = 1, min = 0, step = 1),
+            checkboxInput("exclude_jobs_today", "Exclude today's job assignees", value = TRUE),
+          ),
+          column(6,
+            actionButton("draw_cold", "Draw cold call"),
+            actionButton("commit_cold", "Commit cold call"),
+            div(style="font-size: 22px; font-weight: 600; padding: 8px 0;",
+                textOutput("coldName")
+            ),
+          )
+        ),
+      ),
+      div(class="panel",
+        h4("Manual log entry"),
+        fluidRow(
+          column(6,
+            dateInput("man_date", "Date", value = Sys.Date()),
+            selectInput("man_section", "Section", choices = c("51", "52"))
+          ),
+          column(6,
+            selectInput("man_job", "Type", choices = c(DEFAULT_JOBS, "voluntary answer", "cold call", "other")),
+            uiOutput("man_name_ui")
+          )
+        ),
+        actionButton("man_append", "Append to log")
+      )
+    ),
+    br(),
+    h4("Notes"),
+    div(class="mono", "
+    - Draw creates a draft assignment.
+    - Redraw changes one job (absent student is never logged).
+    - Commit writes to the sheet and removes those names from the bag.
+    ")
+  )
+)
+
+# ----------------------------
+# SERVER
+# ----------------------------
+server <- function(input, output, session) {
+  
+  rv <- reactiveValues(
+    draft = NULL,   # named vector job -> name
+    cycle_id = NA_integer_,
+    bag_n = NA_integer_,
+    roster_n = NA_integer_,
+    cold_current = "",
+    jobs_committed = FALSE
+  )
+
+  jobs_vec <- reactive({
+    strsplit(input$jobs, "\n")[[1]] |>
+      trimws() |>
+      (\(x) x[x != ""])()
+  })
+
+  update_status <- function() {
+    roster <- read_roster(input$section)
+    rv$roster_n <- length(roster)
+    # optionally show per-job remaining counts (safe)
+    st <- read_sheet(SHEET_ID, sheet="state", col_types="ccccc") %>%
+      mutate(section=trimws(as.character(section)), job=trimws(as.character(job)))
+    st_sec <- st %>% filter(section == as.character(input$section))
+    rv$bag_summary <- paste0(st_sec$job, ": ", sapply(st_sec$bag_json, function(x) length(parse_bag(x))), collapse="\n")
+  }
+
+
+  observeEvent(c(input$section, input$date), {
+    rv$cold_current <- ""
+    updateTextInput(session, "manual_name", value = "")
+  }, ignoreInit = TRUE)
+
+
+  observeEvent(TRUE, {
+    update_status()
+  }, once = TRUE)
+
+  observeEvent(input$refresh, {
+    update_status()
+    rv$draft <- NULL
+  })
+
+  observeEvent(input$draw, {
+    jobs <- input$jobs_selected
+    if (is.null(jobs) || length(jobs) == 0) {
+      showNotification("Select at least one job.", type = "warning")
+      return()
+    }
+
+    res <- draw_jobs_day(input$section, jobs)
+    rv$draft <- res$assignments  # named vector job -> name
+  })
+
+  observeEvent(input$draw_cold, {
+    roster <- read_roster(input$section)
+
+    pool <- roster
+    if (isTRUE(input$exclude_jobs_today) && !is.null(rv$draft)) {
+      pool <- setdiff(roster, unname(rv$draft))
+    }
+
+    if (length(pool) == 0) {
+      showNotification("Cold-call pool is empty.", type = "error")
+      rv$cold_current <- ""
+      return()
+    }
+
+    # Drawing clears the previous displayed name automatically
+    rv$cold_current <- sample(pool, 1)
+  })
+
+
+  observeEvent(input$clear_cold, {
+    rv$cold_current <- character(0)
+  })
+
+  observeEvent(input$commit_cold, {
+    if (rv$cold_current == "") {
+      showNotification("No cold call to commit.", type = "warning")
+      return()
+    }
+
+    st <- read_state(input$section, "cold call")
+    cycle_id <- as.character(st$cycle_id[[1]])
+
+    rows <- tibble(
+      ts = as.character(Sys.time()),
+      date = as.character(input$date),
+      section = as.character(input$section),
+      job = "cold call",
+      name = rv$cold_current,
+      cycle_id = cycle_id
+    )
+
+    append_log(rows)
+
+    # Clear after commit
+    rv$cold_current <- ""
+    showNotification("Cold call committed.", type = "message")
+  })
+
+  observeEvent(input$commit_manual, {
+      nm <- trimws(input$manual_name)
+      if (nm == "") {
+        showNotification("Type a name first.", type = "warning")
+        return()
+      }
+
+      # Optional: validate name is in roster (recommended)
+      roster <- read_roster(input$section)
+      if (!(nm %in% roster)) {
+        showNotification("Name not found in roster for this section.", type = "error")
+        return()
+      }
+
+      st <- read_state(input$section, "voluntary answer")
+      cycle_id <- as.character(st$cycle_id[[1]])
+
+      rows <- tibble(
+        ts = as.character(Sys.time()),
+        date = as.character(input$date),
+        section = as.character(input$section),
+        job = "voluntary answer",
+        name = nm,
+        cycle_id = cycle_id
+      )
+
+      append_log(rows)
+
+      updateTextInput(session, "manual_name", value = "")
+      rv$cold_current <- ""  # keep display clean
+      showNotification("Manual name committed.", type = "message")
+    })
+
+  output$man_name_ui <- renderUI({
+    roster <- read_roster(input$man_section)
+    selectizeInput("man_name", "Name", choices = roster, multiple = FALSE,
+                  options = list(placeholder="Type a name…"))
+  })
+
+  observeEvent(input$man_append, {
+    nm <- input$man_name
+    if (is.null(nm) || nm == "") {
+      showNotification("Pick a name.", type="warning")
+      return()
+    }
+
+    # Use current cycle_id just for reference in log (doesn't change bag)
+    st <- read_state(input$man_section, input$man_job)
+    cycle_id <- as.character(st$cycle_id[[1]])
+
+    rows <- tibble(
+      ts = as.character(Sys.time()),
+      date = as.character(input$man_date),
+      section = as.character(input$man_section),
+      job = input$man_job,
+      name = nm,
+      cycle_id = cycle_id
+    )
+
+    append_log(rows)
+    showNotification("Appended.", type="message")
+  })
+
+
+  output$assignTable <- renderTable({
+    if (is.null(rv$draft)) return(data.frame())
+    tibble(job = names(rv$draft), name = unname(rv$draft))
+  }, striped = TRUE, bordered = TRUE)
+
+  output$coldName <- renderText({
+    if (rv$cold_current == "") return("(no cold call drawn)")
+    rv$cold_current
+  })
+
+  output$redrawUI <- renderUI({
+    if (is.null(rv$draft)) return(NULL)
+    tagList(
+      h4("Redraw (if absent)"),
+      fluidRow(
+          selectInput("jobToRedraw", "Job to redraw", choices = DEFAULT_JOBS),
+          actionButton("redraw", "Redraw selected job")
+      )
+    )
+  })
+
+  observeEvent(input$redraw, {
+    req(rv$draft)
+    job_to_redraw <- input$jobToRedraw
+    res <- redraw_one(input$section, rv$draft, job_to_redraw)
+    rv$draft <- res$assignments
+    update_status()
+  })
+
+  observeEvent(input$commit, {
+    req(rv$draft)
+    if (rv$jobs_committed) {
+      showNotification("Jobs already committed for today.", type = "warning")
+      return()
+    }
+
+    commit_jobs_day(
+      section_id = input$section,
+      date = input$date,
+      result = list(assignments = rv$draft, state_updates = NULL)
+    )
+
+    rv$draft <- NULL
+    rv$jobs_committed <- TRUE
+    update_status()
+  })
+
+
+  output$bagStatus <- renderText({
+    sprintf(
+      "section=%s\ncycle_id=%s\nroster_n=%s\nbag_remaining=%s\n(date=%s)",
+      input$section,
+      rv$cycle_id,
+      rv$roster_n,
+      rv$bag_n,
+      as.character(input$date)
+    )
+  })
+
+  observeEvent(input$admin_clear_log, {
+    if (!isTRUE(input$admin_confirm)) {
+      showNotification("Check the confirmation box first.", type = "warning")
+      return()
+    }
+    clear_log(today_only=isTRUE(input$admin_today_only), section_id=input$section, date=input$date)
+    # commited is not false, so can commit again
+    rv$jobs_committed <- FALSE
+    showNotification("Log cleared.", type = "message")
+  })
+
+
+  output$lastCommitted <- renderTable({
+    lg <- read_sheet(SHEET_ID, sheet = "log", col_types = "cccccc")
+    if (nrow(lg) == 0) return(data.frame())
+    lg %>%
+      filter(section == as.character(input$section)) %>%
+      arrange(desc(ts)) %>%
+      head(10)
+  }, striped = TRUE, bordered = TRUE)
+}
+
+shinyApp(ui, server)
