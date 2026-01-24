@@ -211,8 +211,8 @@ commit_jobs_day <- function(section_id, date, result) {
   append_log(rows)
 }
 
-clear_log <- function(today_only = FALSE, section_id = NULL, date = Sys.Date()) {
-  if (today_only) {
+clear_log <- function(delete_date = FALSE, section_id = NULL, date = Sys.Date()) {
+  if (delete_date & is.Date(date)) {
     lg <- read_sheet(SHEET_ID, sheet = "log", col_types = "cccccc")
     date <- as.character(date)
     if (!is.null(section_id)) section_id <- as.character(section_id)
@@ -223,15 +223,20 @@ clear_log <- function(today_only = FALSE, section_id = NULL, date = Sys.Date()) 
     sheet_write(lg2, ss = SHEET_ID, sheet = "log")
     return()
   }
-  empty <- tibble(
-    ts = character(),
-    date = character(),
-    section = character(),
-    job = character(),
-    name = character(),
-    cycle_id = character()
-  )
-  sheet_write(empty, ss = SHEET_ID, sheet = "log")
+  else if (!delete_date) {
+    empty <- tibble(
+      ts = character(),
+      date = character(),
+      section = character(),
+      job = character(),
+      name = character(),
+      cycle_id = character()
+    )
+    sheet_write(empty, ss = SHEET_ID, sheet = "log")
+  }
+  else {
+    return(FALSE)
+  }
 }
 
 reset_bag <- function(section_id) {
@@ -250,6 +255,7 @@ reset_bag <- function(section_id) {
 # ----------------------------
 # UI
 # ----------------------------
+
 ui <- fluidPage(
   tags$head(tags$style(HTML("
     .panel { background: #fff; border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin-top: 10px; }
@@ -258,81 +264,125 @@ ui <- fluidPage(
   "))),
   titlePanel("Class Jobs Console"),
 
+  # Make section and date global controls
   fluidRow(
     column(
-      4,
-      div(class="panel",
-          selectInput("section", "Section", choices = c("51", "52"), selected = "51"),
-          dateInput("date", "Class date", value = Sys.Date()),
-          checkboxGroupInput("jobs_selected", "Select job(s)", choices = DEFAULT_JOBS, selected = DEFAULT_JOBS),
-          div(class="bigbtn",
-              actionButton("draw", "Draw jobs for today"),
-              actionButton("commit", "Commit revealed assignments"),
-          ),
-          actionButton("refresh", "Refresh from sheet"),
-            div(class="panel",
-            h4("Admin"),
-            actionButton("admin_clear_log", "CLEAR log tab (danger)"),
-            checkboxInput("admin_confirm", "I understand this deletes data", value = FALSE),
-            checkboxInput("admin_today_only", "Clear only today's data", value = FALSE),
-            actionButton("admin_reset_bag", "RESET bag (danger)")
-        ),
+      3,
+      div(
+        style = "margin-bottom: 8px;",
+        selectInput("section", "Section", choices = c("51", "52"), selected = "51")
       )
     ),
     column(
-      8,
-      div(class="panel",
-        fluidRow(
-          column(6,
-            h4("Draft (not yet committed)"),
-            tableOutput("assignTable"),
-          ),
-          column(6,
-            uiOutput("redrawUI"),
-          ),
-          column(6,
-            uiOutput("coldUI"),
-          ),
+      3,
+      div(
+        style = "margin-bottom: 8px;",
+        dateInput("date", "Class date", value = Sys.Date())
+      )
+    )
+  ),
+
+  tabsetPanel(
+    tabPanel("Class jobs",
+      fluidRow(
+        column(
+          4,
+          div(class="panel",
+              # section and date controls now global
+              checkboxGroupInput("jobs_selected", "Select job(s)", choices = DEFAULT_JOBS, selected = DEFAULT_JOBS),
+              div(class="bigbtn",
+                  actionButton("draw", "Draw jobs for today"),
+                  actionButton("commit", "Commit revealed assignments")
+              ),
+              actionButton("refresh", "Refresh from sheet")
+          )
+        ),
+        column(
+          8,
+          div(class="panel",
+            fluidRow(
+              column(6,
+                h4("Draft (not yet committed)"),
+                tableOutput("assignTable")
+              ),
+              column(6,
+                uiOutput("redrawUI")
+              ),
+              column(6,
+                uiOutput("coldUI")
+              )
+            )
+          )
         )
-      ),
-      div(class="panel",
-        h4("Cold call (one at a time)"),
-        fluidRow(
-          column(6,
-            numericInput("n_cold", "Number of cold calls to draw", value = 1, min = 0, step = 1),
-            checkboxInput("exclude_jobs_today", "Exclude today's job assignees", value = TRUE),
-          ),
-          column(6,
-            actionButton("draw_cold", "Draw cold call"),
-            actionButton("commit_cold", "Commit cold call"),
-            div(style="font-size: 22px; font-weight: 600; padding: 8px 0;",
-                textOutput("coldName")
-            ),
-          )
-        ),
-      ),
-      div(class="panel",
-        h4("Manual log entry"),
-        fluidRow(
-          column(6,
-            dateInput("man_date", "Date", value = Sys.Date()),
-            selectInput("man_section", "Section", choices = c("51", "52"))
-          ),
-          column(6,
-            selectInput("man_job", "Type", choices = c(DEFAULT_JOBS, "voluntary answer", "cold call", "other")),
-            uiOutput("man_name_ui")
-          )
-        ),
-        actionButton("man_append", "Append to log")
       )
     ),
-    br(),
-    h4("Notes"),
-    div(class="mono", "
-    - Draw creates a draft assignment.
-    - Redraw changes one job (absent student is never logged).
-    - Commit writes to the sheet and removes those names from the bag.
-    ")
+    tabPanel("Cold Call",
+      fluidRow(
+        column(12,
+          div(class="panel",
+            h4("Cold call (one at a time)"),
+            fluidRow(
+              column(6,
+                numericInput("n_cold", "Number of cold calls to draw", value = 1, min = 0, step = 1),
+                checkboxInput("exclude_jobs_today", "Exclude today's job assignees", value = TRUE)
+              ),
+              column(6,
+                actionButton("draw_cold", "Draw cold call"),
+                actionButton("commit_cold", "Commit cold call"),
+                div(style="font-size: 22px; font-weight: 600; padding: 8px 0;",
+                    textOutput("coldName")
+                )
+              )
+            )
+          )
+        )
+      )
+    ),
+    tabPanel("Manual Entry",
+      fluidRow(
+        column(12,
+          div(class="panel",
+            h4("Manual log entry"),
+            fluidRow(
+              column(6,
+                # Allow manual override for section/date:
+                dateInput("man_date", "Date (override)", value = Sys.Date()),
+                selectInput("man_section", "Section (override)", choices = c("51", "52"))
+              ),
+              column(6,
+                selectInput("man_job", "Type", choices = c(DEFAULT_JOBS, "voluntary answer", "cold call", "other")),
+                uiOutput("man_name_ui")
+              )
+            ),
+            actionButton("man_append", "Append to log")
+          )
+        )
+      )
+    ),
+    tabPanel("Admin",
+      fluidRow(
+        column(
+          8,
+          div(class="panel",
+              h4("Admin"),
+              actionButton("admin_clear_log", "CLEAR log tab (danger)"),
+              checkboxInput("admin_confirm", "I understand this deletes data", value = FALSE),
+              checkboxInput("admin_delete_date", "Delete date's data", value = FALSE),
+              dateInput("admin_delete_date", "Date to delete", value = Sys.Date()),
+              actionButton("admin_reset_bag", "RESET bag (danger)")
+          )
+        )
+      )
+    ),
+    tabPanel("Notes",
+      br(),
+      h4("Notes"),
+      div(class="mono", "
+        - Draw creates a draft assignment.
+        - Redraw changes one job (absent student is never logged).
+        - Commit writes to the sheet and removes those names from the bag.
+      ")
+    )
   )
 )
 
@@ -569,10 +619,11 @@ server <- function(input, output, session) {
       showNotification("Check the confirmation box first.", type = "warning")
       return()
     }
-    clear_log(today_only=isTRUE(input$admin_today_only), section_id=input$section, date=input$date)
+    log_clear <- clear_log(delete_date=isTRUE(input$admin_delete_date), section_id=input$section, date=input$admin_delete_date)
     # commited is not false, so can commit again
     rv$jobs_committed <- FALSE
-    showNotification("Log cleared.", type = "message")
+    if (!log_clear) showNotification("Log not cleared, check date.", type = "message")
+    else showNotification("Log cleared.", type = "error")
   })
 
 
