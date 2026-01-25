@@ -94,12 +94,16 @@ parse_bag <- function(bag_json) {
 # ----------------------------
 # CORE LOGIC
 # ----------------------------
-ensure_bag_job <- function(section_id, job_id) {
+# MODIFIED: Add argument to filter students out if absent
+ensure_bag_job <- function(section_id, job_id, absentees = character(0)) {
 
   job_id <- trimws(as.character(job_id))
   if (is.na(job_id) || job_id == "") stop("ensure_bag_job called with empty job. section_id=", section_id, " job=", job_id)
 
   roster <- read_roster(section_id)
+  if (length(absentees) > 0) {
+    roster <- setdiff(roster, absentees)
+  }
   st <- read_state(section_id, job_id)
 
   cycle_id <- suppressWarnings(as.integer(st$cycle_id[[1]]))
@@ -119,9 +123,13 @@ ensure_bag_job <- function(section_id, job_id) {
   list(roster = roster, cycle_id = cycle_id, bag = bag)
 }
 
-draw_jobs_day <- function(section_id, jobs) {
+# MODIFIED: Add argument to filter students out if absent
+draw_jobs_day <- function(section_id, jobs, absentees = character(0)) {
 
   roster <- read_roster(section_id)
+  if (length(absentees) > 0) {
+    roster <- setdiff(roster, absentees)
+  }
   state  <- read_state(section_id)
 
   picked_today <- character(0)
@@ -158,9 +166,13 @@ draw_jobs_day <- function(section_id, jobs) {
 }
 
 # NOTE: inconsistent naming 'ensure_bag' vs 'ensure_bag_job' below:
-redraw_one <- function(section_id, current_assignments, job_to_redraw) {
-  info <- ensure_bag_job(section_id, job_to_redraw)
+# MODIFIED: Add argument to filter students out if absent
+redraw_one <- function(section_id, current_assignments, job_to_redraw, absentees = character(0)) {
+  info <- ensure_bag_job(section_id, job_to_redraw, absentees = absentees)
   roster <- read_roster(section_id)
+  if (length(absentees) > 0) {
+    roster <- setdiff(roster, absentees)
+  }
   bag <- info$bag
 
   taken_today <- unname(current_assignments)
@@ -171,7 +183,7 @@ redraw_one <- function(section_id, current_assignments, job_to_redraw) {
 
   if (length(available) == 0) {
     # try refilling cycle (without committing)
-    info2 <- ensure_bag_job(section_id, job_to_redraw)
+    info2 <- ensure_bag_job(section_id, job_to_redraw, absentees = absentees)
     bag <- info2$bag
     available <- setdiff(bag, taken_today)
   }
@@ -359,6 +371,12 @@ ui <- fluidPage(
         )
       )
     ),
+    tabPanel("Absentees",
+      br(),
+      h4("Absent students:"),
+      p("Select absent students for the current section and date. They will be excluded from all job draws today."),
+      uiOutput("absent_picker_ui")
+    ),
     tabPanel("Admin",
       fluidRow(
         column(
@@ -381,6 +399,7 @@ ui <- fluidPage(
         - Draw creates a draft assignment.
         - Redraw changes one job (absent student is never logged).
         - Commit writes to the sheet and removes those names from the bag.
+        - Use the 'Absentees' tab to mark absent students each day.
       ")
     )
   )
@@ -400,6 +419,30 @@ server <- function(input, output, session) {
     jobs_committed = FALSE
   )
 
+  # Track absentees by (section, date)
+  rv_absent <- reactiveVal(character(0))
+
+  # Absent picker UI (now on its own tab)
+  output$absent_picker_ui <- renderUI({
+    roster <- read_roster(input$section)
+    tagList(
+      selectizeInput("absent_names", label = NULL, choices = roster,
+                     selected = rv_absent(), multiple = TRUE,
+                     options = list(placeholder = "Pick absentees…")),
+      actionButton("confirm_absent", "Confirm Absent"),
+      tags$span(style="font-size:12px;color:#888;", "Don't forget to confirm your selection.")
+    )
+  })
+
+  observeEvent(list(input$section, input$date), {
+    # Reset absentees selection when section or date changes
+    rv_absent(character(0))
+  })
+
+  observeEvent(input$absent_names, {
+    rv_absent(input$absent_names)
+  })
+
   jobs_vec <- reactive({
     strsplit(input$jobs, "\n")[[1]] |>
       trimws() |>
@@ -408,6 +451,10 @@ server <- function(input, output, session) {
 
   update_status <- function() {
     roster <- read_roster(input$section)
+    # Exclude absentees
+    if (length(rv_absent()) > 0) {
+      roster <- setdiff(roster, rv_absent())
+    }
     rv$roster_n <- length(roster)
     # optionally show per-job remaining counts (safe)
     st <- read_sheet(SHEET_ID, sheet="state", col_types="ccccc") %>%
@@ -430,21 +477,26 @@ server <- function(input, output, session) {
   observeEvent(input$refresh, {
     update_status()
     rv$draft <- NULL
+    rv_absent(character(0))
   })
 
   observeEvent(input$draw, {
     jobs <- input$jobs_selected
+    absentees <- rv_absent()
     if (is.null(jobs) || length(jobs) == 0) {
       showNotification("Select at least one job.", type = "warning")
       return()
     }
-
-    res <- draw_jobs_day(input$section, jobs)
+    # Use draw_jobs_day with absentees
+    res <- draw_jobs_day(input$section, jobs, absentees = absentees)
     rv$draft <- res$assignments  # named vector job -> name
   })
 
   observeEvent(input$draw_cold, {
     roster <- read_roster(input$section)
+    if (length(rv_absent()) > 0) {
+      roster <- setdiff(roster, rv_absent())
+    }
 
     pool <- roster
     if (isTRUE(input$exclude_jobs_today) && !is.null(rv$draft)) {
@@ -579,7 +631,7 @@ server <- function(input, output, session) {
   observeEvent(input$redraw, {
     req(rv$draft)
     job_to_redraw <- input$jobToRedraw
-    res <- redraw_one(input$section, rv$draft, job_to_redraw)
+    res <- redraw_one(input$section, rv$draft, job_to_redraw, absentees = rv_absent())
     rv$draft <- res$assignments
     update_status()
   })
@@ -590,11 +642,15 @@ server <- function(input, output, session) {
       showNotification("Jobs already committed for today.", type = "warning")
       return()
     }
-
+    # Because commit requires state_updates (bag update), we must pass those.
+    # Original UI only had rv$draft, now use the full result from draw_jobs_day.
+    jobs <- input$jobs_selected
+    absentees <- rv_absent()
+    res <- draw_jobs_day(input$section, jobs, absentees = absentees)
     commit_jobs_day(
       section_id = input$section,
       date = input$date,
-      result = list(assignments = rv$draft, state_updates = NULL)
+      result = res
     )
 
     rv$draft <- NULL
