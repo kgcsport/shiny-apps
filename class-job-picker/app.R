@@ -277,20 +277,12 @@ ui <- fluidPage(
   titlePanel("Class Jobs Console"),
 
   # Make section and date global controls
-  fluidRow(
-    column(
-      3,
-      div(
-        style = "margin-bottom: 8px;",
-        selectInput("section", "Section", choices = c("51", "52"), selected = "51")
-      )
+  fluidRow(style = "display:flex; flex-wrap:wrap; gap:12px;",
+    div(style="min-width:180px; flex:1;",
+        selectInput("section", "Section", choices = c("51","52"))
     ),
-    column(
-      3,
-      div(
-        style = "margin-bottom: 8px;",
+    div(style="min-width:220px; flex:1;",
         dateInput("date", "Class date", value = Sys.Date())
-      )
     )
   ),
 
