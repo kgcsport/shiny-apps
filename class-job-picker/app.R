@@ -304,7 +304,7 @@ ui <- fluidPage(
               checkboxGroupInput("jobs_selected", "Select job(s)", choices = DEFAULT_JOBS, selected = DEFAULT_JOBS),
               div(class="bigbtn",
                   actionButton("draw", "Draw jobs for today"),
-                  actionButton("commit", "Commit revealed assignments")
+                  actionButton("commit", "Commit jobs")
               ),
               actionButton("refresh", "Refresh from sheet")
           )
