@@ -301,14 +301,20 @@ ui <- fluidPage(
           4,
           div(class="panel",
               # section and date controls now global
-              checkboxGroupInput("jobs_selected", "Select job(s)", choices = DEFAULT_JOBS, selected = DEFAULT_JOBS),
-              div(class="bigbtn",
-                  actionButton("draw", "Draw jobs for today"),
-                  actionButton("commit", "Commit jobs")
-              ),
-              actionButton("refresh", "Refresh from sheet")
-          )
-        ),
+              fluidRow(style = "display: flex; flex-wrap: nowrap;",
+                column(6,
+                  checkboxGroupInput("jobs_selected", "Select job(s)", choices = DEFAULT_JOBS, selected = DEFAULT_JOBS)
+                ),
+                column(6,
+                  div(
+                    actionButton("draw", "Draw jobs"),
+                    actionButton("commit", "Commit jobs"),
+                    actionButton("refresh", "Refresh")
+                  )
+                ),
+              )
+            )
+          ),
         column(
           8,
           div(class="panel",
