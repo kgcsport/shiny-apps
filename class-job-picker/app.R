@@ -11,7 +11,8 @@ library(lubridate)
 # ----------------------------
 # Put your Google Sheet ID here (the long string in the URL)
 SHEET_ID <- "1zXqPsAdhl-tb24LOmbxGAfuE3WfZL9yMdCHcua7toV4"
-SHEET_ID <- "1-_fWuwLC8hxHzrE4pimsDN6u75MWQeUgs9Zk_p093D0"
+## Testing
+# SHEET_ID <- "1-_fWuwLC8hxHzrE4pimsDN6u75MWQeUgs9Zk_p093D0"
 # Path to service account JSON (recommended)
 SERVICE_JSON <- Sys.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 
