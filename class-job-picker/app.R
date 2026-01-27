@@ -4,14 +4,14 @@ library(dplyr)
 library(jsonlite)
 library(lubridate)
 
-# shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/intro-econ/tools/class-job-picker", port = 3838, host = "127.0.0.1")
+# shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/shiny-apps/class-job-picker", port = 3838, host = "127.0.0.1")
 
 # ----------------------------
 # CONFIG
 # ----------------------------
 # Put your Google Sheet ID here (the long string in the URL)
 SHEET_ID <- "1zXqPsAdhl-tb24LOmbxGAfuE3WfZL9yMdCHcua7toV4"
-
+SHEET_ID <- "1-_fWuwLC8hxHzrE4pimsDN6u75MWQeUgs9Zk_p093D0"
 # Path to service account JSON (recommended)
 SERVICE_JSON <- Sys.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 
@@ -106,7 +106,7 @@ ensure_bag_job <- function(section_id, job_id, absentees = character(0)) {
   }
   st <- read_state(section_id, job_id)
 
-  cycle_id <- suppressWarnings(as.integer(st$cycle_id[[1]]))
+  cycle_id <- suppressWarnings(as.integer(st$cycle_id1[1]))
   if (is.na(cycle_id)) cycle_id <- 1
 
   bag <- parse_bag(st$bag_json[[1]])
@@ -224,7 +224,7 @@ commit_jobs_day <- function(section_id, date, result) {
 }
 
 clear_log <- function(delete_date = FALSE, section_id = NULL, date = Sys.Date()) {
-  if (delete_date & is.Date(date)) {
+  if (delete_date && is.Date(date)) {
     lg <- read_sheet(SHEET_ID, sheet = "log", col_types = "cccccc")
     date <- as.character(date)
     if (!is.null(section_id)) section_id <- as.character(section_id)
@@ -233,7 +233,7 @@ clear_log <- function(delete_date = FALSE, section_id = NULL, date = Sys.Date())
       filter(!(date == !!date & (is.null(section_id) | section == !!section_id)))
 
     sheet_write(lg2, ss = SHEET_ID, sheet = "log")
-    return()
+    return(TRUE)
   }
   else if (!delete_date) {
     empty <- tibble(
@@ -245,6 +245,7 @@ clear_log <- function(delete_date = FALSE, section_id = NULL, date = Sys.Date())
       cycle_id = character()
     )
     sheet_write(empty, ss = SHEET_ID, sheet = "log")
+    return(TRUE)
   }
   else {
     return(FALSE)
@@ -384,7 +385,7 @@ ui <- fluidPage(
               actionButton("admin_clear_log", "CLEAR log tab (danger)"),
               checkboxInput("admin_confirm", "I understand this deletes data", value = FALSE),
               checkboxInput("admin_delete_date", "Delete date's data", value = FALSE),
-              dateInput("admin_delete_date", "Date to delete", value = Sys.Date()),
+              dateInput("admin_delete_date_input", "Date to delete", value = Sys.Date()),
               actionButton("admin_reset_bag", "RESET bag (danger)")
           )
         )
@@ -523,7 +524,7 @@ server <- function(input, output, session) {
     }
 
     st <- read_state(input$section, "cold call")
-    cycle_id <- as.character(st$cycle_id[[1]])
+    cycle_id <- as.character(st$cycle_id[1])
 
     rows <- tibble(
       ts = as.character(Sys.time()),
@@ -556,7 +557,7 @@ server <- function(input, output, session) {
       }
 
       st <- read_state(input$section, "voluntary answer")
-      cycle_id <- as.character(st$cycle_id[[1]])
+      cycle_id <- as.character(st$cycle_id[1])
 
       rows <- tibble(
         ts = as.character(Sys.time()),
@@ -589,7 +590,7 @@ server <- function(input, output, session) {
 
     # Use current cycle_id just for reference in log (doesn't change bag)
     st <- read_state(input$man_section, input$man_job)
-    cycle_id <- as.character(st$cycle_id[[1]])
+    cycle_id <- as.character(st$cycle_id[1])
 
     rows <- tibble(
       ts = as.character(Sys.time()),
@@ -673,7 +674,7 @@ server <- function(input, output, session) {
       showNotification("Check the confirmation box first.", type = "warning")
       return()
     }
-    log_clear <- clear_log(delete_date=isTRUE(input$admin_delete_date), section_id=input$section, date=input$admin_delete_date)
+    log_clear <- clear_log(delete_date=isTRUE(input$admin_delete_date), section_id=input$section, date=input$admin_delete_date_input)
     # commited is not false, so can commit again
     rv$jobs_committed <- FALSE
     if (!log_clear) showNotification("Log not cleared, check date.", type = "message")
