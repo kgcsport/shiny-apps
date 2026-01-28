@@ -134,19 +134,23 @@ backup_to_sheets <- function() {
 get_credentials <- function() {
   b64 <- Sys.getenv("CRED_B64", "")
   if (nzchar(b64)) {
+    logf("get_credentials(): using CRED_B64")
     raw <- base64enc::base64decode(b64)
     return(readr::read_csv(raw, show_col_types = FALSE, trim_ws = TRUE))
   }
   csv <- Sys.getenv("CRED_CSV", "")
   if (nzchar(csv)) {
+    logf("get_credentials(): using CRED_CSV")
     con <- textConnection(csv); on.exit(close(con), add = TRUE)
     return(readr::read_csv(con, show_col_types = FALSE, trim_ws = TRUE))
   }
   path <- Sys.getenv("CRED_PATH", "")
   if (nzchar(path)) {
+    logf("get_credentials(): using CRED_PATH")
     stopifnot(file.exists(path))
     return(readr::read_csv(path, show_col_types = FALSE, trim_ws = TRUE))
   }
+  logf("get_credentials(): no credentials found: set CRED_B64, CRED_CSV, or CRED_PATH")
   stop("No credentials found: set CRED_B64, CRED_CSV, or CRED_PATH")
 }
 
