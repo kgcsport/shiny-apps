@@ -1057,7 +1057,8 @@ server <- function(input, output, session) {
         step = step
       ),
       # if choice is "question", state amount currently pledged
-      if (identical(choice, "question")) textOutput(sprintf("Currently pledged: %.2f", alloc$pending_question %||% 0)),
+      if (identical(choice, "question")) tags$p(strong(sprintf("Currently pledged: %.2f", alloc$pending_question %||% 0)))
+      ,
       checkboxInput("buy_confirm", "I confirm this purchase/allocation.", value = FALSE),
       actionButton("buy_submit", "Submit", class="btn-primary"),
       tags$small("Questions = allocation (editable while open). Exam points/extensions = immediate purchases.")
