@@ -864,11 +864,35 @@ server <- function(input, output, session) {
   output$auth_gate <- renderUI({ if (!rv$authed) login_ui() else NULL })
 
   observeEvent(input$login_btn, {
-    u <- trimws(input$login_user); p <- input$login_pw
-    row <- db_query("SELECT user_id, display_name, is_admin, pw_hash FROM users WHERE user_id=?;", list(u))
-    ok  <- nrow(row) == 1 && bcrypt::checkpw(p, row$pw_hash[1])
+    u <- trimws(input$login_user %||% "")
+    p <- input$login_pw %||% ""
 
-    if (!ok) {
+    row <- db_query(
+      "SELECT user_id, display_name, is_admin, pw_hash FROM users WHERE user_id=?;",
+      list(u)
+    )
+
+    if (nrow(row) != 1) {
+      logf("LOGIN FAIL: user not found in DB:", u)
+      showNotification("Login failed.", type="error")
+      return()
+    }
+
+    ph <- row$pw_hash[1] %||% ""
+    if (!nzchar(ph)) {
+      logf("LOGIN FAIL: pw_hash missing/blank for:", u)
+      showNotification("Login failed.", type="error")
+      return()
+    }
+
+    ok <- FALSE
+    ok <- tryCatch(bcrypt::checkpw(p, ph), error = function(e) {
+      logf("LOGIN FAIL: bcrypt error for", u, ":", conditionMessage(e))
+      FALSE
+    })
+
+    if (!isTRUE(ok)) {
+      logf("LOGIN FAIL: bcrypt mismatch for:", u)
       showNotification("Login failed.", type="error")
       return()
     }
@@ -876,9 +900,11 @@ server <- function(input, output, session) {
     rv$authed   <- TRUE
     rv$user     <- row$user_id[1]
     rv$name     <- row$display_name[1]
-    # IMPORTANT: row$is_admin is 0/1 integer; isTRUE(1) is FALSE. Coerce correctly.
     rv$is_admin <- isTRUE(as.integer(row$is_admin[1]) == 1)
+
+    logf("LOGIN OK:", u, "| admin=", rv$is_admin)
   })
+
 
   authed   <- reactive(rv$authed)
   user_id  <- reactive(rv$user)
