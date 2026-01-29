@@ -980,11 +980,15 @@ server <- function(input, output, session) {
 
   # Password changer panel (reused on Student + Admin)
   password_changer <- wellPanel(
-    h5("Change password"),
-    passwordInput("pw_old",  "Current password"),
-    passwordInput("pw_new",  "New password"),
-    passwordInput("pw_new2", "Confirm new password"),
-    actionButton("pw_change_btn", "Update password", class="btn-secondary")
+    tags$details(
+      tags$summary(tags$strong("Change password (click to show)")),
+      div(style="margin-top:12px",
+        passwordInput("pw_old",  "Current password"),
+        passwordInput("pw_new",  "New password"),
+        passwordInput("pw_new2", "Confirm new password"),
+        actionButton("pw_change_btn", "Update password", class="btn-secondary")
+      )
+    )
   )
 
   observeEvent(input$pw_change_btn, {
@@ -1028,15 +1032,15 @@ server <- function(input, output, session) {
       tags$hr(),
       uiOutput("purchase_box"),
       tags$hr(),
-      password_changer,
-      tags$hr(),
       wellPanel(
         h5("Your allocations (live)"),
         tableOutput("student_alloc_table")
       ),
       tags$hr(),
       h4("Your ledger"),
-      DTOutput("my_ledger")
+      DTOutput("my_ledger"),
+      password_changer,
+      tags$hr(),
     )
   })
 
