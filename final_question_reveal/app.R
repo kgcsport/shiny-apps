@@ -553,30 +553,30 @@ get_credentials <- function(
   cache_path = NULL
 ) {
 
-  folder_id <- Sys.getenv("FLEX_CRED_ID", "")
+  folder_id <- Sys.getenv("FLEX_PASS_FOLDER_ID", "")
 
   # Ensure Drive auth is active (use your existing helper)
   if (!exists("google_auth", mode = "function")) {
-    stop("load_credentials_from_drive(): google_auth() not found. Define it first.")
+    stop("get_credentials(): google_auth() not found. Define it first.")
   }
   ok <- tryCatch(google_auth(), error = function(e) FALSE)
-  if (!isTRUE(ok)) stop("load_credentials_from_drive(): google_auth() returned FALSE.")
+  if (!isTRUE(ok)) stop("get_credentials(): google_auth() returned FALSE.")
 
   # Confirm folder exists / accessible
   tryCatch(
     googledrive::drive_get(googledrive::as_id(folder_id)),
-    error = function(e) stop("load_credentials_from_drive(): cannot access folder: ", conditionMessage(e))
+    error = function(e) stop("get_credentials(): cannot access folder: ", conditionMessage(e))
   )
 
   # Find file in folder (exact name match)
   files <- tryCatch(
     googledrive::drive_ls(googledrive::as_id(folder_id)),
-    error = function(e) stop("load_credentials_from_drive(): drive_ls failed: ", conditionMessage(e))
+    error = function(e) stop("get_credentials(): drive_ls failed: ", conditionMessage(e))
   )
 
   hit <- files[files$name == filename, , drop = FALSE]
   if (nrow(hit) == 0) {
-    stop(sprintf("load_credentials_from_drive(): '%s' not found in folder.", filename))
+    stop(sprintf("get_credentials(): '%s' not found in folder.", filename))
   }
   if (nrow(hit) > 1) {
     # choose most recently modified if available; otherwise first
@@ -595,19 +595,19 @@ get_credentials <- function(
 
   tryCatch(
     googledrive::drive_download(file = hit$id, path = cache_path, overwrite = TRUE),
-    error = function(e) stop("load_credentials_from_drive(): drive_download failed: ", conditionMessage(e))
+    error = function(e) stop("get_credentials(): drive_download failed: ", conditionMessage(e))
   )
 
   cred <- tryCatch(
     readr::read_csv(cache_path, show_col_types = FALSE, trim_ws = TRUE),
-    error = function(e) stop("load_credentials_from_drive(): read_csv failed: ", conditionMessage(e))
+    error = function(e) stop("get_credentials(): read_csv failed: ", conditionMessage(e))
   )
 
   # Basic validation + normalization
   need <- c("user", "name", "pw_hash", "is_admin")
   missing <- setdiff(need, names(cred))
   if (length(missing)) {
-    stop("load_credentials_from_drive(): credentials.csv missing columns: ", paste(missing, collapse = ", "))
+    stop("get_credentials(): credentials.csv missing columns: ", paste(missing, collapse = ", "))
   }
 
   cred <- cred |>
