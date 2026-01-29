@@ -155,6 +155,8 @@ get_credentials <- function() {
 }
 
 CRED <- get_credentials()
+logf("CRED: %s", paste(CRED$user, collapse = ", "))
+
 stopifnot(all(c("user","name","pw_hash","is_admin") %in% names(CRED)))
 
 # Robust admin coercion for varied CSV formats (TRUE/FALSE, 1/0, yes/no)
