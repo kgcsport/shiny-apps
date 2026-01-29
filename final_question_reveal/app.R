@@ -1,6 +1,6 @@
 # app.R — streamlined + bug-fixed
 # ------------------------------------------------------------
-# Final question unlock (collective) + Flex passes + Exam points (individual)
+# Exam Question unlock (collective) + Flex passes + Exam points (individual)
 #
 # Key rules:
 # - Students start with `initial_fp` flex passes, but can earn more via admin grants
@@ -867,12 +867,12 @@ admin_student_summary <- function() {
 # -------------------------
 login_ui <- function(msg = NULL) {
   fluidPage(
-    titlePanel("Final Questions + Flex Passes + Exam Points"),
+    titlePanel("Exam Questions + Flex Passes + Exam Points"),
     if (!is.null(msg)) div(style="color:#b00020; font-weight:bold;", msg),
     textInput("login_user", "Username"),
     passwordInput("login_pw", "Password"),
     actionButton("login_btn", "Sign in", class="btn-primary"),
-    tags$small("Use the username and password provided by your instructor.")
+    tags$small("Use the username and password provided by your instructor. Change password upon logging in.")
   )
 }
 
