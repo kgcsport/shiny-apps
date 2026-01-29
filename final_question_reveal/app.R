@@ -128,36 +128,6 @@ backup_to_sheets <- function() {
   invisible(TRUE)
 }
 
-# -------------------------
-# Credentials (seed only)
-# -------------------------
-get_credentials <- function() {
-  b64 <- Sys.getenv("CRED_B64", "")
-  if (nzchar(b64)) {
-    logf("get_credentials(): using CRED_B64")
-    raw <- base64enc::base64decode(b64)
-    return(readr::read_csv(raw, show_col_types = FALSE, trim_ws = TRUE))
-  }
-  csv <- Sys.getenv("CRED_CSV", "")
-  if (nzchar(csv)) {
-    logf("get_credentials(): using CRED_CSV")
-    con <- textConnection(csv); on.exit(close(con), add = TRUE)
-    return(readr::read_csv(con, show_col_types = FALSE, trim_ws = TRUE))
-  }
-  path <- Sys.getenv("CRED_PATH", "")
-  if (nzchar(path)) {
-    logf("get_credentials(): using CRED_PATH")
-    stopifnot(file.exists(path))
-    return(readr::read_csv(path, show_col_types = FALSE, trim_ws = TRUE))
-  }
-  logf("get_credentials(): no credentials found: set CRED_B64, CRED_CSV, or CRED_PATH")
-  stop("No credentials found: set CRED_B64, CRED_CSV, or CRED_PATH")
-}
-
-CRED <- get_credentials()
-logf("CRED: %s", paste(CRED$user, collapse = ", "))
-
-stopifnot(all(c("user","name","pw_hash","is_admin") %in% names(CRED)))
 
 # Robust admin coercion for varied CSV formats (TRUE/FALSE, 1/0, yes/no)
 coerce_is_admin <- function(x) {
@@ -576,6 +546,89 @@ init_db <- function() {
     ))
   }
 }
+
+
+get_credentials <- function(
+  filename = "credentials.csv",
+  cache_path = NULL
+) {
+
+  folder_id <- Sys.getenv("FLEX_CRED_ID", "")
+
+  # Ensure Drive auth is active (use your existing helper)
+  if (!exists("google_auth", mode = "function")) {
+    stop("load_credentials_from_drive(): google_auth() not found. Define it first.")
+  }
+  ok <- tryCatch(google_auth(), error = function(e) FALSE)
+  if (!isTRUE(ok)) stop("load_credentials_from_drive(): google_auth() returned FALSE.")
+
+  # Confirm folder exists / accessible
+  tryCatch(
+    googledrive::drive_get(googledrive::as_id(folder_id)),
+    error = function(e) stop("load_credentials_from_drive(): cannot access folder: ", conditionMessage(e))
+  )
+
+  # Find file in folder (exact name match)
+  files <- tryCatch(
+    googledrive::drive_ls(googledrive::as_id(folder_id)),
+    error = function(e) stop("load_credentials_from_drive(): drive_ls failed: ", conditionMessage(e))
+  )
+
+  hit <- files[files$name == filename, , drop = FALSE]
+  if (nrow(hit) == 0) {
+    stop(sprintf("load_credentials_from_drive(): '%s' not found in folder.", filename))
+  }
+  if (nrow(hit) > 1) {
+    # choose most recently modified if available; otherwise first
+    if ("modifiedTime" %in% names(hit)) {
+      hit <- hit[order(hit$modifiedTime, decreasing = TRUE), , drop = FALSE]
+    }
+    hit <- hit[1, , drop = FALSE]
+  }
+
+  # Download to temp (or cache path if provided)
+  if (is.null(cache_path) || !nzchar(cache_path)) {
+    cache_path <- file.path(tempdir(), paste0("cred_", filename))
+  }
+  cache_dir <- dirname(cache_path)
+  if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+
+  tryCatch(
+    googledrive::drive_download(file = hit$id, path = cache_path, overwrite = TRUE),
+    error = function(e) stop("load_credentials_from_drive(): drive_download failed: ", conditionMessage(e))
+  )
+
+  cred <- tryCatch(
+    readr::read_csv(cache_path, show_col_types = FALSE, trim_ws = TRUE),
+    error = function(e) stop("load_credentials_from_drive(): read_csv failed: ", conditionMessage(e))
+  )
+
+  # Basic validation + normalization
+  need <- c("user", "name", "pw_hash", "is_admin")
+  missing <- setdiff(need, names(cred))
+  if (length(missing)) {
+    stop("load_credentials_from_drive(): credentials.csv missing columns: ", paste(missing, collapse = ", "))
+  }
+
+  cred <- cred |>
+    dplyr::mutate(
+      user    = as.character(.data$user),
+      name    = as.character(.data$name),
+      pw_hash = as.character(.data$pw_hash),
+      is_admin = as.character(.data$is_admin)
+    )
+
+  # Drop empty users
+  cred <- cred |> dplyr::filter(!is.na(.data$user) & nzchar(.data$user))
+
+  cred
+}
+
+CRED <- get_credentials()
+logf("CRED: %s", paste(CRED$user, collapse = ", "))
+
+stopifnot(all(c("user","name","pw_hash","is_admin") %in% names(CRED)))
+
 # Attempt restore from Drive on startup (best-effort)
 try(restore_db_from_drive(), silent = TRUE)
 
