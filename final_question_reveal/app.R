@@ -139,10 +139,10 @@ coerce_is_admin <- function(x) {
 # Questions (edit)
 # -------------------------
 QUESTIONS <- list(
-  HTML("<b>Q1</b><br>Opportunity cost: define + example."),
-  HTML("<b>Q2</b><br>Marginal thinking: define + example."),
-  HTML("<b>Q3</b><br>Comparative advantage: explain."),
-  HTML("<b>Q4</b><br>Consumer theory: shifts vs movements.")
+  HTML("<b>Q1</b><br>True/False/Uncertain: The economic cost and accounting cost of attending class are both zero."),
+  HTML("<b>Q2</b><br>What is an opportunity cost? Give an example from your daily life."),
+  HTML("<b>Q3</b><br>What is a positive vs a normative statement? Give one example of each."),
+  HTML("<b>Q4</b><br>Imagine the price of lattes increases. What happens to the quantity demanded and why?")
 )
 
 render_unlocked_questions <- function(n_unlocked) {
