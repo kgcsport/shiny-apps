@@ -3,12 +3,12 @@ if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 pacman::p_load(tidyverse, bcrypt, googledrive, googlesheets4)
 
 # Step 1. Your plain-text roster (temporary)
-sheet_id='1k5mukmbiANheozOeW_NEfWr_GhT2Ly8flUKiMbIY5tg'
 
-googlesheets4::read_sheet(sheet_id, sheet = "users") %>%
+read_csv('final_question_reveal/roster.csv') %>%
     rowwise() %>%
     mutate(pw_hash=bcrypt::hashpw(password)) %>%
     select(-password) %>%
+    ungroup() %>%
     googlesheets4::sheet_write(sheet_id, sheet = "credentials")
 
 # txt <- readChar("final_question_reveal/credentials.csv", file.info("final_question_reveal/credentials.csv")$size, useBytes = TRUE)
