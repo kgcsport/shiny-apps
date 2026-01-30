@@ -547,13 +547,12 @@ init_db <- function() {
   }
 }
 
-
 get_credentials <- function(
-  filename = "credentials.csv",
+  sheet = "credentials",
   cache_path = NULL
 ) {
 
-  folder_id <- Sys.getenv("FLEX_PASS_FOLDER_ID", "")
+  sheet_id <- Sys.getenv("FLEX_PASS_SHEET_ID")
 
   # Ensure Drive auth is active (use your existing helper)
   if (!exists("google_auth", mode = "function")) {
@@ -564,50 +563,21 @@ get_credentials <- function(
 
   # Confirm folder exists / accessible
   tryCatch(
-    googledrive::drive_get(googledrive::as_id(folder_id)),
+    googledrive::drive_get(googledrive::as_id(sheet_id)),
     error = function(e) stop("get_credentials(): cannot access folder: ", conditionMessage(e))
   )
 
-  # Find file in folder (exact name match)
-  files <- tryCatch(
-    googledrive::drive_ls(googledrive::as_id(folder_id)),
-    error = function(e) stop("get_credentials(): drive_ls failed: ", conditionMessage(e))
-  )
-
-  hit <- files[files$name == filename, , drop = FALSE]
-  if (nrow(hit) == 0) {
-    stop(sprintf("get_credentials(): '%s' not found in folder.", filename))
-  }
-  if (nrow(hit) > 1) {
-    # choose most recently modified if available; otherwise first
-    if ("modifiedTime" %in% names(hit)) {
-      hit <- hit[order(hit$modifiedTime, decreasing = TRUE), , drop = FALSE]
-    }
-    hit <- hit[1, , drop = FALSE]
-  }
-
-  # Download to temp (or cache path if provided)
-  if (is.null(cache_path) || !nzchar(cache_path)) {
-    cache_path <- file.path(tempdir(), paste0("cred_", filename))
-  }
-  cache_dir <- dirname(cache_path)
-  if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
-
-  tryCatch(
-    googledrive::drive_download(file = hit$id, path = cache_path, overwrite = TRUE),
-    error = function(e) stop("get_credentials(): drive_download failed: ", conditionMessage(e))
-  )
-
+  # Read credentials directly from Google Sheet by sheet_id
   cred <- tryCatch(
-    readr::read_csv(cache_path, show_col_types = FALSE, trim_ws = TRUE),
-    error = function(e) stop("get_credentials(): read_csv failed: ", conditionMessage(e))
+    googlesheets4::read_sheet(sheet_id, sheet = sheet),
+    error = function(e) stop("get_credentials(): read_sheet failed: ", conditionMessage(e))
   )
 
   # Basic validation + normalization
   need <- c("user", "name", "pw_hash", "is_admin")
   missing <- setdiff(need, names(cred))
   if (length(missing)) {
-    stop("get_credentials(): credentials.csv missing columns: ", paste(missing, collapse = ", "))
+    stop("get_credentials(): credentials sheet missing columns: ", paste(missing, collapse = ", "))
   }
 
   cred <- cred |>
@@ -615,31 +585,34 @@ get_credentials <- function(
       user    = as.character(.data$user),
       name    = as.character(.data$name),
       pw_hash = as.character(.data$pw_hash),
-      is_admin = as.character(.data$is_admin)
+      is_admin = as.logical(.data$is_admin)
     )
 
   # Drop empty users
   cred <- cred |> dplyr::filter(!is.na(.data$user) & nzchar(.data$user))
 
   cred
-}
+} 
 
 CRED <- get_credentials()
 logf("CRED: %s", paste(CRED$user, collapse = ", "))
+
 
 stopifnot(all(c("user","name","pw_hash","is_admin") %in% names(CRED)))
 
 # Attempt restore from Drive on startup (best-effort)
 try(restore_db_from_drive(), silent = TRUE)
 
-
 init_db()
+
+logf('INIT DB COMPLETED')
 
 get_settings <- function() {
   s <- db_query("SELECT * FROM settings WHERE id=1;")
   if (!nrow(s)) stop("Missing settings row.")
   s
 }
+
 set_settings <- function(...) {
   dots <- list(...)
   if (!length(dots)) return(invisible(TRUE))
@@ -862,6 +835,23 @@ admin_student_summary <- function() {
     )
 }
 
+
+# after you load CRED and after DB is initialized
+u <- "kcoombs"
+
+db_hash <- db_query("SELECT pw_hash FROM users WHERE user_id=?;", list(u))$pw_hash[1] %||% ""
+cred_hash <- {
+  r <- CRED[CRED$user == u, , drop = FALSE]   # adjust if you use user_id/display_name
+  if (nrow(r) == 1) r$pw_hash[1] %||% "" else ""
+}
+
+logf("HASH COMPARE for", u,
+     "| db_nchar=", nchar(db_hash),
+     "| cred_nchar=", nchar(cred_hash),
+     "| db_prefix=", substr(db_hash, 1, 12),
+     "| cred_prefix=", substr(cred_hash, 1, 12),
+     "| identical=", identical(db_hash, cred_hash))
+
 # -------------------------
 # UI
 # -------------------------
@@ -947,7 +937,7 @@ server <- function(input, output, session) {
     })
 
     if (!isTRUE(ok)) {
-      logf("LOGIN FAIL: bcrypt mismatch for:", u)
+      logf("LOGIN FAIL: bcrypt mismatch for:", u, "|", p, "|", ph)
       showNotification("Login failed.", type="error")
       return()
     }
