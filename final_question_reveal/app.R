@@ -16,6 +16,8 @@
 # Notes:
 # - Question "pledges" are allocations (not charged) until admin closes the round.
 # - Ledger records actual spending/grants. Grants are stored as negative amounts.
+# Deploy to 3838 port
+# shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/shiny-apps/final_question_reveal", port = 3838, host = "127.0.0.1")
 
 if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 pacman::p_load(
@@ -226,7 +228,7 @@ google_auth <- function() {
 
 # Hash DB + WAL + SHM to avoid redundant uploads
 .last_db_hash <- NULL
-db_hash <- function() {
+hash_db <- function() {
   parts <- c(DB_PATH, paste0(DB_PATH, "-wal"), paste0(DB_PATH, "-shm"))
   parts <- parts[file.exists(parts)]
   if (!length(parts)) return(NA_character_)
@@ -235,7 +237,7 @@ db_hash <- function() {
 }
 
 db_changed_since_last_backup <- function() {
-  new_hash <- db_hash()
+  new_hash <- hash_db()
   if (is.null(.last_db_hash) || !identical(new_hash, .last_db_hash)) {
     .last_db_hash <<- new_hash
     TRUE
