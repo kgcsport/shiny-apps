@@ -10,9 +10,9 @@ library(lubridate)
 # CONFIG
 # ----------------------------
 # Put your Google Sheet ID here (the long string in the URL)
-SHEET_ID <- "1zXqPsAdhl-tb24LOmbxGAfuE3WfZL9yMdCHcua7toV4"
+# SHEET_ID <- "1zXqPsAdhl-tb24LOmbxGAfuE3WfZL9yMdCHcua7toV4"
 ## Testing
-# SHEET_ID <- "1-_fWuwLC8hxHzrE4pimsDN6u75MWQeUgs9Zk_p093D0"
+SHEET_ID <- "1-_fWuwLC8hxHzrE4pimsDN6u75MWQeUgs9Zk_p093D0"
 # Path to service account JSON (recommended)
 SERVICE_JSON <- Sys.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 
@@ -107,7 +107,7 @@ ensure_bag_job <- function(section_id, job_id, absentees = character(0)) {
   }
   st <- read_state(section_id, job_id)
 
-  cycle_id <- suppressWarnings(as.integer(st$cycle_id1[1]))
+  cycle_id <- suppressWarnings(as.integer(st$cycle_id[1]))
   if (is.na(cycle_id)) cycle_id <- 1
 
   bag <- parse_bag(st$bag_json[[1]])
@@ -199,26 +199,42 @@ redraw_one <- function(section_id, current_assignments, job_to_redraw, absentees
 
 commit_jobs_day <- function(section_id, date, result) {
 
-  state <- read_state(section_id)
+  # Read FULL state (all sections) so we don't wipe other sections
+  st_all <- read_sheet(SHEET_ID, sheet = "state", col_types = "ccccc") %>%
+    mutate(
+      section = trimws(as.character(section)),
+      job     = trimws(as.character(job))
+    )
 
+  section_id <- trimws(as.character(section_id))
+
+  # Apply updates only to matching (section, job)
   for (j in names(result$state_updates)) {
     upd <- result$state_updates[[j]]
-    idx <- state$job == j
+    j   <- trimws(as.character(j))
 
-    state$cycle_id[idx] <- as.character(upd$cycle_id)
-    state$bag_json[idx] <- jsonlite::toJSON(upd$new_bag, auto_unbox = TRUE)
-    state$last_updated[idx] <- as.character(Sys.time())
+    idx <- st_all$section == section_id & st_all$job == j
+    if (!any(idx)) next
+
+    st_all$cycle_id[idx]      <- as.character(upd$cycle_id)
+    st_all$bag_json[idx]      <- jsonlite::toJSON(upd$new_bag, auto_unbox = TRUE)
+    st_all$last_updated[idx]  <- as.character(Sys.time())
   }
 
-  sheet_write(state, ss = SHEET_ID, sheet = "state")
+  # Write FULL state back
+  sheet_write(st_all, ss = SHEET_ID, sheet = "state")
 
+  # Log with cycle_id per job (important for rebuilds)
   rows <- tibble(
-    ts = as.character(Sys.time()),
-    date = as.character(date),
+    ts      = as.character(Sys.time()),
+    date    = as.character(date),
     section = as.character(section_id),
-    job = names(result$assignments),
-    name = unname(result$assignments),
-    cycle_id = NA_character_
+    job     = names(result$assignments),
+    name    = unname(result$assignments),
+    cycle_id = vapply(names(result$assignments), function(j) {
+      idx <- st_all$section == section_id & st_all$job == trimws(j)
+      if (!any(idx)) NA_character_ else as.character(st_all$cycle_id[idx][1])
+    }, FUN.VALUE = character(1))
   )
 
   append_log(rows)
@@ -251,6 +267,80 @@ clear_log <- function(delete_date = FALSE, section_id = NULL, date = Sys.Date())
   else {
     return(FALSE)
   }
+}
+
+append_admin_event <- function(section_id, date, event) {
+  rows <- tibble(
+    ts = as.character(Sys.time()),
+    date = as.character(date),
+    section = as.character(section_id),
+    job = paste0("ADMIN__", event),
+    name = "",
+    cycle_id = ""
+  )
+  append_log(rows)
+}
+
+deterministic_shuffle <- function(x, seed_string) {
+  # Simple deterministic seed from string
+  seed <- sum(utf8ToInt(seed_string)) %% .Machine$integer.max
+  set.seed(seed)
+  sample(x, length(x), replace = FALSE)
+}
+
+rebuild_state_from_log <- function(section_id, upto_date = Sys.Date()) {
+
+  section_id <- trimws(as.character(section_id))
+  upto_date  <- as.character(upto_date)
+
+  roster <- read_roster(section_id)
+  N <- length(roster)
+  if (N == 0) stop("Roster empty for section ", section_id)
+
+  st_all <- read_sheet(SHEET_ID, sheet="state", col_types="ccccc") %>%
+    mutate(section = trimws(as.character(section)),
+           job     = trimws(as.character(job)))
+
+  lg <- read_sheet(SHEET_ID, sheet="log", col_types="cccccc") %>%
+    mutate(section = trimws(as.character(section)),
+           job     = trimws(as.character(job))) %>%
+    filter(section == section_id, date <= upto_date) %>%
+    arrange(ts)
+
+  # Find last reset marker per section (optional but recommended)
+  last_reset_i <- max(which(lg$job == "ADMIN__RESET_BAG"), na.rm = TRUE)
+  if (is.finite(last_reset_i)) {
+    lg_use <- lg[(last_reset_i+1):nrow(lg), , drop=FALSE]
+  } else {
+    lg_use <- lg
+  }
+
+  # Only jobs that exist in state for this section
+  st_sec_idx <- st_all$section == section_id
+  jobs <- st_all$job[st_sec_idx]
+
+  for (j in jobs) {
+    # Count how many times job assigned since last reset
+    k <- sum(lg_use$job == j)
+
+    cycle_id <- floor(k / N) + 1
+    pos_in_cycle <- k %% N
+
+    # Deterministic order for this job/cycle
+    order <- deterministic_shuffle(roster, paste(section_id, j, cycle_id, sep="|"))
+
+    # Remove already-taken in this cycle (we don't know exact order of real past draws,
+    # but this gives a stable, consistent reconstruction)
+    bag <- if (pos_in_cycle == 0) order else order[(pos_in_cycle+1):N]
+
+    idx <- st_all$section == section_id & st_all$job == j
+    st_all$cycle_id[idx]     <- as.character(cycle_id)
+    st_all$bag_json[idx]     <- jsonlite::toJSON(bag, auto_unbox = TRUE)
+    st_all$last_updated[idx] <- as.character(Sys.time())
+  }
+
+  sheet_write(st_all, ss=SHEET_ID, sheet="state")
+  TRUE
 }
 
 reset_bag <- function(section_id) {
@@ -319,9 +409,6 @@ ui <- fluidPage(
               ),
               column(6,
                 uiOutput("redrawUI")
-              ),
-              column(6,
-                uiOutput("coldUI")
               )
             )
           )
@@ -335,7 +422,6 @@ ui <- fluidPage(
             h4("Cold call (one at a time)"),
             fluidRow(
               column(6,
-                numericInput("n_cold", "Number of cold calls to draw", value = 1, min = 0, step = 1),
                 checkboxInput("exclude_jobs_today", "Exclude today's job assignees", value = TRUE)
               ),
               column(6,
@@ -387,7 +473,8 @@ ui <- fluidPage(
               checkboxInput("admin_confirm", "I understand this deletes data", value = FALSE),
               checkboxInput("admin_delete_date", "Delete date's data", value = FALSE),
               dateInput("admin_delete_date_input", "Date to delete", value = Sys.Date()),
-              actionButton("admin_reset_bag", "RESET bag (danger)")
+              actionButton("admin_reset_bag", "RESET bag (danger)"),
+              actionButton("admin_rebuild_state", "REBUILD state from log (danger)")
           )
         )
       )
@@ -412,6 +499,7 @@ server <- function(input, output, session) {
   
   rv <- reactiveValues(
     draft = NULL,   # named vector job -> name
+    draft_res = NULL, # FULL draw result (assignments + state updates)
     cycle_id = NA_integer_,
     bag_n = NA_integer_,
     roster_n = NA_integer_,
@@ -428,9 +516,7 @@ server <- function(input, output, session) {
     tagList(
       selectizeInput("absent_names", label = NULL, choices = roster,
                      selected = rv_absent(), multiple = TRUE,
-                     options = list(placeholder = "Pick absentees…")),
-      actionButton("confirm_absent", "Confirm Absent"),
-      tags$span(style="font-size:12px;color:#888;", "Don't forget to confirm your selection.")
+                     options = list(placeholder = "Pick absentees…"))
     )
   })
 
@@ -441,12 +527,6 @@ server <- function(input, output, session) {
 
   observeEvent(input$absent_names, {
     rv_absent(input$absent_names)
-  })
-
-  jobs_vec <- reactive({
-    strsplit(input$jobs, "\n")[[1]] |>
-      trimws() |>
-      (\(x) x[x != ""])()
   })
 
   update_status <- function() {
@@ -463,13 +543,6 @@ server <- function(input, output, session) {
     rv$bag_summary <- paste0(st_sec$job, ": ", sapply(st_sec$bag_json, function(x) length(parse_bag(x))), collapse="\n")
   }
 
-
-  observeEvent(c(input$section, input$date), {
-    rv$cold_current <- ""
-    updateTextInput(session, "manual_name", value = "")
-  }, ignoreInit = TRUE)
-
-
   observeEvent(TRUE, {
     update_status()
   }, once = TRUE)
@@ -477,20 +550,36 @@ server <- function(input, output, session) {
   observeEvent(input$refresh, {
     update_status()
     rv$draft <- NULL
+    rv$draft_res <- NULL
     rv_absent(character(0))
+    rv$jobs_committed <- FALSE
   })
+
+  observeEvent(list(input$section, input$date), {
+    rv$draft <- NULL
+    rv$draft_res <- NULL
+    rv$jobs_committed <- FALSE
+    rv$cold_current <- ""
+    rv_absent(character(0))
+  }, ignoreInit = TRUE)
+
 
   observeEvent(input$draw, {
     jobs <- input$jobs_selected
     absentees <- rv_absent()
+
     if (is.null(jobs) || length(jobs) == 0) {
       showNotification("Select at least one job.", type = "warning")
       return()
     }
-    # Use draw_jobs_day with absentees
+
     res <- draw_jobs_day(input$section, jobs, absentees = absentees)
-    rv$draft <- res$assignments  # named vector job -> name
+
+    rv$draft_res <- res                 # keep the exact draw
+    rv$draft     <- res$assignments     # what you display
+    rv$jobs_committed <- FALSE          # allow commit after a new draw
   })
+
 
   observeEvent(input$draw_cold, {
     roster <- read_roster(input$section)
@@ -513,10 +602,26 @@ server <- function(input, output, session) {
     rv$cold_current <- sample(pool, 1)
   })
 
+  observeEvent(input$commit, {
+    req(rv$draft_res)
 
-  observeEvent(input$clear_cold, {
-    rv$cold_current <- character(0)
+    if (rv$jobs_committed) {
+      showNotification("Jobs already committed for today.", type = "warning")
+      return()
+    }
+
+    commit_jobs_day(
+      section_id = input$section,
+      date       = input$date,
+      result     = rv$draft_res   # <-- commit EXACTLY what was drawn/redrawn
+    )
+
+    rv$draft <- NULL
+    rv$draft_res <- NULL
+    rv$jobs_committed <- TRUE
+    update_status()
   })
+
 
   observeEvent(input$commit_cold, {
     if (rv$cold_current == "") {
@@ -542,39 +647,6 @@ server <- function(input, output, session) {
     rv$cold_current <- ""
     showNotification("Cold call committed.", type = "message")
   })
-
-  observeEvent(input$commit_manual, {
-      nm <- trimws(input$manual_name)
-      if (nm == "") {
-        showNotification("Type a name first.", type = "warning")
-        return()
-      }
-
-      # Optional: validate name is in roster (recommended)
-      roster <- read_roster(input$section)
-      if (!(nm %in% roster)) {
-        showNotification("Name not found in roster for this section.", type = "error")
-        return()
-      }
-
-      st <- read_state(input$section, "voluntary answer")
-      cycle_id <- as.character(st$cycle_id[1])
-
-      rows <- tibble(
-        ts = as.character(Sys.time()),
-        date = as.character(input$date),
-        section = as.character(input$section),
-        job = "voluntary answer",
-        name = nm,
-        cycle_id = cycle_id
-      )
-
-      append_log(rows)
-
-      updateTextInput(session, "manual_name", value = "")
-      rv$cold_current <- ""  # keep display clean
-      showNotification("Manual name committed.", type = "message")
-    })
 
   output$man_name_ui <- renderUI({
     roster <- read_roster(input$man_section)
@@ -629,45 +701,40 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$redraw, {
-    req(rv$draft)
-    job_to_redraw <- input$jobToRedraw
-    res <- redraw_one(input$section, rv$draft, job_to_redraw, absentees = rv_absent())
-    rv$draft <- res$assignments
-    update_status()
-  })
+    req(rv$draft_res)  # require full draft object
 
-  observeEvent(input$commit, {
-    req(rv$draft)
-    if (rv$jobs_committed) {
-      showNotification("Jobs already committed for today.", type = "warning")
+    job_to_redraw <- input$jobToRedraw
+    absentees <- rv_absent()
+
+    # Ensure bag exists / aligned (may refill) and get current bag snapshot
+    info <- ensure_bag_job(input$section, job_to_redraw, absentees = absentees)
+    roster <- info$roster
+    bag <- info$bag
+
+    taken_today <- unname(rv$draft_res$assignments)
+    taken_today <- taken_today[!is.na(taken_today)]
+
+    available <- setdiff(bag, taken_today)
+    if (length(available) == 0) {
+      showNotification("No one left to redraw from (bag exhausted).", type="error")
       return()
     }
-    # Because commit requires state_updates (bag update), we must pass those.
-    # Original UI only had rv$draft, now use the full result from draw_jobs_day.
-    jobs <- input$jobs_selected
-    absentees <- rv_absent()
-    res <- draw_jobs_day(input$section, jobs, absentees = absentees)
-    commit_jobs_day(
-      section_id = input$section,
-      date = input$date,
-      result = res
+
+    new_name <- sample(available, 1)
+
+    # Update assignments in the stored draft
+    rv$draft_res$assignments[[job_to_redraw]] <- new_name
+
+    # IMPORTANT: also update the pending state update for that job
+    # We remove the chosen name from the (current) bag and keep cycle_id from ensure_bag_job()
+    rv$draft_res$state_updates[[job_to_redraw]] <- list(
+      cycle_id = info$cycle_id,
+      new_bag  = setdiff(bag, new_name)
     )
 
-    rv$draft <- NULL
-    rv$jobs_committed <- TRUE
+    # Refresh table view
+    rv$draft <- rv$draft_res$assignments
     update_status()
-  })
-
-
-  output$bagStatus <- renderText({
-    sprintf(
-      "section=%s\ncycle_id=%s\nroster_n=%s\nbag_remaining=%s\n(date=%s)",
-      input$section,
-      rv$cycle_id,
-      rv$roster_n,
-      rv$bag_n,
-      as.character(input$date)
-    )
   })
 
   observeEvent(input$admin_clear_log, {
@@ -679,8 +746,35 @@ server <- function(input, output, session) {
     # commited is not false, so can commit again
     rv$jobs_committed <- FALSE
     if (!log_clear) showNotification("Log not cleared, check date.", type = "message")
-    else showNotification("Log cleared.", type = "error")
+    else showNotification("Log cleared.", type = "warning")
   })
+
+  observeEvent(input$admin_reset_bag, {
+    if (!isTRUE(input$admin_confirm)) {
+      showNotification("Check the confirmation box first.", type="warning")
+      return()
+    }
+    reset_bag(input$section)
+    append_admin_event(input$section, input$date, "RESET_BAG")
+    rv$jobs_committed <- FALSE
+    rv$draft <- NULL
+    showNotification("Bags reset and event logged.", type="message")
+  })
+
+  # Add a new button in Admin UI: actionButton("admin_rebuild_state", "REBUILD state from log")
+  observeEvent(input$admin_rebuild_state, {
+    if (!isTRUE(input$admin_confirm)) {
+      showNotification("Check the confirmation box first.", type="warning")
+      return()
+    }
+    ok <- rebuild_state_from_log(input$section, upto_date = input$date)
+    if (ok) {
+      rv$jobs_committed <- FALSE
+      rv$draft <- NULL
+      showNotification("State rebuilt from log.", type="message")
+    }
+  })
+
 
 
   output$lastCommitted <- renderTable({
