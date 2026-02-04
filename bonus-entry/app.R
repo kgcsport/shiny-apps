@@ -1,5 +1,5 @@
-library(shiny)
-library(ggplot2)
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(shiny, ggplot2, tidyverse)
 
 # ReactiveValues for app-level storage of responses
 responses <- shiny::reactiveValues(data = data.frame(
@@ -63,7 +63,7 @@ server <- function(input, output, session) {
   admin_logged_in <- reactiveVal(FALSE)
   
   observeEvent(input$admin_auth, {
-    passphrase <- "econ368"
+    passphrase <- Sys.getenv("SHINY_PASSWORD")
     if (!is.null(input$admin_pass) && identical(input$admin_pass, passphrase)) {
       admin_logged_in(TRUE)
       showNotification("Admin logged in. Download enabled.", type = "message")
