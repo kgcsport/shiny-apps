@@ -15,6 +15,10 @@ SHEET_ID <- "1zXqPsAdhl-tb24LOmbxGAfuE3WfZL9yMdCHcua7toV4"
 # SHEET_ID <- "1-_fWuwLC8hxHzrE4pimsDN6u75MWQeUgs9Zk_p093D0"
 # Path to service account JSON (recommended)
 SERVICE_JSON <- Sys.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+SERVICE_JSON <- ''
+# Credentials
+CREDENTIALS <- Sys.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+
 
 # Default job list (edit as you like)
 DEFAULT_JOBS <- read_sheet(SHEET_ID, sheet = "state", col_types = "c") %>% pull(job) %>% unique() %>% sort()
@@ -22,8 +26,23 @@ DEFAULT_JOBS <- read_sheet(SHEET_ID, sheet = "state", col_types = "c") %>% pull(
 # ----------------------------
 # AUTH
 # ----------------------------
+
+get_gs_cred_path <- function(CREDENTIALS, SERVICE_JSON) {
+  # Prefer a file path; fall back to inline JSON.
+  p <- Sys.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+  if (nzchar(p) && file.exists(p)) return(p)
+
+  js <- Sys.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+  if (nzchar(js)) {
+    tf <- tempfile(fileext = ".json")
+    writeLines(js, tf)
+    return(tf)
+  }
+  ""
+}
+
 gs4_deauth() # important: we are NOT using interactive user auth
-gs4_auth(path = SERVICE_JSON)
+gs4_auth(path = get_gs_cred_path(CREDENTIALS, SERVICE_JSON))
 
 # ----------------------------
 # SHEET HELPERS
