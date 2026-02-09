@@ -1378,6 +1378,18 @@ server <- function(input, output, session) {
         tags$small("Uses a service account via GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_SERVICE_ACCOUNT_JSON.")
       ),
 
+      # -------------- restore backup SQL database from Google Drive --------------
+      wellPanel(
+        h5("Restore backup SQL database from Google Drive. Pick a backup file from the list below."),
+        selectInput("restore_db_from_drive_file", "Backup file", choices = {
+          files <- googledrive::drive_ls(googledrive::as_id(drive_folder_id()))
+          files <- files[files$name != "appdata_latest_backup.zip",]
+          setNames(files$name, files$name)
+        }, selected = "appdata_latest_backup.zip"),
+        actionButton("restore_db_from_drive_btn", "Restore", class = "btn-secondary"),
+        tags$small("Restores the backup SQL database from Google Drive.")
+      ),
+
       wellPanel(
         h5("Grant flex passes (students can gain more)"),
         fluidRow(
@@ -1455,6 +1467,13 @@ server <- function(input, output, session) {
     if (isTRUE(ok)) showNotification("Backup complete.", type = "message")
   })
 
+  observeEvent(input$restore_db_from_drive_btn, {
+    req(is_admin())
+    ok <- tryCatch(restore_db_from_drive(input$restore_db_from_drive_file), error = function(e) {
+      showNotification(paste("Restore failed:", conditionMessage(e)), type = "error")
+      FALSE
+    })
+  })
   observeEvent(input$reset_pw_btn, {
     req(is_admin(), input$reset_pw_user)
     pw1 <- input$reset_pw_new %||% ""
