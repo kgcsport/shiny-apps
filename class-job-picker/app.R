@@ -10,7 +10,7 @@ library(lubridate)
 # CONFIG
 # ----------------------------
 # Put your Google Sheet ID here (the long string in the URL)
-SHEET_ID <- "1zXqPsAdhl-tb24LOmbxGAfuE3WfZL9yMdCHcua7toV4"
+SHEET_ID <- Sys.getenv("CLASS_JOB_SHEET_ID")
 ## Testing
 # SHEET_ID <- "1-_fWuwLC8hxHzrE4pimsDN6u75MWQeUgs9Zk_p093D0"
 # Path to service account JSON (recommended)
