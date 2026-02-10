@@ -35,7 +35,7 @@ APP_CONFIG <- list(
 )
 
 logf("CONFIG:",
-     "PUB_ECON_FOLDER present:", nzchar(APP_CONFIG$folder_id),
+     "AUCTION_FOLDER_ID present:", nzchar(APP_CONFIG$folder_id),
      "| FLEX_PASS_FOLDER_ID present:", nzchar(APP_CONFIG$flex_folder_id),
      "| gsa_json present:", nzchar(APP_CONFIG$gsa_json),
      "| gsa_path:", APP_CONFIG$gsa_path)
@@ -148,12 +148,12 @@ zip_db_files <- function(path) {
 }
 
 backup_db_to_drive <- function() {
-  if (!drive_enabled()) return(list(ok = FALSE, msg = "Drive backup disabled (missing PUB_ECON_FOLDER_ID or creds)"))
+  if (!drive_enabled()) return(list(ok = FALSE, msg = "Drive backup disabled (missing AUCTION_FOLDER_ID or creds)"))
   folder <- drive_folder_id()
 
   # Access check
   tryCatch(googledrive::drive_get(googledrive::as_id(folder)), error = function(e) {
-    stop("drive_get(PUB_ECON_FOLDER_ID) failed: ", conditionMessage(e))
+    stop("drive_get(AUCTION_FOLDER_ID) failed: ", conditionMessage(e))
   })
 
   # checkpoint WAL before snapshot
@@ -374,6 +374,30 @@ stop_auction <- function() {
   invisible(TRUE)
 }
 
+
+reset_auction <- function(reset_round = FALSE, clear_accepts = TRUE, reset_settings = FALSE) {
+  # Stop + reset state to "ready to start" using current settings (or defaults if reset_settings)
+  if (isTRUE(reset_settings)) {
+    db_exec(
+      "UPDATE auction_settings
+       SET item_name=?, tick_size=?, tick_seconds=?, start_price=?, units_available=?, max_price=?, round=?
+       WHERE id=1;",
+      list("Fee-free driving pass (one unit)", 1, 3, 0, 5, 9999, 1)
+    )
+  }
+  if (isTRUE(reset_round) && !isTRUE(reset_settings)) {
+    db_exec("UPDATE auction_settings SET round = 1 WHERE id=1;")
+  }
+  if (isTRUE(clear_accepts)) db_exec("DELETE FROM accepts;")
+
+  s <- get_settings()
+  db_exec("UPDATE auction_state
+          SET running=0, current_price=?, units_remaining=?, started_at=NULL, last_tick_at=NULL, ended_at=NULL
+          WHERE id=1;",
+          list(safe_num(s$start_price[1], 0), safe_int(s$units_available[1], 0L)))
+  invisible(TRUE)
+}
+
 advance_tick_if_needed <- function() {
   st <- get_state()
   if (!nrow(st) || safe_int(st$running[1], 0L) != 1L) return(invisible(FALSE))
@@ -586,6 +610,7 @@ server <- function(input, output, session) {
   })
 
   output$auction_status <- renderUI({
+    invalidateLater(250, session)
     st <- get_state()
     s  <- get_settings()
     running <- nrow(st) > 0 && isTRUE(safe_int(st$running[1], 0L) == 1L)
@@ -681,6 +706,8 @@ server <- function(input, output, session) {
           actionButton("backup_now", "Backup now (Drive)", class="btn-default"),
           actionButton("restore_now", "Restore latest backup (Drive)", class="btn-default"),
           br(), br(),
+          actionButton("reset_btn", "RESET auction (clears accepts + resets state)", class="btn-danger"),
+          br(), br(),
           actionButton("refresh_creds", "Refresh credentials from FLEX snapshot", class="btn-default"),
           verbatimTextOutput("admin_msg")
         )
@@ -765,6 +792,19 @@ server <- function(input, output, session) {
     req(authed(), is_admin())
     ok <- tryCatch(restore_db_from_drive(), error = function(e) { admin_msg(paste0("ERROR: ", conditionMessage(e))); FALSE })
     if (isTRUE(ok)) admin_msg("Restored latest auction snapshot from Drive.")
+  })
+
+
+  observeEvent(input$reset_btn, {
+    req(authed(), is_admin())
+    tryCatch({
+      reset_auction(reset_round = FALSE, clear_accepts = TRUE, reset_settings = FALSE)
+      admin_msg("Reset complete: accepts cleared; state reset to start price & full units.")
+      backup_if_changed("reset backup", min_gap_seconds = 0)
+    }, error = function(e) {
+      logf("reset_btn ERROR:", conditionMessage(e))
+      admin_msg(paste0("ERROR: ", conditionMessage(e)))
+    })
   })
 
   observeEvent(input$refresh_creds, {
