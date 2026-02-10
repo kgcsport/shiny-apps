@@ -108,13 +108,13 @@ ui <- fluidPage(
 
     mainPanel(
       fluidRow(
-        column(12, verbatimTextOutput("eq_text"))
-      ),
-      fluidRow(
         column(12, plotOutput("plot_curves", height = "420px"))
       ),
       fluidRow(
         column(12, plotOutput("plot_boxes", height = "360px"))
+      ),
+      fluidRow(
+        column(12, verbatimTextOutput("eq_text"))
       ),
       fluidRow(
         column(
