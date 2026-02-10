@@ -15,7 +15,6 @@ SHEET_ID <- Sys.getenv("CLASS_JOB_SHEET_ID")
 # SHEET_ID <- "1-_fWuwLC8hxHzrE4pimsDN6u75MWQeUgs9Zk_p093D0"
 # Path to service account JSON (recommended)
 SERVICE_JSON <- Sys.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-SERVICE_JSON <- ''
 # Credentials
 CREDENTIALS <- Sys.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 
