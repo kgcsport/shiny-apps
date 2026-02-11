@@ -166,6 +166,8 @@ app_data_dir <- local({
     root <- Sys.getenv("CONNECT_CONTENT_DIR", unset = getwd())
     d <- file.path(root, "data")
     if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+    # check if directory was created
+    if (!dir.exists(d)) stop("Data directory not created: ", d)
     tf <- file.path(d, ".writetest"); on.exit(unlink(tf, force = TRUE), add = TRUE)
     if (!isTRUE(try(file.create(tf), silent = TRUE))) stop("Data directory not writable: ", d)
     dir <<- normalizePath(d, winslash = "/", mustWork = TRUE)
