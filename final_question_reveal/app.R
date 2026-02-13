@@ -206,6 +206,7 @@ google_auth <- function() {
   }
   if (!nzchar(cred) || !file.exists(cred)) {
     logf("google_auth(): no service-account credentials available.")
+    logf("cred:", cred, "and wd", getwd())
     return(invisible(FALSE))
   }
 
