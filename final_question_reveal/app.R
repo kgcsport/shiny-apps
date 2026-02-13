@@ -209,6 +209,12 @@ google_auth <- function() {
     return(invisible(FALSE))
   }
 
+  # confirm that cred exists
+  if (!file.exists(cred)) {
+    logf("google_auth(): credentials file does not exist:", cred)
+    return(invisible(FALSE))
+  }
+
   ok <- tryCatch({
     googledrive::drive_auth(
       path   = cred,
