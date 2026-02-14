@@ -1,0 +1,13 @@
+version: "3.3"
+services:
+  shiny:
+    build: .
+    restart: always
+    ports:
+      - "80:3838"
+    volumes:
+      - ./apps:/srv/shiny-server
+      - ./google_application_credentials.json:/run/secrets/gcp.json:ro
+      - ./appdata:/srv/shiny-server/appdata
+    env_file: .env
+
