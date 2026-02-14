@@ -487,6 +487,7 @@ ui <- fluidPage(
           8,
           div(class="panel",
               h4("Admin"),
+              actionButton("admin_summary", "Create summary of jobs committed"),
               actionButton("admin_clear_log", "CLEAR log tab (danger)"),
               checkboxInput("admin_confirm", "I understand this deletes data", value = FALSE),
               checkboxInput("admin_delete_date", "Delete date's data", value = FALSE),
@@ -753,6 +754,16 @@ server <- function(input, output, session) {
     # Refresh table view
     rv$draft <- rv$draft_res$assignments
     update_status()
+  })
+
+  observeEvent(input$admin_summary, {
+    summary <- read_sheet(SHEET_ID, sheet = "log", col_types = "cccccc") %>%
+      mutate(job = trimws(str_extract(job, "([A-Za-z]+)"))) %>%
+      group_by(job, name,section) %>%
+      summarize(count = n()) %>%
+      arrange(desc(count)) %>%
+      write_sheet(SHEET_ID, sheet = "summary")
+    showNotification("Summary of jobs committed.", type = "message")
   })
 
   observeEvent(input$admin_clear_log, {
