@@ -5,7 +5,6 @@
 library(shiny)
 library(ggplot2)
 library(scales)
-library(tidyverse)
 
 # ---- helper functions ----
 
@@ -192,37 +191,31 @@ server <- function(input, output, session) {
     e <- eq()
 
     Q <- seq(0, p$Qplot, length.out = 400)
-    df <- tibble(
+    df <- data.frame(
       Q = Q,
       Demand = P_demand(Q, p$A, p$B),
       MR = MR(Q, p$A, p$B),
       MC = MC(Q, p$a, p$b, p$c, p$d),
       ATC = ATC(Q, p$F, p$a, p$b, p$c, p$d),
-      AVC = AVC(Q, p$F, p$a, p$b, p$c, p$d),
-      AFC = ATC-AVC
+      AVC = AVC(Q, p$F, p$a, p$b, p$c, p$d)
     )
+    df$AFC <- df$ATC - df$AVC
 
-    # Long format manually (avoid extra deps)
-    # Use pivot_longer from tidyr for long format
+    # Reshape to long format (base R)
     if (isTRUE(input$show_ATC)) {
-      lines <- pivot_longer(
-        df,
-        cols = c("Demand", "MR", "MC", "ATC", "AVC", "AFC"),
-        names_to = "curve",
-        values_to = "y"
-      )
-      lines$curve <- factor(lines$curve, levels = c("Demand", "MR", "MC", "ATC", "AVC", "AFC"))
+      curve_cols <- c("Demand", "MR", "MC", "ATC", "AVC", "AFC")
     } else {
-      lines <- pivot_longer(
-        df,
-        cols = c("Demand", "MR", "MC"),
-        names_to = "curve",
-        values_to = "y"
-      )
-      lines$curve <- factor(lines$curve, levels = c("Demand", "MR", "MC"))
+      curve_cols <- c("Demand", "MR", "MC")
     }
-    if (p$F==0) lines <- lines %>% filter(curve != "AFC")
-    else lines
+    lines <- reshape(df[, c("Q", curve_cols)],
+                     direction = "long",
+                     varying = curve_cols,
+                     v.names = "y",
+                     timevar = "curve",
+                     times = curve_cols,
+                     idvar = "Q_id")
+    lines$curve <- factor(lines$curve, levels = curve_cols)
+    if (p$F == 0) lines <- lines[lines$curve != "AFC", ]
 
     # allow for flexibility in y-axis range
     if (is.na(p$miny)) p$miny <- min(lines$y, na.rm = TRUE)

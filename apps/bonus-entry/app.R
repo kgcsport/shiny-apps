@@ -1,5 +1,5 @@
-if (!require("pacman")) install.packages("pacman")
-pacman::p_load(shiny, ggplot2, tidyverse)
+library(shiny)
+library(ggplot2)
 
 # ReactiveValues for app-level storage of responses
 responses <- shiny::reactiveValues(data = data.frame(

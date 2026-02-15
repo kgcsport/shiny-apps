@@ -10,8 +10,8 @@
 if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 
 pacman::p_load(
-  shiny, DT, dplyr, tibble, DBI, RSQLite, googledrive,
-  bcrypt, digest, stringr
+  shiny, DT, dplyr, DBI, RSQLite, googledrive,
+  bcrypt, digest
 )
 
 # ---- Debug/Crash visibility ----
@@ -262,7 +262,7 @@ read_credentials_from_flex_snapshot <- function() {
   }
 
   u <- DBI::dbGetQuery(con, "SELECT user_id, display_name, pw_hash, is_admin FROM users;") |>
-    tibble::as_tibble() |>
+    as.data.frame() |>
     mutate(
       user_id = trimws(as.character(user_id)),
       display_name = as.character(display_name),
@@ -512,7 +512,7 @@ server <- function(input, output, session) {
   }
   tryCatch(refresh_creds(), error = function(e) {
     logf("Credential load failed:", conditionMessage(e))
-    cred_cache$users <- tibble(user_id=character(), display_name=character(), pw_hash=character(), is_admin=integer())
+    cred_cache$users <- data.frame(user_id=character(), display_name=character(), pw_hash=character(), is_admin=integer())
     cred_cache$when  <- NA_character_
   })
 
