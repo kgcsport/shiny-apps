@@ -57,3 +57,4 @@ google_application_credentials.json
 *.log*
 /secrets/
 .env
+*.dcf
