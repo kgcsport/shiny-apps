@@ -8,5 +8,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml2-dev \
   && rm -rf /var/lib/apt/lists/*
 
-# Install only the R packages actually used by the app
-RUN R -e "install.packages(c('pacman','DT','bcrypt','dplyr','tibble','readr','stringr','DBI','RSQLite','googledrive','googlesheets4','future','promises','digest'), repos='https://cloud.r-project.org')"
+# Install only the R packages actually used by the apps, then GC
+RUN R -e "install.packages(c('pacman','DT','bcrypt','dplyr','tibble','readr','stringr','DBI','RSQLite','googledrive','googlesheets4','future','promises','digest','jsonlite'), repos='https://cloud.r-project.org'); gc()"

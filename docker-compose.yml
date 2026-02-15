@@ -9,4 +9,5 @@ services:
       - ./apps:/srv/shiny-server
       - ./google_application_credentials.json:/run/secrets/gcp.json:ro
       - ./appdata:/srv/shiny-server/appdata
+      - ./shiny-server.conf:/etc/shiny-server/shiny-server.conf:ro
     env_file: .env

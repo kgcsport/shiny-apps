@@ -608,6 +608,7 @@ if (!file.exists(DB_PATH)) {
 }
 
 init_db()
+gc()
 
 logf('INIT DB COMPLETED')
 
