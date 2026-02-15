@@ -2,7 +2,6 @@ library(shiny)
 library(googlesheets4)
 library(dplyr)
 library(jsonlite)
-library(lubridate)
 
 # shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/shiny-apps/class-job-picker", port = 3838, host = "127.0.0.1")
 
@@ -326,7 +325,7 @@ rebuild_state_from_log <- function(section_id, upto_date = Sys.Date()) {
     arrange(ts)
 
   # Find last reset marker per section (optional but recommended)
-  last_reset_i <- max(which(lg$job == "ADMIN__RESET_BAG"), na.rm = TRUE)
+  last_reset_i <- suppressWarnings(max(which(lg$job == "ADMIN__RESET_BAG"), na.rm = TRUE))
   if (is.finite(last_reset_i)) {
     lg_use <- lg[(last_reset_i+1):nrow(lg), , drop=FALSE]
   } else {
@@ -375,6 +374,11 @@ reset_bag <- function(section_id) {
 }
 
 # ----------------------------
+# PASSWORD GATE
+# ----------------------------
+SHINY_PASSWORD <- Sys.getenv("SHINY_PASSWORD", "")
+
+# ----------------------------
 # UI
 # ----------------------------
 
@@ -384,6 +388,18 @@ ui <- fluidPage(
     .bigbtn button { font-size: 16px; padding: 10px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
   "))),
+  uiOutput("main_ui")
+)
+
+login_ui <- fluidPage(
+  titlePanel("Class Jobs Console"),
+  wellPanel(
+    passwordInput("login_pw", "Enter password"),
+    actionButton("login_btn", "Sign in", class = "btn-primary")
+  )
+)
+
+app_ui <- tagList(
   titlePanel("Class Jobs Console"),
 
   # Make section and date global controls
@@ -514,7 +530,23 @@ ui <- fluidPage(
 # SERVER
 # ----------------------------
 server <- function(input, output, session) {
-  
+
+  # --- Password gate ---
+  authed <- reactiveVal(!nzchar(SHINY_PASSWORD))  # auto-auth if no password set
+
+  output$main_ui <- renderUI({
+    if (authed()) app_ui else login_ui
+  })
+
+  observeEvent(input$login_btn, {
+    if (identical(input$login_pw, SHINY_PASSWORD)) {
+      authed(TRUE)
+    } else {
+      showNotification("Incorrect password.", type = "error")
+    }
+  })
+
+  # --- App logic (all gated by authed()) ---
   rv <- reactiveValues(
     draft = NULL,   # named vector job -> name
     draft_res = NULL, # FULL draw result (assignments + state updates)
@@ -530,6 +562,7 @@ server <- function(input, output, session) {
 
   # Absent picker UI (now on its own tab)
   output$absent_picker_ui <- renderUI({
+    req(authed(), input$section)
     roster <- read_roster(input$section)
     tagList(
       selectizeInput("absent_names", label = NULL, choices = roster,
@@ -539,7 +572,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(list(input$section, input$date), {
-    # Reset absentees selection when section or date changes
+    req(authed())
     rv_absent(character(0))
   })
 
@@ -548,6 +581,7 @@ server <- function(input, output, session) {
   })
 
   update_status <- function() {
+    req(authed(), input$section)
     roster <- read_roster(input$section)
     # Exclude absentees
     if (length(rv_absent()) > 0) {
@@ -574,6 +608,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(list(input$section, input$date), {
+    req(authed())
     rv$draft <- NULL
     rv$draft_res <- NULL
     rv$jobs_committed <- FALSE
