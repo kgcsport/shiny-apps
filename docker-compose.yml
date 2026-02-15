@@ -10,4 +10,3 @@ services:
       - ./google_application_credentials.json:/run/secrets/gcp.json:ro
       - ./appdata:/srv/shiny-server/appdata
     env_file: .env
-

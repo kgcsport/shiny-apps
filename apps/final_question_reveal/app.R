@@ -21,7 +21,7 @@
 
 if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 pacman::p_load(
-  shiny, DT, bcrypt, dplyr, tibble, readr, DBI, RSQLite, base64enc, stringr,
+  shiny, DT, bcrypt, dplyr, tibble, readr, DBI, RSQLite, stringr,
   googlesheets4, googledrive, future, promises, digest
 )
 
@@ -183,10 +183,8 @@ DB_PATH  <- file.path(DATA_DIR, "finalqdata.sqlite")  # keep stable name for Dri
 # -------------------------
 # Posit Connect Cloud instances may discard local files when the app goes idle.
 # We therefore treat Google Drive as the source of truth and:
-#   - attempt to RESTORE the latest DB snapshot on every cold start
-#   - upload a fresh snapshot after changes (debounced)
-
-future::plan(future::multisession)
+#   - RESTORE the latest DB snapshot on cold start (only if no local DB)
+#   - upload a fresh snapshot on session end, daily, and on admin command
 
 drive_folder_id <- function() APP_CONFIG$folder_id
 latest_zip_name <- function() "finalqdata_latest_backup.zip"
@@ -406,20 +404,14 @@ backup_db_async <- function(label = "async backup") {
   cfg <- APP_CONFIG
   db_path <- DB_PATH
 
-  promises::future_promise({
-  list(
-    folder = Sys.getenv("FLEX_PASS_FOLDER_ID",""),
-    has_json = nzchar(Sys.getenv("GOOGLE_SERVICE_ACCOUNT_JSON","")),
-    has_path = nzchar(Sys.getenv("GOOGLE_APPLICATION_CREDENTIALS",""))
-  )
-}) %...>% (function(x) logf("FUTURE ENV CHECK:", paste(names(x), x, sep="=", collapse=" | ")))
+  # Temporarily spin up a single worker, then restore previous plan
+  old_plan <- future::plan()
+  future::plan(future::multisession, workers = 1)
+  on.exit(future::plan(old_plan), add = TRUE)
 
   promises::future_promise({
-    # Rebind config values inside the worker
-    # so backup_db_to_drive doesn't depend on Sys.getenv()
     APP_CONFIG <<- cfg
     DB_PATH <<- db_path
-
     backup_db_to_drive()
   }) %...>% (function(res) {
     if (is.list(res)) {
@@ -434,8 +426,6 @@ backup_db_async <- function(label = "async backup") {
 
   invisible(TRUE)
 }
-
-# Debounced backup trigger (set after server starts)
 
 logf("DB_PATH:", DB_PATH)
 logf("FLEX_PASS_FOLDER_ID present:", nzchar(APP_CONFIG$folder_id))
@@ -611,8 +601,11 @@ logf("CRED: %s", paste(CRED$user, collapse = ", "))
 
 stopifnot(all(c("user","name","pw_hash","is_admin") %in% names(CRED)))
 
-# Attempt restore from Drive on startup (best-effort)
-try(restore_db_from_drive(), silent = TRUE)
+# Attempt restore from Drive on startup (only if no local DB exists)
+if (!file.exists(DB_PATH)) {
+  logf("No local DB; restoring from Drive...")
+  try(restore_db_from_drive(), silent = TRUE)
+}
 
 init_db()
 
@@ -896,24 +889,8 @@ server <- function(input, output, session) {
   rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE)
 
   # -------------------------
-  # Debounced Drive backup (persistent storage)
-  # Any DB-changing action should call set_state(), which updates updated_at.
-  # We watch updated_at and trigger a debounced snapshot upload.
-  backup_trigger <- reactiveVal(NULL)
-  backup_trigger_debounced <- debounce(backup_trigger, 4000)
-
-  # observeEvent(backup_trigger_debounced(), {
-  #   if (!db_changed_since_last_backup()) return(invisible(NULL))
-  #   res <- tryCatch(backup_db_to_drive(), error = function(e) list(ok = FALSE, msg = conditionMessage(e)))
-  #   logf("debounced drive backup completed:", as.character(res$ok), "|", res$msg %||% "")
-  # }, ignoreInit = TRUE)
-
-  observeEvent(backup_trigger_debounced(), {
-    if (!db_changed_since_last_backup()) {
-      return(invisible(NULL))
-    }
-    backup_db_async("debounced drive backup")
-  }, ignoreInit = TRUE)
+  # Drive backup: on session end + daily timer (no per-action debounce)
+  # -------------------------
 
   output$authed <- reactive(rv$authed)
   outputOptions(output, "authed", suspendWhenHidden = FALSE)
@@ -1016,11 +993,19 @@ server <- function(input, output, session) {
     showNotification("Password updated.", type="message")
   })
 
-  # Any time the DB heartbeat changes, schedule a backup.
-  observeEvent(state_poll()$updated_at, {
-    backup_trigger(Sys.time())
-  }, ignoreInit = TRUE)
-
+  # Daily backup: check hourly, fire if 24h elapsed
+  .last_daily_backup <- reactiveVal(Sys.time())
+  daily_tick <- reactiveTimer(3600000)  # 1 hour
+  observeEvent(daily_tick(), {
+    elapsed <- difftime(Sys.time(), .last_daily_backup(), units = "hours")
+    if (elapsed >= 24) {
+      if (db_changed_since_last_backup()) {
+        logf("daily backup: 24h elapsed, backing up...")
+        backup_db_async("daily backup")
+      }
+      .last_daily_backup(Sys.time())
+    }
+  })
 
   # ---------------- Student ----------------
   output$student_ui <- renderUI({
@@ -1462,9 +1447,6 @@ server <- function(input, output, session) {
     }
 
     showNotification("Settings updated.", type="message")
-
-    # Best-effort backup on config changes
-    tryCatch({ backup_to_sheets(); }, error = function(e) NULL)
   })
 
   observeEvent(input$backup_sheets_btn, {
@@ -1497,7 +1479,6 @@ server <- function(input, output, session) {
     db_exec("UPDATE users SET pw_hash=? WHERE user_id=?;", list(h, as.character(input$reset_pw_user)))
     set_state()
     showNotification("Password reset.", type = "message")
-    tryCatch({ backup_to_sheets(); }, error = function(e) NULL)
   })
 
   observeEvent(input$do_grant, {
@@ -1513,7 +1494,6 @@ server <- function(input, output, session) {
     ", list(as.character(input$grant_user), -amt))
     set_state()
     showNotification("Granted flex passes.", type="message")
-    tryCatch({ backup_to_sheets(); }, error = function(e) NULL)
   })
 
   observeEvent(input$open_round, {
@@ -1581,8 +1561,6 @@ server <- function(input, output, session) {
       else "Closed (not funded): no one charged; carryover unchanged.",
       type = if (funded) "message" else "warning"
     )
-
-    tryCatch({ backup_to_sheets(); }, error = function(e) NULL)
   })
 
   output$admin_pledges_table <- DT::renderDT({
@@ -1646,6 +1624,13 @@ server <- function(input, output, session) {
   )
 
   session$onSessionEnded(function() {
+    # Synchronous backup on session end if DB changed
+    if (db_changed_since_last_backup()) {
+      logf("session ended: backing up to Drive...")
+      tryCatch(backup_db_to_drive(), error = function(e) {
+        logf("session-end backup FAILED:", conditionMessage(e))
+      })
+    }
     if (!is.null(conn) && DBI::dbIsValid(conn)) try(DBI::dbDisconnect(conn), silent = TRUE)
   })
 }

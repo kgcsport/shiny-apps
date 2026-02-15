@@ -1,13 +1,22 @@
 Package: finalquestionapp
 Title: Final Question App
-Version: 0.0.1
+Version: 0.0.2
 Description: Minimal Shiny app for class activities
 Author: Kyle Coombs
 License: MIT
 Encoding: UTF-8
 Imports:
     shiny,
-    pool,
     DBI,
     RSQLite,
-    tidyverse
+    dplyr,
+    tibble,
+    readr,
+    stringr,
+    DT,
+    bcrypt,
+    googledrive,
+    googlesheets4,
+    future,
+    promises,
+    digest
