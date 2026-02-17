@@ -2,7 +2,8 @@ library(shiny)
 library(dplyr)
 library(tibble)
 
-# shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/shiny-apps/apps/religious-insurance-game", host = "0.0.0.0", port = 3838)
+# Set the admin password here (simple for demo; in production, secure this better)
+ADMIN_PASSWORD <- Sys.getenv("SHINY_PASSWORD")
 
 ui <- fluidPage(
   titlePanel("Religion as Insurance -- Class Simulation (Pooled)"),
@@ -67,31 +68,7 @@ ui <- fluidPage(
       width = 7,
       wellPanel(
         h4("Admin Panel (Instructor)"),
-        fluidRow(
-          column(4, numericInput("initial_income", "Initial tokens (starting balance)", 10, min = 0)),
-          column(4, numericInput("shock_prob", "Shock probability", 0.30, min = 0, max = 1, step = 0.05)),
-          column(4, numericInput("shock_loss", "Loss if shocked", 6, min = 0))
-        ),
-        fluidRow(
-          column(4, numericInput("church_cost", "Church cost to join", 2, min = 0)),
-          column(4, numericInput("church_transfer", "Church transfer if shocked", 4, min = 0)),
-          column(4, checkboxInput("gov_on", "Government insurance on?", value = FALSE))
-        ),
-        fluidRow(
-          column(4, numericInput("gov_transfer", "Gov transfer if shocked", 4, min = 0)),
-          column(4, checkboxInput("strict_mode", "Strict mode? (higher cost)", value = FALSE)),
-          column(4, numericInput("strict_extra_cost", "Extra cost in strict mode", 1, min = 0))
-        ),
-        fluidRow(
-          column(4, actionButton("start_round", "Start / Open Round", class = "btn-success")),
-          column(4, actionButton("resolve_round", "Resolve Round (draw shocks)", class = "btn-warning")),
-          column(4, actionButton("reset_game", "Reset Game", class = "btn-danger"))
-        ),
-        tags$hr(),
-        h4("Live class summary"),
-        tableOutput("summary_table"),
-        tags$hr(),
-        downloadButton("download_data", "Download full data (CSV)")
+        uiOutput("admin_panel_ui")
       )
     )
   )
@@ -108,7 +85,8 @@ server <- function(input, output, session) {
     outcomes = tibble(round = integer(), token = character(), name = character(), shocked = logical(),
                       church_cost = numeric(), church_tax = numeric(), church_transfer = numeric(),
                       gov_transfer = numeric(), net_change = numeric(), end_balance = numeric(),
-                      resolved_at = character())
+                      resolved_at = character()),
+    admin_authed = FALSE
   )
 
   ensure_student <- function(token, name) {
@@ -312,6 +290,65 @@ server <- function(input, output, session) {
       write.csv(full, file, row.names = FALSE)
     }
   )
+
+  # ------------------ Admin Panel UI with Password Gate ----------------------
+  output$admin_panel_ui <- renderUI({
+    if (!isTRUE(rv$admin_authed)) {
+      tagList(
+        tags$p("Instructor login required:"),
+        passwordInput("admin_pass", "Admin password"),
+        actionButton("admin_login", "Login")
+      )
+    } else {
+      tagList(
+        fluidRow(
+          column(4, numericInput("initial_income", "Initial tokens (starting balance)", 10, min = 0)),
+          column(4, numericInput("shock_prob", "Shock probability", 0.30, min = 0, max = 1, step = 0.05)),
+          column(4, numericInput("shock_loss", "Loss if shocked", 6, min = 0))
+        ),
+        fluidRow(
+          column(4, numericInput("church_cost", "Church cost to join", 2, min = 0)),
+          column(4, numericInput("church_transfer", "Church transfer if shocked", 4, min = 0)),
+          column(4, checkboxInput("gov_on", "Government insurance on?", value = FALSE))
+        ),
+        fluidRow(
+          column(4, numericInput("gov_transfer", "Gov transfer if shocked", 4, min = 0)),
+          column(4, checkboxInput("strict_mode", "Strict mode? (higher cost)", value = FALSE)),
+          column(4, numericInput("strict_extra_cost", "Extra cost in strict mode", 1, min = 0))
+        ),
+        fluidRow(
+          column(4, actionButton("start_round", "Start / Open Round", class = "btn-success")),
+          column(4, actionButton("resolve_round", "Resolve Round (draw shocks)", class = "btn-warning")),
+          column(4, actionButton("reset_game", "Reset Game", class = "btn-danger"))
+        ),
+        tags$hr(),
+        h4("Live class summary"),
+        tableOutput("summary_table"),
+        tags$hr(),
+        downloadButton("download_data", "Download full data (CSV)"),
+        tags$hr(),
+        actionButton("admin_logout", "Logout", class = "btn-secondary")
+      )
+    }
+  })
+
+  observeEvent(input$admin_login, {
+    req(input$admin_pass)
+    if (identical(input$admin_pass, ADMIN_PASSWORD)) {
+      rv$admin_authed <- TRUE
+      showNotification("Admin access granted.", type = "message")
+    } else {
+      showNotification("Incorrect password.", type = "error")
+    }
+  })
+
+  observeEvent(input$admin_logout, {
+    rv$admin_authed <- FALSE
+    # Optionally clear password input. This only works for new UI re-render.
+    updateTextInput(session, "admin_pass", value = "")
+    showNotification("Admin access revoked.", type = "message")
+  })
+
 }
 
 shinyApp(ui, server)
