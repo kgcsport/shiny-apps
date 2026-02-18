@@ -11,3 +11,5 @@ services:
       - ./appdata:/srv/shiny-server/appdata
       - ./shiny-server.conf:/etc/shiny-server/shiny-server.conf:ro
     env_file: .env
+
+
