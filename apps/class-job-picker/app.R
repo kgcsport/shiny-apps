@@ -110,6 +110,34 @@ parse_bag <- function(bag_json) {
 }
 
 # ----------------------------
+# EXCLUSION HELPERS
+# ----------------------------
+# Reads the log once and returns two exclusion vectors:
+#   $matsumm  – students who are ahead on materials-summary rotation
+#   $overcap  – students who exceed the commit cap
+compute_exclusions <- function(section_id, roster, max_commits = Inf) {
+  lg <- read_sheet(SHEET_ID, sheet = "log", col_types = "cccccc") %>%
+    filter(section == as.character(section_id),
+           !grepl("^ADMIN__", job))
+
+  # --- Materials summary cross-bag rotation ---
+  matsumm_log <- lg %>% filter(grepl("materials summary", job, ignore.case = TRUE))
+  matsumm_counts <- table(factor(matsumm_log$name, levels = roster))
+  min_matsumm <- min(matsumm_counts)
+  matsumm_excluded <- names(matsumm_counts[matsumm_counts > min_matsumm])
+
+  # --- Commit cap ---
+  if (is.finite(max_commits) && max_commits > 0) {
+    all_counts <- table(factor(lg$name, levels = roster))
+    overcap_excluded <- names(all_counts[all_counts > max_commits])
+  } else {
+    overcap_excluded <- character(0)
+  }
+
+  list(matsumm = matsumm_excluded, overcap = overcap_excluded)
+}
+
+# ----------------------------
 # CORE LOGIC
 # ----------------------------
 # MODIFIED: Add argument to filter students out if absent
@@ -142,13 +170,16 @@ ensure_bag_job <- function(section_id, job_id, absentees = character(0)) {
 }
 
 # MODIFIED: Add argument to filter students out if absent
-draw_jobs_day <- function(section_id, jobs, absentees = character(0)) {
+draw_jobs_day <- function(section_id, jobs, absentees = character(0), exclusions = NULL) {
 
   roster <- read_roster(section_id)
   if (length(absentees) > 0) {
     roster <- setdiff(roster, absentees)
   }
   state  <- read_state(section_id)
+
+  overcap_excluded <- if (!is.null(exclusions)) exclusions$overcap else character(0)
+  matsumm_excluded <- if (!is.null(exclusions)) exclusions$matsumm else character(0)
 
   picked_today <- character(0)
   assignments  <- setNames(character(length(jobs)), jobs)
@@ -167,7 +198,21 @@ draw_jobs_day <- function(section_id, jobs, absentees = character(0)) {
       cycle_id <- as.integer(row$cycle_id)
     }
 
+    # Start with bag minus already-picked-today
     avail <- setdiff(bag, picked_today)
+
+    # Apply overcap exclusion (all jobs)
+    avail <- setdiff(avail, overcap_excluded)
+
+    # Apply materials summary cross-bag exclusion
+    if (grepl("materials summary", j, ignore.case = TRUE)) {
+      avail <- setdiff(avail, matsumm_excluded)
+    }
+
+    # Fallback: if exclusions emptied the pool, draw from bag without exclusions
+    if (length(avail) == 0) {
+      avail <- setdiff(bag, picked_today)
+    }
     if (length(avail) == 0) stop("No eligible student for job: ", j, " in section: ", section_id)
 
     nm <- sample(avail, 1)
@@ -510,7 +555,16 @@ app_ui <- tagList(
               actionButton("admin_reset_bag", "RESET bag (danger)"),
               actionButton("admin_rebuild_state", "REBUILD state from log (danger)")
           )
-        )
+        ),
+        column(
+          4,
+          div(class="panel",
+              numericInput("max_commits", "Max commits before exclusion",
+                               value = 10, min = 1, step = 1),
+              hr(),
+              uiOutput("exclusion_info")
+            )
+          ),
       )
     ),
     tabPanel("Notes",
@@ -521,6 +575,12 @@ app_ui <- tagList(
         - Redraw changes one job (absent student is never logged).
         - Commit writes to the sheet and removes those names from the bag.
         - Use the 'Absentees' tab to mark absent students each day.
+        - Materials summary jobs share a rotation: a student who has done
+          any materials summary is excluded from all materials summary
+          draws until every student has caught up.
+        - Students exceeding the 'Max commits' threshold are excluded
+          from all draws (jobs and cold calls) until others catch up.
+        - Both exclusions fall back gracefully if they would empty the pool.
       ")
     )
   )
@@ -554,7 +614,8 @@ server <- function(input, output, session) {
     bag_n = NA_integer_,
     roster_n = NA_integer_,
     cold_current = "",
-    jobs_committed = FALSE
+    jobs_committed = FALSE,
+    exclusions = NULL  # list with $matsumm and $overcap vectors
   )
 
   # Track absentees by (section, date)
@@ -595,6 +656,28 @@ server <- function(input, output, session) {
     rv$bag_summary <- paste0(st_sec$job, ": ", sapply(st_sec$bag_json, function(x) length(parse_bag(x))), collapse="\n")
   }
 
+  output$exclusion_info <- renderUI({
+    req(authed(), input$section)
+    roster <- read_roster(input$section)
+    max_c <- if (!is.null(input$max_commits)) input$max_commits else Inf
+    excl <- compute_exclusions(input$section, roster, max_commits = max_c)
+    rv$exclusions <- excl
+
+    msgs <- character(0)
+    if (length(excl$matsumm) > 0) {
+      msgs <- c(msgs, paste0("Mat. summ. excluded (", length(excl$matsumm), "): ",
+                              paste(excl$matsumm, collapse = ", ")))
+    }
+    if (length(excl$overcap) > 0) {
+      msgs <- c(msgs, paste0("Over ", max_c, " commits (", length(excl$overcap), "): ",
+                              paste(excl$overcap, collapse = ", ")))
+    }
+    if (length(msgs) == 0) return(NULL)
+
+    tags$div(style = "font-size: 11px; color: #888; margin-top: 6px;",
+             HTML(paste(msgs, collapse = "<br/>")))
+  })
+
   observeEvent(TRUE, {
     update_status()
   }, once = TRUE)
@@ -626,7 +709,13 @@ server <- function(input, output, session) {
       return()
     }
 
-    res <- draw_jobs_day(input$section, jobs, absentees = absentees)
+    # Compute exclusions (materials summary rotation + commit cap)
+    roster <- read_roster(input$section)
+    max_c <- if (!is.null(input$max_commits)) input$max_commits else Inf
+    exclusions <- compute_exclusions(input$section, roster, max_commits = max_c)
+    rv$exclusions <- exclusions
+
+    res <- draw_jobs_day(input$section, jobs, absentees = absentees, exclusions = exclusions)
 
     rv$draft_res <- res                 # keep the exact draw
     rv$draft     <- res$assignments     # what you display
@@ -643,6 +732,12 @@ server <- function(input, output, session) {
     pool <- roster
     if (isTRUE(input$exclude_jobs_today) && !is.null(rv$draft)) {
       pool <- setdiff(roster, unname(rv$draft))
+    }
+
+    # Apply overcap exclusion to cold calls too
+    if (!is.null(rv$exclusions)) {
+      filtered <- setdiff(pool, rv$exclusions$overcap)
+      if (length(filtered) > 0) pool <- filtered
     }
 
     if (length(pool) == 0) {
@@ -768,6 +863,17 @@ server <- function(input, output, session) {
     taken_today <- taken_today[!is.na(taken_today)]
 
     available <- setdiff(bag, taken_today)
+
+    # Apply exclusions if computed
+    if (!is.null(rv$exclusions)) {
+      available <- setdiff(available, rv$exclusions$overcap)
+      if (grepl("materials summary", job_to_redraw, ignore.case = TRUE)) {
+        available <- setdiff(available, rv$exclusions$matsumm)
+      }
+      # Fallback if exclusions emptied the pool
+      if (length(available) == 0) available <- setdiff(bag, taken_today)
+    }
+
     if (length(available) == 0) {
       showNotification("No one left to redraw from (bag exhausted).", type="error")
       return()
