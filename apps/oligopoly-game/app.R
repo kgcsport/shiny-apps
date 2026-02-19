@@ -253,10 +253,13 @@ backup_db_to_drive <- function() {
   files <- files[file.exists(files)]
   if (!length(files)) return(list(ok = FALSE, msg = "No DB files found."))
 
-  zipfile <- file.path(tempdir(), sprintf("finalqdata_%s.zip", format(Sys.time(), "%Y%m%d_%H%M%S")))
+  db_name = basename(DB_PATH)
+  db_name = gsub(".sqlite", "", db_name)
+
+  zipfile <- file.path(tempdir(), sprintf("%s_%s.zip", db_name, format(Sys.time(), "%Y%m%d_%H%M%S")))
   utils::zip(zipfile, files = files, flags = "-j")
 
-  latest_name <- "finalqdata_latest_backup.zip"
+  latest_name <- sprintf("%s_latest_backup.zip", db_name)
   latest_zip <- file.path(tempdir(), latest_name)
   file.copy(zipfile, latest_zip, overwrite = TRUE)
 
