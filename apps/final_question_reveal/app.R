@@ -1045,7 +1045,7 @@ server <- function(input, output, session) {
     ws <- compute_unlocks(pr, st$carryover[1], cost)
 
     tagList(
-      p(sprintf("You start with %.2f flex passes (and can earn more). You may pledge them to help unlock access to potential exam questions for everyone, purchase bonus points on the final exam, or get an extension of 24 hours on a problem set. Any exam questions purchased with flex passes will have a 50% chance of appearing on the next exam and is worth 5 (out of 100) points on the exam. You have %.2f remaining (excluding any open pledge).",
+      p(sprintf("You start with %.2f flex passes (and can earn more). You may pledge them to help unlock access to potential exam questions for everyone, purchase bonus points on the final exam, or get an extension of 24 hours on a problem set. Any exam questions purchased with flex passes will have a 50 percent chance of appearing on the next exam and is worth 5 (out of 100) points on the exam. You have %.2f remaining (excluding any open pledge).",
                 as.numeric(s$initial_fp[1]), student_allocation_summary(user_id())$remaining)),
       p(sprintf("Pledging open: %s", ifelse(as.integer(st$round_open[1]) == 1, "YES", "NO"))),
       p(sprintf("Current question index: %d | Cost to unlock next question: %.2f (schedule: %s)",
