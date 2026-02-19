@@ -29,7 +29,8 @@
 
 if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 pacman::p_load(
-  shiny, DT, bcrypt, dplyr, tibble, DBI, RSQLite, stringr, ggplot2
+  shiny, DT, bcrypt, dplyr, tibble, DBI, RSQLite, stringr, ggplot2,
+  googledrive, googlesheets4, digest
 )
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
@@ -153,6 +154,130 @@ touch_olig <- function() {
 get_olig <- function() db_query("SELECT * FROM olig_settings WHERE id=1;")
 
 round_to_half <- function(x) round(x * 2) / 2
+
+# -------------------------
+# Google backup (Sheets + Drive)
+# -------------------------
+BACKUP_SHEET_ID <- Sys.getenv("FLEX_PASS_SHEET_ID", "")
+DRIVE_FOLDER_ID <- Sys.getenv("FLEX_PASS_FOLDER_ID", "")
+
+get_gs_cred_path <- function() {
+  p <- Sys.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+  if (nzchar(p) && file.exists(p)) return(p)
+  js <- Sys.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+  if (nzchar(js)) {
+    tf <- tempfile(fileext = ".json")
+    writeLines(js, tf)
+    return(tf)
+  }
+  ""
+}
+
+google_auth <- function() {
+  cred <- get_gs_cred_path()
+  if (!nzchar(cred) || !file.exists(cred)) return(FALSE)
+  tryCatch({
+    googledrive::drive_auth(path = cred, scopes = c(
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/spreadsheets"
+    ))
+    googlesheets4::gs4_auth(token = googledrive::drive_token())
+    TRUE
+  }, error = function(e) {
+    logf("google_auth():", conditionMessage(e))
+    FALSE
+  })
+}
+
+overwrite_ws <- function(ss, sheet_name, df) {
+  tabs <- tryCatch(googlesheets4::sheet_names(ss), error = function(e) character(0))
+  if (sheet_name %in% tabs) {
+    tryCatch(googlesheets4::sheet_delete(ss, sheet_name), error = function(e) NULL)
+  }
+  googlesheets4::sheet_add(ss, sheet_name)
+  googlesheets4::range_write(ss, data = df, sheet = sheet_name, range = "A1")
+}
+
+backup_to_sheets <- function() {
+  if (!nzchar(BACKUP_SHEET_ID)) return(list(ok = FALSE, msg = "FLEX_PASS_SHEET_ID not set."))
+  if (!google_auth()) return(list(ok = FALSE, msg = "Google auth failed."))
+
+  tryCatch(googledrive::drive_get(googledrive::as_id(BACKUP_SHEET_ID)), error = function(e) {
+    stop("No access to FLEX_PASS_SHEET_ID: ", conditionMessage(e))
+  })
+
+  overwrite_ws(BACKUP_SHEET_ID, "olig_settings",    db_query("SELECT * FROM olig_settings;"))
+  overwrite_ws(BACKUP_SHEET_ID, "olig_rounds",      db_query("SELECT * FROM olig_rounds ORDER BY round;"))
+  overwrite_ws(BACKUP_SHEET_ID, "olig_submissions",  db_query("SELECT * FROM olig_submissions ORDER BY round, user_id;"))
+  overwrite_ws(BACKUP_SHEET_ID, "olig_payouts",      db_query("SELECT * FROM olig_payouts ORDER BY id DESC;"))
+
+  list(ok = TRUE, msg = "Sheets backup complete (4 olig tabs).")
+}
+
+# DB hash to avoid redundant uploads
+.last_db_hash <- NULL
+hash_db <- function() {
+  parts <- c(DB_PATH, paste0(DB_PATH, "-wal"), paste0(DB_PATH, "-shm"))
+  parts <- parts[file.exists(parts)]
+  if (!length(parts)) return(NA_character_)
+  raw <- unlist(lapply(parts, function(f) readBin(f, what = "raw", n = file.info(f)$size)))
+  digest::digest(raw, algo = "xxhash64")
+}
+
+db_changed_since_last_backup <- function() {
+  new_hash <- hash_db()
+  if (is.null(.last_db_hash) || !identical(new_hash, .last_db_hash)) {
+    .last_db_hash <<- new_hash
+    TRUE
+  } else {
+    FALSE
+  }
+}
+
+backup_db_to_drive <- function() {
+  if (!google_auth()) return(list(ok = FALSE, msg = "Google auth failed."))
+  if (!nzchar(DRIVE_FOLDER_ID)) return(list(ok = FALSE, msg = "FLEX_PASS_FOLDER_ID not set."))
+
+  tryCatch(googledrive::drive_get(googledrive::as_id(DRIVE_FOLDER_ID)), error = function(e) {
+    stop("drive_get(folder) failed: ", conditionMessage(e))
+  })
+
+  # checkpoint WAL
+  con <- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
+  on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
+  try(DBI::dbExecute(con, "PRAGMA wal_checkpoint(FULL);"), silent = TRUE)
+
+  # zip DB files
+  files <- c(DB_PATH, paste0(DB_PATH, "-wal"), paste0(DB_PATH, "-shm"))
+  files <- files[file.exists(files)]
+  if (!length(files)) return(list(ok = FALSE, msg = "No DB files found."))
+
+  zipfile <- file.path(tempdir(), sprintf("finalqdata_%s.zip", format(Sys.time(), "%Y%m%d_%H%M%S")))
+  utils::zip(zipfile, files = files, flags = "-j")
+
+  latest_name <- "finalqdata_latest_backup.zip"
+  latest_zip <- file.path(tempdir(), latest_name)
+  file.copy(zipfile, latest_zip, overwrite = TRUE)
+
+  # timestamped upload
+  tryCatch(googledrive::drive_upload(
+    media = zipfile, path = googledrive::as_id(DRIVE_FOLDER_ID),
+    name = basename(zipfile), type = "application/zip", overwrite = FALSE
+  ), error = function(e) logf("timestamped upload failed:", conditionMessage(e)))
+
+  # latest overwrite
+  ok <- tryCatch({
+    googledrive::drive_upload(
+      media = latest_zip, path = googledrive::as_id(DRIVE_FOLDER_ID),
+      name = latest_name, type = "application/zip", overwrite = TRUE
+    )
+    TRUE
+  }, error = function(e) FALSE)
+
+  if (ok) list(ok = TRUE, msg = paste("Uploaded", latest_name))
+  else list(ok = FALSE, msg = "Latest zip upload failed.")
+}
 
 # -------------------------
 # Flex-pass accounting (reuse the same logic)
@@ -612,6 +737,12 @@ server <- function(input, output, session) {
         actionButton("adm_payout", "Apply payouts to ledger (one-time)", class="btn-success"),
         tags$small("This will CREDIT students using purpose='grant' (negative amounts). Bonus contributions were already debited on submission.")
       ),
+      wellPanel(
+        h5("Backup"),
+        actionButton("adm_backup_sheets", "Backup olig tables to Sheets", class = "btn-secondary"),
+        actionButton("adm_backup_drive", "Backup SQLite to Drive", class = "btn-secondary"),
+        tags$small("Uses FLEX_PASS_SHEET_ID (Sheets) and FLEX_PASS_FOLDER_ID (Drive zip).")
+      ),
       tags$hr(),
       h5("Payout audit (latest 50)"),
       DTOutput("payout_audit")
@@ -684,7 +815,29 @@ server <- function(input, output, session) {
     DT::datatable(df, rownames = FALSE, options = list(pageLength = 10))
   })
 
+  observeEvent(input$adm_backup_sheets, {
+    req(is_admin())
+    res <- tryCatch(backup_to_sheets(), error = function(e) {
+      list(ok = FALSE, msg = conditionMessage(e))
+    })
+    showNotification(res$msg, type = if (isTRUE(res$ok)) "message" else "error")
+  })
+
+  observeEvent(input$adm_backup_drive, {
+    req(is_admin())
+    res <- tryCatch(backup_db_to_drive(), error = function(e) {
+      list(ok = FALSE, msg = conditionMessage(e))
+    })
+    showNotification(res$msg, type = if (isTRUE(res$ok)) "message" else "error")
+  })
+
   session$onSessionEnded(function() {
+    if (db_changed_since_last_backup()) {
+      logf("session ended: backing up to Drive...")
+      tryCatch(backup_db_to_drive(), error = function(e) {
+        logf("session-end backup FAILED:", conditionMessage(e))
+      })
+    }
     if (!is.null(conn) && DBI::dbIsValid(conn)) try(DBI::dbDisconnect(conn), silent = TRUE)
   })
 }
