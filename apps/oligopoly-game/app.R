@@ -316,7 +316,8 @@ pd_pair_payoffs <- function(olig, subs) {
     mutate(idx = row_number(),
            pair = ceiling(idx/2),
            role = ifelse(idx %% 2 == 1, "A", "B"))
-  if (nrow(s) %% 2 == 1) s <- s %>% slice(1:(nrow(s)-1))
+  if (nrow(s) == 1) return(tibble(pair = 1, role = "A", user_id = s$user_id[1], display_name = s$display_name[1], action = s$action[1], payoff = 0))
+  else if (nrow(s) %% 2 == 1) s <- s %>% slice(1:(nrow(s)-1))
 
   payoff_for_pair <- function(a_action, b_action) {
     if (a_action == "High" && b_action == "High") return(c(A = olig$pd_HH_A, B = olig$pd_HH_B))
