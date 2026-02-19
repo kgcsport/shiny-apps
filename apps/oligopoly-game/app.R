@@ -1,4 +1,4 @@
-# app.R — Oligopoly Game (Integrated with Flex Pass DB + Login)
+# app.R --Oligopoly Game (Integrated with Flex Pass DB + Login)
 # -------------------------------------------------------------------
 # Uses the SAME SQLite database and credential table as your flex-pass app:
 #   - users(user_id, display_name, pw_hash, is_admin)
@@ -29,7 +29,7 @@
 
 if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 pacman::p_load(
-  shiny, DT, bcrypt, dplyr, tibble, DBI, RSQLite, stringr
+  shiny, DT, bcrypt, dplyr, tibble, DBI, RSQLite, stringr, ggplot2
 )
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
@@ -374,7 +374,7 @@ server <- function(input, output, session) {
         tagList(
           sliderInput("bonus_c", "Contribute flex passes", min = 0, max = max(0, floor(bal*2)/2), value = 0, step = 0.5),
           actionButton("submit_bonus", "Submit (debited immediately)", class="btn-primary"),
-          tags$small(sprintf("Multiplier m = %.2f. On reveal, pot = m × total contributions; split evenly.", as.numeric(o$bonus_multiplier[1])))
+          tags$small(sprintf("Multiplier m = %.2f. On reveal, pot = m * total contributions; split evenly.", as.numeric(o$bonus_multiplier[1])))
         )
       },
       tags$hr(),
@@ -479,60 +479,86 @@ server <- function(input, output, session) {
     req(authed())
     st <- subs_poll(); o <- st$olig; subs <- st$subs
     r <- as.integer(o$current_round[1])
-    game <- as.character(o$current_game[1])
+    cur_game <- as.character(o$current_game[1])
     status <- as.character(o$round_status[1])
-
-    game_lbl <- if (game == "pd") "Price War (PD)" else "Bonus Pot"
-    n <- nrow(subs %>% filter(round == r, game == game))
+    game_lbl <- if (cur_game == "pd") "Price War (PD)" else "Bonus Pot"
+    n <- nrow(subs %>% filter(round == r, game == cur_game))
 
     tagList(
-      h3(sprintf("Round %d — %s", r, game_lbl)),
+      h3(sprintf("Round %d --%s", r, game_lbl)),
       p(sprintf("Status: %s | Submissions: %d", status, n)),
-      if (game == "pd") {
+      if (cur_game == "pd") {
         tagList(
           p(sprintf("High: %d | Low: %d",
                     sum(subs$action == "High", na.rm = TRUE),
                     sum(subs$action == "Low", na.rm = TRUE))),
-          DTOutput("proj_pd")
+          if (status == "revealed") {
+            tagList(
+              h4("Pair Outcome Counts"),
+              tableOutput("proj_pd_counts")
+            )
+          }
         )
       } else {
         tagList(
           p(sprintf("Total contributed: %.2f | Multiplier m: %.2f",
                     sum(as.numeric(subs$contribute), na.rm = TRUE),
                     as.numeric(o$bonus_multiplier[1]))),
-          DTOutput("proj_bonus")
+          plotOutput("proj_bonus_plot", height = "350px"),
+          if (status == "revealed") {
+            o_data <- get_olig()
+            total_c <- sum(as.numeric(subs$contribute), na.rm = TRUE)
+            m <- as.numeric(o_data$bonus_multiplier[1] %||% 1.5)
+            pot <- m * total_c
+            share <- if (n > 0) round_to_half(pot / n) else 0
+            tagList(
+              h4("Results"),
+              p(sprintf("Pot total: %.2f | Each student receives: %.2f flex passes", pot, share))
+            )
+          }
         )
       }
     )
   })
 
-  output$proj_pd <- DT::renderDT({
+  # PD projector: anonymous pair-outcome counts (HH, HL, LH, LL)
+  output$proj_pd_counts <- renderTable({
     st <- subs_poll(); o <- st$olig; subs <- st$subs
     r <- as.integer(o$current_round[1])
-    df <- subs %>% filter(round == r, game == "pd") %>%
-      select(display_name, action, created_at) %>% arrange(created_at)
-    if (as.character(o$round_status[1]) == "revealed") {
-      pay <- pd_pair_payoffs(o, subs %>% filter(round == r, game == "pd"))
-      df <- df %>%
-        left_join(pay %>% select(user_id, payoff, action, display_name),
-                  by = c("display_name","action"))
-    }
-    DT::datatable(df, rownames = FALSE, options = list(pageLength = 25))
-  })
+    pd_subs <- subs %>% filter(round == r, game == "pd")
+    if (!nrow(pd_subs)) return(data.frame(Outcome = character(), Count = integer()))
 
-  output$proj_bonus <- DT::renderDT({
+    pay <- pd_pair_payoffs(o, pd_subs)
+    if (!nrow(pay)) return(data.frame(Outcome = character(), Count = integer()))
+
+    # Build outcome labels per pair
+    pair_outcomes <- pay %>%
+      group_by(pair) %>%
+      summarise(outcome = paste(sort(action), collapse = "-"), .groups = "drop")
+
+    counts <- pair_outcomes %>%
+      count(outcome, name = "Count") %>%
+      rename(Outcome = outcome)
+
+    counts
+  }, striped = TRUE, bordered = TRUE, align = "lc")
+
+  # Bonus Pot projector: ggplot histogram of contributions (no names)
+  output$proj_bonus_plot <- renderPlot({
     st <- subs_poll(); o <- st$olig; subs <- st$subs
     r <- as.integer(o$current_round[1])
     df <- subs %>% filter(round == r, game == "bonus") %>%
-      mutate(contribute = as.numeric(contribute)) %>%
-      select(display_name, contribute, created_at) %>% arrange(desc(contribute), created_at)
-    if (as.character(o$round_status[1]) == "revealed") {
-      shares <- bonus_shares(o, subs %>% filter(round == r, game == "bonus"))
-      df <- df %>%
-        left_join(shares %>% select(user_id, share_each),
-                  by = character(0))
-    }
-    DT::datatable(df, rownames = FALSE, options = list(pageLength = 25))
+      mutate(contribute = as.numeric(contribute))
+
+    req(nrow(df) > 0)
+
+    ggplot(df, aes(x = contribute)) +
+      geom_histogram(fill = "#0073C2FF", color = "white", binwidth = 0.5, boundary = 0) +
+      labs(title = "Distribution of Contributions",
+           x = "Flex Passes Contributed",
+           y = "Number of Students") +
+      scale_x_continuous(breaks = seq(0, max(df$contribute, na.rm = TRUE) + 0.5, by = 0.5)) +
+      theme_minimal(base_size = 16)
   })
 
   # ---------------- Admin UI ----------------
@@ -559,7 +585,7 @@ server <- function(input, output, session) {
       wellPanel(
         h5("Parameters"),
         numericInput("adm_m", "Bonus multiplier m", value = as.numeric(o$bonus_multiplier[1]), min = 1, step = 0.1),
-        numericInput("adm_pd_scale", "PD scale → flex passes per 'point'", value = as.numeric(o$pd_scale[1]), min = 0, step = 0.01),
+        numericInput("adm_pd_scale", "PD scale -> flex passes per 'point'", value = as.numeric(o$pd_scale[1]), min = 0, step = 0.01),
         tags$hr(),
         h5("PD payoff matrix (A,B)"),
         fluidRow(
