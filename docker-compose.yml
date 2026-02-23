@@ -1,15 +1,12 @@
 version: "3.3"
 services:
   shiny:
-    build: .
+    image: ghcr.io/kgcsport/shiny-apps:latest
     restart: always
     ports:
       - "80:3838"
     volumes:
-      - ./apps:/srv/shiny-server
       - ./google_application_credentials.json:/run/secrets/gcp.json:ro
       - ./appdata:/srv/shiny-server/appdata
       - ./shiny-server.conf:/etc/shiny-server/shiny-server.conf:ro
     env_file: .env
-
-
