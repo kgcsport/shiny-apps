@@ -6,7 +6,7 @@ on:
     paths:
       - "apps/**"
       - "shiny-server.conf"
-      - "Dockerfile.base"
+      - "Dockerfile"
   workflow_dispatch:
 
 permissions:
@@ -32,7 +32,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.base
+          file: Dockerfile
           push: true
           tags: |
             ghcr.io/kgcsport/shiny-apps:latest
