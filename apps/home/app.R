@@ -5,7 +5,7 @@ list_apps <- function(root = "/srv/shiny-server") {
   dirs <- list.dirs(root, full.names = FALSE, recursive = FALSE)
   dirs <- dirs[dirs != ""]
   # hide internal/system dirs
-  hide <- c("appdata", "_logs", "home", "sample-apps")
+  hide <- c("appdata", "_logs", "home", "sample-apps", "default-apps")
   dirs[!dirs %in% hide]
 }
 

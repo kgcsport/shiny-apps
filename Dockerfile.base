@@ -14,4 +14,6 @@ RUN R -e "install.packages(c('pacman','DT','bcrypt','dplyr','tibble','readr','st
 # Cap node.js heap for Shiny Server (default is ~1.5GB, we need very little) 
 ENV NODE_OPTIONS="--max-old-space-size=32 --max-semi-space-size=2" 
 
-
+# Move default example apps out of root listing
+RUN mkdir -p /srv/shiny-server/default-apps && \
+    mv /srv/shiny-server/0* /srv/shiny-server/default-apps/ || true
