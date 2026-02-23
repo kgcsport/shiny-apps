@@ -475,6 +475,8 @@ init_db <- function() {
 
   # Ensure roundless_mode exists for older DBs
   try(db_exec("ALTER TABLE settings ADD COLUMN roundless_mode INTEGER DEFAULT 0;"), silent = TRUE)
+  try(db_exec("ALTER TABLE settings ADD COLUMN exam_names TEXT;"), silent = TRUE)
+  try(db_exec("ALTER TABLE settings ADD COLUMN pset_names TEXT;"), silent = TRUE)
 
   # Game state (single row)
   db_exec("
@@ -515,12 +517,27 @@ init_db <- function() {
   db_exec("CREATE INDEX IF NOT EXISTS ix_ledger_user ON ledger(user_id);")
   db_exec("CREATE INDEX IF NOT EXISTS ix_ledger_purpose ON ledger(purpose);")
 
+  # Resource targets (where students apply already-purchased passes)
+  db_exec("
+    CREATE TABLE IF NOT EXISTS resource_targets (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id       TEXT,
+      resource_type TEXT,
+      target        TEXT,
+      quantity      INTEGER DEFAULT 1,
+      created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, resource_type, target)
+    );
+  ")
+  db_exec("CREATE INDEX IF NOT EXISTS ix_rt_user ON resource_targets(user_id);")
+
   # Seed settings/state if missing
   nset <- db_query("SELECT COUNT(*) n FROM settings WHERE id=1;")$n[1]
   if (is.na(nset) || nset == 0) {
     db_exec("
-      INSERT INTO settings(id, initial_fp, pledge_step, flex_cost, exam_point_cost, question_cost_schedule, shortfall_policy, roundless_mode)
-      VALUES(1, 5, 0.5, 1, 1, '12,20,30,45,70', 'bank_all', 0);
+      INSERT INTO settings(id, initial_fp, pledge_step, flex_cost, exam_point_cost, question_cost_schedule, shortfall_policy, roundless_mode, exam_names, pset_names)
+      VALUES(1, 5, 0.5, 1, 1, '12,20,30,45,70', 'bank_all', 0, 'Midterm 1,Midterm 2,Final', 'PS1,PS2,PS3,PS4,PS5');
     ")
   }
 
@@ -659,6 +676,17 @@ parse_cost_schedule <- function(x) {
   if (!length(out)) c(12,20,30,45,70) else out
 }
 
+parse_names <- function(x) {
+  parts <- unlist(strsplit(as.character(x %||% ""), ",", fixed = TRUE))
+  trimws(parts[nzchar(trimws(parts))])
+}
+
+sanitize_colname <- function(x) {
+  x <- tolower(x)
+  x <- gsub("[^a-z0-9]+", "_", x)
+  gsub("^_+|_+$", "", x)
+}
+
 question_cost_for_round <- function(round, schedule_text) {
   sched <- parse_cost_schedule(schedule_text)
   r <- as.integer(round %||% 1L)
@@ -778,7 +806,6 @@ admin_student_summary <- function() {
   students <- db_query("
     SELECT user_id, display_name
     FROM users
-    WHERE COALESCE(is_admin,0)=0
     ORDER BY display_name;
   ")
   if (!nrow(students)) return(tibble())
@@ -814,13 +841,29 @@ admin_student_summary <- function() {
     tibble(user_id = character(), exam_points = integer())
   }
 
-  out |>
+  # Extensions used — from resource_targets
+  rt_flex <- db_query("SELECT user_id, target FROM resource_targets WHERE resource_type='flex';")
+  extensions_used <- if (nrow(rt_flex)) {
+    rt_flex |> tibble::as_tibble() |>
+      group_by(user_id) |>
+      summarise(extensions_used = paste(sort(unique(target)), collapse=", "), .groups="drop")
+  } else {
+    tibble(user_id=character(), extensions_used=character())
+  }
+
+  # Bonus points per exam — from resource_targets
+  rt_exam <- db_query("SELECT user_id, target, quantity FROM resource_targets WHERE resource_type='exam_point';")
+  exam_names <- parse_names(s$exam_names[1])
+  if (!length(exam_names)) exam_names <- c("Midterm 1", "Midterm 2", "Final")
+
+  out <- out |>
     left_join(grants_amt, by = "user_id") |>
     left_join(q_amt,      by = "user_id") |>
     left_join(flex_amt,   by = "user_id") |>
     left_join(exam_amt,   by = "user_id") |>
     left_join(flex_n,     by = "user_id") |>
     left_join(exam_pts_sum, by = "user_id") |>
+    left_join(extensions_used, by = "user_id") |>
     mutate(
       fp_granted         = coalesce(fp_granted, 0),
       fp_spent_questions = coalesce(fp_spent_questions, 0),
@@ -835,9 +878,40 @@ admin_student_summary <- function() {
       user_id, display_name,
       initial_fp, fp_granted,
       fp_spent_questions, fp_spent_flex, fp_spent_exam,
-      flex_passes, exam_points,
+      flex_passes, exam_points, extensions_used,
       fp_spent_total, fp_remaining
     )
+
+  for (en in exam_names) {
+    col_nm <- paste0("bonus_pts_on_", sanitize_colname(en))
+    if (nrow(rt_exam)) {
+      vals <- rt_exam |> tibble::as_tibble() |>
+        filter(target == en) |>
+        group_by(user_id) |> summarise(!!col_nm := sum(quantity), .groups="drop")
+      out <- left_join(out, vals, by="user_id")
+    } else {
+      out[[col_nm]] <- NA_integer_
+    }
+    out[[col_nm]] <- coalesce(out[[col_nm]], 0L)
+  }
+  out$extensions_used <- coalesce(out$extensions_used, "")
+
+  # Extension declared per pset (0/1 per pset, mirrors bonus-pts-per-exam columns)
+  pset_names <- parse_names(s$pset_names[1])
+  if (!length(pset_names)) pset_names <- c("PS1", "PS2", "PS3", "PS4", "PS5")
+  for (pn in pset_names) {
+    col_nm <- paste0("extension_on_", sanitize_colname(pn))
+    if (nrow(rt_flex)) {
+      vals <- rt_flex |> tibble::as_tibble() |>
+        filter(target == pn) |>
+        transmute(user_id, !!col_nm := 1L)
+      out <- left_join(out, vals, by="user_id")
+    } else {
+      out[[col_nm]] <- NA_integer_
+    }
+    out[[col_nm]] <- coalesce(out[[col_nm]], 0L)
+  }
+  out
 }
 
 
@@ -1019,6 +1093,8 @@ server <- function(input, output, session) {
       tags$hr(),
       uiOutput("purchase_box"),
       tags$hr(),
+      uiOutput("use_resource_box"),
+      tags$hr(),
       wellPanel(
         h5("Your allocations (live)"),
         tableOutput("student_alloc_table")
@@ -1141,6 +1217,119 @@ server <- function(input, output, session) {
     )
   })
 
+  # --- Use Resource box ---
+  output$use_resource_box <- renderUI({
+    req(authed())
+    s <- settings_poll(); state_poll()
+
+    s_exam_names <- parse_names(s$exam_names[1])
+    s_pset_names <- parse_names(s$pset_names[1])
+    if (!length(s_exam_names)) s_exam_names <- c("Midterm 1", "Midterm 2", "Final")
+    if (!length(s_pset_names)) s_pset_names <- c("PS1", "PS2", "PS3", "PS4", "PS5")
+
+    alloc <- student_allocation_summary(user_id())
+    flex_purchased <- as.integer(alloc$spent_flex %||% 0)
+    exam_purchased <- as.integer(alloc$spent_exam %||% 0)
+
+    rt <- db_query(
+      "SELECT resource_type, target, quantity FROM resource_targets WHERE user_id=?;",
+      list(user_id()))
+    flex_used <- sum(rt$quantity[rt$resource_type == "flex"])
+    exam_used  <- sum(rt$quantity[rt$resource_type == "exam_point"])
+
+    wellPanel(
+      h4("Use your resources"),
+      tags$hr(),
+      h5("24-hour extensions"),
+      p(sprintf("Purchased: %d | Declared: %d", flex_purchased, flex_used)),
+      if (nrow(rt[rt$resource_type == "flex", , drop=FALSE]))
+        tableOutput("my_extensions_table")
+      else
+        p(em("None declared yet."))
+      ,
+      if (flex_used < flex_purchased) tagList(
+        selectInput("use_flex_pset", "Apply extension to:", choices = s_pset_names),
+        actionButton("use_flex_submit", "Add extension", class="btn-primary")
+      ) else if (flex_purchased > 0) p(em("All purchased extensions have been declared."))
+      else p(em("No extensions purchased yet."))
+      ,
+      tags$hr(),
+      h5("Exam bonus points"),
+      p(sprintf("Purchased (passes): %d | Declared (passes): %d", exam_purchased, exam_used)),
+      if (nrow(rt[rt$resource_type == "exam_point", , drop=FALSE]))
+        tableOutput("my_exam_pts_table")
+      else
+        p(em("None declared yet."))
+      ,
+      if (exam_used < exam_purchased) tagList(
+        selectInput("use_exam_name", "Apply bonus point(s) to:", choices = s_exam_names),
+        numericInput("use_exam_qty", "Points to declare:", value=1, min=1,
+                     max=exam_purchased - exam_used),
+        actionButton("use_exam_submit", "Apply", class="btn-primary")
+      ) else if (exam_purchased > 0) p(em("All purchased exam points have been declared."))
+      else p(em("No exam points purchased yet."))
+    )
+  })
+
+  output$my_extensions_table <- renderTable({
+    req(authed()); state_poll()
+    db_query("SELECT target AS 'Problem set', created_at AS 'Declared at'
+              FROM resource_targets WHERE user_id=? AND resource_type='flex'
+              ORDER BY created_at;", list(user_id()))
+  }, rownames=FALSE)
+
+  output$my_exam_pts_table <- renderTable({
+    req(authed()); state_poll()
+    db_query("SELECT target AS 'Exam', quantity AS 'Points', created_at AS 'Declared at'
+              FROM resource_targets WHERE user_id=? AND resource_type='exam_point'
+              ORDER BY created_at;", list(user_id()))
+  }, rownames=FALSE)
+
+  observeEvent(input$use_flex_submit, {
+    req(authed())
+    alloc <- student_allocation_summary(user_id())
+    flex_purchased <- as.integer(alloc$spent_flex %||% 0)
+    flex_used <- db_query(
+      "SELECT COALESCE(SUM(quantity),0) AS n FROM resource_targets WHERE user_id=? AND resource_type='flex';",
+      list(user_id()))$n[1]
+    if (flex_used >= flex_purchased) {
+      showNotification("No remaining extensions to declare.", type="error"); return()
+    }
+    pset <- as.character(input$use_flex_pset %||% "")
+    if (!nzchar(pset)) { showNotification("Select a problem set.", type="error"); return() }
+    db_exec("
+      INSERT INTO resource_targets(user_id, resource_type, target, quantity, updated_at)
+      VALUES(?, 'flex', ?, 1, CURRENT_TIMESTAMP)
+      ON CONFLICT(user_id, resource_type, target) DO UPDATE SET updated_at=CURRENT_TIMESTAMP;
+    ", list(user_id(), pset))
+    set_state()
+    showNotification(sprintf("Extension declared for %s.", pset), type="message")
+  })
+
+  observeEvent(input$use_exam_submit, {
+    req(authed())
+    alloc <- student_allocation_summary(user_id())
+    exam_purchased <- as.integer(alloc$spent_exam %||% 0)
+    exam_used <- db_query(
+      "SELECT COALESCE(SUM(quantity),0) AS n FROM resource_targets WHERE user_id=? AND resource_type='exam_point';",
+      list(user_id()))$n[1]
+    qty <- max(1L, as.integer(input$use_exam_qty %||% 1))
+    if (exam_used + qty > exam_purchased) {
+      showNotification("Not enough exam points available to declare.", type="error"); return()
+    }
+    exam <- as.character(input$use_exam_name %||% "")
+    if (!nzchar(exam)) { showNotification("Select an exam.", type="error"); return() }
+    db_exec("
+      INSERT INTO resource_targets(user_id, resource_type, target, quantity, updated_at)
+      VALUES(?, 'exam_point', ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(user_id, resource_type, target) DO UPDATE SET
+        quantity   = resource_targets.quantity + excluded.quantity,
+        updated_at = CURRENT_TIMESTAMP;
+    ", list(user_id(), exam, qty))
+    set_state()
+    showNotification(sprintf("Declared %d bonus point(s) on %s.", qty, exam), type="message")
+  })
+
   observeEvent(input$buy_submit, {
     req(authed())
     if (!isTRUE(input$buy_confirm)) {
@@ -1203,8 +1392,8 @@ server <- function(input, output, session) {
 
       db_exec("
         INSERT INTO ledger(user_id, round, purpose, amount, meta)
-        VALUES(?, NULL, 'flex', ?, '24h_extension');
-      ", list(user_id(), cost))
+        VALUES(?, NULL, 'flex', ?, ?);
+      ", list(user_id(), cost, '24h_extension'))
 
       set_state()
       showNotification("24-hour extension purchased.", type="message")
@@ -1334,6 +1523,12 @@ server <- function(input, output, session) {
             tags$small("If enabled: pledges live in one bucket, you can open/close pledging as needed, and the cost schedule steps with each unlocked question.")
           )
         ),
+        fluidRow(
+          column(6, textInput("cfg_exam_names", "Exam names (comma-separated)",
+                              value = as.character(s$exam_names[1] %||% "Midterm 1,Midterm 2,Final"))),
+          column(6, textInput("cfg_pset_names", "Problem set names (comma-separated)",
+                              value = as.character(s$pset_names[1] %||% "PS1,PS2,PS3,PS4,PS5")))
+        ),
         actionButton("apply_settings", "Apply settings", class="btn-secondary")
       ),
 
@@ -1438,7 +1633,9 @@ server <- function(input, output, session) {
       exam_point_cost = as.numeric(input$cfg_exam_cost),
       question_cost_schedule = as.character(sched),
       shortfall_policy = as.character(input$cfg_shortfall),
-      roundless_mode = as.integer(isTRUE(input$cfg_roundless))
+      roundless_mode = as.integer(isTRUE(input$cfg_roundless)),
+      exam_names = as.character(input$cfg_exam_names %||% ""),
+      pset_names = as.character(input$cfg_pset_names %||% "")
     )
 
     # If enabling roundless, open round and normalize state + clear stray pledge rounds
