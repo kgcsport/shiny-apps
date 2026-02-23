@@ -1,4 +1,4 @@
-FROM ghcr.io/kgcsport/shiny-base:latest
+FROM ghcr.io/kgcsport/shiny-apps:latest
 
 # Copy your Shiny apps into the image
 COPY apps/ /srv/shiny-server/

@@ -1,6 +1,6 @@
 services:
   shiny:
-    image: ghcr.io/kgcsport/shiny-base:latest
+    image: ghcr.io/kgcsport/shiny-apps:latest
     restart: always
     ports:
       - "80:3838"
