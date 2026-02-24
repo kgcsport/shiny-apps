@@ -354,7 +354,10 @@ deterministic_shuffle <- function(x, seed_string) {
 generate_summary_table <- function() {
   # read log and count how many times each student has been assigned each job
   lg <- read_sheet(SHEET_ID, sheet = "log", col_types = "cccccc")
+  roster <- read_sheet(SHEET_ID, sheet = "roster", col_types = "c")
   summary_table <- lg %>%
+    full_join(roster, by = c('name','section')) %>%
+    mutate(job=sub("\\s+[0-9]+$", "", job, ignore.case = TRUE)) %>%
     group_by(name, section, job) %>%
     summarise(count = n()) %>%
     ungroup()
