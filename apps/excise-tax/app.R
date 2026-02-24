@@ -1,25 +1,13 @@
 # apps/excise-tax/app.R
 # -----------------------------------------------------------------------
-# Competitive Markets & Trade Policy -- classroom call-market experiment
+# Tax Incidence: Classroom Call-Market Experiment
 #
-# Based on the Experiencing Economics apple excise-tax experiment,
-# abstracted to a nearly perfectly competitive imported commodity
-# (default: soybeans).
-#
-# HOW IT WORKS
-# -----------------------------------------------------------------------
-# Roles assigned at join time:
-#   Buyer            - domestic consumer; holds max willingness-to-pay
-#   Seller (dom)     - domestic producer;  holds min acceptable price (cost)
-#   Seller (imported)- foreign supplier;   cost = world price (flat)
-#
-# Each round is a "call market" (Walrasian auction):
-#   1. Instructor opens the round (optionally with a tax/tariff)
-#   2. Each player submits their price -- buyers a bid, sellers an ask
-#   3. Instructor closes the round; market clears at a uniform price
-#      where all bids >= asks (effective)
-#   4. Results and surpluses are shown to everyone
-#   5. Repeat with / without a tariff to illustrate incidence & DWL
+# Students experience three rounds in a simple commodity market:
+#   Round 1 -- no tax (competitive baseline)
+#   Round 2 -- tax on sellers  (excise collected from sellers)
+#   Round 3 -- tax on buyers   (excise collected from buyers)
+# Both tax rounds yield identical prices and quantities, demonstrating
+# that statutory incidence != economic incidence.
 #
 # CLASSROOM FLOW
 # -----------------------------------------------------------------------
@@ -41,7 +29,7 @@ logf <- function(...) {
 }
 
 # -----------------------------------------------------------------------
-# DB setup  (same appdata convention as final_question_reveal)
+# DB setup
 # -----------------------------------------------------------------------
 
 data_dir <- local({
@@ -63,27 +51,25 @@ db_exec  <- function(sql, p = NULL) DBI::dbExecute(get_con(),  sql, params = p)
 db_query <- function(sql, p = NULL) DBI::dbGetQuery(get_con(), sql, params = p)
 
 init_db <- function() {
-  # rooms: one row per classroom session
   db_exec("
     CREATE TABLE IF NOT EXISTS rooms (
       room_id        TEXT PRIMARY KEY,
-      good_name      TEXT    DEFAULT 'soybeans',
+      good_name      TEXT    DEFAULT 'wheat',
       unit           TEXT    DEFAULT 'bushel',
-      n_buyers       INTEGER DEFAULT 8,
-      n_sellers_dom  INTEGER DEFAULT 4,
-      n_sellers_imp  INTEGER DEFAULT 4,
-      buyer_hi       REAL    DEFAULT 10,
-      buyer_lo       REAL    DEFAULT 3,
+      n_buyers       INTEGER DEFAULT 4,
+      n_sellers_dom  INTEGER DEFAULT 2,
+      n_sellers_imp  INTEGER DEFAULT 2,
+      buyer_hi       REAL    DEFAULT 11,
+      buyer_lo       REAL    DEFAULT 5,
       dom_cost_lo    REAL    DEFAULT 5,
-      dom_cost_hi    REAL    DEFAULT 9,
-      world_price    REAL    DEFAULT 2,
+      dom_cost_hi    REAL    DEFAULT 7,
+      world_price    REAL    DEFAULT 1,
       current_round  INTEGER DEFAULT 1,
       instructor_pin TEXT,
       created_at     TEXT
     );
   ")
 
-  # cards: one per player slot; player_token filled when student joins
   db_exec("
     CREATE TABLE IF NOT EXISTS cards (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,7 +86,6 @@ init_db <- function() {
     );
   ")
 
-  # rounds: one per round per room
   db_exec("
     CREATE TABLE IF NOT EXISTS rounds (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,7 +103,6 @@ init_db <- function() {
     );
   ")
 
-  # orders: one per player per round (upsertable so students can revise)
   db_exec("
     CREATE TABLE IF NOT EXISTS orders (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,7 +136,6 @@ generate_cards <- function(n_buyers, n_dom, n_imp,
                             world_price, seed = 42L) {
   set.seed(as.integer(seed))
 
-  # Evenly-spaced values -> clean step supply/demand curves
   b_vals  <- round(seq(buyer_hi, buyer_lo, length.out = max(1L, n_buyers)), 2)
   d_costs <- round(seq(dom_lo,   dom_hi,   length.out = max(1L, n_dom)),    2)
   i_costs <- rep(round(world_price, 2), n_imp)
@@ -164,7 +147,7 @@ generate_cards <- function(n_buyers, n_dom, n_imp,
     stringsAsFactors = FALSE
   )
 
-  df          <- df[sample(nrow(df)), ]   # shuffle so roles aren't predictable by join order
+  df          <- df[sample(nrow(df)), ]
   df$card_num <- seq_len(nrow(df))
   rownames(df) <- NULL
   df
@@ -182,62 +165,65 @@ insert_cards <- function(room_id, df) {
 # -----------------------------------------------------------------------
 # Market clearing  (Walrasian call market)
 # -----------------------------------------------------------------------
-# bids / asks: data.frames with columns player_token, submitted_price,
-#              private_value, origin (asks only)
+# tax_type: "none" | "seller_excise" | "buyer_excise"
 #
-# Returns a list with clearing_price, quantity, buyer/seller_tokens,
-# and surplus breakdown.
+# seller_excise: tax raises effective cost for all sellers (supply shifts up)
+# buyer_excise:  tax lowers effective WTP for all buyers  (demand shifts down)
+#
+# In both cases the market-clearing quantity and the buyer/seller price
+# wedge are identical -- this is the main lesson.
 # -----------------------------------------------------------------------
 
 market_clear <- function(bids, asks, tax_amount = 0, tax_type = "none") {
-  empty <- list(clearing_price = NA_real_, quantity = 0L,
-                buyer_tokens = character(0), seller_tokens = character(0),
-                buyer_surplus = 0, seller_surplus = 0,
-                gov_revenue = 0, total_surplus = 0)
+  empty <- list(clearing_price = NA_real_, p_buyer = NA_real_, p_seller = NA_real_,
+                quantity = 0L, buyer_tokens = character(0), seller_tokens = character(0),
+                buyer_surplus = 0, seller_surplus = 0, gov_revenue = 0, total_surplus = 0)
 
   if (!nrow(bids) || !nrow(asks)) return(empty)
 
-  # Effective ask = submitted price + any applicable tax
+  # Effective values after tax
+  bids$eff <- bids$submitted_price
   asks$eff <- asks$submitted_price
-  if (tax_type == "tariff") {
-    asks$eff <- ifelse(asks$origin == "imported",
-                       asks$submitted_price + tax_amount,
-                       asks$submitted_price)
-  } else if (tax_type == "excise") {
-    asks$eff <- asks$submitted_price + tax_amount
+
+  if (tax_type == "buyer_excise") {
+    bids$eff <- bids$submitted_price - tax_amount   # demand shifts down
+  } else if (tax_type == "seller_excise") {
+    asks$eff <- asks$submitted_price + tax_amount   # supply shifts up
   }
 
-  # Sort: bids descending, asks ascending by effective price
-  bids <- bids[order(-bids$submitted_price), , drop = FALSE]
-  asks <- asks[order(asks$eff),              , drop = FALSE]
+  # Sort: effective bids descending, effective asks ascending
+  bids <- bids[order(-bids$eff), , drop = FALSE]
+  asks <- asks[order( asks$eff), , drop = FALSE]
 
-  # Find max k where bid_k >= effective ask_k
+  # Find max k where eff_bid_k >= eff_ask_k
   n <- min(nrow(bids), nrow(asks))
   k <- 0L
   for (i in seq_len(n)) {
-    if (bids$submitted_price[i] >= asks$eff[i]) k <- i else break
+    if (bids$eff[i] >= asks$eff[i]) k <- i else break
   }
   if (k == 0L) return(empty)
 
-  # Uniform clearing price: midpoint of marginal bid and marginal effective ask
-  cp <- round((bids$submitted_price[k] + asks$eff[k]) / 2, 2)
+  # Clearing price = midpoint of marginal effective bid and effective ask
+  # buyer_excise:  cp is P_seller (what seller receives); buyer pays cp + tax
+  # seller_excise: cp is P_buyer  (what buyer pays);      seller keeps cp - tax
+  # none:          cp is the single market price
+  cp <- round((bids$eff[k] + asks$eff[k]) / 2, 2)
+
+  p_buyer  <- if (tax_type == "buyer_excise")  round(cp + tax_amount, 2) else cp
+  p_seller <- if (tax_type == "seller_excise") round(cp - tax_amount, 2) else cp
 
   b_tok <- bids$player_token[seq_len(k)]
   s_tok <- asks$player_token[seq_len(k)]
 
-  # Surplus measured against private values (not submitted prices)
-  bs <- sum(bids$private_value[seq_len(k)]  - cp, na.rm = TRUE)
-  ps <- sum(cp - asks$private_value[seq_len(k)], na.rm = TRUE)
-
-  gov <- if (tax_type == "tariff") {
-    n_imp_traded <- sum(asks$origin[seq_len(k)] == "imported")
-    tax_amount * n_imp_traded
-  } else if (tax_type == "excise") {
-    tax_amount * k
-  } else 0
+  # Surplus measured against private values, net of tax payments
+  bs  <- sum(bids$private_value[seq_len(k)] - p_buyer,  na.rm = TRUE)
+  ps  <- sum(p_seller - asks$private_value[seq_len(k)], na.rm = TRUE)
+  gov <- if (tax_type %in% c("buyer_excise", "seller_excise")) tax_amount * k else 0
 
   list(
     clearing_price  = cp,
+    p_buyer         = p_buyer,
+    p_seller        = p_seller,
     quantity        = k,
     buyer_tokens    = b_tok,
     seller_tokens   = s_tok,
@@ -261,19 +247,18 @@ build_step_curves <- function(room_id, tax_amount = 0, tax_type = "none") {
   buyers  <- cards[cards$role == "buyer",  , drop = FALSE]
   sellers <- cards[cards$role == "seller", , drop = FALSE]
 
-  # Effective cost for sellers
+  # Shift supply up (seller excise) or demand down (buyer excise)
+  buyers$eff  <- buyers$private_value
   sellers$eff <- sellers$private_value
-  if (tax_type == "tariff") {
-    sellers$eff <- ifelse(sellers$origin == "imported",
-                          sellers$private_value + tax_amount,
-                          sellers$private_value)
-  } else if (tax_type == "excise") {
+
+  if (tax_type == "buyer_excise") {
+    buyers$eff <- buyers$private_value - tax_amount
+  } else if (tax_type == "seller_excise") {
     sellers$eff <- sellers$private_value + tax_amount
   }
 
-  # Sort and index
-  buyers  <- buyers[order(-buyers$private_value), , drop = FALSE]
-  sellers <- sellers[order(sellers$eff),          , drop = FALSE]
+  buyers  <- buyers[order(-buyers$eff),   , drop = FALSE]
+  sellers <- sellers[order(sellers$eff),  , drop = FALSE]
   buyers$q  <- seq_len(nrow(buyers))
   sellers$q <- seq_len(nrow(sellers))
 
@@ -281,7 +266,7 @@ build_step_curves <- function(room_id, tax_amount = 0, tax_type = "none") {
 }
 
 # -----------------------------------------------------------------------
-# CSS helpers
+# CSS
 # -----------------------------------------------------------------------
 
 card_css <- "
@@ -300,7 +285,7 @@ card_css <- "
 
 ui <- fluidPage(
   tags$head(tags$style(HTML(card_css))),
-  titlePanel("Competitive Markets & Trade Policy"),
+  titlePanel("Tax Incidence: Classroom Experiment"),
   uiOutput("main_ui")
 )
 
@@ -314,20 +299,18 @@ server <- function(input, output, session) {
     player_token  = NULL,
     room_id       = NULL,
     is_instructor = FALSE,
-    view          = "landing"     # "landing" | "game"
+    view          = "landing"
   )
 
   ticker     <- reactiveTimer(2500)
   setup_open <- reactiveVal(FALSE)
 
-  # Pre-fill room code from ?room= query param
   observeEvent(session$clientData$url_search, {
     q  <- parseQueryString(session$clientData$url_search)
     rc <- toupper(trimws(q[["room"]] %||% ""))
     if (nzchar(rc)) updateTextInput(session, "join_code", value = rc)
   }, once = TRUE, ignoreNULL = FALSE, ignoreInit = FALSE)
 
-  # Landing page
   output$main_ui <- renderUI({
     if (rv$view == "game") return(uiOutput("game_ui"))
 
@@ -370,27 +353,27 @@ server <- function(input, output, session) {
     wellPanel(
       h5("Room parameters"),
       fluidRow(
-        column(4, textInput("cfg_good",  "Good name",  value = "soybeans")),
+        column(4, textInput("cfg_good",  "Good name",  value = "wheat")),
         column(4, textInput("cfg_unit",  "Unit",       value = "bushel")),
         column(4, numericInput("cfg_seed", "Seed (reproducibility)", value = 42, min = 1))
       ),
       fluidRow(
-        column(4, numericInput("cfg_nb",  "# Buyers",           value = 8, min = 1)),
-        column(4, numericInput("cfg_nd",  "# Domestic sellers", value = 4, min = 0)),
-        column(4, numericInput("cfg_ni",  "# Imported sellers", value = 4, min = 0))
+        column(4, numericInput("cfg_nb",  "# Buyers",           value = 4, min = 1)),
+        column(4, numericInput("cfg_nd",  "# Domestic sellers", value = 2, min = 0)),
+        column(4, numericInput("cfg_ni",  "# Imported sellers", value = 2, min = 0))
       ),
       fluidRow(
-        column(3, numericInput("cfg_bhi", "Buyer WTP max ($)", value = 10, min = 1,   step = 0.5)),
-        column(3, numericInput("cfg_blo", "Buyer WTP min ($)", value = 3,  min = 0,   step = 0.5)),
+        column(3, numericInput("cfg_bhi", "Buyer WTP max ($)", value = 11, min = 1,   step = 0.5)),
+        column(3, numericInput("cfg_blo", "Buyer WTP min ($)", value = 5,  min = 0,   step = 0.5)),
         column(3, numericInput("cfg_dlo", "Dom. cost min ($)", value = 5,  min = 0,   step = 0.5)),
-        column(3, numericInput("cfg_dhi", "Dom. cost max ($)", value = 9,  min = 0,   step = 0.5))
+        column(3, numericInput("cfg_dhi", "Dom. cost max ($)", value = 7,  min = 0,   step = 0.5))
       ),
       fluidRow(
-        column(4, numericInput("cfg_wp", "World (import) price ($)", value = 2, min = 0, step = 0.25)),
+        column(4, numericInput("cfg_wp", "World (import) price ($)", value = 1, min = 0, step = 0.25)),
         column(8, tags$div(style = "padding-top:8px;",
           tags$small(class = "text-muted",
             "World price is the cost for all imported sellers.",
-            "A tariff raises their effective cost by the tariff amount."
+            "Import/domestic distinction is flavor; the tax rounds apply equally to all sellers."
           )
         ))
       ),
@@ -399,15 +382,15 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$create_room_btn, {
-    nb  <- as.integer(input$cfg_nb  %||% 8L)
-    nd  <- as.integer(input$cfg_nd  %||% 4L)
-    ni  <- as.integer(input$cfg_ni  %||% 4L)
-    bhi <- as.numeric(input$cfg_bhi %||% 10)
-    blo <- as.numeric(input$cfg_blo %||%  3)
+    nb  <- as.integer(input$cfg_nb  %||% 4L)
+    nd  <- as.integer(input$cfg_nd  %||% 2L)
+    ni  <- as.integer(input$cfg_ni  %||% 2L)
+    bhi <- as.numeric(input$cfg_bhi %||% 11)
+    blo <- as.numeric(input$cfg_blo %||%  5)
     dlo <- as.numeric(input$cfg_dlo %||%  5)
-    dhi <- as.numeric(input$cfg_dhi %||%  9)
-    wp  <- as.numeric(input$cfg_wp  %||%  2)
-    gn  <- trimws(input$cfg_good    %||% "soybeans")
+    dhi <- as.numeric(input$cfg_dhi %||%  7)
+    wp  <- as.numeric(input$cfg_wp  %||%  1)
+    gn  <- trimws(input$cfg_good    %||% "wheat")
     un  <- trimws(input$cfg_unit    %||% "bushel")
     sd  <- as.integer(input$cfg_seed %||% 42L)
 
@@ -415,7 +398,6 @@ server <- function(input, output, session) {
     if (nd + ni < 1)          { showNotification("Need >= 1 seller.",              type = "error"); return() }
     if (blo >= bhi)           { showNotification("Buyer WTP min must be < max.",   type = "error"); return() }
     if (nd > 0 && dlo >= dhi) { showNotification("Domestic cost min must be < max.", type = "error"); return() }
-    if (wp >= bhi)            { showNotification("World price should be < buyer WTP max for trades to occur.", type = "warning") }
 
     code <- gen_room_code()
     pin  <- gen_pin()
@@ -476,7 +458,6 @@ server <- function(input, output, session) {
     tok <- gen_player_token()
 
     if (!as_inst) {
-      # Claim the next unassigned card atomically
       next_card <- db_query("
         SELECT card_num FROM cards
         WHERE room_id = ? AND player_token IS NULL
@@ -503,8 +484,6 @@ server <- function(input, output, session) {
 
     logf("Join:", name, "| room:", code, "| instructor:", as_inst)
   })
-
-  # Game-screen reactives
 
   get_room <- reactive({
     ticker()
@@ -539,8 +518,6 @@ server <- function(input, output, session) {
     if (!nrow(rows)) NULL else rows[1, ]
   })
 
-  # Game UI router
-
   output$game_ui <- renderUI({
     req(rv$view == "game", !is.null(rv$room_id))
     room <- get_room()
@@ -559,11 +536,11 @@ server <- function(input, output, session) {
     }
 
     tax_note <- if (!is.null(rnd) && rnd$tax_amount > 0) {
+      who <- if (rnd$tax_type == "buyer_excise") "collected from buyers"
+             else                                "collected from sellers"
       p(em(class = "text-danger", sprintf(
-        "%s: $%.2f per %s on %s",
-        if (rnd$tax_type == "tariff") "Tariff" else "Excise tax",
-        rnd$tax_amount, room$unit %||% "unit",
-        if (rnd$tax_type == "tariff") "imported goods" else "all transactions"
+        "Tax: $%.2f per %s, %s",
+        rnd$tax_amount, room$unit %||% "unit", who
       )))
     }
 
@@ -586,8 +563,6 @@ server <- function(input, output, session) {
     tagList(header, body)
   })
 
-  # Student UI
-
   output$student_ui <- renderUI({
     card <- get_my_card()
     room <- get_room()
@@ -603,7 +578,6 @@ server <- function(input, output, session) {
       ))
     }
 
-    # Role card
     card_css_class <- if (card$role == "buyer") "role-card buyer-card"
                       else if (card$origin == "imported") "role-card seller-imp-card"
                       else "role-card seller-dom-card"
@@ -616,16 +590,20 @@ server <- function(input, output, session) {
         p(style = "color:#2E7D32; font-weight:600;", "Domestic producer")
     }
 
-    # Effective cost/value for this round
+    # Effective value after tax
     eff     <- card$private_value
     tax_adj <- NULL
-    if (!is.null(rnd) && rnd$tax_amount > 0 && card$role == "seller") {
-      applies <- rnd$tax_type == "excise" ||
-                 (rnd$tax_type == "tariff" && card$origin == "imported")
-      if (applies) {
+
+    if (!is.null(rnd) && rnd$tax_amount > 0) {
+      if (rnd$tax_type == "seller_excise" && card$role == "seller") {
         eff <- card$private_value + rnd$tax_amount
         tax_adj <- p(style = "color:#C62828; font-weight:600;",
           sprintf("Your effective cost this round: $%.2f  (base $%.2f + $%.2f tax)",
+                  eff, card$private_value, rnd$tax_amount))
+      } else if (rnd$tax_type == "buyer_excise" && card$role == "buyer") {
+        eff <- card$private_value - rnd$tax_amount
+        tax_adj <- p(style = "color:#C62828; font-weight:600;",
+          sprintf("Your effective value this round: $%.2f  (value $%.2f - $%.2f tax you owe)",
                   eff, card$private_value, rnd$tax_amount))
       }
     }
@@ -645,7 +623,6 @@ server <- function(input, output, session) {
       p(em(reminder))
     )
 
-    # Trading section
     trading <- if (is.null(rnd) || rnd$status == "pending") {
       wellPanel(p(em("Waiting for your instructor to open the round...")))
 
@@ -681,15 +658,29 @@ server <- function(input, output, session) {
         traded <- tok %in% (res$buyer_tokens  %||% character(0)) ||
                   tok %in% (res$seller_tokens %||% character(0))
 
+        # Use the correct price for surplus calculation
+        my_price <- if (card$role == "buyer") {
+          res$p_buyer %||% cp
+        } else {
+          res$p_seller %||% cp
+        }
+
         surplus <- if (traded) {
-          if (card$role == "buyer") card$private_value - cp
-          else                      cp - card$private_value
+          if (card$role == "buyer") card$private_value - my_price
+          else                      my_price - card$private_value
         } else 0
+
+        p_buyer_lbl  <- res$p_buyer  %||% cp
+        p_seller_lbl <- res$p_seller %||% cp
+
+        price_note <- if (!is.null(rnd) && rnd$tax_amount > 0)
+          p(tags$small(sprintf("Buyers paid: $%.2f | Sellers received: $%.2f",
+                               p_buyer_lbl, p_seller_lbl)))
 
         wellPanel(
           h5("Round result"),
-          p(strong(sprintf("Clearing price: $%.2f | Quantity traded: %d",
-                            cp, rnd$quantity_traded %||% 0))),
+          p(strong(sprintf("Quantity traded: %d", rnd$quantity_traded %||% 0))),
+          price_note,
           if (traded)
             p(class = "surplus-row", style = "color:#1B5E20;",
               tags$b(sprintf("You traded! Your surplus this round: $%.2f",
@@ -714,7 +705,6 @@ server <- function(input, output, session) {
       showNotification("The round is not open.", type = "error"); return()
     }
 
-    # Use revised price input if it exists, else new price input
     price <- suppressWarnings(
       as.numeric(input$order_price_rev %||% input$order_price %||% NA)
     )
@@ -730,8 +720,6 @@ server <- function(input, output, session) {
             format(Sys.time(), "%Y-%m-%dT%H:%M:%S")))
     showNotification(sprintf("Submitted $%.2f", price), type = "message")
   })
-
-  # Instructor UI
 
   output$instructor_ui <- renderUI({
     room <- get_room()
@@ -754,7 +742,6 @@ server <- function(input, output, session) {
                list(rv$room_id, rn))$n[1]
     } else NA_integer_
 
-    # Round control panel
     round_ctrl <- wellPanel(
       h5(sprintf("Round %d controls", rn)),
       p(sprintf("Players joined: %d / %d", n_joined, n_cards)),
@@ -768,11 +755,11 @@ server <- function(input, output, session) {
                            value = 0, min = 0, step = 0.25)
             ),
             column(4,
-              selectInput("cfg_tax_type", "Tax type",
+              selectInput("cfg_tax_type", "Tax collected from",
                 choices = c(
-                  "None (baseline)"          = "none",
-                  "Tariff (imports only)"    = "tariff",
-                  "Excise tax (all sellers)" = "excise"
+                  "No tax (baseline)"  = "none",
+                  "Sellers"            = "seller_excise",
+                  "Buyers"             = "buyer_excise"
                 ))
             ),
             column(4, br(),
@@ -780,7 +767,8 @@ server <- function(input, output, session) {
             )
           ),
           p(tags$small(class = "text-muted",
-            "Once open, students submit bids/asks. Close the round to clear the market."
+            "Both seller and buyer taxes create the same price wedge.",
+            "Use one round for each to demonstrate equivalence."
           ))
         )
       } else if (rnd$status == "open") {
@@ -789,7 +777,7 @@ server <- function(input, output, session) {
           actionButton("close_round_btn", "Close round & clear market",
                        class = "btn-danger btn-lg")
         )
-      } else {  # closed
+      } else {
         tagList(
           uiOutput("round_results_ui"),
           tags$hr(),
@@ -800,7 +788,6 @@ server <- function(input, output, session) {
       }
     )
 
-    # Player / card table
     players_panel <- wellPanel(
       h5("Player cards"),
       p(tags$small(class = "text-muted",
@@ -817,7 +804,7 @@ server <- function(input, output, session) {
           h5("Supply & demand (theoretical)"),
           p(tags$small(class = "text-muted",
             "Dashed line = clearing price when a round has closed.",
-            "Supply curve reflects current round's tax."
+            "Curve shifts to reflect current round's tax side."
           )),
           plotOutput("sd_plot", height = "280px")
         ),
@@ -834,15 +821,19 @@ server <- function(input, output, session) {
 
     if (is.null(cp) || is.na(cp)) return(wellPanel(p("No trades cleared this round.")))
 
+    p_buyer  <- res$p_buyer  %||% cp
+    p_seller <- res$p_seller %||% cp
+
     wellPanel(
       h6("Market outcome"),
       tags$table(class = "table table-condensed table-bordered",
-        style = "max-width:320px;",
-        tags$tr(tags$td("Clearing price"),  tags$td(strong(sprintf("$%.2f", cp)))),
-        tags$tr(tags$td("Units traded"),    tags$td(rnd$quantity_traded %||% 0)),
-        tags$tr(tags$td("Buyer surplus"),   tags$td(sprintf("$%.2f", res$buyer_surplus  %||% 0))),
-        tags$tr(tags$td("Seller surplus"),  tags$td(sprintf("$%.2f", res$seller_surplus %||% 0))),
-        tags$tr(tags$td("Gov. revenue"),    tags$td(sprintf("$%.2f", res$gov_revenue    %||% 0))),
+        style = "max-width:340px;",
+        tags$tr(tags$td("Buyers paid"),    tags$td(strong(sprintf("$%.2f", p_buyer)))),
+        tags$tr(tags$td("Sellers received"), tags$td(strong(sprintf("$%.2f", p_seller)))),
+        tags$tr(tags$td("Units traded"),   tags$td(rnd$quantity_traded %||% 0)),
+        tags$tr(tags$td("Buyer surplus"),  tags$td(sprintf("$%.2f", res$buyer_surplus  %||% 0))),
+        tags$tr(tags$td("Seller surplus"), tags$td(sprintf("$%.2f", res$seller_surplus %||% 0))),
+        tags$tr(tags$td("Gov. revenue"),   tags$td(sprintf("$%.2f", res$gov_revenue    %||% 0))),
         tags$tr(tags$td(strong("Total surplus")),
                 tags$td(strong(sprintf("$%.2f", res$total_surplus %||% 0))))
       )
@@ -861,7 +852,7 @@ server <- function(input, output, session) {
       r   <- closed[i, ]
       res <- tryCatch(jsonlite::fromJSON(r$results_json), error = function(e) list())
       tax_str <- if (r$tax_amount > 0)
-        sprintf("%s $%.2f", r$tax_type, r$tax_amount)
+        sprintf("%s $%.2f", sub("_excise", "", r$tax_type), r$tax_amount)
       else "none"
       tags$tr(
         tags$td(r$round_num),
@@ -876,7 +867,7 @@ server <- function(input, output, session) {
       h6("Round history"),
       tags$table(class = "table table-condensed",
         tags$thead(tags$tr(
-          tags$th("Rnd"), tags$th("Tax"), tags$th("Price"),
+          tags$th("Rnd"), tags$th("Tax"), tags$th("CP"),
           tags$th("Qty"), tags$th("Surplus")
         )),
         tags$tbody(rows)
@@ -916,7 +907,7 @@ server <- function(input, output, session) {
 
     rnd <- get_round()
     ta  <- if (!is.null(rnd)) as.numeric(rnd$tax_amount %||% 0) else 0
-    tt  <- if (!is.null(rnd)) as.character(rnd$tax_type %||% "none") else "none"
+    tt  <- if (!is.null(rnd)) as.character(rnd$tax_type  %||% "none") else "none"
     cp  <- if (!is.null(rnd) && rnd$status == "closed") rnd$clearing_price else NA_real_
 
     curves <- build_step_curves(rv$room_id, ta, tt)
@@ -926,18 +917,17 @@ server <- function(input, output, session) {
     s    <- curves$supply
     unit <- room$unit %||% "unit"
 
-    # Build step-function data frames
     make_steps <- function(vals, qs) {
       do.call(rbind, lapply(seq_along(vals), function(i) {
         data.frame(x = c(qs[i] - 1, qs[i]), y = c(vals[i], vals[i]))
       }))
     }
 
-    d_steps <- make_steps(d$private_value, d$q)
-    s_steps <- make_steps(s$eff,           s$q)
+    d_steps <- make_steps(d$eff, d$q)
+    s_steps <- make_steps(s$eff, s$q)
 
     xmax <- nrow(d) + nrow(s)
-    ymax <- max(c(d$private_value, s$eff), na.rm = TRUE) * 1.15
+    ymax <- max(c(d$private_value, s$private_value), na.rm = TRUE) * 1.15
 
     par(mar = c(4, 4, 1, 1), bg = "white")
     plot(NULL, xlim = c(0, xmax), ylim = c(0, ymax),
@@ -947,13 +937,18 @@ server <- function(input, output, session) {
     lines(d_steps$x, d_steps$y, col = "#1565C0", lwd = 2.5)
     lines(s_steps$x, s_steps$y, col = "#2E7D32", lwd = 2.5)
 
-    if (!is.na(cp)) {
-      abline(h = cp, lty = 2, col = "#B71C1C", lwd = 1.5)
-    }
+    if (!is.na(cp)) abline(h = cp, lty = 2, col = "#B71C1C", lwd = 1.5)
 
-    legend_labels <- c("Demand",
-                       sprintf("Supply (effective%s)",
-                               if (ta > 0) sprintf(" + $%.2f tax", ta) else ""))
+    curve_lbl <- if (tt == "buyer_excise")
+      sprintf("Demand (effective, -%s tax)", sprintf("$%.2f", ta))
+    else if (tt == "seller_excise")
+      sprintf("Supply (effective, +%s tax)", sprintf("$%.2f", ta))
+    else "Supply"
+
+    demand_lbl <- if (tt == "buyer_excise") curve_lbl else "Demand"
+    supply_lbl <- if (tt == "seller_excise") curve_lbl else "Supply"
+
+    legend_labels <- c(demand_lbl, supply_lbl)
     legend_cols   <- c("#1565C0", "#2E7D32")
     if (!is.na(cp)) {
       legend_labels <- c(legend_labels, "Clearing price")
@@ -961,8 +956,6 @@ server <- function(input, output, session) {
     }
     legend("topright", bty = "n", lwd = 2, col = legend_cols, legend = legend_labels)
   })
-
-  # Round event handlers
 
   observeEvent(input$open_round_btn, {
     room <- get_room(); req(!is.null(room))
@@ -988,7 +981,6 @@ server <- function(input, output, session) {
     }
     rn <- as.integer(room$current_round)
 
-    # Pull all orders with role/origin/private_value from cards
     ord_data <- db_query("
       SELECT o.player_token, o.submitted_price,
              c.role, c.origin, c.private_value
@@ -1015,12 +1007,11 @@ server <- function(input, output, session) {
 
     logf("Round closed:", rn, "| cp:", result$clearing_price, "| qty:", result$quantity)
     showNotification(
-      sprintf("Round %d closed. Price: %s | Qty: %d | Surplus: $%.2f",
+      sprintf("Round %d closed. Buyers paid: %s | Sellers got: %s | Qty: %d",
               rn,
-              if (is.na(result$clearing_price)) "no trade"
-              else sprintf("$%.2f", result$clearing_price),
-              result$quantity,
-              result$total_surplus),
+              if (is.na(result$p_buyer))  "no trade" else sprintf("$%.2f", result$p_buyer),
+              if (is.na(result$p_seller)) "no trade" else sprintf("$%.2f", result$p_seller),
+              result$quantity),
       type = "message", duration = 8
     )
   })
@@ -1034,7 +1025,6 @@ server <- function(input, output, session) {
                      type = "message")
   })
 
-  # Cleanup
   session$onSessionEnded(function() {
     if (!is.null(conn) && DBI::dbIsValid(conn))
       try(DBI::dbDisconnect(conn), silent = TRUE)
