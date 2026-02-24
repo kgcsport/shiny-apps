@@ -1,6 +1,7 @@
 library(shiny)
 library(googlesheets4)
 library(dplyr)
+library(tidyr)
 library(jsonlite)
 
 # shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/shiny-apps/class-job-picker", port = 3838, host = "127.0.0.1")
@@ -350,6 +351,20 @@ deterministic_shuffle <- function(x, seed_string) {
   sample(x, length(x), replace = FALSE)
 }
 
+generate_summary_table <- function() {
+  # read log and count how many times each student has been assigned each job
+  lg <- read_sheet(SHEET_ID, sheet = "log", col_types = "cccccc")
+  summary_table <- lg %>%
+    group_by(name, section, job) %>%
+    summarise(count = n()) %>%
+    ungroup()
+  summary_table <- summary_table %>%
+    # row is name and section, column is job, value is count
+    pivot_wider(names_from = job, values_from = count) %>%
+    arrange(name, section)
+  return(summary_table)
+}
+
 rebuild_state_from_log <- function(section_id, upto_date = Sys.Date()) {
 
   section_id <- trimws(as.character(section_id))
@@ -553,7 +568,8 @@ app_ui <- tagList(
               checkboxInput("admin_delete_date", "Delete date's data", value = FALSE),
               dateInput("admin_delete_date_input", "Date to delete", value = Sys.Date()),
               actionButton("admin_reset_bag", "RESET bag (danger)"),
-              actionButton("admin_rebuild_state", "REBUILD state from log (danger)")
+              actionButton("admin_rebuild_state", "REBUILD state from log (danger)"),
+              actionButton("admin_generate_summary", "GENERATE summary table")
           )
         ),
         column(
@@ -932,6 +948,12 @@ server <- function(input, output, session) {
       rv$draft <- NULL
       showNotification("State rebuilt from log.", type="message")
     }
+  })
+
+  # gen summary table and write to summary tab on a click of a button
+  observeEvent(input$admin_generate_summary, {
+    summary_table <- generate_summary_table()
+    write_sheet(summary_table, ss = SHEET_ID, sheet = "summary")
   })
 
 
