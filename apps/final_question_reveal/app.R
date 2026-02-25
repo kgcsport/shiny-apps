@@ -688,6 +688,37 @@ parse_cost_schedule <- function(x) {
   if (!length(out)) c(12,20,30,45,70) else out
 }
 
+# Returns TRUE when x looks like a formula (e.g. "11+c^2") rather than a
+# comma-separated list of prices.  Heuristic: if any comma-separated token
+# isn't a plain number, treat the whole thing as a formula.
+is_cost_formula <- function(x) {
+  x <- trimws(as.character(x %||% ""))
+  if (!nzchar(x)) return(FALSE)
+  parts <- trimws(unlist(strsplit(x, ",", fixed = TRUE)))
+  parts <- parts[nzchar(parts)]
+  vals  <- suppressWarnings(as.numeric(parts))
+  any(!is.finite(vals)) || grepl("[a-zA-Z^]", x)
+}
+
+# Safely evaluate a formula string with c = c_val (the question index).
+# Only digits, basic operators, parentheses, and the letter 'c' are allowed.
+eval_cost_formula <- function(expr_str, c_val) {
+  expr_str <- trimws(as.character(expr_str %||% ""))
+  if (grepl("[^0-9eE.+\\-*/^()c\\s]", expr_str)) {
+    warning("Unsafe characters in cost formula; falling back to default cost 12")
+    return(12)
+  }
+  c <- as.numeric(c_val)   # 'c' shadows base c() inside this scope only
+  result <- tryCatch(
+    eval(parse(text = expr_str)),
+    error = function(e) {
+      warning(sprintf("Cost formula evaluation failed ('%s'): %s", expr_str, e$message))
+      12
+    }
+  )
+  max(0, as.numeric(result[1]))
+}
+
 parse_names <- function(x) {
   parts <- unlist(strsplit(as.character(x %||% ""), ",", fixed = TRUE))
   trimws(parts[nzchar(trimws(parts))])
@@ -700,9 +731,13 @@ sanitize_colname <- function(x) {
 }
 
 question_cost_for_round <- function(round, schedule_text) {
-  sched <- parse_cost_schedule(schedule_text)
   r <- as.integer(round %||% 1L)
-  if (r <= length(sched)) sched[r] else tail(sched, 1)
+  if (is_cost_formula(schedule_text)) {
+    eval_cost_formula(schedule_text, r)
+  } else {
+    sched <- parse_cost_schedule(schedule_text)
+    if (r <= length(sched)) sched[r] else tail(sched, 1)
+  }
 }
 
 # Roundless mode:
@@ -1523,8 +1558,10 @@ server <- function(input, output, session) {
         fluidRow(
           column(4, numericInput("cfg_flex_cost", "Extension cost (flex passes)", value = as.numeric(s$flex_cost[1]), min = 0)),
           column(4, numericInput("cfg_exam_cost", "Exam point cost (flex passes)", value = as.numeric(s$exam_point_cost[1]), min = 0)),
-          column(4, textInput("cfg_sched", "Question cost schedule (comma-separated by question index)",
-                              value = as.character(s$question_cost_schedule[1])))
+          column(4, textInput("cfg_sched",
+                              "Question cost schedule — comma list (12,20,30) or formula in c (e.g. 11+c^2)",
+                              value = as.character(s$question_cost_schedule[1]),
+                              placeholder = "e.g. 12,20,30,45,70  or  11+c^2"))
         ),
         fluidRow(
           column(4,
@@ -1634,8 +1671,14 @@ server <- function(input, output, session) {
     req(is_admin())
     old <- get_settings()
     sched <- input$cfg_sched %||% ""
-    if (!length(parse_cost_schedule(sched))) {
-      showNotification("Bad schedule. Example: 12,20,30,45,70", type="error")
+    sched_ok <- if (is_cost_formula(sched)) {
+      val <- tryCatch(eval_cost_formula(sched, 1L), error = function(e) NA_real_)
+      is.finite(val) && val > 0
+    } else {
+      length(parse_cost_schedule(sched)) > 0
+    }
+    if (!sched_ok) {
+      showNotification("Bad schedule. Use a comma list (e.g. 12,20,30,45,70) or a formula in c (e.g. 11+c^2)", type="error")
       return()
     }
     set_settings(
