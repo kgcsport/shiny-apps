@@ -142,9 +142,21 @@ coerce_is_admin <- function(x) {
 # -------------------------
 QUESTIONS <- list(
   HTML("<b>Q1</b><br>True/False/Uncertain: The economic cost and accounting cost of attending class are both zero."),
-  HTML("<b>Q2</b><br>What is an opportunity cost? Give an example from your daily life."),
-  HTML("<b>Q3</b><br>What is a positive vs a normative statement? Give one example of each."),
-  HTML("<b>Q4</b><br>Imagine the price of lattes increases. What happens to the quantity demanded and why?")
+  HTML("<b>Q2</b><br>True/False/Uncertain: You should always specialize in your absolute advantage."),
+  HTML("<b>Q3</b><br>An accountant pays $80,000 in explicit costs. She could earn $30,000 working elsewhere. Her total revenue is $95,000. Is she earnings an economic profit, economic loss, or breaking even? Explain."),
+  HTML("<b>Q4</b><br>Imagine the price of lattes increases. What happens to the quantity demanded and why?"),
+  HTML("<b>Q5</b><br>The demand for gasoline is relatively inelastic and supply is elastic. If the government imposes a small tax, who will bear the most burden? Buyers or sellers? Explain briefly."),
+  HTML("<b>Q6</b><br>True/False/Uncertain: Making the wealthy worse off the improve the condition of the poor is not Pareto efficient. Therefore we should not increase taxes on the wealthy."),
+  HTML("<b>Q7</b><br>A bakery hires workers. The first worker produces 200 loaves. The second worker increases output by 100 loaves. The third increases output by 60 loaves. What economic principle does this demonstrate?"),
+  HTML("<b>Q8</b><br>Suppose the demand for movie tickets is highly elastic. If theaters raise prices by 10%, what happens to total revenue? Explain."),
+  HTML("<b>Q9</b><br>For each statement, label it positive or normative and briefly explain:<b>a) 'Raising the minimum wage will reduce employment among teenagers.'<br>b) 'The government should raise the minimum wage to reduce inequality.'<br>c) 'Rent control decreases the quantity of housing supplied.'"),
+  HTML("<b>Q10</b><br>A factory emits pollution that harms nearby residents. Is the market equilibrium socially efficient? If not, name a policy that could improve efficiency and briefly explain why."),
+  HTML("<b>Q11</b><br>True, false, uncertain: A firm's marginal revenue is equal to the price they charge for all their goods."),
+  HTML("<b>Q12</b><br>You notice that a fish market's sellers charge different prices to different buyers. Is this firm operating in perfect competition?"),
+  HTML("<b>Q13</b><br>Generic pharmaceuticals are drugs manufactured after patents expire to compete with the original patent holder. Is this market perfectly competitive, monopolistically competitive, an oligopoly, or a monopoly?"),
+  HTML("<b>Q14</b><br>Suppose the most you would be willing to pay for a plane ticket home is $250. If you buy one for $175, what is your economic surplus?"),
+  HTML("<b>Q15</b><br>Assume that all firms in this industry have identical cost curves, and that the market is perfectly competitive. The minimum of average total cost is $5. What is the long run equilibrium price?"),
+  HTML("<b>Q16</b><br>Determine whether each of the following goods is rival or excludable:<br>a) a free public lecture held in a university lecture hall<br>b) a public park<br>c) bicycles available to rent to travel around a city<br>d) a forest used by people to collect firewood")
 )
 
 render_unlocked_questions <- function(n_unlocked) {
