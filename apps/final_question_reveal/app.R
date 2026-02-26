@@ -704,7 +704,7 @@ is_cost_formula <- function(x) {
 # Only digits, basic operators, parentheses, and the letter 'c' are allowed.
 eval_cost_formula <- function(expr_str, c_val) {
   expr_str <- trimws(as.character(expr_str %||% ""))
-  if (grepl("[^0-9eE.+\\-*/^()c\\s]", expr_str)) {
+  if (grepl("[^0-9eE.+\\-*/^()c\\s]", expr_str, perl = TRUE)) {
     warning("Unsafe characters in cost formula; falling back to default cost 12")
     return(12)
   }
