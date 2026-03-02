@@ -378,7 +378,7 @@ pd_pair_payoffs <- function(olig, subs) {
 bonus_shares <- function(olig, subs) {
   if (!nrow(subs)) return(tibble())
   m    <- as.numeric(olig$bonus_multiplier[1] %||% 1.5)
-  subs <- subs %>% mutate(contribute = as.numeric(contribute %||% 0))
+  subs <- subs %>% mutate(contribute = ifelse(is.na(contribute) || is.null(contribute) || nzchar(contribute) == FALSE, 0, as.numeric(contribute)))
   total <- sum(subs$contribute, na.rm = TRUE)
   pot   <- m * total
 
