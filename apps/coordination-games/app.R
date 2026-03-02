@@ -1,35 +1,37 @@
-# app.R --Oligopoly Game (Integrated with Flex Pass DB + Login)
+# app.R -- Coordination Games (Bonus Pot + Price War / PD)
 # -------------------------------------------------------------------
-# Uses the SAME SQLite database and credential table as your flex-pass app:
+# Integrated with the shared Flex Pass SQLite DB + Login.
+# Section-aware: each class section gets its own label and class-size
+# so that bonus-pot payouts use the correct denominator per section.
+#
+# Uses the SAME SQLite database and credential table as the flex-pass app:
 #   - users(user_id, display_name, pw_hash, is_admin)
 #   - settings(id=1, initial_fp, ...)
 #   - ledger(user_id, purpose, amount, meta, created_at, ...)
 #
-# This app adds new tables:
-#   - olig_settings (singleton)
+# This app adds/manages:
+#   - olig_settings (singleton)   <- now includes section + class_size
 #   - olig_rounds
-#   - olig_submissions
-#   - olig_payouts (optional audit)
+#   - olig_submissions             <- now includes section
+#   - olig_payouts                 <- now includes section
 #
 # Key behavior:
-# - Students must log in using existing flex-pass credentials.
-# - Bonus Pot game: student "contribution" is immediately DEBITED from ledger
-#   (purpose='oligopoly_contrib'), capped by their current balance.
-#   On reveal, each student receives a CREDIT equal to their share of the pot
-#   (purpose='grant' with negative amount), rounded to nearest 0.5.
-# - PD game: no staking; on reveal, students receive a CREDIT equal to
-#   (pd_payoff * pd_scale), rounded to nearest 0.5.
+# - Students log in with existing flex-pass credentials.
+# - Bonus Pot: contribution is immediately DEBITED (purpose='oligopoly_contrib').
+#   On reveal each student in the section gets a CREDIT = pot / class_size
+#   (or / submitter count if class_size is 0/NULL), rounded to nearest 0.5.
+# - Price War (PD): no staking; payoff = pd_payoff_points * pd_scale, rounded 0.5.
 #
 # Env vars:
 # - CONNECT_CONTENT_DIR (Posit) optional; otherwise uses getwd()
 # - DB_PATH_OVERRIDE (optional absolute/relative path to the shared sqlite db)
 #
-# Packages: shiny, DT, bcrypt, dplyr, DBI, RSQLite, stringr
+# Packages: shiny, DT, bcrypt, dplyr, DBI, RSQLite, stringr, ggplot2, tidyr
 # -------------------------------------------------------------------
 
 if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 pacman::p_load(
-  shiny, DT, bcrypt, dplyr, tibble, DBI, RSQLite, stringr, ggplot2,
+  shiny, DT, bcrypt, dplyr, tibble, DBI, RSQLite, stringr, ggplot2, tidyr,
   googledrive, googlesheets4, digest
 )
 
@@ -42,7 +44,7 @@ logf <- function(...) {
 }
 
 # -------------------------
-# DB path (match your flex-pass app default)
+# DB path
 # -------------------------
 app_data_dir <- local({
   dir <- NULL
@@ -72,7 +74,7 @@ db_exec  <- function(sql, params = NULL) DBI::dbExecute(get_con(), sql, params =
 db_query <- function(sql, params = NULL) DBI::dbGetQuery(get_con(), sql, params = params)
 
 # -------------------------
-# Init new tables for oligopoly module
+# Init tables for coordination games module
 # -------------------------
 init_olig <- function() {
   # settings singleton
@@ -92,7 +94,17 @@ init_olig <- function() {
     );
   ")
 
-  # round table (optional; mostly for audit)
+  # Migrate: add section + class_size if not present (safe to run repeatedly)
+  tryCatch(
+    db_exec("ALTER TABLE olig_settings ADD COLUMN section TEXT DEFAULT 'default';"),
+    error = function(e) NULL
+  )
+  tryCatch(
+    db_exec("ALTER TABLE olig_settings ADD COLUMN class_size INTEGER;"),
+    error = function(e) NULL
+  )
+
+  # round audit
   db_exec("
     CREATE TABLE IF NOT EXISTS olig_rounds (
       round INTEGER PRIMARY KEY,
@@ -102,7 +114,7 @@ init_olig <- function() {
     );
   ")
 
-  # submissions (one per user per round)
+  # submissions (one per user per round; section-tagged)
   db_exec("
     CREATE TABLE IF NOT EXISTS olig_submissions (
       round INTEGER NOT NULL,
@@ -117,6 +129,12 @@ init_olig <- function() {
   ")
   db_exec("CREATE INDEX IF NOT EXISTS ix_olig_sub_round ON olig_submissions(round);")
 
+  # Migrate: add section to submissions
+  tryCatch(
+    db_exec("ALTER TABLE olig_submissions ADD COLUMN section TEXT DEFAULT 'default';"),
+    error = function(e) NULL
+  )
+
   # payout audit
   db_exec("
     CREATE TABLE IF NOT EXISTS olig_payouts (
@@ -130,18 +148,26 @@ init_olig <- function() {
     );
   ")
 
-  # seed defaults if missing
+  # Migrate: add section to payouts (for per-section idempotency)
+  tryCatch(
+    db_exec("ALTER TABLE olig_payouts ADD COLUMN section TEXT DEFAULT 'default';"),
+    error = function(e) NULL
+  )
+
+  # Seed defaults if missing
   n <- db_query("SELECT COUNT(*) n FROM olig_settings WHERE id=1;")$n[1]
   if (is.na(n) || n == 0) {
     db_exec("
       INSERT INTO olig_settings(
         id, current_round, round_status, current_game,
         bonus_multiplier, pd_scale,
-        pd_HH_A, pd_HH_B, pd_HL_A, pd_HL_B, pd_LH_A, pd_LH_B, pd_LL_A, pd_LL_B
+        pd_HH_A, pd_HH_B, pd_HL_A, pd_HL_B, pd_LH_A, pd_LH_B, pd_LL_A, pd_LL_B,
+        section, class_size
       ) VALUES (
         1, 1, 'open', 'pd',
         1.5, 0.1,
-        50, 50, 10, 70, 70, 10, 30, 30
+        50, 50, 10, 70, 70, 10, 30, 30,
+        'default', NULL
       );
     ")
   }
@@ -154,6 +180,9 @@ touch_olig <- function() {
 get_olig <- function() db_query("SELECT * FROM olig_settings WHERE id=1;")
 
 round_to_half <- function(x) round(x * 2) / 2
+
+# Helper: current section label (never NA/NULL)
+olig_section <- function(olig) as.character(olig$section[1] %||% "default")
 
 # -------------------------
 # Google backup (Sheets + Drive)
@@ -207,15 +236,18 @@ backup_to_sheets <- function() {
     stop("No access to FLEX_PASS_SHEET_ID: ", conditionMessage(e))
   })
 
-  overwrite_ws(BACKUP_SHEET_ID, "olig_settings",    db_query("SELECT * FROM olig_settings;"))
-  overwrite_ws(BACKUP_SHEET_ID, "olig_rounds",      db_query("SELECT * FROM olig_rounds ORDER BY round;"))
-  overwrite_ws(BACKUP_SHEET_ID, "olig_submissions",  db_query("SELECT * FROM olig_submissions ORDER BY round, user_id;"))
-  overwrite_ws(BACKUP_SHEET_ID, "olig_payouts",      db_query("SELECT * FROM olig_payouts ORDER BY id DESC;"))
+  overwrite_ws(BACKUP_SHEET_ID, "olig_settings",
+    db_query("SELECT * FROM olig_settings;"))
+  overwrite_ws(BACKUP_SHEET_ID, "olig_rounds",
+    db_query("SELECT * FROM olig_rounds ORDER BY round;"))
+  overwrite_ws(BACKUP_SHEET_ID, "olig_submissions",
+    db_query("SELECT * FROM olig_submissions ORDER BY round, section, user_id;"))
+  overwrite_ws(BACKUP_SHEET_ID, "olig_payouts",
+    db_query("SELECT * FROM olig_payouts ORDER BY id DESC;"))
 
-  list(ok = TRUE, msg = "Sheets backup complete (4 olig tabs).")
+  list(ok = TRUE, msg = "Sheets backup complete (4 coordination-games tabs).")
 }
 
-# DB hash to avoid redundant uploads
 .last_db_hash <- NULL
 hash_db <- function() {
   parts <- c(DB_PATH, paste0(DB_PATH, "-wal"), paste0(DB_PATH, "-shm"))
@@ -243,33 +275,27 @@ backup_db_to_drive <- function() {
     stop("drive_get(folder) failed: ", conditionMessage(e))
   })
 
-  # checkpoint WAL
   con <- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
   on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
   try(DBI::dbExecute(con, "PRAGMA wal_checkpoint(FULL);"), silent = TRUE)
 
-  # zip DB files
   files <- c(DB_PATH, paste0(DB_PATH, "-wal"), paste0(DB_PATH, "-shm"))
   files <- files[file.exists(files)]
   if (!length(files)) return(list(ok = FALSE, msg = "No DB files found."))
 
-  db_name = basename(DB_PATH)
-  db_name = gsub(".sqlite", "", db_name)
-
+  db_name <- gsub(".sqlite", "", basename(DB_PATH))
   zipfile <- file.path(tempdir(), sprintf("%s_%s.zip", db_name, format(Sys.time(), "%Y%m%d_%H%M%S")))
   utils::zip(zipfile, files = files, flags = "-j")
 
   latest_name <- sprintf("%s_latest_backup.zip", db_name)
-  latest_zip <- file.path(tempdir(), latest_name)
+  latest_zip  <- file.path(tempdir(), latest_name)
   file.copy(zipfile, latest_zip, overwrite = TRUE)
 
-  # timestamped upload
   tryCatch(googledrive::drive_upload(
     media = zipfile, path = googledrive::as_id(DRIVE_FOLDER_ID),
     name = basename(zipfile), type = "application/zip", overwrite = FALSE
   ), error = function(e) logf("timestamped upload failed:", conditionMessage(e)))
 
-  # latest overwrite
   ok <- tryCatch({
     googledrive::drive_upload(
       media = latest_zip, path = googledrive::as_id(DRIVE_FOLDER_ID),
@@ -283,7 +309,7 @@ backup_db_to_drive <- function() {
 }
 
 # -------------------------
-# Flex-pass accounting (reuse the same logic)
+# Flex-pass accounting
 # -------------------------
 get_settings <- function() {
   s <- db_query("SELECT * FROM settings WHERE id=1;")
@@ -301,7 +327,6 @@ remaining_fp <- function(uid) {
   s <- get_settings()
   initial <- suppressWarnings(as.numeric(s$initial_fp[1]))
   if (!is.finite(initial)) initial <- 5
-  # grants in your system are negative ledger amounts; this is already included in SUM(amount)
   pmax(0, initial - spent_total(uid))
 }
 
@@ -309,15 +334,17 @@ remaining_fp <- function(uid) {
 # Game logic
 # -------------------------
 pd_pair_payoffs <- function(olig, subs) {
-  # Pair in submission order (created_at); ignore odd last person
   if (!nrow(subs)) return(tibble())
   s <- subs %>%
     arrange(created_at) %>%
-    mutate(idx = row_number(),
+    mutate(idx  = row_number(),
            pair = ceiling(idx/2),
            role = ifelse(idx %% 2 == 1, "A", "B"))
-  if (nrow(s) == 1) return(tibble(pair = 1, role = "A", user_id = s$user_id[1], display_name = s$display_name[1], action = s$action[1], payoff = 0))
-  else if (nrow(s) %% 2 == 1) s <- s %>% slice(1:(nrow(s)-1))
+  if (nrow(s) == 1) {
+    return(tibble(pair = 1, role = "A", user_id = s$user_id[1],
+                  display_name = s$display_name[1], action = s$action[1], payoff = 0))
+  }
+  if (nrow(s) %% 2 == 1) s <- s %>% slice(1:(nrow(s)-1))
 
   payoff_for_pair <- function(a_action, b_action) {
     if (a_action == "High" && b_action == "High") return(c(A = olig$pd_HH_A, B = olig$pd_HH_B))
@@ -338,52 +365,72 @@ pd_pair_payoffs <- function(olig, subs) {
     ) %>%
     ungroup() %>%
     tidyr::pivot_longer(cols = c(A_pay, B_pay), names_to = "role_pay", values_to = "payoff") %>%
-    mutate(role = ifelse(role_pay == "A_pay", "A", "B"),
-           user_id = ifelse(role == "A", user_id_A, user_id_B),
+    mutate(role         = ifelse(role_pay == "A_pay", "A", "B"),
+           user_id      = ifelse(role == "A", user_id_A, user_id_B),
            display_name = ifelse(role == "A", display_name_A, display_name_B),
-           action = ifelse(role == "A", action_A, action_B)) %>%
+           action       = ifelse(role == "A", action_A, action_B)) %>%
     select(pair, role, user_id, display_name, action, payoff)
 
   out
 }
 
+# bonus_shares: divide pot by class_size if configured (> 0), else by submitter count.
 bonus_shares <- function(olig, subs) {
   if (!nrow(subs)) return(tibble())
-  m <- as.numeric(olig$bonus_multiplier[1] %||% 1.5)
+  m    <- as.numeric(olig$bonus_multiplier[1] %||% 1.5)
   subs <- subs %>% mutate(contribute = as.numeric(contribute %||% 0))
   total <- sum(subs$contribute, na.rm = TRUE)
-  pot <- m * total
-  share <- ifelse(nrow(subs) > 0, pot / nrow(subs), 0)
+  pot   <- m * total
+
+  cs      <- suppressWarnings(as.integer(olig$class_size[1]))
+  n_denom <- if (!is.null(cs) && !is.na(cs) && cs > 0) cs else nrow(subs)
+  share   <- if (n_denom > 0) pot / n_denom else 0
+
   subs %>%
     mutate(total_contrib = total,
-           pot_total = pot,
-           share_each = share)
+           pot_total     = pot,
+           n_denom       = n_denom,
+           share_each    = share)
 }
 
-# Apply payouts into the shared ledger
+# Apply payouts into the shared ledger -- filtered to current section
 apply_payouts <- function(round, game) {
   olig <- get_olig()
-  subs <- db_query("SELECT * FROM olig_submissions WHERE round=? AND game=?;", list(as.integer(round), as.character(game)))
-  if (!nrow(subs)) return(list(ok = FALSE, msg = "No submissions."))
+  sec  <- olig_section(olig)
+
+  # Filter submissions to current section (also accept legacy NULL section rows)
+  subs <- db_query(
+    "SELECT * FROM olig_submissions WHERE round=? AND game=? AND (section=? OR section IS NULL);",
+    list(as.integer(round), as.character(game), sec)
+  )
+  if (!nrow(subs)) {
+    return(list(ok = FALSE, msg = sprintf("No submissions for section '%s'.", sec)))
+  }
 
   if (game == "bonus") {
-    # Credits: each student gets share_each (rounded to 0.5) as a grant (negative amount)
-    shares <- bonus_shares(olig, subs)
+    shares  <- bonus_shares(olig, subs)
     payouts <- shares %>% mutate(payout = round_to_half(share_each)) %>% select(user_id, payout)
-    # write to ledger + audit
+    cs_used <- if (nrow(shares) > 0) shares$n_denom[1] else nrow(subs)
     for (i in seq_len(nrow(payouts))) {
       uid <- payouts$user_id[i]
       pay <- payouts$payout[i]
       if (!is.finite(pay) || pay <= 0) next
-      db_exec("INSERT INTO ledger(user_id, round, purpose, amount, meta)
-               VALUES(?, ?, 'grant', ?, ?);",
-              list(uid, as.integer(round), -pay, sprintf("oligopoly_bonus_share round=%d", round)))
-      db_exec("INSERT INTO olig_payouts(round, user_id, game, payout, meta)
-               VALUES(?, ?, ?, ?, ?);",
-              list(as.integer(round), uid, "bonus", pay, "share_each"))
+      db_exec(
+        "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?, ?, 'grant', ?, ?);",
+        list(uid, as.integer(round), -pay,
+             sprintf("coordination_bonus_share round=%d section=%s class_size=%d", round, sec, cs_used))
+      )
+      db_exec(
+        "INSERT INTO olig_payouts(round, user_id, game, payout, meta, section) VALUES(?, ?, ?, ?, ?, ?);",
+        list(as.integer(round), uid, "bonus", pay,
+             sprintf("share_each class_size=%d", cs_used), sec)
+      )
     }
     touch_olig()
-    return(list(ok = TRUE, msg = sprintf("Applied bonus payouts to %d students.", nrow(payouts))))
+    return(list(ok = TRUE, msg = sprintf(
+      "Applied bonus payouts to %d students (section '%s', denominator = %d).",
+      nrow(payouts), sec, cs_used
+    )))
   }
 
   if (game == "pd") {
@@ -392,17 +439,22 @@ apply_payouts <- function(round, game) {
       select(user_id, payout)
     for (i in seq_len(nrow(pay))) {
       uid <- pay$user_id[i]
-      p  <- pay$payout[i]
+      p   <- pay$payout[i]
       if (!is.finite(p) || p <= 0) next
-      db_exec("INSERT INTO ledger(user_id, round, purpose, amount, meta)
-               VALUES(?, ?, 'grant', ?, ?);",
-              list(uid, as.integer(round), -p, sprintf("oligopoly_pd_payout round=%d", round)))
-      db_exec("INSERT INTO olig_payouts(round, user_id, game, payout, meta)
-               VALUES(?, ?, ?, ?, ?);",
-              list(as.integer(round), uid, "pd", p, "pd_scale"))
+      db_exec(
+        "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?, ?, 'grant', ?, ?);",
+        list(uid, as.integer(round), -p,
+             sprintf("coordination_pd_payout round=%d section=%s", round, sec))
+      )
+      db_exec(
+        "INSERT INTO olig_payouts(round, user_id, game, payout, meta, section) VALUES(?, ?, ?, ?, ?, ?);",
+        list(as.integer(round), uid, "pd", p, "pd_scale", sec)
+      )
     }
     touch_olig()
-    return(list(ok = TRUE, msg = sprintf("Applied PD payouts to %d students (paired).", nrow(pay))))
+    return(list(ok = TRUE, msg = sprintf(
+      "Applied PD payouts to %d students in section '%s' (paired).", nrow(pay), sec
+    )))
   }
 
   list(ok = FALSE, msg = "Unknown game.")
@@ -413,11 +465,11 @@ apply_payouts <- function(round, game) {
 # -------------------------
 login_ui <- function(msg = NULL) {
   fluidPage(
-    titlePanel("Oligopoly Game (Flex Pass Integrated)"),
-    if (!is.null(msg)) div(style="color:#b00020; font-weight:bold;", msg),
+    titlePanel("Coordination Games (Flex Pass Integrated)"),
+    if (!is.null(msg)) div(style = "color:#b00020; font-weight:bold;", msg),
     textInput("login_user", "Username"),
     passwordInput("login_pw", "Password"),
-    actionButton("login_btn", "Sign in", class="btn-primary"),
+    actionButton("login_btn", "Sign in", class = "btn-primary"),
     tags$small("Use the same username/password as the flex passes app.")
   )
 }
@@ -426,9 +478,9 @@ ui <- fluidPage(
   uiOutput("auth_gate"),
   conditionalPanel("output.authed",
     tabsetPanel(
-      tabPanel("Student", uiOutput("student_ui")),
+      tabPanel("Student",   uiOutput("student_ui")),
       tabPanel("Projector", uiOutput("projector_ui")),
-      tabPanel("Admin", uiOutput("admin_ui"))
+      tabPanel("Admin",     uiOutput("admin_ui"))
     )
   )
 )
@@ -445,65 +497,88 @@ server <- function(input, output, session) {
     p <- input$login_pw %||% ""
 
     row <- db_query("SELECT user_id, display_name, is_admin, pw_hash FROM users WHERE user_id=?;", list(u))
-    if (nrow(row) != 1) { showNotification("Login failed.", type="error"); return() }
+    if (nrow(row) != 1) { showNotification("Login failed.", type = "error"); return() }
 
     ph <- row$pw_hash[1] %||% ""
     ok <- tryCatch(bcrypt::checkpw(p, ph), error = function(e) FALSE)
-    if (!isTRUE(ok)) { showNotification("Login failed.", type="error"); return() }
+    if (!isTRUE(ok)) { showNotification("Login failed.", type = "error"); return() }
 
-    rv$authed <- TRUE
-    rv$user <- row$user_id[1]
-    rv$name <- row$display_name[1]
+    rv$authed   <- TRUE
+    rv$user     <- row$user_id[1]
+    rv$name     <- row$display_name[1]
     rv$is_admin <- isTRUE(as.integer(row$is_admin[1]) == 1)
   })
 
-  authed <- reactive(rv$authed)
-  user_id <- reactive(rv$user)
-  name <- reactive(rv$name)
+  authed   <- reactive(rv$authed)
+  user_id  <- reactive(rv$user)
+  name     <- reactive(rv$name)
   is_admin <- reactive(rv$is_admin)
 
   # Poll shared state via olig_settings.updated_at
   olig_poll <- reactivePoll(
     1200, session,
     checkFunc = function() get_olig()$updated_at[1] %||% as.character(Sys.time()),
-    valueFunc = function() get_olig()
+    valueFunc  = function() get_olig()
   )
+
+  # Poll submissions -- filtered to the current section
   subs_poll <- reactivePoll(
     1200, session,
-    checkFunc = function() paste0(get_olig()$updated_at[1] %||% "", "|", db_query("SELECT COUNT(*) n FROM olig_submissions WHERE round=(SELECT current_round FROM olig_settings WHERE id=1);")$n[1]),
-    valueFunc = function() {
+    checkFunc = function() {
       o <- get_olig()
-      subs <- db_query("SELECT * FROM olig_submissions WHERE round=?;", list(as.integer(o$current_round[1])))
-      list(olig = o, subs = subs)
+      paste0(
+        o$updated_at[1] %||% "", "|",
+        db_query(
+          "SELECT COUNT(*) n FROM olig_submissions WHERE round=? AND (section=? OR section IS NULL);",
+          list(as.integer(o$current_round[1]), olig_section(o))
+        )$n[1]
+      )
+    },
+    valueFunc = function() {
+      o   <- get_olig()
+      sec <- olig_section(o)
+      subs <- db_query(
+        "SELECT * FROM olig_submissions WHERE round=? AND (section=? OR section IS NULL);",
+        list(as.integer(o$current_round[1]), sec)
+      )
+      list(olig = o, subs = subs, section = sec)
     }
   )
 
   # ---------------- Student UI ----------------
   output$student_ui <- renderUI({
     req(authed())
-    st <- subs_poll()
-    o <- st$olig
+    st  <- subs_poll()
+    o   <- st$olig
+    sec <- st$section
 
-    bal <- remaining_fp(user_id())
-    game <- as.character(o$current_game[1])
+    bal    <- remaining_fp(user_id())
+    game   <- as.character(o$current_game[1])
     status <- as.character(o$round_status[1])
 
     game_lbl <- if (game == "pd") "Price War (High vs Low)" else "Bonus Pot (Contribute flex passes)"
     tagList(
       h4(sprintf("Logged in as: %s (%s)", user_id(), name())),
-      p(sprintf("Flex passes available right now: %.2f", bal)),
-      p(sprintf("Round %d | Game: %s | Status: %s", as.integer(o$current_round[1]), game_lbl, status)),
+      p(sprintf("Section: %s | Flex passes available: %.2f", sec, bal)),
+      p(sprintf("Round %d | Game: %s | Status: %s",
+                as.integer(o$current_round[1]), game_lbl, status)),
       tags$hr(),
       if (game == "pd") {
         tagList(
-          radioButtons("pd_action", "Your choice", choices = c("High","Low"), inline = TRUE),
-          actionButton("submit_pd", "Submit", class="btn-primary")
+          radioButtons("pd_action", "Your choice", choices = c("High", "Low"), inline = TRUE),
+          actionButton("submit_pd", "Submit", class = "btn-primary")
         )
       } else {
+        cs      <- suppressWarnings(as.integer(o$class_size[1]))
+        cs_note <- if (!is.null(cs) && !is.na(cs) && cs > 0)
+          sprintf("Class size = %d (pot divided among all %d students).", cs, cs)
+        else
+          "Pot divided among students who submit."
         tagList(
-          sliderInput("bonus_c", "Contribute flex passes", min = 0, max = max(0, floor(bal*2)/2), value = 0, step = 0.5),
-          actionButton("submit_bonus", "Submit (debited immediately)", class="btn-primary"),
-          tags$small(sprintf("Multiplier m = %.2f. On reveal, pot = m * total contributions; split evenly.", as.numeric(o$bonus_multiplier[1])))
+          sliderInput("bonus_c", "Contribute flex passes",
+                      min = 0, max = max(0, floor(bal*2)/2), value = 0, step = 0.5),
+          actionButton("submit_bonus", "Submit (debited immediately)", class = "btn-primary"),
+          tags$small(sprintf("Multiplier m = %.2f. %s", as.numeric(o$bonus_multiplier[1]), cs_note))
         )
       },
       tags$hr(),
@@ -511,7 +586,6 @@ server <- function(input, output, session) {
     )
   })
 
-  # Prevent duplicate submissions per round
   already_submitted <- function(round) {
     x <- db_query("SELECT COUNT(*) n FROM olig_submissions WHERE round=? AND user_id=?;",
                   list(as.integer(round), as.character(user_id())))
@@ -520,51 +594,73 @@ server <- function(input, output, session) {
 
   observeEvent(input$submit_pd, {
     req(authed())
-    st <- subs_poll(); o <- st$olig
-    req(as.character(o$round_status[1]) == "open")
-    req(as.character(o$current_game[1]) == "pd")
-    req(input$pd_action %in% c("High","Low"))
-    if (already_submitted(o$current_round[1])) {
-      showNotification("You already submitted this round.", type="warning"); return()
+    st <- subs_poll(); o <- st$olig; sec <- st$section
+
+    # Explicit error messages so students know why a submission was rejected
+    if (as.character(o$round_status[1]) != "open") {
+      showNotification("Round is not open for submissions.", type = "error"); return()
     }
-    db_exec("INSERT INTO olig_submissions(round, user_id, display_name, game, action, contribute)
-             VALUES(?, ?, ?, 'pd', ?, NULL);",
-            list(as.integer(o$current_round[1]), as.character(user_id()), as.character(name()), as.character(input$pd_action)))
+    if (as.character(o$current_game[1]) != "pd") {
+      showNotification("Current game is not Price War.", type = "error"); return()
+    }
+    if (!(input$pd_action %in% c("High", "Low"))) {
+      showNotification("Please select High or Low.", type = "error"); return()
+    }
+    if (already_submitted(o$current_round[1])) {
+      showNotification("You already submitted this round.", type = "warning"); return()
+    }
+
+    db_exec(
+      "INSERT INTO olig_submissions(round, user_id, display_name, game, action, contribute, section)
+       VALUES(?, ?, ?, 'pd', ?, NULL, ?);",
+      list(as.integer(o$current_round[1]), as.character(user_id()),
+           as.character(name()), as.character(input$pd_action), sec)
+    )
     touch_olig()
-    showNotification("Submitted.", type="message")
+    showNotification("Submitted.", type = "message")
   })
 
   observeEvent(input$submit_bonus, {
     req(authed())
-    st <- subs_poll(); o <- st$olig
-    req(as.character(o$round_status[1]) == "open")
-    req(as.character(o$current_game[1]) == "bonus")
+    st <- subs_poll(); o <- st$olig; sec <- st$section
 
+    # Explicit error messages
+    if (as.character(o$round_status[1]) != "open") {
+      showNotification("Round is not open for submissions.", type = "error"); return()
+    }
+    if (as.character(o$current_game[1]) != "bonus") {
+      showNotification("Current game is not Bonus Pot.", type = "error"); return()
+    }
     if (already_submitted(o$current_round[1])) {
-      showNotification("You already submitted this round.", type="warning"); return()
+      showNotification("You already submitted this round.", type = "warning"); return()
     }
 
-    c <- round_to_half(as.numeric(input$bonus_c %||% 0))
-    if (!is.finite(c) || c < 0) c <- 0
+    c_val <- round_to_half(as.numeric(input$bonus_c %||% 0))
+    if (!is.finite(c_val) || c_val < 0) c_val <- 0
 
     bal <- remaining_fp(user_id())
-    if (c > bal + 1e-9) {
-      showNotification("Not enough flex passes.", type="error"); return()
+    if (c_val > bal + 1e-9) {
+      showNotification("Not enough flex passes.", type = "error"); return()
     }
 
-    # Debit immediately
-    if (c > 0) {
-      db_exec("INSERT INTO ledger(user_id, round, purpose, amount, meta)
-               VALUES(?, ?, 'oligopoly_contrib', ?, ?);",
-              list(as.character(user_id()), as.integer(o$current_round[1]), c,
-                   sprintf("oligopoly_bonus_contribution round=%d", as.integer(o$current_round[1]))))
+    # Debit contribution immediately
+    if (c_val > 0) {
+      db_exec(
+        "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?, ?, 'oligopoly_contrib', ?, ?);",
+        list(as.character(user_id()), as.integer(o$current_round[1]), c_val,
+             sprintf("coordination_bonus_contribution round=%d section=%s",
+                     as.integer(o$current_round[1]), sec))
+      )
     }
 
-    db_exec("INSERT INTO olig_submissions(round, user_id, display_name, game, action, contribute)
-             VALUES(?, ?, ?, 'bonus', NULL, ?);",
-            list(as.integer(o$current_round[1]), as.character(user_id()), as.character(name()), c))
+    db_exec(
+      "INSERT INTO olig_submissions(round, user_id, display_name, game, action, contribute, section)
+       VALUES(?, ?, ?, 'bonus', NULL, ?, ?);",
+      list(as.integer(o$current_round[1]), as.character(user_id()),
+           as.character(name()), c_val, sec)
+    )
     touch_olig()
-    showNotification("Submitted. Your contribution was deducted immediately.", type="message")
+    showNotification("Submitted. Your contribution was deducted immediately.", type = "message")
   })
 
   output$student_result <- renderUI({
@@ -573,26 +669,27 @@ server <- function(input, output, session) {
     if (as.character(o$round_status[1]) != "revealed") {
       return(p("Results will appear after the instructor reveals the round."))
     }
-    r <- as.integer(o$current_round[1])
-    game <- as.character(o$current_game[1])
-
+    game   <- as.character(o$current_game[1])
     my_sub <- subs %>% filter(user_id == !!user_id())
     if (!nrow(my_sub)) return(p("No submission recorded for you this round."))
 
     if (game == "bonus") {
       shares <- bonus_shares(o, subs %>% filter(game == "bonus"))
-      me <- shares %>% filter(user_id == !!user_id())
+      me     <- shares %>% filter(user_id == !!user_id())
       if (!nrow(me)) return(p("No bonus result found."))
       payout <- round_to_half(me$share_each[1])
       tagList(
         h5("Your result"),
         p(sprintf("You contributed: %.2f", as.numeric(me$contribute[1]))),
-        p(sprintf("Your share of pot: %.2f (credited to your flex pass balance; rounded to nearest 0.5)", payout))
+        p(sprintf("Pot divided among: %d students", me$n_denom[1])),
+        p(sprintf("Your share of pot: %.2f (credited; rounded to nearest 0.5)", payout))
       )
     } else {
       pay <- pd_pair_payoffs(o, subs %>% filter(game == "pd"))
-      me <- pay %>% filter(user_id == !!user_id())
-      if (!nrow(me)) return(p("Odd number of submissions: last unpaired student has no PD payoff this round."))
+      me  <- pay %>% filter(user_id == !!user_id())
+      if (!nrow(me)) {
+        return(p("Odd number of submissions: last unpaired student has no PD payoff this round."))
+      }
       payout <- round_to_half(as.numeric(me$payoff[1]) * as.numeric(o$pd_scale[1] %||% 0.1))
       tagList(
         h5("Your result"),
@@ -606,79 +703,72 @@ server <- function(input, output, session) {
   # ---------------- Projector UI ----------------
   output$projector_ui <- renderUI({
     req(authed())
-    st <- subs_poll(); o <- st$olig; subs <- st$subs
-    r <- as.integer(o$current_round[1])
+    st       <- subs_poll(); o <- st$olig; subs <- st$subs; sec <- st$section
+    r        <- as.integer(o$current_round[1])
     cur_game <- as.character(o$current_game[1])
-    status <- as.character(o$round_status[1])
+    status   <- as.character(o$round_status[1])
     game_lbl <- if (cur_game == "pd") "Price War (PD)" else "Bonus Pot"
-    n <- nrow(subs %>% filter(round == r, game == cur_game))
+    n        <- nrow(subs %>% filter(round == r, game == cur_game))
 
     tagList(
-      h3(sprintf("Round %d --%s", r, game_lbl)),
-      p(sprintf("Status: %s | Submissions: %d", status, n)),
+      h3(sprintf("Round %d -- %s  |  Section: %s", r, game_lbl, sec)),
+      p(sprintf("Status: %s | Submissions (this section): %d", status, n)),
       if (cur_game == "pd") {
         tagList(
           p(sprintf("High: %d | Low: %d",
                     sum(subs$action == "High", na.rm = TRUE),
-                    sum(subs$action == "Low", na.rm = TRUE))),
-          if (status == "revealed") {
-            tagList(
-              h4("Pair Outcome Counts"),
-              tableOutput("proj_pd_counts")
-            )
-          }
+                    sum(subs$action == "Low",  na.rm = TRUE))),
+          if (status == "revealed")
+            tagList(h4("Pair Outcome Counts"), tableOutput("proj_pd_counts"))
         )
       } else {
+        cs      <- suppressWarnings(as.integer(o$class_size[1]))
+        cs_note <- if (!is.null(cs) && !is.na(cs) && cs > 0)
+          sprintf("Class size: %d", cs)
+        else
+          sprintf("Denominator: submitters (%d)", n)
         tagList(
-          p(sprintf("Total contributed: %.2f | Multiplier m: %.2f",
+          p(sprintf("Total contributed: %.2f | Multiplier m: %.2f | %s",
                     sum(as.numeric(subs$contribute), na.rm = TRUE),
-                    as.numeric(o$bonus_multiplier[1]))),
+                    as.numeric(o$bonus_multiplier[1]), cs_note)),
           plotOutput("proj_bonus_plot", height = "350px"),
           if (status == "revealed") {
-            o_data <- get_olig()
-            total_c <- sum(as.numeric(subs$contribute), na.rm = TRUE)
-            m <- as.numeric(o_data$bonus_multiplier[1] %||% 1.5)
-            pot <- m * total_c
-            share <- if (n > 0) round_to_half(pot / n) else 0
-            tagList(
-              h4("Results"),
-              p(sprintf("Pot total: %.2f | Each student receives: %.2f flex passes", pot, share))
-            )
+            shares <- bonus_shares(o, subs %>% filter(game == "bonus"))
+            if (nrow(shares) > 0) {
+              tagList(
+                h4("Results"),
+                p(sprintf("Pot total: %.2f | Divided by: %d | Each student receives: %.2f flex passes",
+                          shares$pot_total[1], shares$n_denom[1],
+                          round_to_half(shares$share_each[1])))
+              )
+            }
           }
         )
       }
     )
   })
 
-  # PD projector: anonymous pair-outcome counts (HH, HL, LH, LL)
   output$proj_pd_counts <- renderTable({
-    st <- subs_poll(); o <- st$olig; subs <- st$subs
-    r <- as.integer(o$current_round[1])
+    st      <- subs_poll(); o <- st$olig; subs <- st$subs
+    r       <- as.integer(o$current_round[1])
     pd_subs <- subs %>% filter(round == r, game == "pd")
     if (!nrow(pd_subs)) return(data.frame(Outcome = character(), Count = integer()))
 
     pay <- pd_pair_payoffs(o, pd_subs)
     if (!nrow(pay)) return(data.frame(Outcome = character(), Count = integer()))
 
-    # Build outcome labels per pair
-    pair_outcomes <- pay %>%
+    pay %>%
       group_by(pair) %>%
-      summarise(outcome = paste(sort(action), collapse = "-"), .groups = "drop")
-
-    counts <- pair_outcomes %>%
+      summarise(outcome = paste(sort(action), collapse = "-"), .groups = "drop") %>%
       count(outcome, name = "Count") %>%
       rename(Outcome = outcome)
-
-    counts
   }, striped = TRUE, bordered = TRUE, align = "lc")
 
-  # Bonus Pot projector: ggplot histogram of contributions (no names)
   output$proj_bonus_plot <- renderPlot({
     st <- subs_poll(); o <- st$olig; subs <- st$subs
-    r <- as.integer(o$current_round[1])
+    r  <- as.integer(o$current_round[1])
     df <- subs %>% filter(round == r, game == "bonus") %>%
       mutate(contribute = as.numeric(contribute))
-
     req(nrow(df) > 0)
 
     ggplot(df, aes(x = contribute)) +
@@ -695,28 +785,69 @@ server <- function(input, output, session) {
     req(authed())
     if (!is_admin()) return(fluidPage(h4("Admin"), p("You are not an admin.")))
 
-    o <- olig_poll()
+    o      <- olig_poll()
+    cs_val <- suppressWarnings(as.integer(o$class_size[1]))
+    if (is.null(cs_val) || is.na(cs_val)) cs_val <- 0L
+
     fluidPage(
       h4("Admin controls"),
-      p(sprintf("Current round: %d | Game: %s | Status: %s",
-                as.integer(o$current_round[1]), as.character(o$current_game[1]), as.character(o$round_status[1]))),
+      p(sprintf("Round: %d | Section: %s | Class size: %s | Game: %s | Status: %s",
+                as.integer(o$current_round[1]),
+                olig_section(o),
+                if (cs_val > 0) as.character(cs_val) else "(submitter count)",
+                as.character(o$current_game[1]),
+                as.character(o$round_status[1]))),
       tags$hr(),
+
+      # --- Round / Section / Status ---
       wellPanel(
-        h5("Round + status"),
-        numericInput("adm_round", "Round number", value = as.integer(o$current_round[1]), min = 1, step = 1),
-        selectInput("adm_game", "Game", choices = c("Price War (PD)" = "pd", "Bonus Pot" = "bonus"),
-                    selected = as.character(o$current_game[1])),
-        selectInput("adm_status", "Status", choices = c("open","closed","revealed"),
-                    selected = as.character(o$round_status[1])),
-        actionButton("adm_apply", "Apply", class="btn-primary"),
-        actionButton("adm_clear", "Clear submissions (this round)", class="btn-danger")
+        h5("Round + Section + Status"),
+        fluidRow(
+          column(3,
+            numericInput("adm_round", "Round number",
+                         value = as.integer(o$current_round[1]), min = 1, step = 1)
+          ),
+          column(3,
+            textInput("adm_section", "Class Section",
+                      value = olig_section(o),
+                      placeholder = "e.g. A, B, MWF-9am")
+          ),
+          column(3,
+            numericInput("adm_class_size",
+                         "Class Size (0 = use submitter count)",
+                         value = cs_val, min = 0, step = 1)
+          ),
+          column(3,
+            selectInput("adm_game", "Game",
+                        choices = c("Price War (PD)" = "pd", "Bonus Pot" = "bonus"),
+                        selected = as.character(o$current_game[1]))
+          )
+        ),
+        fluidRow(
+          column(4,
+            selectInput("adm_status", "Status",
+                        choices = c("open", "closed", "revealed"),
+                        selected = as.character(o$round_status[1]))
+          )
+        ),
+        actionButton("adm_apply", "Apply round settings", class = "btn-primary"),
+        actionButton("adm_clear", "Clear submissions (this round + section)", class = "btn-danger"),
+        tags$small(
+          "Tip: update Section and Class Size when switching to a new class section. ",
+          "Clearing removes only submissions for the current section; ",
+          "contribution debits remain in the ledger."
+        )
       ),
+
+      # --- Game Parameters ---
       wellPanel(
-        h5("Parameters"),
-        numericInput("adm_m", "Bonus multiplier m", value = as.numeric(o$bonus_multiplier[1]), min = 1, step = 0.1),
-        numericInput("adm_pd_scale", "PD scale -> flex passes per 'point'", value = as.numeric(o$pd_scale[1]), min = 0, step = 0.01),
+        h5("Game Parameters"),
+        numericInput("adm_m", "Bonus multiplier m",
+                     value = as.numeric(o$bonus_multiplier[1]), min = 1, step = 0.1),
+        numericInput("adm_pd_scale", "PD scale (flex passes per payoff point)",
+                     value = as.numeric(o$pd_scale[1]), min = 0, step = 0.01),
         tags$hr(),
-        h5("PD payoff matrix (A,B)"),
+        h5("PD payoff matrix (A, B)"),
         fluidRow(
           column(6, numericInput("pd_HH_A", "HH: A", value = as.numeric(o$pd_HH_A[1]))),
           column(6, numericInput("pd_HH_B", "HH: B", value = as.numeric(o$pd_HH_B[1])))
@@ -733,46 +864,75 @@ server <- function(input, output, session) {
           column(6, numericInput("pd_LL_A", "LL: A", value = as.numeric(o$pd_LL_A[1]))),
           column(6, numericInput("pd_LL_B", "LL: B", value = as.numeric(o$pd_LL_B[1])))
         ),
-        actionButton("adm_save_params", "Save parameters", class="btn-secondary")
+        actionButton("adm_save_params", "Save parameters", class = "btn-secondary")
       ),
+
+      # --- Settlement ---
       wellPanel(
         h5("Settlement"),
-        p("After you set status to REVEALED, click the button below to post payouts back to student balances."),
-        actionButton("adm_payout", "Apply payouts to ledger (one-time)", class="btn-success"),
-        tags$small("This will CREDIT students using purpose='grant' (negative amounts). Bonus contributions were already debited on submission.")
+        p("Set status to REVEALED, then click below to post payouts for the current section."),
+        actionButton("adm_payout", "Apply payouts to ledger (one-time per section)", class = "btn-success"),
+        tags$small(
+          "Credits students in the current section via purpose='grant' (negative amount). ",
+          "Bonus contributions were already debited on submission."
+        )
       ),
+
+      # --- Backup ---
       wellPanel(
         h5("Backup"),
-        actionButton("adm_backup_sheets", "Backup olig tables to Sheets", class = "btn-secondary"),
-        actionButton("adm_backup_drive", "Backup SQLite to Drive", class = "btn-secondary"),
+        actionButton("adm_backup_sheets", "Backup tables to Sheets", class = "btn-secondary"),
+        actionButton("adm_backup_drive",  "Backup SQLite to Drive",  class = "btn-secondary"),
         tags$small("Uses FLEX_PASS_SHEET_ID (Sheets) and FLEX_PASS_FOLDER_ID (Drive zip).")
       ),
+
       tags$hr(),
-      h5("Payout audit (latest 50)"),
+      h5("Payout audit (latest 100)"),
       DTOutput("payout_audit")
     )
   })
 
   observeEvent(input$adm_apply, {
     req(is_admin())
-    db_exec("UPDATE olig_settings SET current_round=?, current_game=?, round_status=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
-            list(as.integer(input$adm_round), as.character(input$adm_game), as.character(input$adm_status)))
-    # ensure round row exists
-    db_exec("INSERT OR IGNORE INTO olig_rounds(round, game, status) VALUES(?, ?, ?);",
-            list(as.integer(input$adm_round), as.character(input$adm_game), as.character(input$adm_status)))
-    db_exec("UPDATE olig_rounds SET game=?, status=? WHERE round=?;",
-            list(as.character(input$adm_game), as.character(input$adm_status), as.integer(input$adm_round)))
-    showNotification("Updated.", type="message")
+    cs <- suppressWarnings(as.integer(input$adm_class_size))
+    if (is.na(cs) || cs < 0) cs <- 0L
+    db_exec(
+      "UPDATE olig_settings SET current_round=?, current_game=?, round_status=?,
+       section=?, class_size=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+      list(as.integer(input$adm_round), as.character(input$adm_game),
+           as.character(input$adm_status), as.character(input$adm_section), cs)
+    )
+    db_exec(
+      "INSERT OR IGNORE INTO olig_rounds(round, game, status) VALUES(?, ?, ?);",
+      list(as.integer(input$adm_round), as.character(input$adm_game), as.character(input$adm_status))
+    )
+    db_exec(
+      "UPDATE olig_rounds SET game=?, status=? WHERE round=?;",
+      list(as.character(input$adm_game), as.character(input$adm_status), as.integer(input$adm_round))
+    )
+    showNotification(
+      sprintf("Updated: Round %d | Section '%s' | Class size %s | Game: %s | Status: %s.",
+              as.integer(input$adm_round), input$adm_section,
+              if (cs > 0) as.character(cs) else "(submitter count)",
+              input$adm_game, input$adm_status),
+      type = "message"
+    )
   })
 
   observeEvent(input$adm_clear, {
     req(is_admin())
-    o <- get_olig()
-    r <- as.integer(o$current_round[1])
-    # IMPORTANT: do not automatically refund contributions here; clearing is "hard reset".
-    db_exec("DELETE FROM olig_submissions WHERE round=?;", list(r))
+    o   <- get_olig()
+    r   <- as.integer(o$current_round[1])
+    sec <- olig_section(o)
+    db_exec(
+      "DELETE FROM olig_submissions WHERE round=? AND (section=? OR section IS NULL);",
+      list(r, sec)
+    )
     touch_olig()
-    showNotification("Cleared submissions for this round. (Contrib debits remain in ledger.)", type="warning")
+    showNotification(
+      sprintf("Cleared submissions for round %d, section '%s'. (Contribution debits remain in ledger.)", r, sec),
+      type = "warning"
+    )
   })
 
   observeEvent(input$adm_save_params, {
@@ -787,27 +947,34 @@ server <- function(input, output, session) {
         updated_at=CURRENT_TIMESTAMP
       WHERE id=1;
     ", list(
-      as.numeric(input$adm_m), as.numeric(input$adm_pd_scale),
-      as.numeric(input$pd_HH_A), as.numeric(input$pd_HH_B),
-      as.numeric(input$pd_HL_A), as.numeric(input$pd_HL_B),
-      as.numeric(input$pd_LH_A), as.numeric(input$pd_LH_B),
-      as.numeric(input$pd_LL_A), as.numeric(input$pd_LL_B)
+      as.numeric(input$adm_m),     as.numeric(input$adm_pd_scale),
+      as.numeric(input$pd_HH_A),   as.numeric(input$pd_HH_B),
+      as.numeric(input$pd_HL_A),   as.numeric(input$pd_HL_B),
+      as.numeric(input$pd_LH_A),   as.numeric(input$pd_LH_B),
+      as.numeric(input$pd_LL_A),   as.numeric(input$pd_LL_B)
     ))
-    showNotification("Parameters saved.", type="message")
+    showNotification("Parameters saved.", type = "message")
   })
 
   observeEvent(input$adm_payout, {
     req(is_admin())
-    o <- get_olig()
-    r <- as.integer(o$current_round[1])
+    o    <- get_olig()
+    r    <- as.integer(o$current_round[1])
     game <- as.character(o$current_game[1])
+    sec  <- olig_section(o)
     if (as.character(o$round_status[1]) != "revealed") {
-      showNotification("Set status to 'revealed' first.", type="error"); return()
+      showNotification("Set status to 'revealed' first.", type = "error"); return()
     }
-    # crude idempotency: block if payouts already exist for round+game
-    already <- db_query("SELECT COUNT(*) n FROM olig_payouts WHERE round=? AND game=?;", list(r, game))$n[1]
+    # Per-section idempotency check
+    already <- db_query(
+      "SELECT COUNT(*) n FROM olig_payouts WHERE round=? AND game=? AND (section=? OR section IS NULL);",
+      list(r, game, sec)
+    )$n[1]
     if (as.integer(already) > 0) {
-      showNotification("Payouts already applied for this round/game.", type="warning"); return()
+      showNotification(
+        sprintf("Payouts already applied for round %d, game '%s', section '%s'.", r, game, sec),
+        type = "warning"
+      ); return()
     }
     res <- apply_payouts(r, game)
     showNotification(res$msg, type = if (isTRUE(res$ok)) "message" else "error")
@@ -815,32 +982,30 @@ server <- function(input, output, session) {
 
   output$payout_audit <- DT::renderDT({
     req(authed(), is_admin())
-    df <- db_query("SELECT created_at, round, game, user_id, payout, meta FROM olig_payouts ORDER BY id DESC LIMIT 50;")
-    DT::datatable(df, rownames = FALSE, options = list(pageLength = 10))
+    df <- db_query(
+      "SELECT created_at, round, section, game, user_id, payout, meta
+       FROM olig_payouts ORDER BY id DESC LIMIT 100;"
+    )
+    DT::datatable(df, rownames = FALSE, options = list(pageLength = 15))
   })
 
   observeEvent(input$adm_backup_sheets, {
     req(is_admin())
-    res <- tryCatch(backup_to_sheets(), error = function(e) {
-      list(ok = FALSE, msg = conditionMessage(e))
-    })
+    res <- tryCatch(backup_to_sheets(), error = function(e) list(ok = FALSE, msg = conditionMessage(e)))
     showNotification(res$msg, type = if (isTRUE(res$ok)) "message" else "error")
   })
 
   observeEvent(input$adm_backup_drive, {
     req(is_admin())
-    res <- tryCatch(backup_db_to_drive(), error = function(e) {
-      list(ok = FALSE, msg = conditionMessage(e))
-    })
+    res <- tryCatch(backup_db_to_drive(), error = function(e) list(ok = FALSE, msg = conditionMessage(e)))
     showNotification(res$msg, type = if (isTRUE(res$ok)) "message" else "error")
   })
 
   session$onSessionEnded(function() {
     if (db_changed_since_last_backup()) {
       logf("session ended: backing up to Drive...")
-      tryCatch(backup_db_to_drive(), error = function(e) {
-        logf("session-end backup FAILED:", conditionMessage(e))
-      })
+      tryCatch(backup_db_to_drive(),
+               error = function(e) logf("session-end backup FAILED:", conditionMessage(e)))
     }
     if (!is.null(conn) && DBI::dbIsValid(conn)) try(DBI::dbDisconnect(conn), silent = TRUE)
   })
