@@ -113,7 +113,7 @@ backup_to_sheets <- function() {
     stop("No access to FLEX_PASS_SHEET_ID: ", conditionMessage(e))
   })
 
-  users_df   <- db_query("SELECT user_id, display_name, is_admin FROM users ORDER BY is_admin DESC, display_name;")
+  users_df   <- db_query("SELECT * FROM users ORDER BY is_admin DESC, display_name;")
   settings_df<- db_query("SELECT * FROM settings WHERE id=1;")
   state_df   <- db_query("SELECT * FROM game_state WHERE id=1;")
   pledges_df <- db_query("SELECT * FROM pledges ORDER BY round, user_id;")
