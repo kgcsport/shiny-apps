@@ -573,7 +573,11 @@ init_db <- function() {
   }
 
   # Upsert roster from CRED (seed pw_hash if missing; always update admin flag & name)
-  for (i in seq_len(nrow(CRED))) {
+  upsert_cred_to_db(CRED)
+}
+
+upsert_cred_to_db <- function(cred) {
+  for (i in seq_len(nrow(cred))) {
     db_exec("
       INSERT INTO users(user_id, display_name, is_admin, pw_hash)
       VALUES(?, ?, ?, ?)
@@ -582,10 +586,10 @@ init_db <- function() {
         is_admin     = excluded.is_admin,
         pw_hash      = COALESCE(users.pw_hash, excluded.pw_hash);
     ", list(
-      as.character(CRED$user[i]),
-      as.character(CRED$name[i]),
-      coerce_is_admin(CRED$is_admin[i]),
-      as.character(CRED$pw_hash[i])
+      as.character(cred$user[i]),
+      as.character(cred$name[i]),
+      coerce_is_admin(cred$is_admin[i]),
+      as.character(cred$pw_hash[i])
     ))
   }
 }
@@ -1723,6 +1727,32 @@ server <- function(input, output, session) {
       ),
 
       wellPanel(
+        h5("Remove student"),
+        fluidRow(
+          column(8,
+            selectInput("remove_user", "Student",
+              choices = {
+                us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+                setNames(us$user_id, us$display_name)
+              }
+            )
+          ),
+          column(4, br(),
+            actionButton("do_remove_user", "Remove", class = "btn-danger",
+              onclick = "if(!confirm('Remove this student? This cannot be undone (unless you restore from backup).')) event.stopPropagation();")
+          )
+        ),
+        tags$small("Removes the student from the roster. Their ledger history is kept for auditing but they will no longer be able to log in.")
+      ),
+
+      wellPanel(
+        h5("Add student from credentials sheet"),
+        p("Add the student to the ", tags$code("credentials"), " tab in the Google Sheet (with columns: user, name, pw_hash, is_admin), then click below."),
+        actionButton("sync_cred_btn", "Sync from credentials sheet", class = "btn-secondary"),
+        tags$small("Adds new users and updates names/admin flags. Never overwrites existing passwords.")
+      ),
+
+      wellPanel(
         h5("Admin export table: balances & purchases"),
         DTOutput("admin_export_table"),
         tags$br(),
@@ -1823,6 +1853,40 @@ server <- function(input, output, session) {
     ", list(as.character(input$grant_user), -amt))
     set_state()
     showNotification("Granted flex passes.", type="message")
+  })
+
+  observeEvent(input$do_remove_user, {
+    req(is_admin(), input$remove_user)
+    uid <- as.character(input$remove_user)
+    # Guard: never remove an admin
+    row <- db_query("SELECT is_admin FROM users WHERE user_id=?;", list(uid))
+    if (!nrow(row) || isTRUE(as.logical(row$is_admin[1]))) {
+      showNotification("Cannot remove an admin account.", type = "error"); return()
+    }
+    db_exec("DELETE FROM users              WHERE user_id=?;", list(uid))
+    db_exec("DELETE FROM pledges            WHERE user_id=?;", list(uid))
+    db_exec("DELETE FROM resource_targets   WHERE user_id=?;", list(uid))
+    set_state()
+    showNotification(sprintf("Removed %s.", uid), type = "message")
+  })
+
+  observeEvent(input$sync_cred_btn, {
+    req(is_admin())
+    before <- db_query("SELECT COUNT(*) n FROM users;")$n[1]
+    new_cred <- tryCatch(get_credentials(), error = function(e) {
+      showNotification(paste("Could not read credentials sheet:", conditionMessage(e)), type = "error")
+      NULL
+    })
+    if (is.null(new_cred)) return()
+    CRED <<- new_cred
+    upsert_cred_to_db(new_cred)
+    after <- db_query("SELECT COUNT(*) n FROM users;")$n[1]
+    added <- max(0L, as.integer(after) - as.integer(before))
+    set_state()
+    showNotification(
+      sprintf("Synced %d users from credentials sheet (%d new).", nrow(new_cred), added),
+      type = "message"
+    )
   })
 
   observeEvent(input$open_round, {
