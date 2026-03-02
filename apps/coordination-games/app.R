@@ -96,26 +96,18 @@ init_olig <- function() {
     );
   ")
 
-  # sections registry -- admin manages this; each row is one class section
-  db_exec("
-    CREATE TABLE IF NOT EXISTS sections (
-      section_id   TEXT PRIMARY KEY,
-      section_name TEXT,
-      class_size   INTEGER NOT NULL DEFAULT 0
-    );
-  ")
-
-  # Migrate olig_settings: add section + use_section_size (safe to run repeatedly)
+  # Migrate: add section + use_section_size if not present (safe to run repeatedly)
   tryCatch(
     db_exec("ALTER TABLE olig_settings ADD COLUMN section TEXT DEFAULT '';"),
     error = function(e) NULL
   )
-  # use_section_size: 1 = use sections.class_size, 0 = use submitter count
+  # use_section_size: 1 = divide pot by section's enrolled count from users table
+  #                   0 = divide pot by number of students who submitted
   tryCatch(
     db_exec("ALTER TABLE olig_settings ADD COLUMN use_section_size INTEGER DEFAULT 1;"),
     error = function(e) NULL
   )
-  # legacy class_size column kept for DB backward-compat but no longer used by UI
+  # legacy class_size column kept for DB compat but no longer used by UI
   tryCatch(
     db_exec("ALTER TABLE olig_settings ADD COLUMN class_size INTEGER;"),
     error = function(e) NULL
@@ -198,30 +190,39 @@ get_olig <- function() db_query("SELECT * FROM olig_settings WHERE id=1;")
 
 round_to_half <- function(x) round(x * 2) / 2
 
-# Helper: current section id (empty string when none selected)
+# Current section id stored in settings (empty string = none selected)
 olig_section <- function(olig) as.character(olig$section[1] %||% "")
 
-# All registered sections from DB
-get_sections <- function() db_query("SELECT * FROM sections ORDER BY section_id;")
-
-# Named vector for selectInput: values = section_id, names = "id (n students [name])"
-sections_choices <- function() {
-  secs <- get_sections()
-  if (!nrow(secs)) return(setNames("", "(no sections -- add below)"))
-  lbl <- ifelse(
-    nzchar(secs$section_name %||% ""),
-    sprintf("%s: %s  (%d enrolled)", secs$section_id, secs$section_name, secs$class_size),
-    sprintf("%s  (%d enrolled)", secs$section_id, secs$class_size)
-  )
-  setNames(secs$section_id, lbl)
+# Does the shared users table have a 'section' column?
+users_has_section_col <- function() {
+  cols <- tryCatch(db_query("PRAGMA table_info(users);"), error = function(e) data.frame())
+  "section" %in% (cols$name %||% character(0))
 }
 
-# Class size for a given section_id; NA if not found or 0
+# Distinct sections + enrolled counts from the users table
+sections_from_users <- function() {
+  db_query("
+    SELECT section, COUNT(*) AS class_size
+    FROM users
+    WHERE section IS NOT NULL AND section != ''
+    GROUP BY section
+    ORDER BY section;
+  ")
+}
+
+# Named vector suitable for selectInput (value = section id, name = display label)
+sections_choices <- function() {
+  secs <- sections_from_users()
+  if (!nrow(secs)) return(setNames("", "(no sections in users table)"))
+  setNames(secs$section,
+           sprintf("%s  (%d enrolled)", secs$section, secs$class_size))
+}
+
+# Enrolled count for a section from the users table; NA if not found
 section_class_size <- function(section_id) {
   if (!nzchar(section_id %||% "")) return(NA_integer_)
-  x <- db_query("SELECT class_size FROM sections WHERE section_id=?;", list(section_id))
-  if (!nrow(x)) return(NA_integer_)
-  cs <- suppressWarnings(as.integer(x$class_size[1]))
+  x <- db_query("SELECT COUNT(*) AS n FROM users WHERE section=?;", list(section_id))
+  cs <- suppressWarnings(as.integer(x$n[1]))
   if (is.na(cs) || cs <= 0) NA_integer_ else cs
 }
 
@@ -277,8 +278,6 @@ backup_to_sheets <- function() {
     stop("No access to FLEX_PASS_SHEET_ID: ", conditionMessage(e))
   })
 
-  overwrite_ws(BACKUP_SHEET_ID, "sections",
-    db_query("SELECT * FROM sections ORDER BY section_id;"))
   overwrite_ws(BACKUP_SHEET_ID, "olig_settings",
     db_query("SELECT * FROM olig_settings;"))
   overwrite_ws(BACKUP_SHEET_ID, "olig_rounds",
@@ -288,7 +287,7 @@ backup_to_sheets <- function() {
   overwrite_ws(BACKUP_SHEET_ID, "olig_payouts",
     db_query("SELECT * FROM olig_payouts ORDER BY id DESC;"))
 
-  list(ok = TRUE, msg = "Sheets backup complete (5 coordination-games tabs).")
+  list(ok = TRUE, msg = "Sheets backup complete (4 coordination-games tabs).")
 }
 
 .last_db_hash <- NULL
@@ -417,8 +416,8 @@ pd_pair_payoffs <- function(olig, subs) {
   out
 }
 
-# bonus_shares: denominator is EITHER the section's registered class_size OR the
-# submitter count -- controlled by olig$use_section_size. No other values allowed.
+# bonus_shares: denominator is EITHER the section's enrolled count (from users table)
+# OR the number of students who actually submitted. No other values.
 bonus_shares <- function(olig, subs) {
   if (!nrow(subs)) return(tibble())
   m    <- as.numeric(olig$bonus_multiplier[1] %||% 1.5)
@@ -429,16 +428,18 @@ bonus_shares <- function(olig, subs) {
   use_sec <- isTRUE(as.integer(olig$use_section_size[1] %||% 1) == 1)
   cs      <- if (use_sec) section_class_size(olig_section(olig)) else NA_integer_
   n_denom <- if (!is.na(cs)) cs else nrow(subs)
-  denom_source <- if (!is.na(cs)) sprintf("section class size (%d)", cs) else
-                                  sprintf("submitter count (%d)", nrow(subs))
-  share   <- if (n_denom > 0) pot / n_denom else 0
+  denom_source <- if (!is.na(cs))
+    sprintf("section class size (%d enrolled)", cs)
+  else
+    sprintf("submitter count (%d)", nrow(subs))
+  share <- if (n_denom > 0) pot / n_denom else 0
 
   subs %>%
-    mutate(total_contrib  = total,
-           pot_total      = pot,
-           n_denom        = n_denom,
-           denom_source   = denom_source,
-           share_each     = share)
+    mutate(total_contrib = total,
+           pot_total     = pot,
+           n_denom       = n_denom,
+           denom_source  = denom_source,
+           share_each    = share)
 }
 
 # Apply payouts into the shared ledger -- filtered to current section
@@ -456,10 +457,9 @@ apply_payouts <- function(round, game) {
   }
 
   if (game == "bonus") {
-    shares  <- bonus_shares(olig, subs)
-    payouts <- shares %>% mutate(payout = round_to_half(share_each)) %>% select(user_id, payout)
-    cs_used      <- if (nrow(shares) > 0) shares$n_denom[1] else nrow(subs)
-    denom_source <- if (nrow(shares) > 0) shares$denom_source[1] else "submitter count"
+    shares       <- bonus_shares(olig, subs)
+    payouts      <- shares %>% mutate(payout = round_to_half(share_each)) %>% select(user_id, payout)
+    denom_source <- if (nrow(shares) > 0) shares$denom_source[1] else sprintf("submitter count (%d)", nrow(subs))
     for (i in seq_len(nrow(payouts))) {
       uid <- payouts$user_id[i]
       pay <- payouts$payout[i]
@@ -467,18 +467,16 @@ apply_payouts <- function(round, game) {
       db_exec(
         "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?, ?, 'grant', ?, ?);",
         list(uid, as.integer(round), -pay,
-             sprintf("coordination_bonus_share round=%d section=%s denom=%s",
-                     round, sec, denom_source))
+             sprintf("coordination_bonus_share round=%d section=%s denom=%s", round, sec, denom_source))
       )
       db_exec(
         "INSERT INTO olig_payouts(round, user_id, game, payout, meta, section) VALUES(?, ?, ?, ?, ?, ?);",
-        list(as.integer(round), uid, "bonus", pay,
-             sprintf("denom=%s", denom_source), sec)
+        list(as.integer(round), uid, "bonus", pay, sprintf("denom=%s", denom_source), sec)
       )
     }
     touch_olig()
     return(list(ok = TRUE, msg = sprintf(
-      "Applied bonus payouts to %d students (section '%s', denominator = %s).",
+      "Applied bonus payouts to %d students (section '%s', %s).",
       nrow(payouts), sec, denom_source
     )))
   }
@@ -732,7 +730,7 @@ server <- function(input, output, session) {
       tagList(
         h5("Your result"),
         p(sprintf("You contributed: %.2f", as.numeric(me$contribute[1]))),
-        p(sprintf("Pot divided by: %s", me$denom_source[1])),
+        p(sprintf("Denominator: %s", me$denom_source[1])),
         p(sprintf("Your share of pot: %.2f (credited; rounded to nearest 0.5)", payout))
       )
     } else {
@@ -778,7 +776,7 @@ server <- function(input, output, session) {
         cs_note  <- if (!is.na(cs))
           sprintf("Section class size: %d enrolled", cs)
         else
-          sprintf("Denominator: submitter count (%d)", n)
+          sprintf("Submitter count: %d", n)
         tagList(
           p(sprintf("Total contributed: %.2f | Multiplier m: %.2f | %s",
                     sum(as.numeric(subs$contribute), na.rm = TRUE),
@@ -789,7 +787,7 @@ server <- function(input, output, session) {
             if (nrow(shares) > 0) {
               tagList(
                 h4("Results"),
-                p(sprintf("Pot total: %.2f | Divided by %s | Each student receives: %.2f flex passes",
+                p(sprintf("Pot total: %.2f | %s | Each student receives: %.2f flex passes",
                           shares$pot_total[1], shares$denom_source[1],
                           round_to_half(shares$share_each[1])))
               )
@@ -837,46 +835,46 @@ server <- function(input, output, session) {
     req(authed())
     if (!is_admin()) return(fluidPage(h4("Admin"), p("You are not an admin.")))
 
-    o        <- olig_poll()   # triggers refresh when sections are added
-    sec      <- olig_section(o)
-    use_sec  <- as.integer(o$use_section_size[1] %||% 1)
-    cs       <- section_class_size(sec)
+    o       <- olig_poll()
+    sec     <- olig_section(o)
+    use_sec <- as.integer(o$use_section_size[1] %||% 1)
+    has_col <- users_has_section_col()
+    cs      <- if (has_col && use_sec == 1L) section_class_size(sec) else NA_integer_
     denom_lbl <- if (!is.na(cs)) sprintf("section class size (%d)", cs) else "submitter count"
 
-    sec_choices <- sections_choices()
+    # Section choices derived from users table (re-read on each render)
+    sec_choices <- if (has_col) sections_choices() else setNames("", "(users table has no section column)")
 
-    # Build denominator radio choices -- two options only, no free input
-    cs_label <- if (!is.na(cs))
+    # Radio button labels -- only two options, no free input
+    cs_radio_lbl <- if (!is.na(cs))
       sprintf("Section class size  (%d enrolled)", cs)
+    else if (has_col && nzchar(sec))
+      sprintf("Section class size  (section '%s' not found in users)", sec)
     else
-      "Section class size  (not set for this section)"
-    denom_choices <- setNames(c("1", "0"), c(cs_label, "Submitter count"))
+      "Section class size  (no section selected or column missing)"
+    denom_choices <- setNames(c("1", "0"), c(cs_radio_lbl, "Submitter count"))
 
     fluidPage(
       h4("Admin controls"),
       p(sprintf("Round: %d | Section: %s | Denominator: %s | Game: %s | Status: %s",
-                as.integer(o$current_round[1]), if (nzchar(sec)) sec else "(none)",
-                denom_lbl, as.character(o$current_game[1]), as.character(o$round_status[1]))),
-      tags$hr(),
+                as.integer(o$current_round[1]),
+                if (nzchar(sec)) sec else "(none)",
+                denom_lbl,
+                as.character(o$current_game[1]),
+                as.character(o$round_status[1]))),
 
-      # --- Manage Sections (one-time setup) ---
-      wellPanel(
-        h5("Manage Sections"),
-        p(tags$em("Add your class sections here once. Each section's enrolled count becomes
-                   available as the bonus-pot denominator.")),
-        DTOutput("sections_table"),
-        tags$hr(),
-        fluidRow(
-          column(3, textInput("new_sec_id",   "Section ID",   placeholder = "e.g. A")),
-          column(4, textInput("new_sec_name", "Name (optional)", placeholder = "e.g. MWF 9am")),
-          column(3, numericInput("new_sec_size", "Enrolled count", value = 1, min = 1, step = 1)),
-          column(2, br(), actionButton("adm_add_section", "Add / Update", class = "btn-primary"))
-        ),
-        fluidRow(
-          column(4, textInput("del_sec_id", "Section ID to delete", placeholder = "exact ID")),
-          column(2, br(), actionButton("adm_del_section", "Delete", class = "btn-danger"))
-        )
+      # Warning banner when users table has no section column
+      if (!has_col) div(
+        style = "background:#fff3cd; border:1px solid #ffc107; padding:10px; margin-bottom:10px; border-radius:4px;",
+        tags$strong("Warning:"),
+        " The ", tags$code("users"), " table does not have a ",
+        tags$code("section"), " column. Add a ",
+        tags$code("section TEXT"), " column to the ", tags$code("users"),
+        " table in ", tags$code("finalqdata.sqlite"),
+        " and assign each student to their section before using section-based class sizes."
       ),
+
+      tags$hr(),
 
       # --- Round / Section / Status ---
       wellPanel(
@@ -913,7 +911,7 @@ server <- function(input, output, session) {
         actionButton("adm_apply", "Apply round settings", class = "btn-primary"),
         actionButton("adm_clear", "Clear submissions (this round + section)", class = "btn-danger"),
         tags$small(
-          "Switch the Active Section dropdown when moving between class sections. ",
+          "Switch Active Section when moving between class sections. ",
           "Clearing removes only submissions for the current section; ",
           "contribution debits stay in the ledger."
         )
@@ -972,57 +970,13 @@ server <- function(input, output, session) {
     )
   })
 
-  # Render sections table
-  output$sections_table <- DT::renderDT({
-    olig_poll()  # re-render when olig is touched (happens after add/delete)
-    df <- get_sections()
-    if (!nrow(df)) df <- data.frame(section_id = character(), section_name = character(), class_size = integer())
-    DT::datatable(df, rownames = FALSE, colnames = c("ID", "Name", "Enrolled"),
-                  options = list(pageLength = 10, dom = "t"))
-  })
-
-  # Add / update section
-  observeEvent(input$adm_add_section, {
-    req(is_admin())
-    sid   <- trimws(input$new_sec_id   %||% "")
-    sname <- trimws(input$new_sec_name %||% "")
-    cs    <- suppressWarnings(as.integer(input$new_sec_size))
-    if (!nzchar(sid)) {
-      showNotification("Section ID is required.", type = "error"); return()
-    }
-    if (is.na(cs) || cs < 1) {
-      showNotification("Enrolled count must be at least 1.", type = "error"); return()
-    }
-    db_exec(
-      "INSERT INTO sections(section_id, section_name, class_size) VALUES(?, ?, ?)
-       ON CONFLICT(section_id) DO UPDATE SET section_name=excluded.section_name,
-                                             class_size=excluded.class_size;",
-      list(sid, sname, cs)
-    )
-    touch_olig()
-    showNotification(sprintf("Section '%s' saved (%d enrolled).", sid, cs), type = "message")
-  })
-
-  # Delete section
-  observeEvent(input$adm_del_section, {
-    req(is_admin())
-    sid <- trimws(input$del_sec_id %||% "")
-    if (!nzchar(sid)) {
-      showNotification("Enter the section ID to delete.", type = "error"); return()
-    }
-    db_exec("DELETE FROM sections WHERE section_id=?;", list(sid))
-    touch_olig()
-    showNotification(sprintf("Section '%s' deleted.", sid), type = "warning")
-  })
-
   observeEvent(input$adm_apply, {
     req(is_admin())
-    use_sec <- as.integer(input$adm_use_section_size %||% "1")
+    use_sec <- suppressWarnings(as.integer(input$adm_use_section_size %||% "1"))
     if (is.na(use_sec)) use_sec <- 1L
-    sec <- as.character(input$adm_section %||% "")
-    cs  <- section_class_size(sec)
-    denom_lbl <- if (!is.na(cs) && use_sec == 1L)
-      sprintf("section class size (%d)", cs) else "submitter count"
+    sec     <- as.character(input$adm_section %||% "")
+    cs      <- if (use_sec == 1L) section_class_size(sec) else NA_integer_
+    denom_lbl <- if (!is.na(cs)) sprintf("section class size (%d)", cs) else "submitter count"
 
     db_exec(
       "UPDATE olig_settings SET current_round=?, current_game=?, round_status=?,
@@ -1040,7 +994,8 @@ server <- function(input, output, session) {
     )
     showNotification(
       sprintf("Updated: Round %d | Section '%s' | Denominator: %s | Game: %s | Status: %s.",
-              as.integer(input$adm_round), if (nzchar(sec)) sec else "(none)",
+              as.integer(input$adm_round),
+              if (nzchar(sec)) sec else "(none)",
               denom_lbl, input$adm_game, input$adm_status),
       type = "message"
     )
