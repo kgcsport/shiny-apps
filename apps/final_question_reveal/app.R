@@ -459,6 +459,8 @@ reg.finalizer(.GlobalEnv, function(e) {
   }
 }, onexit = TRUE)
 
+DB_BROKEN <- FALSE  # set TRUE by init_db() if users table is missing PRIMARY KEY
+
 init_db <- function() {
   # Users
   db_exec("
@@ -468,8 +470,19 @@ init_db <- function() {
       is_admin INTEGER DEFAULT 0
     );
   ")
-  # Ensure pw_hash column exists
+  # Detect if users table lost PRIMARY KEY (e.g. from dbWriteTable overwrite).
+  # Do NOT attempt self-repair — flag it and let the admin restore from Drive backup.
+  tbl_def <- db_query("SELECT sql FROM sqlite_master WHERE type='table' AND name='users';")
+  if (nrow(tbl_def) && !grepl("PRIMARY KEY", tbl_def$sql[1], ignore.case = TRUE)) {
+    logf("ERROR: users table is missing PRIMARY KEY — DB is broken.",
+         "The app will prompt for a Drive restore. No data has been deleted.")
+    DB_BROKEN <<- TRUE
+    return()  # skip remaining setup; server will show restore modal
+  }
+
+  # Ensure optional columns exist (safe no-ops if already present)
   try(db_exec("ALTER TABLE users ADD COLUMN pw_hash TEXT;"), silent = TRUE)
+  try(db_exec("ALTER TABLE users ADD COLUMN section TEXT;"), silent = TRUE)
 
   # Settings (single row)
   db_exec("
@@ -1009,6 +1022,55 @@ ui <- fluidPage(
 server <- function(input, output, session) {
 
   rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE)
+
+  # -------------------------
+  # Emergency: broken DB modal (shown instead of normal UI if init_db detected corruption)
+  # -------------------------
+  observe({
+    req(DB_BROKEN)
+    can_restore <- google_auth_ok() && nzchar(drive_folder_id())
+    backup_choices <- if (can_restore) {
+      tryCatch({
+        files <- googledrive::drive_ls(googledrive::as_id(drive_folder_id()))
+        files <- files[files$name != "appdata_latest_backup.zip", ]
+        setNames(files$name, files$name)
+      }, error = function(e) character(0))
+    } else character(0)
+
+    showModal(modalDialog(
+      title = "Database Error — Restore Required",
+      p(strong("The users table is corrupted"), " (PRIMARY KEY constraint is missing)."),
+      p("This happens when the 'Amend SQL' button overwrites the users table directly.",
+        "No data has been permanently deleted — a Drive backup will fully recover it."),
+      if (can_restore && length(backup_choices)) {
+        tagList(
+          selectInput("modal_restore_file", "Select backup to restore",
+            choices = backup_choices, selected = backup_choices[1]),
+          actionButton("db_broken_restore_btn", "Restore from Drive", class = "btn-danger")
+        )
+      } else {
+        p(em("Google Drive is not available. Manually replace the database file at:"),
+          br(), code(DB_PATH))
+      },
+      footer = NULL,
+      easyClose = FALSE
+    ))
+  })
+
+  observeEvent(input$db_broken_restore_btn, {
+    filename <- input$modal_restore_file %||% latest_zip_name()
+    ok <- tryCatch(restore_db_from_drive(filename), error = function(e) {
+      showNotification(paste("Restore failed:", conditionMessage(e)), type = "error")
+      FALSE
+    })
+    if (isTRUE(ok)) {
+      removeModal()
+      showNotification(
+        "Database restored. Please reload the page to continue.",
+        type = "message", duration = NULL
+      )
+    }
+  })
 
   # -------------------------
   # Drive backup: on session end + daily timer (no per-action debounce)
@@ -1629,6 +1691,20 @@ server <- function(input, output, session) {
         tags$small("Restores the backup SQL database from Google Drive.")
       ),
 
+      # -------------- add way to amend SQL database with sheet from Google Drive. select tab from Google Drive from drop down and table in SQL database from drop down --------------
+      wellPanel(
+        h5("Amend SQL database with sheet from Google Drive"),
+        fluidRow(
+          column(6, selectInput("amend_sql_sheet", "Google Drive sheet", choices = googlesheets4::sheet_names(gs_backup_sheet_id())), selected = 'users'),
+          column(6, selectInput("amend_sql_table", "SQL table", choices = DBI::dbListTables(get_con())), selected = 'users'),
+          column(6, actionButton("amend_sql_btn", "Amend (overwrite!)", class = "btn-secondary", 
+            onclick = "if(!confirm('WARNING: This will OVERWRITE the selected SQL table with the selected Google Sheet data. Are you sure you want to continue?')){event.stopPropagation();}")
+          )
+        ),
+        tags$small("Amends the SQL database with the selected sheet from Google Drive. Never overwrite credentials column in SQL table users.")
+      ),
+
+
       wellPanel(
         h5("Grant flex passes (students can gain more)"),
         fluidRow(
@@ -1845,6 +1921,43 @@ server <- function(input, output, session) {
       stringsAsFactors = FALSE
     )
   }, rownames = FALSE)
+
+  observeEvent(input$amend_sql_btn, {
+    req(is_admin())
+    sheet <- input$amend_sql_sheet
+    table <- input$amend_sql_table
+    df    <- googlesheets4::read_sheet(gs_backup_sheet_id(), sheet = sheet)
+
+    if (table == "users") {
+      # Safe merge: add missing columns then update rows — never touch pw_hash or PRIMARY KEY
+      df <- dplyr::select(df, -dplyr::any_of("pw_hash"))
+      if (!"user_id" %in% names(df)) {
+        showNotification("Sheet must have a 'user_id' column to merge into users.", type = "error")
+        return()
+      }
+      existing_cols <- DBI::dbListFields(get_con(), "users")
+      new_cols      <- setdiff(names(df), existing_cols)
+      for (col in new_cols) {
+        try(db_exec(sprintf("ALTER TABLE users ADD COLUMN \"%s\" TEXT;", col)), silent = TRUE)
+        logf("Added column to users:", col)
+      }
+      update_cols <- setdiff(names(df), c("user_id", "pw_hash"))
+      for (i in seq_len(nrow(df))) {
+        uid <- as.character(df$user_id[i] %||% "")
+        if (!nzchar(uid)) next
+        for (col in update_cols) {
+          db_exec(sprintf("UPDATE users SET \"%s\" = ? WHERE user_id = ?;", col),
+            list(as.character(df[[col]][i] %||% ""), uid))
+        }
+      }
+      set_state()
+      showNotification(sprintf("users updated: %d rows, columns: %s",
+        nrow(df), paste(update_cols, collapse = ", ")), type = "message")
+    } else {
+      DBI::dbWriteTable(get_con(), table, df, overwrite = TRUE)
+      showNotification("SQL database amended.", type = "message")
+    }
+  })
 
   output$admin_export_table <- DT::renderDT({
     req(authed(), is_admin())
