@@ -112,6 +112,11 @@ init_olig <- function() {
     db_exec("ALTER TABLE olig_settings ADD COLUMN class_size INTEGER;"),
     error = function(e) NULL
   )
+  # contrib_cap: max flex passes a student can wager per bonus round (0 = no cap)
+  tryCatch(
+    db_exec("ALTER TABLE olig_settings ADD COLUMN contrib_cap REAL DEFAULT 0;"),
+    error = function(e) NULL
+  )
 
   # round audit
   db_exec("
@@ -196,7 +201,7 @@ olig_section <- function(olig) as.character(olig$section[1] %||% "")
 # Does the shared users table have a 'section' column?
 users_has_section_col <- function() {
   cols <- tryCatch(db_query("PRAGMA table_info(users);"), error = function(e) data.frame())
-  "section" %in% (cols$name %||% character(0))
+  "section" %in% (if (nrow(cols) > 0) cols$name else character(0))
 }
 
 # Distinct sections + enrolled counts from the users table
@@ -421,7 +426,7 @@ pd_pair_payoffs <- function(olig, subs) {
 bonus_shares <- function(olig, subs) {
   if (!nrow(subs)) return(tibble())
   m    <- as.numeric(olig$bonus_multiplier[1] %||% 1.5)
-  subs <- subs %>% mutate(contribute = ifelse(is.na(contribute) || is.null(contribute) || nzchar(contribute) == FALSE, 0, as.numeric(contribute)))
+  subs <- subs %>% mutate(contribute = ifelse(is.na(contribute) | !nzchar(as.character(contribute)), 0, as.numeric(contribute)))
   total <- sum(subs$contribute, na.rm = TRUE)
   pot   <- m * total
 
@@ -624,8 +629,12 @@ server <- function(input, output, session) {
         else
           "Pot divided among students who submit."
         tagList(
-          sliderInput("bonus_c", "Contribute flex passes",
-                      min = 0, max = max(0, floor(bal*2)/2), value = 0, step = 0.5),
+          {
+            cap <- as.numeric(o$contrib_cap[1] %||% 0)
+            eff_max <- if (is.finite(cap) && cap > 0) min(bal, cap) else bal
+            sliderInput("bonus_c", "Contribute flex passes",
+                        min = 0, max = max(0, floor(eff_max * 2) / 2), value = 0, step = 0.5)
+          },
           actionButton("submit_bonus", "Submit (debited immediately)", class = "btn-primary"),
           tags$small(sprintf("Multiplier m = %.2f. %s", as.numeric(o$bonus_multiplier[1]), cs_note))
         )
@@ -690,6 +699,10 @@ server <- function(input, output, session) {
     bal <- remaining_fp(user_id())
     if (c_val > bal + 1e-9) {
       showNotification("Not enough flex passes.", type = "error"); return()
+    }
+    cap <- as.numeric(o$contrib_cap[1] %||% 0)
+    if (is.finite(cap) && cap > 0 && c_val > cap + 1e-9) {
+      showNotification(sprintf("Contribution exceeds the cap of %.1f flex passes.", cap), type = "error"); return()
     }
 
     # Debit contribution immediately
@@ -922,6 +935,8 @@ server <- function(input, output, session) {
         h5("Game Parameters"),
         numericInput("adm_m", "Bonus multiplier m",
                      value = as.numeric(o$bonus_multiplier[1]), min = 1, step = 0.1),
+        numericInput("adm_contrib_cap", "Max flex passes students can wager (0 = no cap)",
+                     value = as.numeric(o$contrib_cap[1] %||% 0), min = 0, step = 0.5),
         numericInput("adm_pd_scale", "PD scale (flex passes per payoff point)",
                      value = as.numeric(o$pd_scale[1]), min = 0, step = 0.01),
         tags$hr(),
@@ -1021,7 +1036,7 @@ server <- function(input, output, session) {
     req(is_admin())
     db_exec("
       UPDATE olig_settings SET
-        bonus_multiplier=?, pd_scale=?,
+        bonus_multiplier=?, contrib_cap=?, pd_scale=?,
         pd_HH_A=?, pd_HH_B=?,
         pd_HL_A=?, pd_HL_B=?,
         pd_LH_A=?, pd_LH_B=?,
@@ -1029,7 +1044,7 @@ server <- function(input, output, session) {
         updated_at=CURRENT_TIMESTAMP
       WHERE id=1;
     ", list(
-      as.numeric(input$adm_m),     as.numeric(input$adm_pd_scale),
+      as.numeric(input$adm_m),     as.numeric(input$adm_contrib_cap), as.numeric(input$adm_pd_scale),
       as.numeric(input$pd_HH_A),   as.numeric(input$pd_HH_B),
       as.numeric(input$pd_HL_A),   as.numeric(input$pd_HL_B),
       as.numeric(input$pd_LH_A),   as.numeric(input$pd_LH_B),
