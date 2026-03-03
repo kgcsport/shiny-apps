@@ -127,6 +127,11 @@ backup_to_sheets <- function() {
   overwrite_ws(ss, "ledger", ledger_df)
   overwrite_ws(ss, "admin_export", export_df)
 
+  job_state_df <- db_query("SELECT * FROM job_state ORDER BY section, job;")
+  job_log_df   <- db_query("SELECT * FROM job_log   ORDER BY created_at DESC;")
+  overwrite_ws(ss, "job_state", job_state_df)
+  overwrite_ws(ss, "job_log",   job_log_df)
+
   invisible(TRUE)
 }
 
@@ -556,6 +561,31 @@ init_db <- function() {
     );
   ")
   db_exec("CREATE INDEX IF NOT EXISTS ix_rt_user ON resource_targets(user_id);")
+
+  # Job state for class-job-picker (shared DB)
+  db_exec("
+    CREATE TABLE IF NOT EXISTS job_state (
+      section      TEXT NOT NULL,
+      job          TEXT NOT NULL,
+      cycle_id     INTEGER DEFAULT 1,
+      bag_json     TEXT DEFAULT '[]',
+      last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (section, job)
+    );
+  ")
+  db_exec("
+    CREATE TABLE IF NOT EXISTS job_log (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      logged_date  TEXT,
+      section      TEXT,
+      job          TEXT,
+      display_name TEXT,
+      cycle_id     INTEGER DEFAULT 0,
+      created_at   TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  ")
+  db_exec("CREATE INDEX IF NOT EXISTS ix_job_log_section ON job_log(section);")
+  db_exec("CREATE INDEX IF NOT EXISTS ix_job_log_date    ON job_log(logged_date);")
 
   # Seed settings/state if missing
   nset <- db_query("SELECT COUNT(*) n FROM settings WHERE id=1;")$n[1]
