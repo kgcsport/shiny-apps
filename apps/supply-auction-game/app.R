@@ -478,7 +478,23 @@ login_ui <- function(msg = NULL) {
   )
 }
 
+VASSAR_CSS <- "
+  body { font-size: 16px; }
+  .btn-primary       { background-color: #951829; border-color: #7a1221; }
+  .btn-primary:hover { background-color: #7a1221; border-color: #5e0d19; }
+  .btn-success       { background-color: #2d6a4f; border-color: #245c43; }
+  .btn-success:hover { background-color: #245c43; border-color: #1b4d38; }
+  a { color: #951829; } a:hover { color: #7a1221; }
+  .shiny-notification-panel { top:16px; bottom:auto; right:16px; min-width:340px; width:auto; }
+  .shiny-notification { font-size:1.1rem; padding:1rem 1.25rem; border-radius:8px; border:none;
+    box-shadow:0 4px 20px rgba(0,0,0,.25); color:#fff; margin-bottom:8px; }
+  .shiny-notification-message { background:#2d6a4f; }
+  .shiny-notification-warning { background:#92400e; }
+  .shiny-notification-error   { background:#951829; }
+  .shiny-notification-close   { color:rgba(255,255,255,.8); font-size:1.2rem; }
+"
 ui <- fluidPage(
+  tags$head(tags$style(HTML(VASSAR_CSS))),
   tags$head(tags$style(HTML("
     .bigprice { font-size: 56px; font-weight: 800; }
     .muted { color: #666; }

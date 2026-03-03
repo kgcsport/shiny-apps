@@ -45,10 +45,11 @@ ui <- fluidPage(
       max-width: 820px;
       margin: 2.5rem auto;
       font-family: system-ui, -apple-system, sans-serif;
+      font-size: 18px;
       background: #fafafa;
     }
     .page-title {
-      font-size: 2rem;
+      font-size: 2.2rem;
       font-weight: 700;
       color: #951829;
       margin-bottom: 0.2rem;
@@ -56,10 +57,10 @@ ui <- fluidPage(
     .subtitle {
       color: #777;
       margin-bottom: 2rem;
-      font-size: 0.95rem;
+      font-size: 1rem;
     }
     .section-header {
-      font-size: 0.78rem;
+      font-size: 0.85rem;
       font-weight: 700;
       color: #951829;
       text-transform: uppercase;
@@ -71,11 +72,11 @@ ui <- fluidPage(
     .card {
       display: flex;
       align-items: center;
-      padding: .8rem 1.1rem;
+      padding: 1rem 1.25rem;
       background: #fff;
       border: 1px solid #e8e8e8;
       border-radius: 10px;
-      margin-bottom: .45rem;
+      margin-bottom: .5rem;
       transition: box-shadow .15s, border-color .15s;
     }
     .card:hover {
@@ -83,7 +84,7 @@ ui <- fluidPage(
       border-color: #951829;
     }
     .card a {
-      font-size: 1.05rem;
+      font-size: 1.15rem;
       text-decoration: none;
       color: #1a1a1a;
       flex: 1;
@@ -91,7 +92,7 @@ ui <- fluidPage(
     .card:hover a { color: #951829; }
     .arrow {
       color: #ccc;
-      font-size: 1rem;
+      font-size: 1.1rem;
       transition: color .15s, transform .15s;
     }
     .card:hover .arrow {
@@ -100,7 +101,7 @@ ui <- fluidPage(
     }
     .footer-note {
       color: #999;
-      font-size: .82rem;
+      font-size: .88rem;
       margin-top: 2.5rem;
     }
   "))),
