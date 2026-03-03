@@ -55,11 +55,17 @@ if (nzchar(cred_path)) tryCatch(gs4_auth(path = cred_path), error = function(e) 
 # ----------------------------
 # DEFAULT JOB LIST
 # ----------------------------
-DEFAULT_JOBS <- c(
-  "cold call", "last class summary",
+# Jobs that appear in the "Class jobs" draw panel
+DRAW_JOBS <- c(
+  "last class summary",
   "materials summary 1", "materials summary 2", "materials summary 3",
-  "note taker", "voluntary answer"
+  "note taker"
 )
+# Jobs tracked via their own tabs/manual entry — not in the main draw panel,
+# and NOT counted toward the "max commits" cap
+SPECIAL_JOBS <- c("cold call", "voluntary answer")
+# Full list seeded into job_state on startup
+DEFAULT_JOBS <- c(DRAW_JOBS, SPECIAL_JOBS)
 
 # ----------------------------
 # DB HELPER FUNCTIONS
@@ -159,14 +165,16 @@ compute_exclusions <- function(section_id, roster, max_commits = Inf) {
     list(as.character(section_id))
   )
 
+  # Materials summary rotation uses all regular job entries
   matsumm_log    <- lg[grepl("materials summary", lg$job, ignore.case = TRUE), ]
   matsumm_counts <- table(factor(matsumm_log$display_name, levels = roster))
   min_matsumm    <- if (length(matsumm_counts) > 0) min(matsumm_counts) else 0
   matsumm_excluded <- names(matsumm_counts[matsumm_counts > min_matsumm])
 
+  # Overcap counts all job entries (cold call and voluntary answer included)
   if (is.finite(max_commits) && max_commits > 0) {
     all_counts <- table(factor(lg$display_name, levels = roster))
-    overcap_excluded <- names(all_counts[all_counts > max_commits])
+    overcap_excluded <- names(all_counts[all_counts >= max_commits])
   } else {
     overcap_excluded <- character(0)
   }
@@ -398,6 +406,44 @@ reset_bag <- function(section_id) {
            list(as.character(section_id)))
 }
 
+# Import historical log from the Google Sheet into job_log.
+# Uses the original `ts` column as `created_at` so re-running is idempotent
+# (rows whose ts already exists in job_log are skipped).
+import_log_from_sheets <- function() {
+  if (!nzchar(SHEET_ID)) stop("CLASS_JOB_SHEET_ID not set")
+
+  gs_log <- read_sheet(SHEET_ID, sheet = "log", col_types = "cccccc")
+  # Expected columns: ts, date, section, job, name, cycle_id
+  if (nrow(gs_log) == 0) return(0L)
+
+  existing_ts <- jdb_query(
+    "SELECT created_at FROM job_log WHERE created_at IS NOT NULL"
+  )$created_at
+
+  new_rows <- gs_log[!as.character(gs_log$ts) %in% existing_ts, ]
+  if (nrow(new_rows) == 0) return(0L)
+
+  n <- 0L
+  for (i in seq_len(nrow(new_rows))) {
+    cycle_val <- suppressWarnings(as.integer(new_rows$cycle_id[i]))
+    if (is.na(cycle_val)) cycle_val <- 0L
+    tryCatch({
+      jdb_exec(
+        "INSERT INTO job_log(logged_date, section, job, display_name, cycle_id, created_at)
+         VALUES(?,?,?,?,?,?)",
+        list(as.character(new_rows$date[i]),
+             as.character(new_rows$section[i]),
+             as.character(new_rows$job[i]),
+             as.character(new_rows$name[i]),
+             cycle_val,
+             as.character(new_rows$ts[i]))
+      )
+      n <- n + 1L
+    }, error = function(e) NULL)
+  }
+  n
+}
+
 # ----------------------------
 # PASSWORD GATE
 # ----------------------------
@@ -465,7 +511,7 @@ app_ui <- tagList(
             fluidRow(style = "display: flex; flex-wrap: nowrap;",
               column(6,
                 checkboxGroupInput("jobs_selected", "Select job(s)",
-                                   choices = DEFAULT_JOBS, selected = DEFAULT_JOBS)
+                                   choices = DRAW_JOBS, selected = DRAW_JOBS)
               ),
               column(6,
                 div(
@@ -552,6 +598,7 @@ app_ui <- tagList(
             actionButton("admin_reset_bag",       "RESET bag (danger)"),
             actionButton("admin_rebuild_state",   "REBUILD state from log (danger)"),
             actionButton("admin_generate_summary","GENERATE summary table"),
+            actionButton("admin_import_log",      "Import log from Google Sheet"),
             hr(),
             wellPanel(
               h4("Manage jobs"),
@@ -651,8 +698,9 @@ server <- function(input, output, session) {
       error = function(e) data.frame(job = DEFAULT_JOBS)
     )
     if (nrow(jobs_df) > 0) {
+      draw_choices <- jobs_df$job[!tolower(jobs_df$job) %in% tolower(SPECIAL_JOBS)]
       updateCheckboxGroupInput(session, "jobs_selected",
-                               choices = jobs_df$job, selected = jobs_df$job)
+                               choices = draw_choices, selected = draw_choices)
       updateSelectInput(session, "man_job", choices = jobs_df$job)
     }
 
@@ -668,8 +716,9 @@ server <- function(input, output, session) {
       error = function(e) data.frame(job = DEFAULT_JOBS)
     )
     if (nrow(jobs_df) > 0) {
+      draw_choices <- jobs_df$job[!tolower(jobs_df$job) %in% tolower(SPECIAL_JOBS)]
       updateCheckboxGroupInput(session, "jobs_selected",
-                               choices = jobs_df$job, selected = jobs_df$job)
+                               choices = draw_choices, selected = draw_choices)
       updateSelectInput(session, "man_job", choices = jobs_df$job)
     }
   }, ignoreInit = TRUE)
@@ -882,12 +931,13 @@ server <- function(input, output, session) {
     jobs_df <- tryCatch(
       jdb_query("SELECT job FROM job_state WHERE section=? ORDER BY job",
                 list(as.character(input$section))),
-      error = function(e) data.frame(job = DEFAULT_JOBS)
+      error = function(e) data.frame(job = DRAW_JOBS)
     )
+    draw_choices <- jobs_df$job[!tolower(jobs_df$job) %in% tolower(SPECIAL_JOBS)]
     tagList(
       h4("Redraw (if absent)"),
       fluidRow(
-        selectInput("jobToRedraw", "Job to redraw", choices = jobs_df$job),
+        selectInput("jobToRedraw", "Job to redraw", choices = draw_choices),
         actionButton("redraw", "Redraw selected job")
       )
     )
@@ -986,6 +1036,20 @@ server <- function(input, output, session) {
     } else {
       showNotification("CLASS_JOB_SHEET_ID not set; cannot write summary.", type = "warning")
     }
+  })
+
+  # --- Admin: import log from Google Sheet ---
+  observeEvent(input$admin_import_log, {
+    n <- tryCatch(
+      import_log_from_sheets(),
+      error = function(e) {
+        showNotification(paste("Import failed:", conditionMessage(e)), type = "error")
+        NULL
+      }
+    )
+    if (!is.null(n))
+      showNotification(paste0("Imported ", n, " new log entries from Google Sheet."),
+                       type = "message")
   })
 
   # --- Admin: manage jobs ---
