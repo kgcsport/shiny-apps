@@ -957,8 +957,8 @@ server <- function(input, output, session) {
         actionButton("adm_clear", "Clear submissions (this round + section)", class = "btn-danger"),
         tags$small(
           "Switch Active Section when moving between class sections. ",
-          "Clearing removes only submissions for the current section; ",
-          "contribution debits stay in the ledger."
+          "Clearing removes submissions for the current section and reverses ",
+          "any bonus contribution debits from the ledger."
         )
       ),
 
@@ -1053,13 +1053,27 @@ server <- function(input, output, session) {
     o   <- get_olig()
     r   <- as.integer(o$current_round[1])
     sec <- olig_section(o)
+
+    # Reverse contribution debits before removing submissions, so student
+    # balances are restored as if the round never happened.
+    n_debits <- db_exec(
+      "DELETE FROM ledger
+       WHERE round=? AND purpose='oligopoly_contrib'
+         AND user_id IN (
+           SELECT user_id FROM olig_submissions
+           WHERE round=? AND (section=? OR section IS NULL)
+         );",
+      list(r, r, sec)
+    )
+
     db_exec(
       "DELETE FROM olig_submissions WHERE round=? AND (section=? OR section IS NULL);",
       list(r, sec)
     )
     touch_olig()
     showNotification(
-      sprintf("Cleared submissions for round %d, section '%s'. (Contribution debits remain in ledger.)", r, sec),
+      sprintf("Cleared submissions for round %d, section '%s'. Reversed %d contribution debit(s).",
+              r, sec, as.integer(n_debits)),
       type = "warning"
     )
   })
