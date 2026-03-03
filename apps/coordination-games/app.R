@@ -594,11 +594,15 @@ server <- function(input, output, session) {
   )
 
   # ---------------- Student UI ----------------
+  # Deliberately uses olig_poll() (game state only), NOT subs_poll().
+  # subs_poll fires whenever any classmate submits, which would re-render the
+  # sliderInput and reset it to value=0 mid-session. Game-state (round/status/
+  # game-type) changes come only from admin actions, so olig_poll is the right
+  # dependency here. student_result (below) uses subs_poll for live result display.
   output$student_ui <- renderUI({
     req(authed())
-    st  <- subs_poll()
-    o   <- st$olig
-    sec <- st$section
+    o   <- olig_poll()
+    sec <- olig_section(o)
 
     bal    <- remaining_fp(user_id())
     game   <- as.character(o$current_game[1])
@@ -643,9 +647,11 @@ server <- function(input, output, session) {
 
   observeEvent(input$submit_pd, {
     req(authed())
-    st <- subs_poll(); o <- st$olig; sec <- st$section
+    # Read game state fresh (not via subs_poll) to avoid a reactive dependency
+    # that could re-trigger the student UI render on every classmate submission.
+    o   <- get_olig()
+    sec <- olig_section(o)
 
-    # Explicit error messages so students know why a submission was rejected
     if (as.character(o$round_status[1]) != "open") {
       showNotification("Round is not open for submissions.", type = "error"); return()
     }
@@ -665,15 +671,17 @@ server <- function(input, output, session) {
       list(as.integer(o$current_round[1]), as.character(user_id()),
            as.character(name()), as.character(input$pd_action), sec)
     )
-    touch_olig()
+    # Do NOT call touch_olig() here. subs_poll detects new submissions via the
+    # COUNT query in its checkFunc. Calling touch_olig() would invalidate olig_poll
+    # which re-renders every connected student's form, bouncing their sliders to 0.
     showNotification("Submitted.", type = "message")
   })
 
   observeEvent(input$submit_bonus, {
     req(authed())
-    st <- subs_poll(); o <- st$olig; sec <- st$section
+    o   <- get_olig()
+    sec <- olig_section(o)
 
-    # Explicit error messages
     if (as.character(o$round_status[1]) != "open") {
       showNotification("Round is not open for submissions.", type = "error"); return()
     }
@@ -708,8 +716,17 @@ server <- function(input, output, session) {
       list(as.integer(o$current_round[1]), as.character(user_id()),
            as.character(name()), c_val, sec)
     )
-    touch_olig()
-    showNotification("Submitted. Your contribution was deducted immediately.", type = "message")
+
+    # Reset slider in-place without re-rendering the whole form.
+    # Do NOT call touch_olig() -- that would fire olig_poll for every connected
+    # client and bounce all their sliders back to 0.
+    new_bal <- remaining_fp(user_id())
+    updateSliderInput(session, "bonus_c", value = 0,
+                      max = max(0, floor(new_bal * 2) / 2))
+    showNotification(
+      sprintf("Submitted. Contributed %.1f flex pass(es); deducted immediately.", c_val),
+      type = "message"
+    )
   })
 
   output$student_result <- renderUI({
