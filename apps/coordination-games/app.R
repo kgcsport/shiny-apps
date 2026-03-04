@@ -19,10 +19,12 @@
 #
 # Key behavior:
 # - Students log in with existing flex-pass credentials.
-# - Bonus Pot: contribution is immediately DEBITED (purpose='oligopoly_contrib').
+# - Bonus Pot: students UPSERT their contribution while the round is open (no debit yet).
+#   When admin sets status → 'closed', contributions are DEBITED (purpose='oligopoly_contrib').
 #   On reveal each student in the section gets a CREDIT = pot / class_size
 #   (or / submitter count if class_size is 0/NULL), rounded to nearest 0.5.
 # - Price War (PD): no staking; payoff = pd_payoff_points * pd_scale, rounded 0.5.
+#   PD choices can also be changed while the round is open (upsert).
 #
 # Env vars:
 # - CONNECT_CONTENT_DIR (Posit) optional; otherwise uses getwd()
@@ -513,6 +515,33 @@ apply_payouts <- function(round, game) {
   list(ok = FALSE, msg = "Unknown game.")
 }
 
+# Debit bonus contributions that haven't been charged yet (idempotent).
+# Called when admin closes the round. Returns count of new debits posted.
+debit_pending_contributions <- function(round, sec) {
+  subs <- db_query(
+    "SELECT * FROM olig_submissions WHERE round=? AND game='bonus' AND (section=? OR section IS NULL);",
+    list(as.integer(round), sec)
+  )
+  debited <- 0L
+  for (i in seq_len(nrow(subs))) {
+    uid   <- subs$user_id[i]
+    c_val <- suppressWarnings(as.numeric(subs$contribute[i]))
+    if (!is.finite(c_val) || c_val <= 0) next
+    already <- db_query(
+      "SELECT COUNT(*) n FROM ledger WHERE user_id=? AND round=? AND purpose='oligopoly_contrib';",
+      list(uid, as.integer(round))
+    )$n[1]
+    if (as.integer(already) > 0) next
+    db_exec(
+      "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?, ?, 'oligopoly_contrib', ?, ?);",
+      list(uid, as.integer(round), c_val,
+           sprintf("coordination_bonus_contribution round=%d section=%s", as.integer(round), sec))
+    )
+    debited <- debited + 1L
+  }
+  debited
+}
+
 # -------------------------
 # Auth UI
 # -------------------------
@@ -680,8 +709,8 @@ server <- function(input, output, session) {
             sliderInput("bonus_c", "Contribute flex passes",
                         min = 0, max = max(0, floor(eff_max * 2) / 2), value = 0, step = 0.5)
           },
-          actionButton("submit_bonus", "Submit (debited immediately)", class = "btn-primary"),
-          tags$small(sprintf("Multiplier m = %.2f. %s", as.numeric(o$bonus_multiplier[1]), cs_note))
+          actionButton("submit_bonus", "Save contribution", class = "btn-primary"),
+          tags$small(sprintf("Multiplier m = %.2f. %s Contributions are debited when the round closes.", as.numeric(o$bonus_multiplier[1]), cs_note))
         )
       },
       tags$hr(),
@@ -711,12 +740,10 @@ server <- function(input, output, session) {
     if (!(input$pd_action %in% c("High", "Low"))) {
       showNotification("Please select High or Low.", type = "error"); return()
     }
-    if (already_submitted(o$current_round[1])) {
-      showNotification("You already submitted this round.", type = "warning"); return()
-    }
 
+    # Upsert -- allow re-submission while round is open
     db_exec(
-      "INSERT INTO olig_submissions(round, user_id, display_name, game, action, contribute, section)
+      "INSERT OR REPLACE INTO olig_submissions(round, user_id, display_name, game, action, contribute, section)
        VALUES(?, ?, ?, 'pd', ?, NULL, ?);",
       list(as.integer(o$current_round[1]), as.character(user_id()),
            as.character(name()), as.character(input$pd_action), sec)
@@ -724,7 +751,7 @@ server <- function(input, output, session) {
     # Do NOT call touch_olig() here. subs_poll detects new submissions via the
     # COUNT query in its checkFunc. Calling touch_olig() would invalidate olig_poll
     # which re-renders every connected student's form, bouncing their sliders to 0.
-    showNotification("Submitted.", type = "message")
+    showNotification("Choice saved. You can change it until the round closes.", type = "message")
   })
 
   observeEvent(input$submit_bonus, {
@@ -737,9 +764,6 @@ server <- function(input, output, session) {
     }
     if (as.character(o$current_game[1]) != "bonus") {
       showNotification("Current game is not Bonus Pot.", type = "error"); return()
-    }
-    if (already_submitted(o$current_round[1])) {
-      showNotification("You already submitted this round.", type = "warning"); return()
     }
 
     c_val <- round_to_half(as.numeric(input$bonus_c %||% 0))
@@ -754,31 +778,17 @@ server <- function(input, output, session) {
       showNotification(sprintf("Contribution exceeds the cap of %.1f flex passes.", cap), type = "error"); return()
     }
 
-    # Debit contribution immediately
-    if (c_val > 0) {
-      db_exec(
-        "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?, ?, 'oligopoly_contrib', ?, ?);",
-        list(as.character(user_id()), as.integer(o$current_round[1]), c_val,
-             sprintf("coordination_bonus_contribution round=%d section=%s",
-                     as.integer(o$current_round[1]), sec))
-      )
-    }
-
+    # Upsert -- no debit yet; debit happens when admin closes the round.
+    # Do NOT call touch_olig() -- that would fire olig_poll for every connected
+    # client and bounce all their sliders back to 0.
     db_exec(
-      "INSERT INTO olig_submissions(round, user_id, display_name, game, action, contribute, section)
+      "INSERT OR REPLACE INTO olig_submissions(round, user_id, display_name, game, action, contribute, section)
        VALUES(?, ?, ?, 'bonus', NULL, ?, ?);",
       list(as.integer(o$current_round[1]), as.character(user_id()),
            as.character(name()), c_val, sec)
     )
-
-    # Reset slider in-place without re-rendering the whole form.
-    # Do NOT call touch_olig() -- that would fire olig_poll for every connected
-    # client and bounce all their sliders back to 0.
-    new_bal <- remaining_fp(user_id())
-    updateSliderInput(session, "bonus_c", value = 0,
-                      max = max(0, floor(new_bal * 2) / 2))
     showNotification(
-      sprintf("Submitted. Contributed %.1f flex pass(es); deducted immediately.", c_val),
+      sprintf("Saved %.1f flex pass(es) as your contribution. You can change it until the round closes.", c_val),
       type = "message"
     )
   })
@@ -786,10 +796,31 @@ server <- function(input, output, session) {
   output$student_result <- renderUI({
     req(authed())
     st <- subs_poll(); o <- st$olig; subs <- st$subs
-    if (as.character(o$round_status[1]) != "revealed") {
+    status <- as.character(o$round_status[1])
+    game   <- as.character(o$current_game[1])
+
+    if (status != "revealed") {
+      my_sub <- subs %>% filter(user_id == !!user_id())
+      if (nrow(my_sub) > 0 && game == "bonus") {
+        c_saved <- suppressWarnings(as.numeric(my_sub$contribute[1]))
+        c_saved <- if (is.finite(c_saved)) c_saved else 0
+        return(tagList(
+          p(strong(sprintf("Saved contribution: %.1f flex pass(es).", c_saved))),
+          p(if (status == "open")
+              "You can update your contribution until the round closes."
+            else
+              "Round closed. Contributions are being debited.")
+        ))
+      }
+      if (nrow(my_sub) > 0 && game == "pd") {
+        return(tagList(
+          p(strong(sprintf("Saved choice: %s.", as.character(my_sub$action[1])))),
+          p(if (status == "open") "You can change your choice until the round closes."
+            else "Round closed.")
+        ))
+      }
       return(p("Results will appear after the instructor reveals the round."))
     }
-    game   <- as.character(o$current_game[1])
     my_sub <- subs %>% filter(user_id == !!user_id())
     if (!nrow(my_sub)) return(p("No submission recorded for you this round."))
 
@@ -1046,7 +1077,7 @@ server <- function(input, output, session) {
         actionButton("adm_payout", "Apply payouts to ledger (one-time per section)", class = "btn-success"),
         tags$small(
           "Credits students in the current section via purpose='grant' (negative amount). ",
-          "Bonus contributions were already debited on submission."
+          "Bonus contributions are debited when the round is closed."
         )
       ),
 
@@ -1093,6 +1124,18 @@ server <- function(input, output, session) {
               denom_lbl, input$adm_game, input$adm_status),
       type = "message"
     )
+
+    # When closing a bonus round, debit all pending contributions.
+    if (as.character(input$adm_status) == "closed" &&
+        as.character(input$adm_game) == "bonus") {
+      n_debited <- debit_pending_contributions(as.integer(input$adm_round), sec)
+      if (n_debited > 0) {
+        showNotification(
+          sprintf("Debited bonus contributions for %d student(s) in section '%s'.", n_debited, sec),
+          type = "message"
+        )
+      }
+    }
   })
 
   observeEvent(input$adm_clear, {
