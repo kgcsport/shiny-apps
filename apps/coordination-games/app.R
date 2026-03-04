@@ -571,7 +571,8 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE)
+  rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE,
+                       impersonate = FALSE, impersonate_uid = NULL, impersonate_name = NULL)
 
   output$authed <- reactive(rv$authed)
   outputOptions(output, "authed", suspendWhenHidden = FALSE)
@@ -595,8 +596,12 @@ server <- function(input, output, session) {
   })
 
   authed   <- reactive(rv$authed)
-  user_id  <- reactive(rv$user)
-  name     <- reactive(rv$name)
+  user_id  <- reactive({
+    if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_uid)) rv$impersonate_uid else rv$user
+  })
+  name     <- reactive({
+    if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_name)) rv$impersonate_name else rv$name
+  })
   is_admin <- reactive(rv$is_admin)
 
   # Poll shared state via olig_settings.updated_at
@@ -647,7 +652,11 @@ server <- function(input, output, session) {
 
     game_lbl <- if (game == "pd") "Price War (High vs Low)" else "Bonus Pot (Contribute flex passes)"
     tagList(
-      h4(sprintf("Logged in as: %s (%s)", user_id(), name())),
+      h4(sprintf("Logged in as: %s (%s)", rv$user, rv$name)),
+      if (isTRUE(rv$impersonate)) div(
+        style = "background:#92400e; color:#fff; padding:6px 12px; border-radius:6px; margin-bottom:8px;",
+        strong(sprintf("IMPERSONATING: %s (%s) — submissions recorded under this student", rv$impersonate_name, rv$impersonate_uid))
+      ),
       p(sprintf("Section: %s | Flex passes available: %.2f", sec, bal)),
       p(sprintf("Round %d | Game: %s | Status: %s",
                 as.integer(o$current_round[1]), game_lbl, status)),
@@ -938,6 +947,27 @@ server <- function(input, output, session) {
 
       tags$hr(),
 
+      if (isTRUE(rv$impersonate)) div(
+        style = "background:#92400e; color:#fff; padding:8px 16px; border-radius:6px; margin-bottom:12px;",
+        strong(sprintf("IMPERSONATING: %s (%s)", rv$impersonate_name, rv$impersonate_uid)),
+        " — Student tab actions (PD choice, bonus contribution) are attributed to this student."
+      ),
+
+      wellPanel(
+        h5("Impersonate student (act as any student)"),
+        p("As admin, simulate game participation as any student. The Student tab will show their view and all submissions are recorded under their identity."),
+        fluidRow(
+          column(6, selectInput("impersonate_select", "Student to impersonate",
+            choices = {
+              us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+              setNames(us$user_id, us$display_name)
+            }
+          )),
+          column(3, br(), actionButton("impersonate_start", "Start impersonating", class = "btn-warning")),
+          column(3, br(), actionButton("impersonate_stop",  "Stop impersonating",  class = "btn-secondary"))
+        )
+      ),
+
       # --- Round / Section / Status ---
       wellPanel(
         h5("Round + Section + Status"),
@@ -1159,6 +1189,29 @@ server <- function(input, output, session) {
     req(is_admin())
     res <- tryCatch(backup_db_to_drive(), error = function(e) list(ok = FALSE, msg = conditionMessage(e)))
     showNotification(res$msg, type = if (isTRUE(res$ok)) "message" else "error")
+  })
+
+  # ---------------- Impersonation ----------------
+  observeEvent(input$impersonate_start, {
+    req(is_admin(), input$impersonate_select)
+    uid <- as.character(input$impersonate_select)
+    row <- db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid))
+    if (!nrow(row)) { showNotification("User not found.", type = "error"); return() }
+    rv$impersonate      <- TRUE
+    rv$impersonate_uid  <- uid
+    rv$impersonate_name <- row$display_name[1]
+    showNotification(
+      sprintf("Now impersonating %s. Switch to Student tab to submit as them.", row$display_name[1]),
+      type = "warning"
+    )
+  })
+
+  observeEvent(input$impersonate_stop, {
+    req(is_admin())
+    rv$impersonate      <- FALSE
+    rv$impersonate_uid  <- NULL
+    rv$impersonate_name <- NULL
+    showNotification("Stopped impersonating.", type = "message")
   })
 
   session$onSessionEnded(function() {

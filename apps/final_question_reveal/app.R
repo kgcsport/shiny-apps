@@ -1087,7 +1087,8 @@ ui <- fluidPage(
 # -------------------------
 server <- function(input, output, session) {
 
-  rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE)
+  rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE,
+                       impersonate = FALSE, impersonate_uid = NULL, impersonate_name = NULL)
 
   # -------------------------
   # Emergency: broken DB modal (shown instead of normal UI if init_db detected corruption)
@@ -1190,8 +1191,12 @@ server <- function(input, output, session) {
 
 
   authed   <- reactive(rv$authed)
-  user_id  <- reactive(rv$user)
-  name     <- reactive(rv$name)
+  user_id  <- reactive({
+    if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_uid)) rv$impersonate_uid else rv$user
+  })
+  name     <- reactive({
+    if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_name)) rv$impersonate_name else rv$name
+  })
   is_admin <- reactive(rv$is_admin)
 
   # Live polling via game_state.updated_at
@@ -1221,6 +1226,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$pw_change_btn, {
     req(authed())
+    if (isTRUE(rv$impersonate)) {
+      showNotification("Stop impersonating before changing passwords.", type = "error"); return()
+    }
     old <- input$pw_old %||% ""
     new <- input$pw_new %||% ""
     new2 <- input$pw_new2 %||% ""
@@ -1284,7 +1292,14 @@ server <- function(input, output, session) {
 
   output$whoami <- renderUI({
     req(authed())
-    HTML(sprintf("<b>Logged in as:</b> %s (%s)", user_id(), name()))
+    base <- HTML(sprintf("<b>Logged in as:</b> %s (%s)", rv$user, rv$name))
+    if (isTRUE(rv$impersonate)) {
+      tagList(
+        base,
+        div(style = "background:#92400e; color:#fff; padding:6px 12px; border-radius:6px; margin-top:6px;",
+          strong(sprintf("IMPERSONATING: %s (%s) — Student tab shows this student's view", rv$impersonate_name, rv$impersonate_uid)))
+      )
+    } else base
   })
 
   output$student_status <- renderUI({
@@ -1674,6 +1689,27 @@ server <- function(input, output, session) {
       h4("Admin Controls"),
       tags$hr(),
 
+      if (isTRUE(rv$impersonate)) div(
+        style = "background:#92400e; color:#fff; padding:8px 16px; border-radius:6px; margin-bottom:12px;",
+        strong(sprintf("IMPERSONATING: %s (%s)", rv$impersonate_name, rv$impersonate_uid)),
+        " — Student tab actions are attributed to this student."
+      ),
+
+      wellPanel(
+        h5("Impersonate student (act as any student)"),
+        p("As admin, simulate actions as any student. The Student tab shows that student's view and all actions are attributed to them."),
+        fluidRow(
+          column(6, selectInput("impersonate_select", "Student to impersonate",
+            choices = {
+              us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+              setNames(us$user_id, us$display_name)
+            }
+          )),
+          column(3, br(), actionButton("impersonate_start", "Start impersonating", class = "btn-warning")),
+          column(3, br(), actionButton("impersonate_stop",  "Stop impersonating",  class = "btn-secondary"))
+        )
+      ),
+
       wellPanel(
         h5("Settings"),
         fluidRow(
@@ -1786,6 +1822,23 @@ server <- function(input, output, session) {
           column(3, br(), actionButton("do_grant", "Grant", class="btn-success"))
         ),
         tags$small("Grants are recorded as negative ledger amounts (credits).")
+      ),
+
+      wellPanel(
+        h5("Bulk flex pass grant / deduct"),
+        p("Select students and apply a uniform amount to each. Positive = grant more passes; negative = deduct."),
+        checkboxGroupInput("bulk_grant_users", "Students",
+          choices = {
+            us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+            setNames(us$user_id, us$display_name)
+          }
+        ),
+        fluidRow(
+          column(4, numericInput("bulk_grant_amt", "Amount per student (negative = deduct)",
+                                 value = 1, min = -100, max = 100, step = 0.5)),
+          column(4, br(), actionButton("do_bulk_grant", "Apply to selected", class = "btn-success"))
+        ),
+        tags$small("Each selected student receives this adjustment. Recorded in ledger with purpose 'grant'.")
       ),
 
       wellPanel(
@@ -2114,6 +2167,59 @@ server <- function(input, output, session) {
       readr::write_csv(df, file)
     }
   )
+
+  # ---------------- Impersonation ----------------
+  observeEvent(input$impersonate_start, {
+    req(is_admin(), input$impersonate_select)
+    uid <- as.character(input$impersonate_select)
+    row <- db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid))
+    if (!nrow(row)) { showNotification("User not found.", type = "error"); return() }
+    rv$impersonate      <- TRUE
+    rv$impersonate_uid  <- uid
+    rv$impersonate_name <- row$display_name[1]
+    showNotification(
+      sprintf("Now impersonating %s. Switch to Student tab to see their view.", row$display_name[1]),
+      type = "warning"
+    )
+  })
+
+  observeEvent(input$impersonate_stop, {
+    req(is_admin())
+    rv$impersonate      <- FALSE
+    rv$impersonate_uid  <- NULL
+    rv$impersonate_name <- NULL
+    showNotification("Stopped impersonating.", type = "message")
+  })
+
+  # ---------------- Bulk grant / deduct ----------------
+  observeEvent(input$do_bulk_grant, {
+    req(is_admin())
+    users_sel <- input$bulk_grant_users
+    if (!length(users_sel)) {
+      showNotification("No students selected.", type = "warning"); return()
+    }
+    amt <- suppressWarnings(as.numeric(input$bulk_grant_amt %||% 0))
+    if (!is.finite(amt) || amt == 0) {
+      showNotification("Amount must be nonzero.", type = "error"); return()
+    }
+    meta <- if (amt > 0) "admin_bulk_grant" else "admin_bulk_deduct"
+    for (uid in users_sel) {
+      db_exec("
+        INSERT INTO ledger(user_id, round, purpose, amount, meta)
+        VALUES(?, NULL, 'grant', ?, ?);
+      ", list(as.character(uid), -amt, meta))
+    }
+    set_state()
+    showNotification(
+      sprintf("%s %.2f pass(es) %s %d student(s).",
+        if (amt > 0) "Granted" else "Deducted",
+        abs(amt),
+        if (amt > 0) "to" else "from",
+        length(users_sel)
+      ),
+      type = "message"
+    )
+  })
 
   session$onSessionEnded(function() {
     # Synchronous backup on session end if DB changed
