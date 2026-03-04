@@ -1827,11 +1827,12 @@ server <- function(input, output, session) {
       wellPanel(
         h5("Bulk flex pass grant / deduct"),
         p("Select students and apply a uniform amount to each. Positive = grant more passes; negative = deduct."),
-        checkboxGroupInput("bulk_grant_users", "Students",
+        selectInput("bulk_grant_users", "Students",
           choices = {
             us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
             setNames(us$user_id, us$display_name)
-          }
+          },
+          multiple = TRUE
         ),
         fluidRow(
           column(4, numericInput("bulk_grant_amt", "Amount per student (negative = deduct)",
