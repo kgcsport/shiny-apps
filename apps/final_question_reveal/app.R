@@ -4,7 +4,7 @@
 #
 # Key rules:
 # - Students start with `initial_fp` flex passes, but can earn more via admin grants
-# - Flex purchase is rate-limited: 1 per 24 hours
+# - 24-hour extensions: no purchase cooldown; capped by count per pset (max_per_pset setting)
 # - Exam points can be purchased in integer units
 # - Collective question unlock cost rises by round using a schedule (editable)
 #
@@ -146,22 +146,30 @@ coerce_is_admin <- function(x) {
 # Questions (edit)
 # -------------------------
 QUESTIONS <- list(
-  HTML("<b>Q1</b><br>True/False/Uncertain: The economic cost and accounting cost of attending class are both zero."),
-  HTML("<b>Q2</b><br>True/False/Uncertain: You should always specialize in your absolute advantage."),
-  HTML("<b>Q3</b><br>An accountant pays $80,000 in explicit costs. She could earn $30,000 working elsewhere. Her total revenue is $95,000. Is she earnings an economic profit, economic loss, or breaking even? Explain."),
-  HTML("<b>Q4</b><br>Imagine the price of lattes increases. What happens to the quantity demanded and why?"),
-  HTML("<b>Q5</b><br>The demand for gasoline is relatively inelastic and supply is elastic. If the government imposes a small tax, who will bear the most burden? Buyers or sellers? Explain briefly."),
-  HTML("<b>Q6</b><br>True/False/Uncertain: Making the wealthy worse off the improve the condition of the poor is not Pareto efficient. Therefore we should not increase taxes on the wealthy."),
-  HTML("<b>Q7</b><br>A bakery hires workers. The first worker produces 200 loaves. The second worker increases output by 100 loaves. The third increases output by 60 loaves. What economic principle does this demonstrate?"),
-  HTML("<b>Q8</b><br>Suppose the demand for movie tickets is highly elastic. If theaters raise prices by 10%, what happens to total revenue? Explain."),
-  HTML("<b>Q9</b><br>For each statement, label it positive or normative and briefly explain:<b>a) 'Raising the minimum wage will reduce employment among teenagers.'<br>b) 'The government should raise the minimum wage to reduce inequality.'<br>c) 'Rent control decreases the quantity of housing supplied.'"),
-  HTML("<b>Q10</b><br>A factory emits pollution that harms nearby residents. Is the market equilibrium socially efficient? If not, name a policy that could improve efficiency and briefly explain why."),
-  HTML("<b>Q11</b><br>True, false, uncertain: A firm's marginal revenue is equal to the price they charge for all their goods."),
-  HTML("<b>Q12</b><br>You notice that a fish market's sellers charge different prices to different buyers. Is this firm operating in perfect competition?"),
-  HTML("<b>Q13</b><br>Generic pharmaceuticals are drugs manufactured after patents expire to compete with the original patent holder. Is this market perfectly competitive, monopolistically competitive, an oligopoly, or a monopoly?"),
-  HTML("<b>Q14</b><br>Suppose the most you would be willing to pay for a plane ticket home is $250. If you buy one for $175, what is your economic surplus?"),
-  HTML("<b>Q15</b><br>Assume that all firms in this industry have identical cost curves, and that the market is perfectly competitive. The minimum of average total cost is $5. What is the long run equilibrium price?"),
-  HTML("<b>Q16</b><br>Determine whether each of the following goods is rival or excludable:<br>a) a free public lecture held in a university lecture hall<br>b) a public park<br>c) bicycles available to rent to travel around a city<br>d) a forest used by people to collect firewood")
+  HTML("<b>Q1.</b><br>True/False/Uncertain: The economic cost and accounting cost of attending class are both zero."),
+  HTML("<b>Q2.</b> True/False/Uncertain: People should specialize in the good for which they have an absolute advantage."),
+  HTML("<b>Q3.</b> An accountant pays $80,000 in explicit costs and could earn $30,000 working elsewhere. Her total revenue is $95,000. Is she earning an economic profit, an economic loss, or breaking even? Briefly explain."),
+  HTML("<b>Q4.</b> Suppose the price of lattes increases while all else remains constant. What happens to the <i>quantity demanded</i>? Explain briefly using the law of demand."),
+  HTML("<b>Q5.</b> The demand for gasoline is relatively inelastic and supply is relatively elastic. If the government imposes a small tax, who bears most of the tax burden—buyers or sellers? Briefly explain."),
+  HTML("<b>Q6.</b> True/False/Uncertain: Making the wealthy worse off to improve the condition of the poor is not Pareto efficient. Therefore, we should not increase taxes on the wealthy."),
+  HTML("<b>Q7.</b> A bakery hires workers. The first worker produces 200 loaves. The second worker increases output by 100 loaves. The third increases output by 60 loaves. What economic principle does this demonstrate?"),
+  HTML("<b>Q8.</b> Suppose demand for movie tickets is elastic. If theaters raise prices by 10%, what happens to total revenue? Briefly explain."),
+  HTML("<b>Q9.</b> For each statement, label it <i>positive</i> or <i>normative</i> and briefly explain:<br> a) 'Raising the minimum wage will reduce employment among teenagers.'<br> b) 'The government should raise the minimum wage to reduce inequality.'<br> c) 'Rent control decreases the quantity of housing supplied.'"),
+  HTML("<b>Q10.</b> A factory emits pollution that harms nearby residents. Is the market equilibrium socially efficient? If not, name one policy that could improve efficiency and briefly explain why."),
+  HTML("<b>Q11.</b> True/False/Uncertain: A firm's marginal revenue is equal to the price for every unit it sells."),
+  HTML("<b>Q12.</b> You notice that sellers at a fish market charge different prices to different buyers. Is this market operating under perfect competition? Briefly explain."),
+  HTML("<b>Q13.</b> After patents expire, many firms produce chemically identical generic drugs. Which market structure best describes this industry: perfect competition, monopolistic competition, oligopoly, or monopoly? Briefly justify."),
+  HTML("<b>Q14.</b> Suppose the most you would be willing to pay for a plane ticket home is $250. If you buy one for $175, what is your consumer surplus (in dollars)?"),
+  HTML("<b>Q15.</b> Assume all firms have identical cost curves and the market is perfectly competitive. The minimum of average total cost is $5. What is the long-run equilibrium price?"),
+  HTML("<b>Q16.</b> For each good, state whether it is <i>rival</i> and whether it is <i>excludable</i>:<br> a) A free public lecture held in a university lecture hall<br> b) A public park<br> c) Bicycles available to rent around a city<br> d) A forest used by people to collect firewood"),
+  HTML("<b>Q17.</b> The government shifts a tax on the sale of cars from car buyers to car manufacturers. Will this save car buyers money <i>in equilibrium</i>? Briefly explain."),
+  HTML("<b>Q18.</b> For each event below, state whether the <b>demand for new cars</b> shifts right, shifts left, or does not shift. Give a one-sentence reason:<br> a) ____________________<br> b) ____________________<br> c) ____________________"),
+  HTML("<b>Q19.</b> A movie ticket price rises from $10 to $20 and sales fall from 80 to 40. Using the midpoint method, compute the price elasticity of demand and state what happens to total revenue. Show your work."),
+  HTML("<b>Q20.</b> Lia's marginal rate of substitution (MRS) of tea for coffee is 3 (she'd give up 3 teas for 1 coffee). Coffee costs $4 and tea costs $2. Is Lia at her utility-maximizing bundle? If not, what should she do? Explain in 2–3 sentences."),
+  HTML("<b>Q21.</b> A firm has fixed costs of $60. At Q = 4, average variable cost is $9. What is average total cost at Q = 4? Show your reasoning."),
+  HTML("<b>Q22.</b> A firm has fixed costs of $80. Total revenue is $90 and variable costs are $110. Should it operate or shut down in the short run? Compare the loss under each option and state the shutdown rule."),
+  HTML("<b>Q23.</b> A competitive firm faces P = $22. At Q = 7, MC = $22; at Q = 8, MC = $26. Should the firm produce an 8th unit? Briefly justify."),
+  HTML("<b>Q24.</b> True/False/Uncertain: After a patent expires and other firms enter the market, total surplus will rise.")
 )
 
 render_unlocked_questions <- function(n_unlocked) {
@@ -499,7 +507,8 @@ init_db <- function() {
       exam_point_cost REAL,
       question_cost_schedule TEXT,
       shortfall_policy TEXT,
-      roundless_mode INTEGER DEFAULT 0
+      roundless_mode INTEGER DEFAULT 0,
+      max_per_pset REAL DEFAULT 3
     );
   ")
 
@@ -507,6 +516,8 @@ init_db <- function() {
   try(db_exec("ALTER TABLE settings ADD COLUMN roundless_mode INTEGER DEFAULT 0;"), silent = TRUE)
   try(db_exec("ALTER TABLE settings ADD COLUMN exam_names TEXT;"), silent = TRUE)
   try(db_exec("ALTER TABLE settings ADD COLUMN pset_names TEXT;"), silent = TRUE)
+  # add delay for older DBs
+  try(db_exec("ALTER TABLE settings ADD COLUMN max_per_pset REAL DEFAULT 3;"), silent = TRUE)
 
   # Game state (single row)
   db_exec("
@@ -842,12 +853,11 @@ compute_unlocks <- function(round, carryover, cost) {
   list(pledged = pledged, effective = eff, units = as.integer(units), carry = as.numeric(carry))
 }
 
-# Flex purchase: once per 24 hours
-eligible_for_flex <- function(uid) {
-  last <- db_query("SELECT MAX(created_at) AS t FROM ledger WHERE user_id=? AND purpose='flex';", list(uid))$t[1]
-  if (is.na(last) || !nzchar(last)) return(TRUE)
-  dt <- difftime(Sys.time(), as.POSIXct(last, tz="UTC"), units = "hours")
-  isTRUE(dt >= 24)
+# Count of flex extensions already declared for a specific pset
+flex_count_for_pset <- function(uid, pset) {
+  db_query(
+    "SELECT COALESCE(quantity, 0) AS n FROM resource_targets WHERE user_id=? AND resource_type='flex' AND target=?;",
+    list(uid, pset))$n[1] %||% 0L
 }
 
 student_allocation_summary <- function(uid) {
@@ -1311,7 +1321,7 @@ server <- function(input, output, session) {
     ws <- compute_unlocks(pr, st$carryover[1], cost)
 
     tagList(
-      p(sprintf("You start with %.2f flex passes (and can earn more). You may pledge them to help unlock access to potential exam questions for everyone, purchase bonus points on the final exam, or get an extension of 24 hours on a problem set. Any exam questions purchased with flex passes will have a 50 percent chance of appearing on the next exam and is worth 5 (out of 100) points on the exam. You have %.2f remaining (excluding any open pledge).",
+      p(sprintf("You start with %.2f flex passes (and can earn more). You may pledge them to help unlock access to potential exam questions for everyone, purchase bonus points on the final exam, or get a 24-hour extension on a problem set. Any exam questions purchased with flex passes will have a 50 percent chance of appearing on the next exam and is worth 5 (out of 100) points on the exam. You have %.2f remaining (excluding any open pledge).",
                 as.numeric(s$initial_fp[1]), student_allocation_summary(user_id())$remaining)),
       p(sprintf("Pledging open: %s", ifelse(as.integer(st$round_open[1]) == 1, "YES", "NO"))),
       p(sprintf("Current question index: %d | Cost to unlock next question: %.2f (schedule: %s)",
@@ -1463,9 +1473,9 @@ server <- function(input, output, session) {
 
   output$my_extensions_table <- renderTable({
     req(authed()); state_poll()
-    db_query("SELECT target AS 'Problem set', created_at AS 'Declared at'
+    db_query("SELECT target AS 'Problem set', quantity AS 'Extensions', updated_at AS 'Last declared'
               FROM resource_targets WHERE user_id=? AND resource_type='flex'
-              ORDER BY created_at;", list(user_id()))
+              ORDER BY updated_at;", list(user_id()))
   }, rownames=FALSE)
 
   output$my_exam_pts_table <- renderTable({
@@ -1477,6 +1487,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$use_flex_submit, {
     req(authed())
+    s <- get_settings()
     alloc <- student_allocation_summary(user_id())
     flex_purchased <- as.integer(alloc$spent_flex %||% 0)
     flex_used <- db_query(
@@ -1487,10 +1498,22 @@ server <- function(input, output, session) {
     }
     pset <- as.character(input$use_flex_pset %||% "")
     if (!nzchar(pset)) { showNotification("Select a problem set.", type="error"); return() }
+
+    # Enforce per-pset cap
+    max_pp <- suppressWarnings(as.numeric(s$max_per_pset[1]))
+    if (!is.finite(max_pp) || max_pp <= 0) max_pp <- Inf
+    pset_count <- as.integer(flex_count_for_pset(user_id(), pset) %||% 0L)
+    if (pset_count >= max_pp) {
+      showNotification(sprintf("You have already used the maximum (%d) extensions for %s.", as.integer(max_pp), pset), type="error")
+      return()
+    }
+
     db_exec("
       INSERT INTO resource_targets(user_id, resource_type, target, quantity, updated_at)
       VALUES(?, 'flex', ?, 1, CURRENT_TIMESTAMP)
-      ON CONFLICT(user_id, resource_type, target) DO UPDATE SET updated_at=CURRENT_TIMESTAMP;
+      ON CONFLICT(user_id, resource_type, target) DO UPDATE SET
+        quantity   = resource_targets.quantity + 1,
+        updated_at = CURRENT_TIMESTAMP;
     ", list(user_id(), pset))
     set_state()
     showNotification(sprintf("Extension declared for %s.", pset), type="message")
@@ -1565,12 +1588,9 @@ server <- function(input, output, session) {
     }
 
     if (typ == "flex") {
-      # One extension per 24 hours; interpret amt as count and require exactly 1
+      # Interpret amt as count; require exactly 1 per purchase
       if (abs(amt - 1) > 1e-9) {
         showNotification("24-hour extension must be purchased as exactly 1.", type="error"); return()
-      }
-      if (!eligible_for_flex(user_id())) {
-        showNotification("You can only buy one 24-hour extension every 24 hours.", type="error"); return()
       }
 
       cost <- suppressWarnings(as.numeric(s$flex_cost[1]))
@@ -1583,7 +1603,7 @@ server <- function(input, output, session) {
       db_exec("
         INSERT INTO ledger(user_id, round, purpose, amount, meta)
         VALUES(?, NULL, 'flex', ?, ?);
-      ", list(user_id(), cost, '24h_extension'))
+      ", list(user_id(), cost, 'extension'))
 
       set_state()
       showNotification("24-hour extension purchased.", type="message")
@@ -1720,7 +1740,7 @@ server <- function(input, output, session) {
                                 selected = as.character(s$shortfall_policy[1])))
         ),
         fluidRow(
-          column(4, numericInput("cfg_flex_cost", "Extension cost (flex passes)", value = as.numeric(s$flex_cost[1]), min = 0)),
+          column(4, numericInput("cfg_flex_cost", "Extension cost (passes each)", value = as.numeric(s$flex_cost[1]), min = 0)),
           column(4, numericInput("cfg_exam_cost", "Exam point cost (flex passes)", value = as.numeric(s$exam_point_cost[1]), min = 0)),
           column(4, textInput("cfg_sched",
                               "Question cost schedule — comma list (12,20,30) or formula in c (e.g. 11+c^2)",
@@ -1737,9 +1757,10 @@ server <- function(input, output, session) {
           )
         ),
         fluidRow(
-          column(6, textInput("cfg_exam_names", "Exam names (comma-separated)",
+          column(4, numericInput("cfg_max_per_pset", "Max extensions per pset", value = as.numeric(s$max_per_pset[1]), min = 0)),
+          column(4, textInput("cfg_exam_names", "Exam names (comma-separated)",
                               value = as.character(s$exam_names[1] %||% "Midterm 1,Midterm 2,Final"))),
-          column(6, textInput("cfg_pset_names", "Problem set names (comma-separated)",
+          column(4, textInput("cfg_pset_names", "Problem set names (comma-separated)",
                               value = as.character(s$pset_names[1] %||% "PS1,PS2,PS3,PS4,PS5")))
         ),
         actionButton("apply_settings", "Apply settings", class="btn-secondary")
@@ -1912,7 +1933,8 @@ server <- function(input, output, session) {
       shortfall_policy = as.character(input$cfg_shortfall),
       roundless_mode = as.integer(isTRUE(input$cfg_roundless)),
       exam_names = as.character(input$cfg_exam_names %||% ""),
-      pset_names = as.character(input$cfg_pset_names %||% "")
+      pset_names = as.character(input$cfg_pset_names %||% ""),
+      max_per_pset = as.numeric(input$cfg_max_per_pset)
     )
 
     # If enabling roundless, open round and normalize state + clear stray pledge rounds
