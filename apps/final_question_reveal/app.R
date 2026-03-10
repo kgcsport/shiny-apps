@@ -855,9 +855,10 @@ compute_unlocks <- function(round, carryover, cost) {
 
 # Count of flex extensions already declared for a specific pset
 flex_count_for_pset <- function(uid, pset) {
-  db_query(
+  n <- db_query(
     "SELECT COALESCE(quantity, 0) AS n FROM resource_targets WHERE user_id=? AND resource_type='flex' AND target=?;",
-    list(uid, pset))$n[1] %||% 0L
+    list(uid, pset))$n[1]
+  if (!length(n) || is.na(n)) 0L else as.integer(n)
 }
 
 student_allocation_summary <- function(uid) {
