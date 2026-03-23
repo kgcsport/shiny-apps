@@ -159,13 +159,36 @@ QUESTIONS <- list(
   HTML("<b>Q16</b><br>Determine whether each of the following goods is rival or excludable:<br>a) a free public lecture held in a university lecture hall<br>b) a public park<br>c) bicycles available to rent to travel around a city<br>d) a forest used by people to collect firewood")
 )
 
-render_unlocked_questions <- function(n_unlocked) {
+render_unlocked_questions <- function(n_unlocked, questions = QUESTIONS) {
   if (!is.finite(n_unlocked) || n_unlocked <= 0) return(NULL)
-  idx <- seq_len(min(as.integer(n_unlocked), length(QUESTIONS)))
+  idx <- seq_len(min(as.integer(n_unlocked), length(questions)))
   tagList(
     h5(if (length(idx) == 1) "Unlocked Question" else sprintf("Unlocked Questions (%d)", length(idx))),
-    lapply(rev(idx), function(i) wellPanel(div(style="font-size:1.1em; line-height:1.45;", QUESTIONS[[i]])))
+    lapply(rev(idx), function(i) wellPanel(div(style="font-size:1.1em; line-height:1.45;", questions[[i]])))
   )
+}
+
+# Load questions from DB for a given exam id; falls back to built-in QUESTIONS list
+get_exam_questions <- function(exam_id) {
+  if (!nzchar(exam_id %||% "")) return(QUESTIONS)
+  rows <- tryCatch(
+    db_query(
+      "SELECT question_html FROM exam_questions WHERE exam_id=? ORDER BY question_num;",
+      list(exam_id)
+    ),
+    error = function(e) data.frame()
+  )
+  if (!nrow(rows)) return(QUESTIONS)
+  lapply(rows$question_html, HTML)
+}
+
+# Distinct exam ids that have questions loaded in the DB
+list_exams_with_questions <- function() {
+  ids <- tryCatch(
+    db_query("SELECT DISTINCT exam_id FROM exam_questions ORDER BY exam_id;")$exam_id,
+    error = function(e) character(0)
+  )
+  if (!length(ids)) character(0) else ids
 }
 
 # -------------------------
@@ -501,6 +524,19 @@ init_db <- function() {
       updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
     );
   ")
+  # Migrate: active exam column (which exam set is currently in use)
+  try(db_exec("ALTER TABLE game_state ADD COLUMN active_exam TEXT DEFAULT 'exam1';"), silent = TRUE)
+
+  # Exam questions bank: one row per question per exam
+  db_exec("
+    CREATE TABLE IF NOT EXISTS exam_questions (
+      exam_id      TEXT NOT NULL,
+      question_num INTEGER NOT NULL,
+      question_html TEXT NOT NULL,
+      created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (exam_id, question_num)
+    );
+  ")
 
   # Pledges (allocations for questions; charged only on close)
   db_exec("
@@ -555,8 +591,8 @@ init_db <- function() {
 
   ngs <- db_query("SELECT COUNT(*) n FROM game_state WHERE id=1;")$n[1]
   if (is.na(ngs) || ngs == 0) {
-    db_exec("INSERT INTO game_state(id, round, round_open, carryover, unlocked_questions)
-             VALUES(1, 1, 0, 0, 0);")
+    db_exec("INSERT INTO game_state(id, round, round_open, carryover, unlocked_questions, active_exam)
+             VALUES(1, 1, 0, 0, 0, 'exam1');")
   }
 
   # Upsert roster from CRED (seed pw_hash if missing; always update admin flag & name)
@@ -1166,8 +1202,11 @@ server <- function(input, output, session) {
     pr  <- pledge_bucket_round(st, s)
     cost <- question_cost_for_round(idx, s$question_cost_schedule[1])
     ws <- compute_unlocks(pr, st$carryover[1], cost)
+    active_exam_id <- as.character(st$active_exam[1] %||% "exam1")
+    questions <- get_exam_questions(active_exam_id)
 
     tagList(
+      p(sprintf("Active exam: %s", active_exam_id)),
       p(sprintf("You start with %.2f flex passes (and can earn more). You may pledge them to help unlock access to potential exam questions for everyone, purchase bonus points on the final exam, or get an extension of 24 hours on a problem set. Any exam questions purchased with flex passes will have a 50 percent chance of appearing on the next exam and is worth 5 (out of 100) points on the exam. You have %.2f remaining (excluding any open pledge).",
                 as.numeric(s$initial_fp[1]), student_allocation_summary(user_id())$remaining)),
       p(sprintf("Pledging open: %s", ifelse(as.integer(st$round_open[1]) == 1, "YES", "NO"))),
@@ -1177,7 +1216,8 @@ server <- function(input, output, session) {
       p(sprintf("Pledged currently: %.2f | Effective (pledged + carry): %.2f | Unlocks if closed now: %d",
                 ws$pledged, ws$effective, ws$units)),
       p(sprintf("Unlocked so far: %d", as.integer(st$unlocked_questions[1]))),
-      if (as.integer(st$unlocked_questions[1]) > 0) render_unlocked_questions(as.integer(st$unlocked_questions[1]))
+      if (as.integer(st$unlocked_questions[1]) > 0)
+        render_unlocked_questions(as.integer(st$unlocked_questions[1]), questions)
     )
   })
 
@@ -1519,15 +1559,19 @@ server <- function(input, output, session) {
     pr  <- pledge_bucket_round(st, s)
     cost <- question_cost_for_round(idx, s$question_cost_schedule[1])
     ws <- compute_unlocks(pr, st$carryover[1], cost)
+    active_exam_id <- as.character(st$active_exam[1] %||% "exam1")
+    questions <- get_exam_questions(active_exam_id)
 
     fluidPage(
       h3("Class Progress"),
+      p(sprintf("Active exam: %s", active_exam_id)),
       p(sprintf("Question index: %d | Unlocked: %d | Carryover: %.2f",
                 idx, st$unlocked_questions[1], st$carryover[1])),
       p(sprintf("Pledged currently: %.2f | Effective: %.2f | Cost now: %.2f | Unlocks if closed now: %d",
                 ws$pledged, ws$effective, cost, ws$units)),
       tags$hr(),
-      if (as.integer(st$unlocked_questions[1]) > 0) render_unlocked_questions(as.integer(st$unlocked_questions[1]))
+      if (as.integer(st$unlocked_questions[1]) > 0)
+        render_unlocked_questions(as.integer(st$unlocked_questions[1]), questions)
     )
   })
 
@@ -1582,8 +1626,49 @@ server <- function(input, output, session) {
       ),
 
       wellPanel(
+        h5("Exam management"),
+        {
+          active_exam_id <- as.character(st$active_exam[1] %||% "exam1")
+          db_exams <- list_exams_with_questions()
+          all_exam_choices <- unique(c(db_exams, active_exam_id))
+          all_exam_choices <- all_exam_choices[nzchar(all_exam_choices)]
+          if (!length(all_exam_choices)) all_exam_choices <- "exam1"
+
+          tagList(
+            p(sprintf("Active exam: %s", active_exam_id)),
+            div(style = "background:#fff3cd; border:1px solid #ffc107; padding:8px; margin-bottom:8px; border-radius:4px; font-size:0.9em;",
+              tags$strong("Note:"), " Switching exam resets round to 1, clears unlocked questions and carryover, and closes pledging."
+            ),
+            fluidRow(
+              column(4,
+                selectInput("adm_active_exam", "Switch to exam",
+                            choices = all_exam_choices, selected = active_exam_id)
+              ),
+              column(4, br(),
+                actionButton("adm_switch_exam", "Switch exam", class = "btn-warning")
+              )
+            ),
+            tags$hr(),
+            h6("Upload questions for an exam"),
+            p(tags$small("CSV must have a ", tags$code("question"), " column (HTML allowed). Optional ",
+              tags$code("question_num"), " column; if absent, rows are numbered in order.")),
+            fluidRow(
+              column(3, textInput("upload_exam_id", "Exam ID", placeholder = "e.g. exam1")),
+              column(5, fileInput("upload_questions_csv", "Questions CSV", accept = ".csv"))
+            ),
+            actionButton("do_upload_questions", "Upload questions", class = "btn-secondary"),
+            tags$br(), tags$br(),
+            h6(sprintf("Current questions for active exam (%s)", active_exam_id)),
+            tableOutput("admin_exam_questions_table"),
+            downloadButton("dl_exam_questions", "Download current exam questions (CSV)")
+          )
+        }
+      ),
+
+      wellPanel(
         h5("Round controls"),
-        p(sprintf("Pledging open: %s | Question index: %d | Cost now: %.2f",
+        p(sprintf("Active exam: %s | Pledging open: %s | Question index: %d | Cost now: %.2f",
+                  as.character(st$active_exam[1] %||% "exam1"),
                   ifelse(as.integer(st$round_open[1]) == 1, "YES", "NO"), idx, cost)),
         fluidRow(
           column(3, actionButton("open_round", "Open round", class="btn-success")),
@@ -1872,6 +1957,110 @@ server <- function(input, output, session) {
     filename = function() "ledger.csv",
     content = function(file) {
       df <- db_query("SELECT * FROM ledger ORDER BY datetime(created_at) DESC;")
+      readr::write_csv(df, file)
+    }
+  )
+
+  # ---------------- Exam management ----------------
+
+  observeEvent(input$adm_switch_exam, {
+    req(is_admin())
+    exam_id <- trimws(as.character(input$adm_active_exam %||% ""))
+    if (!nzchar(exam_id)) { showNotification("Select an exam first.", type = "error"); return() }
+    db_exec(
+      "UPDATE game_state SET active_exam=?, round=1, round_open=0, carryover=0, unlocked_questions=0,
+       updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+      list(exam_id)
+    )
+    showNotification(
+      sprintf("Switched to exam '%s'. Round reset to 1, unlocked questions and carryover cleared.", exam_id),
+      type = "message"
+    )
+  })
+
+  observeEvent(input$do_upload_questions, {
+    req(is_admin())
+    exam_id <- trimws(as.character(input$upload_exam_id %||% ""))
+    if (!nzchar(exam_id)) { showNotification("Enter an exam ID.", type = "error"); return() }
+
+    fi <- input$upload_questions_csv
+    if (is.null(fi)) { showNotification("Select a CSV file.", type = "error"); return() }
+
+    df <- tryCatch(
+      readr::read_csv(fi$datapath, show_col_types = FALSE),
+      error = function(e) {
+        showNotification(paste("CSV read failed:", conditionMessage(e)), type = "error")
+        NULL
+      }
+    )
+    if (is.null(df)) return()
+
+    # Accept 'question_html' or 'question' column
+    qcol <- intersect(c("question_html", "question"), names(df))
+    if (!length(qcol)) {
+      showNotification("CSV must have a 'question' or 'question_html' column.", type = "error")
+      return()
+    }
+    qcol <- qcol[1]
+
+    nums <- if ("question_num" %in% names(df)) {
+      suppressWarnings(as.integer(df$question_num))
+    } else {
+      seq_len(nrow(df))
+    }
+    texts <- as.character(df[[qcol]])
+    valid <- !is.na(texts) & nzchar(texts) & !is.na(nums)
+
+    if (!any(valid)) {
+      showNotification("No valid questions found in CSV.", type = "error")
+      return()
+    }
+
+    db_exec("DELETE FROM exam_questions WHERE exam_id=?;", list(exam_id))
+    for (i in which(valid)) {
+      db_exec(
+        "INSERT INTO exam_questions(exam_id, question_num, question_html) VALUES(?,?,?);",
+        list(exam_id, as.integer(nums[i]), texts[i])
+      )
+    }
+    set_state()
+    showNotification(
+      sprintf("Uploaded %d question(s) for exam '%s'.", sum(valid), exam_id),
+      type = "message"
+    )
+  })
+
+  output$admin_exam_questions_table <- renderTable({
+    req(authed(), is_admin())
+    state_poll()
+    st <- get_state()
+    exam_id <- as.character(st$active_exam[1] %||% "exam1")
+    df <- db_query(
+      "SELECT question_num AS '#', question_html AS 'Question' FROM exam_questions WHERE exam_id=? ORDER BY question_num;",
+      list(exam_id)
+    )
+    if (!nrow(df)) return(data.frame(Note = "No questions uploaded — using built-in question bank."))
+    df
+  }, rownames = FALSE, sanitize.text.function = identity)
+
+  output$dl_exam_questions <- downloadHandler(
+    filename = function() {
+      st <- get_state()
+      sprintf("questions_%s.csv", as.character(st$active_exam[1] %||% "exam"))
+    },
+    content = function(file) {
+      st <- get_state()
+      exam_id <- as.character(st$active_exam[1] %||% "exam1")
+      df <- db_query(
+        "SELECT question_num, question_html FROM exam_questions WHERE exam_id=? ORDER BY question_num;",
+        list(exam_id)
+      )
+      if (!nrow(df)) {
+        df <- tibble::tibble(
+          question_num  = seq_along(QUESTIONS),
+          question_html = vapply(QUESTIONS, function(q) as.character(q), character(1))
+        )
+      }
       readr::write_csv(df, file)
     }
   )
