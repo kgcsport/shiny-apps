@@ -508,7 +508,8 @@ init_db <- function() {
       question_cost_schedule TEXT,
       shortfall_policy TEXT,
       roundless_mode INTEGER DEFAULT 0,
-      max_per_pset REAL DEFAULT 3
+      max_per_pset REAL DEFAULT 3,
+      max_fp_held  REAL DEFAULT 8
     );
   ")
 
@@ -518,6 +519,7 @@ init_db <- function() {
   try(db_exec("ALTER TABLE settings ADD COLUMN pset_names TEXT;"), silent = TRUE)
   # add delay for older DBs
   try(db_exec("ALTER TABLE settings ADD COLUMN max_per_pset REAL DEFAULT 3;"), silent = TRUE)
+  try(db_exec("ALTER TABLE settings ADD COLUMN max_fp_held  REAL DEFAULT 8;"), silent = TRUE)
 
   # Game state (single row)
   db_exec("
@@ -1759,6 +1761,7 @@ server <- function(input, output, session) {
         ),
         fluidRow(
           column(4, numericInput("cfg_max_per_pset", "Max extensions per pset", value = as.numeric(s$max_per_pset[1]), min = 0)),
+          column(4, numericInput("cfg_max_fp_held", "Max flex passes held at once", value = as.numeric(s$max_fp_held[1] %||% 8), min = 1)),
           column(4, textInput("cfg_exam_names", "Exam names (comma-separated)",
                               value = as.character(s$exam_names[1] %||% "Midterm 1,Midterm 2,Final"))),
           column(4, textInput("cfg_pset_names", "Problem set names (comma-separated)",
@@ -1935,7 +1938,8 @@ server <- function(input, output, session) {
       roundless_mode = as.integer(isTRUE(input$cfg_roundless)),
       exam_names = as.character(input$cfg_exam_names %||% ""),
       pset_names = as.character(input$cfg_pset_names %||% ""),
-      max_per_pset = as.numeric(input$cfg_max_per_pset)
+      max_per_pset = as.numeric(input$cfg_max_per_pset),
+      max_fp_held  = as.numeric(input$cfg_max_fp_held)
     )
 
     # If enabling roundless, open round and normalize state + clear stray pledge rounds
@@ -1986,12 +1990,20 @@ server <- function(input, output, session) {
       showNotification("Grant must be > 0.", type="error")
       return()
     }
+    uid <- as.character(input$grant_user)
+    cap <- as.numeric(get_settings()$max_fp_held[1] %||% 8)
+    current_held <- get_allocation(uid)$remaining
+    if (current_held >= cap) {
+      showNotification(sprintf("Student already holds the maximum %.0f flex passes. Cannot grant more.", cap), type="warning")
+      return()
+    }
+    amt <- min(amt, cap - current_held)
     db_exec("
       INSERT INTO ledger(user_id, round, purpose, amount, meta)
       VALUES(?, NULL, 'grant', ?, 'admin_grant');
-    ", list(as.character(input$grant_user), -amt))
+    ", list(uid, -amt))
     set_state()
-    showNotification("Granted flex passes.", type="message")
+    showNotification(sprintf("Granted %.2f flex pass(es).", amt), type="message")
   })
 
   observeEvent(input$do_remove_user, {
@@ -2227,22 +2239,36 @@ server <- function(input, output, session) {
       showNotification("Amount must be nonzero.", type = "error"); return()
     }
     meta <- if (amt > 0) "admin_bulk_grant" else "admin_bulk_deduct"
+    cap <- as.numeric(get_settings()$max_fp_held[1] %||% 8)
+    granted_count <- 0L
+    capped_count  <- 0L
     for (uid in users_sel) {
+      effective_amt <- amt
+      if (amt > 0) {
+        current_held <- get_allocation(as.character(uid))$remaining
+        if (current_held >= cap) next
+        effective_amt <- min(amt, cap - current_held)
+        if (effective_amt < amt) capped_count <- capped_count + 1L
+      }
       db_exec("
         INSERT INTO ledger(user_id, round, purpose, amount, meta)
         VALUES(?, NULL, 'grant', ?, ?);
-      ", list(as.character(uid), -amt, meta))
+      ", list(as.character(uid), -effective_amt, meta))
+      granted_count <- granted_count + 1L
     }
     set_state()
-    showNotification(
-      sprintf("%s %.2f pass(es) %s %d student(s).",
-        if (amt > 0) "Granted" else "Deducted",
-        abs(amt),
-        if (amt > 0) "to" else "from",
-        length(users_sel)
-      ),
-      type = "message"
+    msg <- sprintf("%s %.2f pass(es) %s %d student(s).",
+      if (amt > 0) "Granted" else "Deducted",
+      abs(amt),
+      if (amt > 0) "to" else "from",
+      granted_count
     )
+    skipped <- length(users_sel) - granted_count
+    if (skipped > 0 && amt > 0)
+      msg <- paste0(msg, sprintf(" %d already at %.0f-pass cap, skipped.", skipped, cap))
+    if (capped_count > 0)
+      msg <- paste0(msg, sprintf(" %d grant(s) reduced to stay at cap.", capped_count))
+    showNotification(msg, type = "message")
   })
 
   session$onSessionEnded(function() {
