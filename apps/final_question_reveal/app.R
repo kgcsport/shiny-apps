@@ -1329,7 +1329,7 @@ server <- function(input, output, session) {
       tags$hr(),
       wellPanel(
         h5("Your allocations (live)"),
-        tableOutput("student_alloc_table")
+        uiOutput("student_alloc_table")
       ),
       tags$hr(),
       h4("Your ledger"),
@@ -1377,21 +1377,13 @@ server <- function(input, output, session) {
     )
   })
 
-  output$student_alloc_table <- renderTable({
+  output$student_alloc_table <- renderUI({
     req(authed())
     state_poll()  # refresh on heartbeat
     x <- student_allocation_summary(user_id())
 
-    items <- c(
-      "Starting passes",
-      "Earned passes (grants)",
-      "Spent: exam questions",
-      "Spent: 24h extensions",
-      "Spent: exam points",
-      "Pending: question pledge (if open)",
-      "Remaining available now"
-    )
-
+    labels <- c("Starting", "Earned", "Spent: Questions", "Spent: Extensions",
+                "Spent: Exam Pts", "Pending Pledge", "Remaining")
     vals <- c(
       x$initial %||% 0,
       x$granted %||% 0,
@@ -1402,12 +1394,22 @@ server <- function(input, output, session) {
       x$remaining %||% 0
     )
 
-    data.frame(
-      Item   = items,
-      Amount = sprintf("%.2f", vals),
-      stringsAsFactors = FALSE
+    cell_style <- "text-align:center; padding:4px 10px; white-space:nowrap;"
+    header_cells <- lapply(labels, function(l)
+      tags$th(style = paste0(cell_style, " font-size:0.82em; font-weight:600;"), l))
+    value_cells  <- lapply(sprintf("%.2f", vals), function(v)
+      tags$td(style = cell_style, v))
+
+    tags$div(
+      style = "overflow-x:auto;",
+      tags$table(
+        class = "table table-bordered table-condensed",
+        style = "width:auto; min-width:100%; font-size:0.9em; margin-bottom:0;",
+        tags$thead(tags$tr(.list = header_cells)),
+        tags$tbody(tags$tr(.list = value_cells))
+      )
     )
-  }, rownames = FALSE)
+  })
 
   # Purchase UI (single interface)
   output$purchase_box <- renderUI({
@@ -1847,9 +1849,13 @@ server <- function(input, output, session) {
             ),
             actionButton("do_upload_questions", "Upload questions", class = "btn-secondary"),
             tags$br(), tags$br(),
-            h6(sprintf("Current questions for active exam (%s)", active_exam_id)),
-            tableOutput("admin_exam_questions_table"),
-            downloadButton("dl_exam_questions", "Download current exam questions (CSV)")
+            tags$details(
+              tags$summary(style = "cursor:pointer; font-weight:600;",
+                           sprintf("Current questions for active exam (%s)", active_exam_id)),
+              tags$br(),
+              tableOutput("admin_exam_questions_table"),
+              downloadButton("dl_exam_questions", "Download current exam questions (CSV)")
+            )
           )
         }
       ),
@@ -1978,8 +1984,12 @@ server <- function(input, output, session) {
         tags$small("Adds new users and updates names/admin flags. Never overwrites existing passwords.")
       ),
 
-      wellPanel(
-        h5("Admin export table: balances & purchases"),
+      tags$details(
+        class = "well",
+        style = "padding:15px; margin-bottom:10px;",
+        tags$summary(style = "cursor:pointer; font-weight:bold; font-size:1.05em;",
+                     "Admin export table: balances & purchases"),
+        tags$br(),
         DTOutput("admin_export_table"),
         tags$br(),
         downloadButton("dl_admin_export", "Download balances & purchases (CSV)")
@@ -1991,11 +2001,23 @@ server <- function(input, output, session) {
         downloadButton("dl_ledger", "Download ledger (CSV)")
       ),
 
-      h5("Live pledges this round"),
-      DTOutput("admin_pledges_table"),
+      tags$details(
+        class = "well",
+        style = "padding:15px; margin-bottom:10px;",
+        tags$summary(style = "cursor:pointer; font-weight:bold; font-size:1.05em;",
+                     "Live pledges this round"),
+        tags$br(),
+        DTOutput("admin_pledges_table")
+      ),
 
-      h5("Quick totals (this round)"),
-      tableOutput("admin_round_totals")
+      tags$details(
+        class = "well",
+        style = "padding:15px; margin-bottom:10px;",
+        tags$summary(style = "cursor:pointer; font-weight:bold; font-size:1.05em;",
+                     "Quick totals (this round)"),
+        tags$br(),
+        tableOutput("admin_round_totals")
+      )
     )
   })
 
