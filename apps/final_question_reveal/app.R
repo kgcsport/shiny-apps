@@ -4,7 +4,7 @@
 #
 # Key rules:
 # - Students start with `initial_fp` flex passes, but can earn more via admin grants
-# - Flex purchase is rate-limited: 1 per 24 hours
+# - 24-hour extensions: no purchase cooldown; capped by count per pset (max_per_pset setting)
 # - Exam points can be purchased in integer units
 # - Collective question unlock cost rises by round using a schedule (editable)
 #
@@ -113,7 +113,7 @@ backup_to_sheets <- function() {
     stop("No access to FLEX_PASS_SHEET_ID: ", conditionMessage(e))
   })
 
-  users_df   <- db_query("SELECT user_id, display_name, is_admin FROM users ORDER BY is_admin DESC, display_name;")
+  users_df   <- db_query("SELECT * FROM users ORDER BY is_admin DESC, display_name;")
   settings_df<- db_query("SELECT * FROM settings WHERE id=1;")
   state_df   <- db_query("SELECT * FROM game_state WHERE id=1;")
   pledges_df <- db_query("SELECT * FROM pledges ORDER BY round, user_id;")
@@ -126,6 +126,11 @@ backup_to_sheets <- function() {
   overwrite_ws(ss, "pledges", pledges_df)
   overwrite_ws(ss, "ledger", ledger_df)
   overwrite_ws(ss, "admin_export", export_df)
+
+  job_state_df <- db_query("SELECT * FROM job_state ORDER BY section, job;")
+  job_log_df   <- db_query("SELECT * FROM job_log   ORDER BY created_at DESC;")
+  overwrite_ws(ss, "job_state", job_state_df)
+  overwrite_ws(ss, "job_log",   job_log_df)
 
   invisible(TRUE)
 }
@@ -141,22 +146,30 @@ coerce_is_admin <- function(x) {
 # Questions (edit)
 # -------------------------
 QUESTIONS <- list(
-  HTML("<b>Q1</b><br>True/False/Uncertain: The economic cost and accounting cost of attending class are both zero."),
-  HTML("<b>Q2</b><br>True/False/Uncertain: You should always specialize in your absolute advantage."),
-  HTML("<b>Q3</b><br>An accountant pays $80,000 in explicit costs. She could earn $30,000 working elsewhere. Her total revenue is $95,000. Is she earnings an economic profit, economic loss, or breaking even? Explain."),
-  HTML("<b>Q4</b><br>Imagine the price of lattes increases. What happens to the quantity demanded and why?"),
-  HTML("<b>Q5</b><br>The demand for gasoline is relatively inelastic and supply is elastic. If the government imposes a small tax, who will bear the most burden? Buyers or sellers? Explain briefly."),
-  HTML("<b>Q6</b><br>True/False/Uncertain: Making the wealthy worse off the improve the condition of the poor is not Pareto efficient. Therefore we should not increase taxes on the wealthy."),
-  HTML("<b>Q7</b><br>A bakery hires workers. The first worker produces 200 loaves. The second worker increases output by 100 loaves. The third increases output by 60 loaves. What economic principle does this demonstrate?"),
-  HTML("<b>Q8</b><br>Suppose the demand for movie tickets is highly elastic. If theaters raise prices by 10%, what happens to total revenue? Explain."),
-  HTML("<b>Q9</b><br>For each statement, label it positive or normative and briefly explain:<b>a) 'Raising the minimum wage will reduce employment among teenagers.'<br>b) 'The government should raise the minimum wage to reduce inequality.'<br>c) 'Rent control decreases the quantity of housing supplied.'"),
-  HTML("<b>Q10</b><br>A factory emits pollution that harms nearby residents. Is the market equilibrium socially efficient? If not, name a policy that could improve efficiency and briefly explain why."),
-  HTML("<b>Q11</b><br>True, false, uncertain: A firm's marginal revenue is equal to the price they charge for all their goods."),
-  HTML("<b>Q12</b><br>You notice that a fish market's sellers charge different prices to different buyers. Is this firm operating in perfect competition?"),
-  HTML("<b>Q13</b><br>Generic pharmaceuticals are drugs manufactured after patents expire to compete with the original patent holder. Is this market perfectly competitive, monopolistically competitive, an oligopoly, or a monopoly?"),
-  HTML("<b>Q14</b><br>Suppose the most you would be willing to pay for a plane ticket home is $250. If you buy one for $175, what is your economic surplus?"),
-  HTML("<b>Q15</b><br>Assume that all firms in this industry have identical cost curves, and that the market is perfectly competitive. The minimum of average total cost is $5. What is the long run equilibrium price?"),
-  HTML("<b>Q16</b><br>Determine whether each of the following goods is rival or excludable:<br>a) a free public lecture held in a university lecture hall<br>b) a public park<br>c) bicycles available to rent to travel around a city<br>d) a forest used by people to collect firewood")
+  HTML("<b>Q1.</b><br>True/False/Uncertain: The economic cost and accounting cost of attending class are both zero."),
+  HTML("<b>Q2.</b> True/False/Uncertain: People should specialize in the good for which they have an absolute advantage."),
+  HTML("<b>Q3.</b> An accountant pays $80,000 in explicit costs and could earn $30,000 working elsewhere. Her total revenue is $95,000. Is she earning an economic profit, an economic loss, or breaking even? Briefly explain."),
+  HTML("<b>Q4.</b> Suppose the price of lattes increases while all else remains constant. What happens to the <i>quantity demanded</i>? Explain briefly using the law of demand."),
+  HTML("<b>Q5.</b> The demand for gasoline is relatively inelastic and supply is relatively elastic. If the government imposes a small tax, who bears most of the tax burden—buyers or sellers? Briefly explain."),
+  HTML("<b>Q6.</b> True/False/Uncertain: Making the wealthy worse off to improve the condition of the poor is not Pareto efficient. Therefore, we should not increase taxes on the wealthy."),
+  HTML("<b>Q7.</b> A bakery hires workers. The first worker produces 200 loaves. The second worker increases output by 100 loaves. The third increases output by 60 loaves. What economic principle does this demonstrate?"),
+  HTML("<b>Q8.</b> Suppose demand for movie tickets is elastic. If theaters raise prices by 10%, what happens to total revenue? Briefly explain."),
+  HTML("<b>Q9.</b> For each statement, label it <i>positive</i> or <i>normative</i> and briefly explain:<br> a) 'Raising the minimum wage will reduce employment among teenagers.'<br> b) 'The government should raise the minimum wage to reduce inequality.'<br> c) 'Rent control decreases the quantity of housing supplied.'"),
+  HTML("<b>Q10.</b> A factory emits pollution that harms nearby residents. Is the market equilibrium socially efficient? If not, name one policy that could improve efficiency and briefly explain why."),
+  HTML("<b>Q11.</b> True/False/Uncertain: A firm's marginal revenue is equal to the price for every unit it sells."),
+  HTML("<b>Q12.</b> You notice that sellers at a fish market charge different prices to different buyers. Is this market operating under perfect competition? Briefly explain."),
+  HTML("<b>Q13.</b> After patents expire, many firms produce chemically identical generic drugs. Which market structure best describes this industry: perfect competition, monopolistic competition, oligopoly, or monopoly? Briefly justify."),
+  HTML("<b>Q14.</b> Suppose the most you would be willing to pay for a plane ticket home is $250. If you buy one for $175, what is your consumer surplus (in dollars)?"),
+  HTML("<b>Q15.</b> Assume all firms have identical cost curves and the market is perfectly competitive. The minimum of average total cost is $5. What is the long-run equilibrium price?"),
+  HTML("<b>Q16.</b> For each good, state whether it is <i>rival</i> and whether it is <i>excludable</i>:<br> a) A free public lecture held in a university lecture hall<br> b) A public park<br> c) Bicycles available to rent around a city<br> d) A forest used by people to collect firewood"),
+  HTML("<b>Q17.</b> The government shifts a tax on the sale of cars from car buyers to car manufacturers. Will this save car buyers money <i>in equilibrium</i>? Briefly explain."),
+  HTML("<b>Q18.</b> For each event below, state whether the <b>demand for new cars</b> shifts right, shifts left, or does not shift. Give a one-sentence reason:<br> a) ____________________<br> b) ____________________<br> c) ____________________"),
+  HTML("<b>Q19.</b> A movie ticket price rises from $10 to $20 and sales fall from 80 to 40. Using the midpoint method, compute the price elasticity of demand and state what happens to total revenue. Show your work."),
+  HTML("<b>Q20.</b> Lia's marginal rate of substitution (MRS) of tea for coffee is 3 (she'd give up 3 teas for 1 coffee). Coffee costs $4 and tea costs $2. Is Lia at her utility-maximizing bundle? If not, what should she do? Explain in 2–3 sentences."),
+  HTML("<b>Q21.</b> A firm has fixed costs of $60. At Q = 4, average variable cost is $9. What is average total cost at Q = 4? Show your reasoning."),
+  HTML("<b>Q22.</b> A firm has fixed costs of $80. Total revenue is $90 and variable costs are $110. Should it operate or shut down in the short run? Compare the loss under each option and state the shutdown rule."),
+  HTML("<b>Q23.</b> A competitive firm faces P = $22. At Q = 7, MC = $22; at Q = 8, MC = $26. Should the firm produce an 8th unit? Briefly justify."),
+  HTML("<b>Q24.</b> True/False/Uncertain: After a patent expires and other firms enter the market, total surplus will rise.")
 )
 
 render_unlocked_questions <- function(n_unlocked, questions = QUESTIONS) {
@@ -482,6 +495,8 @@ reg.finalizer(.GlobalEnv, function(e) {
   }
 }, onexit = TRUE)
 
+DB_BROKEN <- FALSE  # set TRUE by init_db() if users table is missing PRIMARY KEY
+
 init_db <- function() {
   # Users
   db_exec("
@@ -491,8 +506,19 @@ init_db <- function() {
       is_admin INTEGER DEFAULT 0
     );
   ")
-  # Ensure pw_hash column exists
+  # Detect if users table lost PRIMARY KEY (e.g. from dbWriteTable overwrite).
+  # Do NOT attempt self-repair — flag it and let the admin restore from Drive backup.
+  tbl_def <- db_query("SELECT sql FROM sqlite_master WHERE type='table' AND name='users';")
+  if (nrow(tbl_def) && !grepl("PRIMARY KEY", tbl_def$sql[1], ignore.case = TRUE)) {
+    logf("ERROR: users table is missing PRIMARY KEY — DB is broken.",
+         "The app will prompt for a Drive restore. No data has been deleted.")
+    DB_BROKEN <<- TRUE
+    return()  # skip remaining setup; server will show restore modal
+  }
+
+  # Ensure optional columns exist (safe no-ops if already present)
   try(db_exec("ALTER TABLE users ADD COLUMN pw_hash TEXT;"), silent = TRUE)
+  try(db_exec("ALTER TABLE users ADD COLUMN section TEXT;"), silent = TRUE)
 
   # Settings (single row)
   db_exec("
@@ -504,7 +530,9 @@ init_db <- function() {
       exam_point_cost REAL,
       question_cost_schedule TEXT,
       shortfall_policy TEXT,
-      roundless_mode INTEGER DEFAULT 0
+      roundless_mode INTEGER DEFAULT 0,
+      max_per_pset REAL DEFAULT 3,
+      max_fp_held  REAL DEFAULT 8
     );
   ")
 
@@ -512,6 +540,9 @@ init_db <- function() {
   try(db_exec("ALTER TABLE settings ADD COLUMN roundless_mode INTEGER DEFAULT 0;"), silent = TRUE)
   try(db_exec("ALTER TABLE settings ADD COLUMN exam_names TEXT;"), silent = TRUE)
   try(db_exec("ALTER TABLE settings ADD COLUMN pset_names TEXT;"), silent = TRUE)
+  # add delay for older DBs
+  try(db_exec("ALTER TABLE settings ADD COLUMN max_per_pset REAL DEFAULT 3;"), silent = TRUE)
+  try(db_exec("ALTER TABLE settings ADD COLUMN max_fp_held  REAL DEFAULT 8;"), silent = TRUE)
 
   # Game state (single row)
   db_exec("
@@ -580,6 +611,31 @@ init_db <- function() {
   ")
   db_exec("CREATE INDEX IF NOT EXISTS ix_rt_user ON resource_targets(user_id);")
 
+  # Job state for class-job-picker (shared DB)
+  db_exec("
+    CREATE TABLE IF NOT EXISTS job_state (
+      section      TEXT NOT NULL,
+      job          TEXT NOT NULL,
+      cycle_id     INTEGER DEFAULT 1,
+      bag_json     TEXT DEFAULT '[]',
+      last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (section, job)
+    );
+  ")
+  db_exec("
+    CREATE TABLE IF NOT EXISTS job_log (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      logged_date  TEXT,
+      section      TEXT,
+      job          TEXT,
+      display_name TEXT,
+      cycle_id     INTEGER DEFAULT 0,
+      created_at   TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  ")
+  db_exec("CREATE INDEX IF NOT EXISTS ix_job_log_section ON job_log(section);")
+  db_exec("CREATE INDEX IF NOT EXISTS ix_job_log_date    ON job_log(logged_date);")
+
   # Seed settings/state if missing
   nset <- db_query("SELECT COUNT(*) n FROM settings WHERE id=1;")$n[1]
   if (is.na(nset) || nset == 0) {
@@ -596,7 +652,11 @@ init_db <- function() {
   }
 
   # Upsert roster from CRED (seed pw_hash if missing; always update admin flag & name)
-  for (i in seq_len(nrow(CRED))) {
+  upsert_cred_to_db(CRED)
+}
+
+upsert_cred_to_db <- function(cred) {
+  for (i in seq_len(nrow(cred))) {
     db_exec("
       INSERT INTO users(user_id, display_name, is_admin, pw_hash)
       VALUES(?, ?, ?, ?)
@@ -605,10 +665,10 @@ init_db <- function() {
         is_admin     = excluded.is_admin,
         pw_hash      = COALESCE(users.pw_hash, excluded.pw_hash);
     ", list(
-      as.character(CRED$user[i]),
-      as.character(CRED$name[i]),
-      coerce_is_admin(CRED$is_admin[i]),
-      as.character(CRED$pw_hash[i])
+      as.character(cred$user[i]),
+      as.character(cred$name[i]),
+      coerce_is_admin(cred$is_admin[i]),
+      as.character(cred$pw_hash[i])
     ))
   }
 }
@@ -831,12 +891,12 @@ compute_unlocks <- function(round, carryover, cost) {
   list(pledged = pledged, effective = eff, units = as.integer(units), carry = as.numeric(carry))
 }
 
-# Flex purchase: once per 24 hours
-eligible_for_flex <- function(uid) {
-  last <- db_query("SELECT MAX(created_at) AS t FROM ledger WHERE user_id=? AND purpose='flex';", list(uid))$t[1]
-  if (is.na(last) || !nzchar(last)) return(TRUE)
-  dt <- difftime(Sys.time(), as.POSIXct(last, tz="UTC"), units = "hours")
-  isTRUE(dt >= 24)
+# Count of flex extensions already declared for a specific pset
+flex_count_for_pset <- function(uid, pset) {
+  n <- db_query(
+    "SELECT COALESCE(quantity, 0) AS n FROM resource_targets WHERE user_id=? AND resource_type='flex' AND target=?;",
+    list(uid, pset))$n[1]
+  if (!length(n) || is.na(n)) 0L else as.integer(n)
 }
 
 student_allocation_summary <- function(uid) {
@@ -1029,6 +1089,38 @@ login_ui <- function(msg = NULL) {
 }
 
 ui <- fluidPage(
+  tags$head(tags$style(HTML("
+    /* --- Base font --- */
+    body { font-size: 16px; }
+
+    /* --- Vassar palette overrides for Bootstrap elements --- */
+    .btn-primary  { background-color: #951829; border-color: #7a1221; }
+    .btn-primary:hover { background-color: #7a1221; border-color: #5e0d19; }
+    .btn-success  { background-color: #2d6a4f; border-color: #245c43; }
+    .btn-success:hover { background-color: #245c43; border-color: #1b4d38; }
+    a { color: #951829; }
+    a:hover { color: #7a1221; }
+
+    /* --- Notifications: top-right, large, bold colors --- */
+    .shiny-notification-panel {
+      top: 16px; bottom: auto;
+      right: 16px;
+      min-width: 340px; width: auto;
+    }
+    .shiny-notification {
+      font-size: 1.1rem;
+      padding: 1rem 1.25rem;
+      border-radius: 8px;
+      border: none;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+      color: #fff;
+      margin-bottom: 8px;
+    }
+    .shiny-notification-message { background: #2d6a4f; }
+    .shiny-notification-warning { background: #92400e; }
+    .shiny-notification-error   { background: #951829; }
+    .shiny-notification-close   { color: rgba(255,255,255,0.8); font-size: 1.2rem; }
+  "))),
   uiOutput("auth_gate"),
   conditionalPanel("output.authed",
     tabsetPanel(
@@ -1044,7 +1136,57 @@ ui <- fluidPage(
 # -------------------------
 server <- function(input, output, session) {
 
-  rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE)
+  rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE,
+                       impersonate = FALSE, impersonate_uid = NULL, impersonate_name = NULL)
+
+  # -------------------------
+  # Emergency: broken DB modal (shown instead of normal UI if init_db detected corruption)
+  # -------------------------
+  observe({
+    req(DB_BROKEN)
+    can_restore <- google_auth_ok() && nzchar(drive_folder_id())
+    backup_choices <- if (can_restore) {
+      tryCatch({
+        files <- googledrive::drive_ls(googledrive::as_id(drive_folder_id()))
+        files <- files[files$name != "appdata_latest_backup.zip", ]
+        setNames(files$name, files$name)
+      }, error = function(e) character(0))
+    } else character(0)
+
+    showModal(modalDialog(
+      title = "Database Error — Restore Required",
+      p(strong("The users table is corrupted"), " (PRIMARY KEY constraint is missing)."),
+      p("This happens when the 'Amend SQL' button overwrites the users table directly.",
+        "No data has been permanently deleted — a Drive backup will fully recover it."),
+      if (can_restore && length(backup_choices)) {
+        tagList(
+          selectInput("modal_restore_file", "Select backup to restore",
+            choices = backup_choices, selected = backup_choices[1]),
+          actionButton("db_broken_restore_btn", "Restore from Drive", class = "btn-danger")
+        )
+      } else {
+        p(em("Google Drive is not available. Manually replace the database file at:"),
+          br(), code(DB_PATH))
+      },
+      footer = NULL,
+      easyClose = FALSE
+    ))
+  })
+
+  observeEvent(input$db_broken_restore_btn, {
+    filename <- input$modal_restore_file %||% latest_zip_name()
+    ok <- tryCatch(restore_db_from_drive(filename), error = function(e) {
+      showNotification(paste("Restore failed:", conditionMessage(e)), type = "error")
+      FALSE
+    })
+    if (isTRUE(ok)) {
+      removeModal()
+      showNotification(
+        "Database restored. Please reload the page to continue.",
+        type = "message", duration = NULL
+      )
+    }
+  })
 
   # -------------------------
   # Drive backup: on session end + daily timer (no per-action debounce)
@@ -1098,8 +1240,12 @@ server <- function(input, output, session) {
 
 
   authed   <- reactive(rv$authed)
-  user_id  <- reactive(rv$user)
-  name     <- reactive(rv$name)
+  user_id  <- reactive({
+    if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_uid)) rv$impersonate_uid else rv$user
+  })
+  name     <- reactive({
+    if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_name)) rv$impersonate_name else rv$name
+  })
   is_admin <- reactive(rv$is_admin)
 
   # Live polling via game_state.updated_at
@@ -1129,6 +1275,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$pw_change_btn, {
     req(authed())
+    if (isTRUE(rv$impersonate)) {
+      showNotification("Stop impersonating before changing passwords.", type = "error"); return()
+    }
     old <- input$pw_old %||% ""
     new <- input$pw_new %||% ""
     new2 <- input$pw_new2 %||% ""
@@ -1192,7 +1341,14 @@ server <- function(input, output, session) {
 
   output$whoami <- renderUI({
     req(authed())
-    HTML(sprintf("<b>Logged in as:</b> %s (%s)", user_id(), name()))
+    base <- HTML(sprintf("<b>Logged in as:</b> %s (%s)", rv$user, rv$name))
+    if (isTRUE(rv$impersonate)) {
+      tagList(
+        base,
+        div(style = "background:#92400e; color:#fff; padding:6px 12px; border-radius:6px; margin-top:6px;",
+          strong(sprintf("IMPERSONATING: %s (%s) — Student tab shows this student's view", rv$impersonate_name, rv$impersonate_uid)))
+      )
+    } else base
   })
 
   output$student_status <- renderUI({
@@ -1360,9 +1516,9 @@ server <- function(input, output, session) {
 
   output$my_extensions_table <- renderTable({
     req(authed()); state_poll()
-    db_query("SELECT target AS 'Problem set', created_at AS 'Declared at'
+    db_query("SELECT target AS 'Problem set', quantity AS 'Extensions', updated_at AS 'Last declared'
               FROM resource_targets WHERE user_id=? AND resource_type='flex'
-              ORDER BY created_at;", list(user_id()))
+              ORDER BY updated_at;", list(user_id()))
   }, rownames=FALSE)
 
   output$my_exam_pts_table <- renderTable({
@@ -1374,6 +1530,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$use_flex_submit, {
     req(authed())
+    s <- get_settings()
     alloc <- student_allocation_summary(user_id())
     flex_purchased <- as.integer(alloc$spent_flex %||% 0)
     flex_used <- db_query(
@@ -1384,10 +1541,22 @@ server <- function(input, output, session) {
     }
     pset <- as.character(input$use_flex_pset %||% "")
     if (!nzchar(pset)) { showNotification("Select a problem set.", type="error"); return() }
+
+    # Enforce per-pset cap
+    max_pp <- suppressWarnings(as.numeric(s$max_per_pset[1]))
+    if (!is.finite(max_pp) || max_pp <= 0) max_pp <- Inf
+    pset_count <- as.integer(flex_count_for_pset(user_id(), pset) %||% 0L)
+    if (pset_count >= max_pp) {
+      showNotification(sprintf("You have already used the maximum (%d) extensions for %s.", as.integer(max_pp), pset), type="error")
+      return()
+    }
+
     db_exec("
       INSERT INTO resource_targets(user_id, resource_type, target, quantity, updated_at)
       VALUES(?, 'flex', ?, 1, CURRENT_TIMESTAMP)
-      ON CONFLICT(user_id, resource_type, target) DO UPDATE SET updated_at=CURRENT_TIMESTAMP;
+      ON CONFLICT(user_id, resource_type, target) DO UPDATE SET
+        quantity   = resource_targets.quantity + 1,
+        updated_at = CURRENT_TIMESTAMP;
     ", list(user_id(), pset))
     set_state()
     showNotification(sprintf("Extension declared for %s.", pset), type="message")
@@ -1462,12 +1631,9 @@ server <- function(input, output, session) {
     }
 
     if (typ == "flex") {
-      # One extension per 24 hours; interpret amt as count and require exactly 1
+      # Interpret amt as count; require exactly 1 per purchase
       if (abs(amt - 1) > 1e-9) {
         showNotification("24-hour extension must be purchased as exactly 1.", type="error"); return()
-      }
-      if (!eligible_for_flex(user_id())) {
-        showNotification("You can only buy one 24-hour extension every 24 hours.", type="error"); return()
       }
 
       cost <- suppressWarnings(as.numeric(s$flex_cost[1]))
@@ -1480,7 +1646,7 @@ server <- function(input, output, session) {
       db_exec("
         INSERT INTO ledger(user_id, round, purpose, amount, meta)
         VALUES(?, NULL, 'flex', ?, ?);
-      ", list(user_id(), cost, '24h_extension'))
+      ", list(user_id(), cost, 'extension'))
 
       set_state()
       showNotification("24-hour extension purchased.", type="message")
@@ -1590,6 +1756,27 @@ server <- function(input, output, session) {
       h4("Admin Controls"),
       tags$hr(),
 
+      if (isTRUE(rv$impersonate)) div(
+        style = "background:#92400e; color:#fff; padding:8px 16px; border-radius:6px; margin-bottom:12px;",
+        strong(sprintf("IMPERSONATING: %s (%s)", rv$impersonate_name, rv$impersonate_uid)),
+        " — Student tab actions are attributed to this student."
+      ),
+
+      wellPanel(
+        h5("Impersonate student (act as any student)"),
+        p("As admin, simulate actions as any student. The Student tab shows that student's view and all actions are attributed to them."),
+        fluidRow(
+          column(6, selectInput("impersonate_select", "Student to impersonate",
+            choices = {
+              us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+              setNames(us$user_id, us$display_name)
+            }
+          )),
+          column(3, br(), actionButton("impersonate_start", "Start impersonating", class = "btn-warning")),
+          column(3, br(), actionButton("impersonate_stop",  "Stop impersonating",  class = "btn-secondary"))
+        )
+      ),
+
       wellPanel(
         h5("Settings"),
         fluidRow(
@@ -1600,7 +1787,7 @@ server <- function(input, output, session) {
                                 selected = as.character(s$shortfall_policy[1])))
         ),
         fluidRow(
-          column(4, numericInput("cfg_flex_cost", "Extension cost (flex passes)", value = as.numeric(s$flex_cost[1]), min = 0)),
+          column(4, numericInput("cfg_flex_cost", "Extension cost (passes each)", value = as.numeric(s$flex_cost[1]), min = 0)),
           column(4, numericInput("cfg_exam_cost", "Exam point cost (flex passes)", value = as.numeric(s$exam_point_cost[1]), min = 0)),
           column(4, textInput("cfg_sched",
                               "Question cost schedule — comma list (12,20,30) or formula in c (e.g. 11+c^2)",
@@ -1617,9 +1804,11 @@ server <- function(input, output, session) {
           )
         ),
         fluidRow(
-          column(6, textInput("cfg_exam_names", "Exam names (comma-separated)",
+          column(4, numericInput("cfg_max_per_pset", "Max extensions per pset", value = as.numeric(s$max_per_pset[1]), min = 0)),
+          column(4, numericInput("cfg_max_fp_held", "Max flex passes held at once", value = as.numeric(s$max_fp_held[1] %||% 8), min = 1)),
+          column(4, textInput("cfg_exam_names", "Exam names (comma-separated)",
                               value = as.character(s$exam_names[1] %||% "Midterm 1,Midterm 2,Final"))),
-          column(6, textInput("cfg_pset_names", "Problem set names (comma-separated)",
+          column(4, textInput("cfg_pset_names", "Problem set names (comma-separated)",
                               value = as.character(s$pset_names[1] %||% "PS1,PS2,PS3,PS4,PS5")))
         ),
         actionButton("apply_settings", "Apply settings", class="btn-secondary")
@@ -1714,6 +1903,20 @@ server <- function(input, output, session) {
         tags$small("Restores the backup SQL database from Google Drive.")
       ),
 
+      # -------------- add way to amend SQL database with sheet from Google Drive. select tab from Google Drive from drop down and table in SQL database from drop down --------------
+      wellPanel(
+        h5("Amend SQL database with sheet from Google Drive"),
+        fluidRow(
+          column(6, selectInput("amend_sql_sheet", "Google Drive sheet", choices = googlesheets4::sheet_names(gs_backup_sheet_id())), selected = 'users'),
+          column(6, selectInput("amend_sql_table", "SQL table", choices = DBI::dbListTables(get_con())), selected = 'users'),
+          column(6, actionButton("amend_sql_btn", "Amend (overwrite!)", class = "btn-secondary", 
+            onclick = "if(!confirm('WARNING: This will OVERWRITE the selected SQL table with the selected Google Sheet data. Are you sure you want to continue?')){event.stopPropagation();}")
+          )
+        ),
+        tags$small("Amends the SQL database with the selected sheet from Google Drive. Never overwrite credentials column in SQL table users.")
+      ),
+
+
       wellPanel(
         h5("Grant flex passes (students can gain more)"),
         fluidRow(
@@ -1729,6 +1932,50 @@ server <- function(input, output, session) {
           column(3, br(), actionButton("do_grant", "Grant", class="btn-success"))
         ),
         tags$small("Grants are recorded as negative ledger amounts (credits).")
+      ),
+
+      wellPanel(
+        h5("Bulk flex pass grant / deduct"),
+        p("Select students and apply a uniform amount to each. Positive = grant more passes; negative = deduct."),
+        selectInput("bulk_grant_users", "Students",
+          choices = {
+            us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+            setNames(us$user_id, us$display_name)
+          },
+          multiple = TRUE
+        ),
+        fluidRow(
+          column(4, numericInput("bulk_grant_amt", "Amount per student (negative = deduct)",
+                                 value = 1, min = -100, max = 100, step = 0.5)),
+          column(4, br(), actionButton("do_bulk_grant", "Apply to selected", class = "btn-success"))
+        ),
+        tags$small("Each selected student receives this adjustment. Recorded in ledger with purpose 'grant'.")
+      ),
+
+      wellPanel(
+        h5("Remove student"),
+        fluidRow(
+          column(8,
+            selectInput("remove_user", "Student",
+              choices = {
+                us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+                setNames(us$user_id, us$display_name)
+              }
+            )
+          ),
+          column(4, br(),
+            actionButton("do_remove_user", "Remove", class = "btn-danger",
+              onclick = "if(!confirm('Remove this student? This cannot be undone (unless you restore from backup).')) event.stopPropagation();")
+          )
+        ),
+        tags$small("Removes the student from the roster. Their ledger history is kept for auditing but they will no longer be able to log in.")
+      ),
+
+      wellPanel(
+        h5("Add student from credentials sheet"),
+        p("Add the student to the ", tags$code("credentials"), " tab in the Google Sheet (with columns: user, name, pw_hash, is_admin), then click below."),
+        actionButton("sync_cred_btn", "Sync from credentials sheet", class = "btn-secondary"),
+        tags$small("Adds new users and updates names/admin flags. Never overwrites existing passwords.")
       ),
 
       wellPanel(
@@ -1775,7 +2022,9 @@ server <- function(input, output, session) {
       shortfall_policy = as.character(input$cfg_shortfall),
       roundless_mode = as.integer(isTRUE(input$cfg_roundless)),
       exam_names = as.character(input$cfg_exam_names %||% ""),
-      pset_names = as.character(input$cfg_pset_names %||% "")
+      pset_names = as.character(input$cfg_pset_names %||% ""),
+      max_per_pset = as.numeric(input$cfg_max_per_pset),
+      max_fp_held  = as.numeric(input$cfg_max_fp_held)
     )
 
     # If enabling roundless, open round and normalize state + clear stray pledge rounds
@@ -1826,12 +2075,54 @@ server <- function(input, output, session) {
       showNotification("Grant must be > 0.", type="error")
       return()
     }
+    uid <- as.character(input$grant_user)
+    cap <- as.numeric(get_settings()$max_fp_held[1] %||% 8)
+    current_held <- student_allocation_summary(uid)$remaining
+    if (current_held >= cap) {
+      showNotification(sprintf("Student already holds the maximum %.0f flex passes. Cannot grant more.", cap), type="warning")
+      return()
+    }
+    amt <- min(amt, cap - current_held)
     db_exec("
       INSERT INTO ledger(user_id, round, purpose, amount, meta)
       VALUES(?, NULL, 'grant', ?, 'admin_grant');
-    ", list(as.character(input$grant_user), -amt))
+    ", list(uid, -amt))
     set_state()
-    showNotification("Granted flex passes.", type="message")
+    showNotification(sprintf("Granted %.2f flex pass(es).", amt), type="message")
+  })
+
+  observeEvent(input$do_remove_user, {
+    req(is_admin(), input$remove_user)
+    uid <- as.character(input$remove_user)
+    # Guard: never remove an admin
+    row <- db_query("SELECT is_admin FROM users WHERE user_id=?;", list(uid))
+    if (!nrow(row) || isTRUE(as.logical(row$is_admin[1]))) {
+      showNotification("Cannot remove an admin account.", type = "error"); return()
+    }
+    db_exec("DELETE FROM users              WHERE user_id=?;", list(uid))
+    db_exec("DELETE FROM pledges            WHERE user_id=?;", list(uid))
+    db_exec("DELETE FROM resource_targets   WHERE user_id=?;", list(uid))
+    set_state()
+    showNotification(sprintf("Removed %s.", uid), type = "message")
+  })
+
+  observeEvent(input$sync_cred_btn, {
+    req(is_admin())
+    before <- db_query("SELECT COUNT(*) n FROM users;")$n[1]
+    new_cred <- tryCatch(get_credentials(), error = function(e) {
+      showNotification(paste("Could not read credentials sheet:", conditionMessage(e)), type = "error")
+      NULL
+    })
+    if (is.null(new_cred)) return()
+    CRED <<- new_cred
+    upsert_cred_to_db(new_cred)
+    after <- db_query("SELECT COUNT(*) n FROM users;")$n[1]
+    added <- max(0L, as.integer(after) - as.integer(before))
+    set_state()
+    showNotification(
+      sprintf("Synced %d users from credentials sheet (%d new).", nrow(new_cred), added),
+      type = "message"
+    )
   })
 
   observeEvent(input$open_round, {
@@ -1930,6 +2221,43 @@ server <- function(input, output, session) {
       stringsAsFactors = FALSE
     )
   }, rownames = FALSE)
+
+  observeEvent(input$amend_sql_btn, {
+    req(is_admin())
+    sheet <- input$amend_sql_sheet
+    table <- input$amend_sql_table
+    df    <- googlesheets4::read_sheet(gs_backup_sheet_id(), sheet = sheet)
+
+    if (table == "users") {
+      # Safe merge: add missing columns then update rows — never touch pw_hash or PRIMARY KEY
+      df <- dplyr::select(df, -dplyr::any_of("pw_hash"))
+      if (!"user_id" %in% names(df)) {
+        showNotification("Sheet must have a 'user_id' column to merge into users.", type = "error")
+        return()
+      }
+      existing_cols <- DBI::dbListFields(get_con(), "users")
+      new_cols      <- setdiff(names(df), existing_cols)
+      for (col in new_cols) {
+        try(db_exec(sprintf("ALTER TABLE users ADD COLUMN \"%s\" TEXT;", col)), silent = TRUE)
+        logf("Added column to users:", col)
+      }
+      update_cols <- setdiff(names(df), c("user_id", "pw_hash"))
+      for (i in seq_len(nrow(df))) {
+        uid <- as.character(df$user_id[i] %||% "")
+        if (!nzchar(uid)) next
+        for (col in update_cols) {
+          db_exec(sprintf("UPDATE users SET \"%s\" = ? WHERE user_id = ?;", col),
+            list(as.character(df[[col]][i] %||% ""), uid))
+        }
+      }
+      set_state()
+      showNotification(sprintf("users updated: %d rows, columns: %s",
+        nrow(df), paste(update_cols, collapse = ", ")), type = "message")
+    } else {
+      DBI::dbWriteTable(get_con(), table, df, overwrite = TRUE)
+      showNotification("SQL database amended.", type = "message")
+    }
+  })
 
   output$admin_export_table <- DT::renderDT({
     req(authed(), is_admin())
@@ -2064,6 +2392,73 @@ server <- function(input, output, session) {
       readr::write_csv(df, file)
     }
   )
+
+  # ---------------- Impersonation ----------------
+  observeEvent(input$impersonate_start, {
+    req(is_admin(), input$impersonate_select)
+    uid <- as.character(input$impersonate_select)
+    row <- db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid))
+    if (!nrow(row)) { showNotification("User not found.", type = "error"); return() }
+    rv$impersonate      <- TRUE
+    rv$impersonate_uid  <- uid
+    rv$impersonate_name <- row$display_name[1]
+    showNotification(
+      sprintf("Now impersonating %s. Switch to Student tab to see their view.", row$display_name[1]),
+      type = "warning"
+    )
+  })
+
+  observeEvent(input$impersonate_stop, {
+    req(is_admin())
+    rv$impersonate      <- FALSE
+    rv$impersonate_uid  <- NULL
+    rv$impersonate_name <- NULL
+    showNotification("Stopped impersonating.", type = "message")
+  })
+
+  # ---------------- Bulk grant / deduct ----------------
+  observeEvent(input$do_bulk_grant, {
+    req(is_admin())
+    users_sel <- input$bulk_grant_users
+    if (!length(users_sel)) {
+      showNotification("No students selected.", type = "warning"); return()
+    }
+    amt <- suppressWarnings(as.numeric(input$bulk_grant_amt %||% 0))
+    if (!is.finite(amt) || amt == 0) {
+      showNotification("Amount must be nonzero.", type = "error"); return()
+    }
+    meta <- if (amt > 0) "admin_bulk_grant" else "admin_bulk_deduct"
+    cap <- as.numeric(get_settings()$max_fp_held[1] %||% 8)
+    granted_count <- 0L
+    capped_count  <- 0L
+    for (uid in users_sel) {
+      effective_amt <- amt
+      if (amt > 0) {
+        current_held <- student_allocation_summary(as.character(uid))$remaining
+        if (current_held >= cap) next
+        effective_amt <- min(amt, cap - current_held)
+        if (effective_amt < amt) capped_count <- capped_count + 1L
+      }
+      db_exec("
+        INSERT INTO ledger(user_id, round, purpose, amount, meta)
+        VALUES(?, NULL, 'grant', ?, ?);
+      ", list(as.character(uid), -effective_amt, meta))
+      granted_count <- granted_count + 1L
+    }
+    set_state()
+    msg <- sprintf("%s %.2f pass(es) %s %d student(s).",
+      if (amt > 0) "Granted" else "Deducted",
+      abs(amt),
+      if (amt > 0) "to" else "from",
+      granted_count
+    )
+    skipped <- length(users_sel) - granted_count
+    if (skipped > 0 && amt > 0)
+      msg <- paste0(msg, sprintf(" %d already at %.0f-pass cap, skipped.", skipped, cap))
+    if (capped_count > 0)
+      msg <- paste0(msg, sprintf(" %d grant(s) reduced to stay at cap.", capped_count))
+    showNotification(msg, type = "message")
+  })
 
   session$onSessionEnded(function() {
     # Synchronous backup on session end if DB changed

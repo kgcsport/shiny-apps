@@ -478,7 +478,23 @@ login_ui <- function(msg = NULL) {
   )
 }
 
+VASSAR_CSS <- "
+  body { font-size: 16px; }
+  .btn-primary       { background-color: #951829; border-color: #7a1221; }
+  .btn-primary:hover { background-color: #7a1221; border-color: #5e0d19; }
+  .btn-success       { background-color: #2d6a4f; border-color: #245c43; }
+  .btn-success:hover { background-color: #245c43; border-color: #1b4d38; }
+  a { color: #951829; } a:hover { color: #7a1221; }
+  .shiny-notification-panel { top:16px; bottom:auto; right:16px; min-width:340px; width:auto; }
+  .shiny-notification { font-size:1.1rem; padding:1rem 1.25rem; border-radius:8px; border:none;
+    box-shadow:0 4px 20px rgba(0,0,0,.25); color:#fff; margin-bottom:8px; }
+  .shiny-notification-message { background:#2d6a4f; }
+  .shiny-notification-warning { background:#92400e; }
+  .shiny-notification-error   { background:#951829; }
+  .shiny-notification-close   { color:rgba(255,255,255,.8); font-size:1.2rem; }
+"
 ui <- fluidPage(
+  tags$head(tags$style(HTML(VASSAR_CSS))),
   tags$head(tags$style(HTML("
     .bigprice { font-size: 56px; font-weight: 800; }
     .muted { color: #666; }
@@ -517,7 +533,8 @@ server <- function(input, output, session) {
   })
 
   # Auth state
-  rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE)
+  rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE,
+                       impersonate = FALSE, impersonate_uid = NULL, impersonate_name = NULL)
 
   output$auth_gate <- renderUI({
     if (!rv$authed) return(login_ui())
@@ -546,8 +563,12 @@ server <- function(input, output, session) {
   })
 
   authed   <- reactive(rv$authed)
-  user_id  <- reactive(rv$user)
-  user_nm  <- reactive(rv$name)
+  user_id  <- reactive({
+    if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_uid)) rv$impersonate_uid else rv$user
+  })
+  user_nm  <- reactive({
+    if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_name)) rv$impersonate_name else rv$name
+  })
   is_admin <- reactive(rv$is_admin)
 
   # Main UI
@@ -597,9 +618,10 @@ server <- function(input, output, session) {
 
   output$me <- renderText({
     req(authed())
-    paste0("User: ", user_id(), "\n",
-           "Name: ", user_nm(), "\n",
-           "Admin: ", isTRUE(is_admin()))
+    base <- paste0("Real user: ", rv$user, "\nName: ", rv$name, "\nAdmin: ", isTRUE(is_admin()))
+    if (isTRUE(rv$impersonate)) {
+      paste0(base, "\n\n[IMPERSONATING] ", rv$impersonate_name, " (", rv$impersonate_uid, ")\nAccept button records as this student.")
+    } else base
   })
 
   # Live ticking (NO tick backups)
@@ -681,6 +703,28 @@ server <- function(input, output, session) {
     tagList(
       h3("Admin controls"),
       p(class="muted", "Tip: If things get weird, click Stop, then Advance Round, then Start."),
+
+      wellPanel(
+        h4("Impersonate student (act as any student)"),
+        if (isTRUE(rv$impersonate)) div(
+          style = "background:#92400e; color:#fff; padding:6px 12px; border-radius:6px; margin-bottom:8px;",
+          strong(sprintf("IMPERSONATING: %s (%s)", rv$impersonate_name, rv$impersonate_uid)),
+          " — Accept button records as this student."
+        ),
+        p("Simulate auction participation as any student. The Accept button will record the bid under that student's identity."),
+        fluidRow(
+          column(6, selectInput("impersonate_select", "Student to impersonate",
+            choices = {
+              u <- cred_cache$users
+              if (is.null(u) || !nrow(u)) character(0)
+              else setNames(u$user_id[u$is_admin == 0], u$display_name[u$is_admin == 0])
+            }
+          )),
+          column(3, br(), actionButton("impersonate_start", "Start", class = "btn-warning")),
+          column(3, br(), actionButton("impersonate_stop",  "Stop",  class = "btn-secondary"))
+        )
+      ),
+
       fluidRow(
         column(
           6,
@@ -816,6 +860,27 @@ server <- function(input, output, session) {
   })
 
   output$admin_msg <- renderText(admin_msg())
+
+  # ---------------- Impersonation ----------------
+  observeEvent(input$impersonate_start, {
+    req(is_admin(), input$impersonate_select)
+    uid <- as.character(input$impersonate_select)
+    users <- cred_cache$users
+    row <- users[users$user_id == uid, , drop = FALSE]
+    if (!nrow(row)) { admin_msg("User not found."); return() }
+    rv$impersonate      <- TRUE
+    rv$impersonate_uid  <- uid
+    rv$impersonate_name <- row$display_name[1]
+    admin_msg(sprintf("Now impersonating %s (%s). Accept button records under this student.", row$display_name[1], uid))
+  })
+
+  observeEvent(input$impersonate_stop, {
+    req(is_admin())
+    rv$impersonate      <- FALSE
+    rv$impersonate_uid  <- NULL
+    rv$impersonate_name <- NULL
+    admin_msg("Stopped impersonating.")
+  })
 
   # Optional session-end backup (Drive only; debounced)
   session$onSessionEnded(function() {

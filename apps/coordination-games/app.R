@@ -19,10 +19,12 @@
 #
 # Key behavior:
 # - Students log in with existing flex-pass credentials.
-# - Bonus Pot: contribution is immediately DEBITED (purpose='oligopoly_contrib').
+# - Bonus Pot: students UPSERT their contribution while the round is open (no debit yet).
+#   When admin sets status → 'closed', contributions are DEBITED (purpose='oligopoly_contrib').
 #   On reveal each student in the section gets a CREDIT = pot / class_size
 #   (or / submitter count if class_size is 0/NULL), rounded to nearest 0.5.
 # - Price War (PD): no staking; payoff = pd_payoff_points * pd_scale, rounded 0.5.
+#   PD choices can also be changed while the round is open (upsert).
 #
 # Env vars:
 # - CONNECT_CONTENT_DIR (Posit) optional; otherwise uses getwd()
@@ -112,6 +114,11 @@ init_olig <- function() {
     db_exec("ALTER TABLE olig_settings ADD COLUMN class_size INTEGER;"),
     error = function(e) NULL
   )
+  # contrib_cap: max flex passes a student can wager per bonus round (0 = no cap)
+  tryCatch(
+    db_exec("ALTER TABLE olig_settings ADD COLUMN contrib_cap REAL DEFAULT 0;"),
+    error = function(e) NULL
+  )
 
   # round audit
   db_exec("
@@ -196,7 +203,7 @@ olig_section <- function(olig) as.character(olig$section[1] %||% "")
 # Does the shared users table have a 'section' column?
 users_has_section_col <- function() {
   cols <- tryCatch(db_query("PRAGMA table_info(users);"), error = function(e) data.frame())
-  "section" %in% (cols$name %||% character(0))
+  "section" %in% (if (nrow(cols) > 0) cols$name else character(0))
 }
 
 # Distinct sections + enrolled counts from the users table
@@ -421,7 +428,7 @@ pd_pair_payoffs <- function(olig, subs) {
 bonus_shares <- function(olig, subs) {
   if (!nrow(subs)) return(tibble())
   m    <- as.numeric(olig$bonus_multiplier[1] %||% 1.5)
-  subs <- subs %>% mutate(contribute = as.numeric(contribute %||% 0))
+  subs <- subs %>% mutate(contribute = ifelse(is.na(contribute) | !nzchar(as.character(contribute)), 0, as.numeric(contribute)))
   total <- sum(subs$contribute, na.rm = TRUE)
   pot   <- m * total
 
@@ -508,6 +515,33 @@ apply_payouts <- function(round, game) {
   list(ok = FALSE, msg = "Unknown game.")
 }
 
+# Debit bonus contributions that haven't been charged yet (idempotent).
+# Called when admin closes the round. Returns count of new debits posted.
+debit_pending_contributions <- function(round, sec) {
+  subs <- db_query(
+    "SELECT * FROM olig_submissions WHERE round=? AND game='bonus' AND (section=? OR section IS NULL);",
+    list(as.integer(round), sec)
+  )
+  debited <- 0L
+  for (i in seq_len(nrow(subs))) {
+    uid   <- subs$user_id[i]
+    c_val <- suppressWarnings(as.numeric(subs$contribute[i]))
+    if (!is.finite(c_val) || c_val <= 0) next
+    already <- db_query(
+      "SELECT COUNT(*) n FROM ledger WHERE user_id=? AND round=? AND purpose='oligopoly_contrib';",
+      list(uid, as.integer(round))
+    )$n[1]
+    if (as.integer(already) > 0) next
+    db_exec(
+      "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?, ?, 'oligopoly_contrib', ?, ?);",
+      list(uid, as.integer(round), c_val,
+           sprintf("coordination_bonus_contribution round=%d section=%s", as.integer(round), sec))
+    )
+    debited <- debited + 1L
+  }
+  debited
+}
+
 # -------------------------
 # Auth UI
 # -------------------------
@@ -523,6 +557,38 @@ login_ui <- function(msg = NULL) {
 }
 
 ui <- fluidPage(
+  tags$head(tags$style(HTML("
+    /* --- Base font --- */
+    body { font-size: 16px; }
+
+    /* --- Vassar palette overrides for Bootstrap elements --- */
+    .btn-primary  { background-color: #951829; border-color: #7a1221; }
+    .btn-primary:hover { background-color: #7a1221; border-color: #5e0d19; }
+    .btn-success  { background-color: #2d6a4f; border-color: #245c43; }
+    .btn-success:hover { background-color: #245c43; border-color: #1b4d38; }
+    a { color: #951829; }
+    a:hover { color: #7a1221; }
+
+    /* --- Notifications: top-right, large, bold colors --- */
+    .shiny-notification-panel {
+      top: 16px; bottom: auto;
+      right: 16px;
+      min-width: 340px; width: auto;
+    }
+    .shiny-notification {
+      font-size: 1.1rem;
+      padding: 1rem 1.25rem;
+      border-radius: 8px;
+      border: none;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+      color: #fff;
+      margin-bottom: 8px;
+    }
+    .shiny-notification-message { background: #2d6a4f; }
+    .shiny-notification-warning { background: #92400e; }
+    .shiny-notification-error   { background: #951829; }
+    .shiny-notification-close   { color: rgba(255,255,255,0.8); font-size: 1.2rem; }
+  "))),
   uiOutput("auth_gate"),
   conditionalPanel("output.authed",
     tabsetPanel(
@@ -534,7 +600,8 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE)
+  rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE,
+                       impersonate = FALSE, impersonate_uid = NULL, impersonate_name = NULL)
 
   output$authed <- reactive(rv$authed)
   outputOptions(output, "authed", suspendWhenHidden = FALSE)
@@ -558,8 +625,12 @@ server <- function(input, output, session) {
   })
 
   authed   <- reactive(rv$authed)
-  user_id  <- reactive(rv$user)
-  name     <- reactive(rv$name)
+  user_id  <- reactive({
+    if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_uid)) rv$impersonate_uid else rv$user
+  })
+  name     <- reactive({
+    if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_name)) rv$impersonate_name else rv$name
+  })
   is_admin <- reactive(rv$is_admin)
 
   # Poll shared state via olig_settings.updated_at
@@ -610,7 +681,11 @@ server <- function(input, output, session) {
 
     game_lbl <- if (game == "pd") "Price War (High vs Low)" else "Bonus Pot (Contribute flex passes)"
     tagList(
-      h4(sprintf("Logged in as: %s (%s)", user_id(), name())),
+      h4(sprintf("Logged in as: %s (%s)", rv$user, rv$name)),
+      if (isTRUE(rv$impersonate)) div(
+        style = "background:#92400e; color:#fff; padding:6px 12px; border-radius:6px; margin-bottom:8px;",
+        strong(sprintf("IMPERSONATING: %s (%s) — submissions recorded under this student", rv$impersonate_name, rv$impersonate_uid))
+      ),
       p(sprintf("Section: %s | Flex passes available: %.2f", sec, bal)),
       p(sprintf("Round %d | Game: %s | Status: %s",
                 as.integer(o$current_round[1]), game_lbl, status)),
@@ -628,10 +703,14 @@ server <- function(input, output, session) {
         else
           "Pot divided among students who submit."
         tagList(
-          sliderInput("bonus_c", "Contribute flex passes",
-                      min = 0, max = max(0, floor(bal*2)/2), value = 0, step = 0.5),
-          actionButton("submit_bonus", "Submit (debited immediately)", class = "btn-primary"),
-          tags$small(sprintf("Multiplier m = %.2f. %s", as.numeric(o$bonus_multiplier[1]), cs_note))
+          {
+            cap <- as.numeric(o$contrib_cap[1] %||% 0)
+            eff_max <- if (is.finite(cap) && cap > 0) min(bal, cap) else bal
+            sliderInput("bonus_c", "Contribute flex passes",
+                        min = 0, max = max(0, floor(eff_max * 2) / 2), value = 0, step = 0.5)
+          },
+          actionButton("submit_bonus", "Save contribution", class = "btn-primary"),
+          tags$small(sprintf("Multiplier m = %.2f. %s Contributions are debited when the round closes.", as.numeric(o$bonus_multiplier[1]), cs_note))
         )
       },
       tags$hr(),
@@ -661,12 +740,10 @@ server <- function(input, output, session) {
     if (!(input$pd_action %in% c("High", "Low"))) {
       showNotification("Please select High or Low.", type = "error"); return()
     }
-    if (already_submitted(o$current_round[1])) {
-      showNotification("You already submitted this round.", type = "warning"); return()
-    }
 
+    # Upsert -- allow re-submission while round is open
     db_exec(
-      "INSERT INTO olig_submissions(round, user_id, display_name, game, action, contribute, section)
+      "INSERT OR REPLACE INTO olig_submissions(round, user_id, display_name, game, action, contribute, section)
        VALUES(?, ?, ?, 'pd', ?, NULL, ?);",
       list(as.integer(o$current_round[1]), as.character(user_id()),
            as.character(name()), as.character(input$pd_action), sec)
@@ -674,7 +751,7 @@ server <- function(input, output, session) {
     # Do NOT call touch_olig() here. subs_poll detects new submissions via the
     # COUNT query in its checkFunc. Calling touch_olig() would invalidate olig_poll
     # which re-renders every connected student's form, bouncing their sliders to 0.
-    showNotification("Submitted.", type = "message")
+    showNotification("Choice saved. You can change it until the round closes.", type = "message")
   })
 
   observeEvent(input$submit_bonus, {
@@ -688,9 +765,6 @@ server <- function(input, output, session) {
     if (as.character(o$current_game[1]) != "bonus") {
       showNotification("Current game is not Bonus Pot.", type = "error"); return()
     }
-    if (already_submitted(o$current_round[1])) {
-      showNotification("You already submitted this round.", type = "warning"); return()
-    }
 
     c_val <- round_to_half(as.numeric(input$bonus_c %||% 0))
     if (!is.finite(c_val) || c_val < 0) c_val <- 0
@@ -699,32 +773,22 @@ server <- function(input, output, session) {
     if (c_val > bal + 1e-9) {
       showNotification("Not enough flex passes.", type = "error"); return()
     }
-
-    # Debit contribution immediately
-    if (c_val > 0) {
-      db_exec(
-        "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?, ?, 'oligopoly_contrib', ?, ?);",
-        list(as.character(user_id()), as.integer(o$current_round[1]), c_val,
-             sprintf("coordination_bonus_contribution round=%d section=%s",
-                     as.integer(o$current_round[1]), sec))
-      )
+    cap <- as.numeric(o$contrib_cap[1] %||% 0)
+    if (is.finite(cap) && cap > 0 && c_val > cap + 1e-9) {
+      showNotification(sprintf("Contribution exceeds the cap of %.1f flex passes.", cap), type = "error"); return()
     }
 
+    # Upsert -- no debit yet; debit happens when admin closes the round.
+    # Do NOT call touch_olig() -- that would fire olig_poll for every connected
+    # client and bounce all their sliders back to 0.
     db_exec(
-      "INSERT INTO olig_submissions(round, user_id, display_name, game, action, contribute, section)
+      "INSERT OR REPLACE INTO olig_submissions(round, user_id, display_name, game, action, contribute, section)
        VALUES(?, ?, ?, 'bonus', NULL, ?, ?);",
       list(as.integer(o$current_round[1]), as.character(user_id()),
            as.character(name()), c_val, sec)
     )
-
-    # Reset slider in-place without re-rendering the whole form.
-    # Do NOT call touch_olig() -- that would fire olig_poll for every connected
-    # client and bounce all their sliders back to 0.
-    new_bal <- remaining_fp(user_id())
-    updateSliderInput(session, "bonus_c", value = 0,
-                      max = max(0, floor(new_bal * 2) / 2))
     showNotification(
-      sprintf("Submitted. Contributed %.1f flex pass(es); deducted immediately.", c_val),
+      sprintf("Saved %.1f flex pass(es) as your contribution. You can change it until the round closes.", c_val),
       type = "message"
     )
   })
@@ -732,10 +796,31 @@ server <- function(input, output, session) {
   output$student_result <- renderUI({
     req(authed())
     st <- subs_poll(); o <- st$olig; subs <- st$subs
-    if (as.character(o$round_status[1]) != "revealed") {
+    status <- as.character(o$round_status[1])
+    game   <- as.character(o$current_game[1])
+
+    if (status != "revealed") {
+      my_sub <- subs %>% filter(user_id == !!user_id())
+      if (nrow(my_sub) > 0 && game == "bonus") {
+        c_saved <- suppressWarnings(as.numeric(my_sub$contribute[1]))
+        c_saved <- if (is.finite(c_saved)) c_saved else 0
+        return(tagList(
+          p(strong(sprintf("Saved contribution: %.1f flex pass(es).", c_saved))),
+          p(if (status == "open")
+              "You can update your contribution until the round closes."
+            else
+              "Round closed. Contributions are being debited.")
+        ))
+      }
+      if (nrow(my_sub) > 0 && game == "pd") {
+        return(tagList(
+          p(strong(sprintf("Saved choice: %s.", as.character(my_sub$action[1])))),
+          p(if (status == "open") "You can change your choice until the round closes."
+            else "Round closed.")
+        ))
+      }
       return(p("Results will appear after the instructor reveals the round."))
     }
-    game   <- as.character(o$current_game[1])
     my_sub <- subs %>% filter(user_id == !!user_id())
     if (!nrow(my_sub)) return(p("No submission recorded for you this round."))
 
@@ -893,6 +978,27 @@ server <- function(input, output, session) {
 
       tags$hr(),
 
+      if (isTRUE(rv$impersonate)) div(
+        style = "background:#92400e; color:#fff; padding:8px 16px; border-radius:6px; margin-bottom:12px;",
+        strong(sprintf("IMPERSONATING: %s (%s)", rv$impersonate_name, rv$impersonate_uid)),
+        " — Student tab actions (PD choice, bonus contribution) are attributed to this student."
+      ),
+
+      wellPanel(
+        h5("Impersonate student (act as any student)"),
+        p("As admin, simulate game participation as any student. The Student tab will show their view and all submissions are recorded under their identity."),
+        fluidRow(
+          column(6, selectInput("impersonate_select", "Student to impersonate",
+            choices = {
+              us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+              setNames(us$user_id, us$display_name)
+            }
+          )),
+          column(3, br(), actionButton("impersonate_start", "Start impersonating", class = "btn-warning")),
+          column(3, br(), actionButton("impersonate_stop",  "Stop impersonating",  class = "btn-secondary"))
+        )
+      ),
+
       # --- Round / Section / Status ---
       wellPanel(
         h5("Round + Section + Status"),
@@ -929,8 +1035,8 @@ server <- function(input, output, session) {
         actionButton("adm_clear", "Clear submissions (this round + section)", class = "btn-danger"),
         tags$small(
           "Switch Active Section when moving between class sections. ",
-          "Clearing removes only submissions for the current section; ",
-          "contribution debits stay in the ledger."
+          "Clearing removes submissions for the current section and reverses ",
+          "any bonus contribution debits from the ledger."
         )
       ),
 
@@ -939,6 +1045,8 @@ server <- function(input, output, session) {
         h5("Game Parameters"),
         numericInput("adm_m", "Bonus multiplier m",
                      value = as.numeric(o$bonus_multiplier[1]), min = 1, step = 0.1),
+        numericInput("adm_contrib_cap", "Max flex passes students can wager (0 = no cap)",
+                     value = as.numeric(o$contrib_cap[1] %||% 0), min = 0, step = 0.5),
         numericInput("adm_pd_scale", "PD scale (flex passes per payoff point)",
                      value = as.numeric(o$pd_scale[1]), min = 0, step = 0.01),
         tags$hr(),
@@ -969,7 +1077,7 @@ server <- function(input, output, session) {
         actionButton("adm_payout", "Apply payouts to ledger (one-time per section)", class = "btn-success"),
         tags$small(
           "Credits students in the current section via purpose='grant' (negative amount). ",
-          "Bonus contributions were already debited on submission."
+          "Bonus contributions are debited when the round is closed."
         )
       ),
 
@@ -1016,6 +1124,18 @@ server <- function(input, output, session) {
               denom_lbl, input$adm_game, input$adm_status),
       type = "message"
     )
+
+    # When closing a bonus round, debit all pending contributions.
+    if (as.character(input$adm_status) == "closed" &&
+        as.character(input$adm_game) == "bonus") {
+      n_debited <- debit_pending_contributions(as.integer(input$adm_round), sec)
+      if (n_debited > 0) {
+        showNotification(
+          sprintf("Debited bonus contributions for %d student(s) in section '%s'.", n_debited, sec),
+          type = "message"
+        )
+      }
+    }
   })
 
   observeEvent(input$adm_clear, {
@@ -1023,13 +1143,27 @@ server <- function(input, output, session) {
     o   <- get_olig()
     r   <- as.integer(o$current_round[1])
     sec <- olig_section(o)
+
+    # Reverse contribution debits before removing submissions, so student
+    # balances are restored as if the round never happened.
+    n_debits <- db_exec(
+      "DELETE FROM ledger
+       WHERE round=? AND purpose='oligopoly_contrib'
+         AND user_id IN (
+           SELECT user_id FROM olig_submissions
+           WHERE round=? AND (section=? OR section IS NULL)
+         );",
+      list(r, r, sec)
+    )
+
     db_exec(
       "DELETE FROM olig_submissions WHERE round=? AND (section=? OR section IS NULL);",
       list(r, sec)
     )
     touch_olig()
     showNotification(
-      sprintf("Cleared submissions for round %d, section '%s'. (Contribution debits remain in ledger.)", r, sec),
+      sprintf("Cleared submissions for round %d, section '%s'. Reversed %d contribution debit(s).",
+              r, sec, as.integer(n_debits)),
       type = "warning"
     )
   })
@@ -1038,7 +1172,7 @@ server <- function(input, output, session) {
     req(is_admin())
     db_exec("
       UPDATE olig_settings SET
-        bonus_multiplier=?, pd_scale=?,
+        bonus_multiplier=?, contrib_cap=?, pd_scale=?,
         pd_HH_A=?, pd_HH_B=?,
         pd_HL_A=?, pd_HL_B=?,
         pd_LH_A=?, pd_LH_B=?,
@@ -1046,7 +1180,7 @@ server <- function(input, output, session) {
         updated_at=CURRENT_TIMESTAMP
       WHERE id=1;
     ", list(
-      as.numeric(input$adm_m),     as.numeric(input$adm_pd_scale),
+      as.numeric(input$adm_m),     as.numeric(input$adm_contrib_cap), as.numeric(input$adm_pd_scale),
       as.numeric(input$pd_HH_A),   as.numeric(input$pd_HH_B),
       as.numeric(input$pd_HL_A),   as.numeric(input$pd_HL_B),
       as.numeric(input$pd_LH_A),   as.numeric(input$pd_LH_B),
@@ -1098,6 +1232,29 @@ server <- function(input, output, session) {
     req(is_admin())
     res <- tryCatch(backup_db_to_drive(), error = function(e) list(ok = FALSE, msg = conditionMessage(e)))
     showNotification(res$msg, type = if (isTRUE(res$ok)) "message" else "error")
+  })
+
+  # ---------------- Impersonation ----------------
+  observeEvent(input$impersonate_start, {
+    req(is_admin(), input$impersonate_select)
+    uid <- as.character(input$impersonate_select)
+    row <- db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid))
+    if (!nrow(row)) { showNotification("User not found.", type = "error"); return() }
+    rv$impersonate      <- TRUE
+    rv$impersonate_uid  <- uid
+    rv$impersonate_name <- row$display_name[1]
+    showNotification(
+      sprintf("Now impersonating %s. Switch to Student tab to submit as them.", row$display_name[1]),
+      type = "warning"
+    )
+  })
+
+  observeEvent(input$impersonate_stop, {
+    req(is_admin())
+    rv$impersonate      <- FALSE
+    rv$impersonate_uid  <- NULL
+    rv$impersonate_name <- NULL
+    showNotification("Stopped impersonating.", type = "message")
   })
 
   session$onSessionEnded(function() {
