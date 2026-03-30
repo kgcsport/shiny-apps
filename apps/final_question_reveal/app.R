@@ -1992,7 +1992,7 @@ server <- function(input, output, session) {
     }
     uid <- as.character(input$grant_user)
     cap <- as.numeric(get_settings()$max_fp_held[1] %||% 8)
-    current_held <- get_allocation(uid)$remaining
+    current_held <- student_allocation_summary(uid)$remaining
     if (current_held >= cap) {
       showNotification(sprintf("Student already holds the maximum %.0f flex passes. Cannot grant more.", cap), type="warning")
       return()
@@ -2245,7 +2245,7 @@ server <- function(input, output, session) {
     for (uid in users_sel) {
       effective_amt <- amt
       if (amt > 0) {
-        current_held <- get_allocation(as.character(uid))$remaining
+        current_held <- student_allocation_summary(as.character(uid))$remaining
         if (current_held >= cap) next
         effective_amt <- min(amt, cap - current_held)
         if (effective_amt < amt) capped_count <- capped_count + 1L
