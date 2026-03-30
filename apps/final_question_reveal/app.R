@@ -1826,7 +1826,7 @@ server <- function(input, output, session) {
           tagList(
             p(sprintf("Active exam: %s", active_exam_id)),
             div(style = "background:#fff3cd; border:1px solid #ffc107; padding:8px; margin-bottom:8px; border-radius:4px; font-size:0.9em;",
-              tags$strong("Note:"), " Switching exam resets round to 1, clears unlocked questions and carryover, and closes pledging."
+              tags$strong("Note:"), " Switching exam only changes the active question bank. Round, unlocked questions, carryover, and pledge status are not affected."
             ),
             fluidRow(
               column(4,
@@ -2296,12 +2296,11 @@ server <- function(input, output, session) {
     exam_id <- trimws(as.character(input$adm_active_exam %||% ""))
     if (!nzchar(exam_id)) { showNotification("Select an exam first.", type = "error"); return() }
     db_exec(
-      "UPDATE game_state SET active_exam=?, round=1, round_open=0, carryover=0, unlocked_questions=0,
-       updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+      "UPDATE game_state SET active_exam=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
       list(exam_id)
     )
     showNotification(
-      sprintf("Switched to exam '%s'. Round reset to 1, unlocked questions and carryover cleared.", exam_id),
+      sprintf("Switched to exam '%s'. Round, carryover, and unlocked questions unchanged.", exam_id),
       type = "message"
     )
   })
