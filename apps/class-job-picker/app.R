@@ -463,7 +463,7 @@ student_points_data <- function(display_name) {
 student_points_ui <- function(display_name) {
   fluidPage(
     tags$head(tags$style(HTML(VASSAR_CSS))),
-    titlePanel(paste0("Times Selected/Volunteered for Class Jobs (need", MAX_COMMITS, " total) — ", display_name)),
+    titlePanel(paste0("My Class Jobs — ", display_name)),
     uiOutput("student_total"),
     fluidRow(
       column(5,
@@ -625,6 +625,21 @@ app_ui <- tagList(
       p("Select absent students for the current section and date. They will be excluded from all job draws today."),
       uiOutput("absent_picker_ui")
     ),
+    tabPanel("Student Preview",
+      br(),
+      uiOutput("impersonate_banner"),
+      uiOutput("student_total"),
+      fluidRow(
+        column(5,
+          h4("Summary by job type"),
+          tableOutput("student_summary")
+        ),
+        column(7,
+          h4("Recent entries (last 20)"),
+          tableOutput("student_recent")
+        )
+      )
+    ),
     tabPanel("Admin",
       fluidRow(
         column(8,
@@ -638,6 +653,16 @@ app_ui <- tagList(
             actionButton("admin_rebuild_state",   "REBUILD state from log (danger)"),
             actionButton("admin_generate_summary","GENERATE summary table"),
             actionButton("admin_import_log",      "Import log from Google Sheet"),
+            hr(),
+            wellPanel(
+              h4("Preview student view"),
+              p("Select any student to see their job history in the Student Preview tab."),
+              fluidRow(
+                column(6, uiOutput("impersonate_select_ui")),
+                column(3, br(), actionButton("impersonate_start", "Preview",      class = "btn-warning")),
+                column(3, br(), actionButton("impersonate_stop",  "Clear preview", class = "btn-secondary"))
+              )
+            ),
             hr(),
             wellPanel(
               h4("Manage jobs"),
@@ -692,8 +717,14 @@ app_ui <- tagList(
 server <- function(input, output, session) {
 
   # --- Auth state ---
-  authed       <- reactiveVal(!nzchar(SHINY_PASSWORD))  # TRUE = admin
-  student_user <- reactiveVal(NULL)  # display_name of logged-in student (or NULL)
+  authed           <- reactiveVal(!nzchar(SHINY_PASSWORD))  # TRUE = admin
+  student_user     <- reactiveVal(NULL)   # display_name of logged-in student
+  impersonate_user <- reactiveVal(NULL)   # display_name admin is previewing
+
+  # Unified: who's the "active student" for the student view outputs
+  view_student <- reactive({
+    impersonate_user() %||% student_user()
+  })
 
   output$main_ui <- renderUI({
     if (authed()) {
@@ -719,10 +750,10 @@ server <- function(input, output, session) {
         showNotification("Incorrect password.", type = "error")
       }
     } else {
-      # Student path: check pw_hash in users table
+      # DB path: check pw_hash in users table (works for both students and admins)
       row <- tryCatch(
         jdb_query(
-          "SELECT display_name, pw_hash FROM users WHERE user_id=? AND COALESCE(is_admin,0)=0",
+          "SELECT display_name, pw_hash, COALESCE(is_admin,0) AS is_admin FROM users WHERE user_id=?",
           list(uname)
         ),
         error = function(e) data.frame()
@@ -734,7 +765,11 @@ server <- function(input, output, session) {
         if (!nzchar(ph)) {
           showNotification("No password set for this account. Contact your instructor.", type = "error")
         } else if (bcrypt::checkpw(pw, ph)) {
-          student_user(row$display_name[1])
+          if (as.integer(row$is_admin[1]) == 1L) {
+            authed(TRUE)   # admin via DB → full app
+          } else {
+            student_user(row$display_name[1])
+          }
         } else {
           showNotification("Incorrect password.", type = "error")
         }
@@ -744,26 +779,24 @@ server <- function(input, output, session) {
 
   # --- Student view outputs & logout ---
   output$student_total <- renderUI({
-    req(!is.null(student_user()))
-    n <- nrow(student_points_data(student_user()))
+    vs <- view_student(); req(!is.null(vs))
+    n <- nrow(student_points_data(vs))
     p(style = "color:#666;", paste0("Total job entries: ", n))
   })
 
   output$student_summary <- renderTable({
-    req(!is.null(student_user()))
-    lg <- student_points_data(student_user())
+    vs <- view_student(); req(!is.null(vs))
+    lg <- student_points_data(vs)
     if (nrow(lg) == 0) return(NULL)
     lg$job_type <- sub("\\s+[0-9]+$", "", lg$job, ignore.case = TRUE)
-    out <- dplyr::count(lg, job_type, name = "Times done") |>
+    dplyr::count(lg, Job = job_type, name = "Times done") |>
       dplyr::arrange(dplyr::desc(`Times done`)) |>
-      dplyr::rename(Job = job_type) |>
       as.data.frame()
-    out
   }, striped = TRUE, hover = TRUE)
 
   output$student_recent <- renderTable({
-    req(!is.null(student_user()))
-    lg <- student_points_data(student_user())
+    vs <- view_student(); req(!is.null(vs))
+    lg <- student_points_data(vs)
     if (nrow(lg) == 0) return(NULL)
     dplyr::select(lg, Date = logged_date, Section = section, Job = job) |>
       head(20) |> as.data.frame()
@@ -771,6 +804,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$student_logout, {
     student_user(NULL)
+    impersonate_user(NULL)
   })
 
   # --- Reactive values ---
@@ -787,6 +821,41 @@ server <- function(input, output, session) {
   )
 
   rv_absent <- reactiveVal(character(0))
+
+  # --- Impersonation ---
+  output$impersonate_select_ui <- renderUI({
+    req(authed())
+    students <- tryCatch(
+      jdb_query("SELECT display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name"),
+      error = function(e) data.frame(display_name = character(0))
+    )
+    selectInput("impersonate_select", label = NULL,
+                choices = c("— select student —" = "", students$display_name))
+  })
+
+  observeEvent(input$impersonate_start, {
+    req(authed())
+    nm <- input$impersonate_select %||% ""
+    if (!nzchar(nm)) { showNotification("Select a student first.", type = "warning"); return() }
+    impersonate_user(nm)
+    showNotification(sprintf("Previewing: %s. Switch to Student Preview tab.", nm), type = "warning")
+  })
+
+  observeEvent(input$impersonate_stop, {
+    req(authed())
+    impersonate_user(NULL)
+    showNotification("Preview cleared.", type = "message")
+  })
+
+  output$impersonate_banner <- renderUI({
+    nm <- impersonate_user()
+    if (is.null(nm)) {
+      p(style = "color:#888;", "No student selected. Use the Admin tab to pick one.")
+    } else {
+      div(style = "background:#92400e; color:#fff; padding:8px 16px; border-radius:6px; margin-bottom:12px;",
+          strong(sprintf("Previewing: %s", nm)))
+    }
+  })
 
   # --- On auth: refresh section pickers and seed default jobs ---
   observeEvent(authed(), {
