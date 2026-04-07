@@ -482,7 +482,7 @@ student_points_data <- function(display_name) {
 student_points_ui <- function(display_name) {
   fluidPage(
     tags$head(tags$style(HTML(VASSAR_CSS))),
-    titlePanel(paste0("My Class Jobs — ", display_name)),
+    titlePanel(paste0("My Class Jobs (preliminary count) — ", display_name)),
     uiOutput("student_total"),
     fluidRow(
       column(5,
