@@ -70,6 +70,25 @@ DEFAULT_JOBS <- c(DRAW_JOBS, SPECIAL_JOBS)
 # ----------------------------
 # DB HELPER FUNCTIONS
 # ----------------------------
+get_max_commits_setting <- function(default = 10L) {
+  tryCatch({
+    r <- jdb_query("SELECT value FROM app_settings WHERE key='max_commits'")
+    if (nrow(r) == 0) return(as.integer(default))
+    as.integer(r$value[1])
+  }, error = function(e) as.integer(default))
+}
+
+save_max_commits_setting <- function(val) {
+  tryCatch({
+    jdb_exec("CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY, value TEXT)")
+    jdb_exec(
+      "INSERT INTO app_settings(key,value) VALUES('max_commits',?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      list(as.character(as.integer(val)))
+    )
+  }, error = function(e) NULL)
+}
+
 sections_from_db <- function() {
   tryCatch(
     jdb_query("SELECT DISTINCT section FROM users
@@ -780,9 +799,18 @@ server <- function(input, output, session) {
   # --- Student view outputs & logout ---
   output$student_total <- renderUI({
     vs <- view_student(); req(!is.null(vs))
-    n <- nrow(student_points_data(vs))
-    p(style = "color:#666;", paste0("Total job entries: ", n))
+    n      <- nrow(student_points_data(vs))
+    target <- get_max_commits_setting()
+    color  <- if (n >= target) "#2d6a4f" else "#666"
+    p(style = paste0("color:", color, ";"),
+      paste0("Total job entries: ", n, " / ", target, " required"))
   })
+
+  # Persist max_commits whenever admin changes it
+  observeEvent(input$max_commits, {
+    req(authed(), !is.null(input$max_commits))
+    save_max_commits_setting(input$max_commits)
+  }, ignoreInit = TRUE)
 
   output$student_summary <- renderTable({
     vs <- view_student(); req(!is.null(vs))
