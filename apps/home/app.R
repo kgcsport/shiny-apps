@@ -10,7 +10,7 @@ APP_NAMES <- c(
   "oligopoly-game"         = "Oligopoly",
   "restricted-seller-game" = "Restricted Seller",
   "supply-auction-game"    = "Supply Auction",
-  "class-job-picker"       = "Class Job Picker",
+  "class-job-picker"       = "Class Job Picker (see times picked/volunteered for job assignments)",
   "core-arcade"            = "CORE Arcade",
   "final_question_reveal"  = "Flex Pass Accounting",
   "indifference-to-demand" = "Indifference to Demand",
