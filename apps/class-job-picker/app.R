@@ -5,7 +5,7 @@
 # shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/shiny-apps/apps/class-job-picker", port = 3838, host = "127.0.0.1")
 
 if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
-pacman::p_load(shiny, googlesheets4, dplyr, tidyr, tibble, jsonlite, DBI, RSQLite)
+pacman::p_load(shiny, googlesheets4, dplyr, tidyr, tibble, jsonlite, DBI, RSQLite, bcrypt)
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 
@@ -445,6 +445,42 @@ import_log_from_sheets <- function() {
 }
 
 # ----------------------------
+# STUDENT POINTS HELPER
+# ----------------------------
+student_points_data <- function(display_name) {
+  lg <- tryCatch(
+    jdb_query(
+      "SELECT logged_date, section, job FROM job_log
+       WHERE display_name=? AND job NOT LIKE 'ADMIN__%'
+       ORDER BY logged_date DESC",
+      list(as.character(display_name))
+    ),
+    error = function(e) data.frame()
+  )
+  lg
+}
+
+student_points_ui <- function(display_name) {
+  fluidPage(
+    tags$head(tags$style(HTML(VASSAR_CSS))),
+    titlePanel(paste0("Times Selected/Volunteered for Class Jobs (need", MAX_COMMITS, " total) — ", display_name)),
+    uiOutput("student_total"),
+    fluidRow(
+      column(5,
+        h4("Summary by job type"),
+        tableOutput("student_summary")
+      ),
+      column(7,
+        h4("Recent entries (last 20)"),
+        tableOutput("student_recent")
+      )
+    ),
+    br(),
+    actionButton("student_logout", "Log out", class = "btn-primary")
+  )
+}
+
+# ----------------------------
 # PASSWORD GATE
 # ----------------------------
 SHINY_PASSWORD <- Sys.getenv("SHINY_PASSWORD", "")
@@ -482,8 +518,11 @@ ui <- fluidPage(
 login_ui <- fluidPage(
   titlePanel("Class Jobs Console"),
   wellPanel(
-    passwordInput("login_pw", "Enter password"),
-    actionButton("login_btn", "Sign in", class = "btn-primary")
+    textInput("login_user", "Username (students only — leave blank for admin)"),
+    passwordInput("login_pw", "Password"),
+    actionButton("login_btn", "Sign in", class = "btn-primary"),
+    tags$small(style = "color:#666;",
+      "Students: enter your username and password. Instructors: leave username blank.")
   )
 )
 
@@ -653,19 +692,86 @@ app_ui <- tagList(
 # ----------------------------
 server <- function(input, output, session) {
 
-  # --- Password gate ---
-  authed <- reactiveVal(!nzchar(SHINY_PASSWORD))
+  # --- Auth state ---
+  authed       <- reactiveVal(!nzchar(SHINY_PASSWORD))  # TRUE = admin
+  student_user <- reactiveVal(NULL)  # display_name of logged-in student (or NULL)
 
   output$main_ui <- renderUI({
-    if (authed()) app_ui else login_ui
+    if (authed()) {
+      app_ui
+    } else if (!is.null(student_user())) {
+      student_points_ui(student_user())
+    } else {
+      login_ui
+    }
   })
 
   observeEvent(input$login_btn, {
-    if (identical(input$login_pw, SHINY_PASSWORD)) {
-      authed(TRUE)
+    uname <- trimws(input$login_user %||% "")
+    pw    <- input$login_pw %||% ""
+
+    if (!nzchar(uname)) {
+      # Admin path: single shared password
+      if (nzchar(SHINY_PASSWORD) && identical(pw, SHINY_PASSWORD)) {
+        authed(TRUE)
+      } else if (!nzchar(SHINY_PASSWORD)) {
+        authed(TRUE)
+      } else {
+        showNotification("Incorrect password.", type = "error")
+      }
     } else {
-      showNotification("Incorrect password.", type = "error")
+      # Student path: check pw_hash in users table
+      row <- tryCatch(
+        jdb_query(
+          "SELECT display_name, pw_hash FROM users WHERE user_id=? AND COALESCE(is_admin,0)=0",
+          list(uname)
+        ),
+        error = function(e) data.frame()
+      )
+      if (nrow(row) == 0) {
+        showNotification("Username not found.", type = "error")
+      } else {
+        ph <- row$pw_hash[1] %||% ""
+        if (!nzchar(ph)) {
+          showNotification("No password set for this account. Contact your instructor.", type = "error")
+        } else if (bcrypt::checkpw(pw, ph)) {
+          student_user(row$display_name[1])
+        } else {
+          showNotification("Incorrect password.", type = "error")
+        }
+      }
     }
+  })
+
+  # --- Student view outputs & logout ---
+  output$student_total <- renderUI({
+    req(!is.null(student_user()))
+    n <- nrow(student_points_data(student_user()))
+    p(style = "color:#666;", paste0("Total job entries: ", n))
+  })
+
+  output$student_summary <- renderTable({
+    req(!is.null(student_user()))
+    lg <- student_points_data(student_user())
+    if (nrow(lg) == 0) return(NULL)
+    lg$job_type <- sub("\\s+[0-9]+$", "", lg$job, ignore.case = TRUE)
+    out <- dplyr::count(lg, job_type, name = "Times done") |>
+      dplyr::arrange(dplyr::desc(`Times done`)) |>
+      dplyr::rename(Job = job_type) |>
+      as.data.frame()
+    out
+  }, striped = TRUE, hover = TRUE)
+
+  output$student_recent <- renderTable({
+    req(!is.null(student_user()))
+    lg <- student_points_data(student_user())
+    if (nrow(lg) == 0) return(NULL)
+    dplyr::select(lg, Date = logged_date, Section = section, Job = job) |>
+      head(20) |> as.data.frame()
+  }, striped = TRUE, hover = TRUE)
+
+  observeEvent(input$student_logout, {
+    student_user(NULL)
   })
 
   # --- Reactive values ---
