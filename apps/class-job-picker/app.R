@@ -517,7 +517,8 @@ app_ui <- tagList(
                 div(
                   actionButton("draw",    "Draw jobs"),
                   actionButton("commit",  "Commit jobs"),
-                  actionButton("refresh", "Refresh")
+                  actionButton("refresh", "Refresh"),
+                  uiOutput("undoUI")
                 )
               )
             )
@@ -671,6 +672,8 @@ server <- function(input, output, session) {
   rv <- reactiveValues(
     draft        = NULL,
     draft_res    = NULL,
+    prev_draft     = NULL,
+    prev_draft_res = NULL,
     cycle_id     = NA_integer_,
     bag_n        = NA_integer_,
     roster_n     = NA_integer_,
@@ -782,18 +785,22 @@ server <- function(input, output, session) {
 
   observeEvent(input$refresh, {
     update_status()
-    rv$draft        <- NULL
-    rv$draft_res    <- NULL
+    rv$draft           <- NULL
+    rv$draft_res       <- NULL
+    rv$prev_draft      <- NULL
+    rv$prev_draft_res  <- NULL
     rv_absent(character(0))
-    rv$jobs_committed <- FALSE
+    rv$jobs_committed  <- FALSE
   })
 
   observeEvent(list(input$section, input$date), {
     req(authed())
-    rv$draft          <- NULL
-    rv$draft_res      <- NULL
-    rv$jobs_committed <- FALSE
-    rv$cold_current   <- ""
+    rv$draft           <- NULL
+    rv$draft_res       <- NULL
+    rv$prev_draft      <- NULL
+    rv$prev_draft_res  <- NULL
+    rv$jobs_committed  <- FALSE
+    rv$cold_current    <- ""
     rv_absent(character(0))
   }, ignoreInit = TRUE)
 
@@ -814,8 +821,10 @@ server <- function(input, output, session) {
 
     res      <- draw_jobs_day(input$section, jobs, absentees = absentees,
                               exclusions = exclusions)
-    rv$draft_res  <- res
-    rv$draft      <- res$assignments
+    rv$prev_draft     <- rv$draft
+    rv$prev_draft_res <- rv$draft_res
+    rv$draft_res      <- res
+    rv$draft          <- res$assignments
     rv$jobs_committed <- FALSE
   })
 
@@ -970,6 +979,8 @@ server <- function(input, output, session) {
 
     new_name <- sample(available, 1)
 
+    rv$prev_draft     <- rv$draft
+    rv$prev_draft_res <- rv$draft_res
     rv$draft_res$assignments[[job_to_redraw]] <- new_name
     rv$draft_res$state_updates[[job_to_redraw]] <- list(
       cycle_id = info$cycle_id,
@@ -978,6 +989,21 @@ server <- function(input, output, session) {
 
     rv$draft <- rv$draft_res$assignments
     update_status()
+  })
+
+  # --- Undo last draw / redraw ---
+  observeEvent(input$undo_draw, {
+    req(!is.null(rv$prev_draft))
+    rv$draft          <- rv$prev_draft
+    rv$draft_res      <- rv$prev_draft_res
+    rv$prev_draft     <- NULL
+    rv$prev_draft_res <- NULL
+    rv$jobs_committed <- FALSE
+  })
+
+  output$undoUI <- renderUI({
+    if (is.null(rv$prev_draft)) return(NULL)
+    actionButton("undo_draw", "Undo last draw", class = "btn-warning")
   })
 
   # --- Admin: clear log ---
