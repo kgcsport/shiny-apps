@@ -368,16 +368,19 @@ server <- function(input, output, session) {
             "Be specific: brand, size, store location.",
             tags$em(" E.g. '32oz Gatorade Fruit Punch, CVS Main St.' not just 'Gatorade'.")),
           fluidRow(
-            column(5, selectizeInput("ni_name", "Item (brand & size)",
-                                     choices  = prior_names,
-                                     selected = NULL,
-                                     options  = list(create = TRUE, createOnBlur = TRUE,
-                                                     placeholder = "32oz Gatorade Fruit Punch"))),
-            column(4, selectizeInput("ni_store", "Store",
-                                     choices  = prior_stores,
-                                     selected = NULL,
-                                     options  = list(create = TRUE, createOnBlur = TRUE,
-                                                     placeholder = "CVS Main St."))),
+            column(5,
+              textInput("ni_name", "Item (brand & size)",
+                        placeholder = "32oz Gatorade Fruit Punch"),
+              tags$datalist(id = "ni_name_list",
+                lapply(prior_names, function(n) tags$option(value = n))),
+              tags$script('document.getElementById("ni_name").setAttribute("list","ni_name_list")')
+            ),
+            column(4,
+              textInput("ni_store", "Store", placeholder = "CVS Main St."),
+              tags$datalist(id = "ni_store_list",
+                lapply(prior_stores, function(s) tags$option(value = s))),
+              tags$script('document.getElementById("ni_store").setAttribute("list","ni_store_list")')
+            ),
             column(3, selectInput("ni_cat", "Category", choices = BLS_CATEGORIES))
           ),
           fluidRow(
@@ -481,8 +484,8 @@ server <- function(input, output, session) {
            SET price=excluded.price, source=excluded.source, recorded_at=CURRENT_TIMESTAMP;",
         list(iid, uid, pr, if (nzchar(src)) src else NA_character_))
 
-      updateSelectizeInput(session, "ni_name",   selected = character(0))
-      updateSelectizeInput(session, "ni_store",  selected = character(0))
+      updateTextInput(session, "ni_name",  value = "")
+      updateTextInput(session, "ni_store", value = "")
       updateSelectizeInput(session, "ni_source", selected = character(0))
       updateNumericInput(session, "ni_price", value = NA)
       showNotification(paste0('"', nm, '" added.'), type = "message")
