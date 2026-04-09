@@ -1,6 +1,6 @@
 FROM rocker/shiny:latest
 
-# System deps for google auth + SSL + SQLite
+# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsqlite3-dev \
     libcurl4-openssl-dev \
@@ -8,10 +8,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml2-dev \
   && rm -rf /var/lib/apt/lists/*
 
-# Install only the R packages actually used by the apps, then GC
-RUN R -e "install.packages(c('pacman','DT','bcrypt','dplyr','tibble','readr','stringr','DBI','RSQLite','googledrive','googlesheets4','future','promises','digest','jsonlite','ggplot2','tidyr','lubridate'), repos='https://cloud.r-project.org'); gc()"
+# R packages
+RUN R -e "install.packages(c('pacman','DT','bcrypt','dplyr','tibble','readr','stringr','DBI','RSQLite','googledrive','googlesheets4','future','promises','digest','jsonlite','ggplot2','tidyr','lubridate','forcats'), repos='https://cloud.r-project.org'); gc()"
 
-# Cap node.js heap for Shiny Server (default is ~1.5GB, we need very little) 
-ENV NODE_OPTIONS="--max-old-space-size=32 --max-semi-space-size=2" 
-
+# Copy your apps into the image
+RUN rm -rf /srv/shiny-server/*
 COPY apps/ /srv/shiny-server/
+
+# (optional) bake in shiny-server.conf; if you mount it, you can skip this
+# COPY shiny-server.conf /etc/shiny-server/shiny-server.conf

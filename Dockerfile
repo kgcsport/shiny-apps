@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 # R packages
-RUN R -e "install.packages(c('pacman','DT','bcrypt','dplyr','tibble','readr','stringr','DBI','RSQLite','googledrive','googlesheets4','future','promises','digest','jsonlite','ggplot2','tidyr','lubridate'), repos='https://cloud.r-project.org'); gc()"
+RUN R -e "install.packages(c('pacman','DT','bcrypt','dplyr','tibble','readr','stringr','DBI','RSQLite','googledrive','googlesheets4','future','promises','digest','jsonlite','ggplot2','tidyr','lubridate','forcats'), repos='https://cloud.r-project.org'); gc()"
 
 # Copy your apps into the image
 RUN rm -rf /srv/shiny-server/*
