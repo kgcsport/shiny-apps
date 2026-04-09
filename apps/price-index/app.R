@@ -92,10 +92,15 @@ init_db <- function() {
     item_id     INTEGER NOT NULL REFERENCES basket_items(item_id),
     user_id     TEXT    NOT NULL,
     price       REAL    NOT NULL,
+    source      TEXT,
     wave        INTEGER NOT NULL,
     recorded_at TEXT    DEFAULT (CURRENT_TIMESTAMP),
     UNIQUE(item_id, wave)
   );")
+  # Migration: add source column if upgrading from a DB without it
+  cols <- db_query("PRAGMA table_info(price_records);")$name
+  if (!"source" %in% cols)
+    db_exec("ALTER TABLE price_records ADD COLUMN source TEXT;")
 
   db_exec("CREATE INDEX IF NOT EXISTS ix_pr_user  ON price_records(user_id);")
   db_exec("CREATE INDEX IF NOT EXISTS ix_pr_wave  ON price_records(wave);")
@@ -325,7 +330,7 @@ server <- function(input, output, session) {
     valueFunc = function() {
       db_query("
         SELECT u.display_name, u.section, bi.item_name, bi.store, bi.category,
-               bi.times_per_month, pr.price, pr.wave, pr.recorded_at
+               bi.times_per_month, pr.price, pr.source, pr.wave, pr.recorded_at
         FROM price_records pr
         JOIN basket_items bi ON pr.item_id = bi.item_id
         JOIN users u ON pr.user_id = u.user_id
@@ -355,22 +360,36 @@ server <- function(input, output, session) {
 
       # ── Entry form ──
       if (w == 1) {
+        prior_names  <- sort(unique(items$item_name))
+        prior_stores <- sort(unique(items$store))
         wellPanel(
           tags$h5("Add an Item"),
           tags$p(style = "color:#555;font-size:0.9em;",
             "Be specific: brand, size, store location.",
             tags$em(" E.g. '32oz Gatorade Fruit Punch, CVS Main St.' not just 'Gatorade'.")),
           fluidRow(
-            column(5, textInput("ni_name",  "Item (brand & size)",
-                                placeholder = "32oz Gatorade Fruit Punch")),
-            column(4, textInput("ni_store", "Store",
-                                placeholder = "CVS Main St.")),
+            column(5, selectizeInput("ni_name", "Item (brand & size)",
+                                     choices  = prior_names,
+                                     selected = NULL,
+                                     options  = list(create = TRUE, createOnBlur = TRUE,
+                                                     placeholder = "32oz Gatorade Fruit Punch"))),
+            column(4, selectizeInput("ni_store", "Store",
+                                     choices  = prior_stores,
+                                     selected = NULL,
+                                     options  = list(create = TRUE, createOnBlur = TRUE,
+                                                     placeholder = "CVS Main St."))),
             column(3, selectInput("ni_cat", "Category", choices = BLS_CATEGORIES))
           ),
           fluidRow(
             column(3, numericInput("ni_freq",  "Times/month", value = 4, min = 0.5, step = 0.5)),
             column(3, numericInput("ni_price", "Price today ($)", value = NA, min = 0, step = 0.01)),
-            column(3, tags$br(),
+            column(4, selectizeInput("ni_source", "Price source",
+                                     choices  = c("In store (price tag)", "Store website",
+                                                  "Receipt", "App (Instacart, Amazon, etc.)"),
+                                     selected = NULL,
+                                     options  = list(create = TRUE, createOnBlur = TRUE,
+                                                     placeholder = "Where did you check?"))),
+            column(2, tags$br(),
                    actionButton("add_item_btn", "Add Item",
                                 class = "btn-success", style = "margin-top:4px;"))
           )
@@ -393,7 +412,7 @@ server <- function(input, output, session) {
             tags$table(class = "table table-sm",
               tags$thead(tags$tr(
                 tags$th("Item"), tags$th("Store"), tags$th("Category"),
-                tags$th("New Price ($)"), tags$th("")
+                tags$th("New Price ($)"), tags$th("Source"), tags$th("")
               )),
               tags$tbody(
                 lapply(seq_len(nrow(pending)), function(i) {
@@ -404,6 +423,13 @@ server <- function(input, output, session) {
                     tags$td(tags$span(class="badge bg-secondary", r$category)),
                     tags$td(numericInput(paste0("upd_", r$item_id), NULL,
                                         value = NA, min = 0, step = 0.01, width = "110px")),
+                    tags$td(selectizeInput(paste0("upd_src_", r$item_id), NULL,
+                                          choices  = c("In store (price tag)", "Store website",
+                                                       "Receipt", "App (Instacart, Amazon, etc.)"),
+                                          selected = NULL,
+                                          options  = list(create = TRUE, createOnBlur = TRUE,
+                                                          placeholder = "Source"),
+                                          width = "180px")),
                     tags$td(actionButton(paste0("upd_btn_", r$item_id), "Save",
                                         class = "btn-sm btn-primary"))
                   )
@@ -425,11 +451,12 @@ server <- function(input, output, session) {
   # ── Add item ────────────────────────────────────────────────────────────────
   observeEvent(input$add_item_btn, {
     uid <- req(rv$user_id)
-    nm  <- trimws(input$ni_name  %||% "")
-    st  <- trimws(input$ni_store %||% "")
-    cat <- input$ni_cat   %||% BLS_CATEGORIES[1]
+    nm  <- trimws(input$ni_name   %||% "")
+    st  <- trimws(input$ni_store  %||% "")
+    cat <- input$ni_cat    %||% BLS_CATEGORIES[1]
     fr  <- as.numeric(input$ni_freq)
     pr  <- as.numeric(input$ni_price)
+    src <- trimws(input$ni_source %||% "")
 
     if (!nzchar(nm))          { showNotification("Item name required.", type="error"); return() }
     if (!nzchar(st))          { showNotification("Store required.",     type="error"); return() }
@@ -448,14 +475,15 @@ server <- function(input, output, session) {
         list(uid, nm, st))$item_id[1]
 
       db_exec(
-        "INSERT INTO price_records(item_id, user_id, price, wave)
-         VALUES(?,?,?,1)
+        "INSERT INTO price_records(item_id, user_id, price, source, wave)
+         VALUES(?,?,?,?,1)
          ON CONFLICT(item_id, wave) DO UPDATE
-           SET price=excluded.price, recorded_at=CURRENT_TIMESTAMP;",
-        list(iid, uid, pr))
+           SET price=excluded.price, source=excluded.source, recorded_at=CURRENT_TIMESTAMP;",
+        list(iid, uid, pr, if (nzchar(src)) src else NA_character_))
 
-      updateTextInput(session, "ni_name",  value = "")
-      updateTextInput(session, "ni_store", value = "")
+      updateSelectizeInput(session, "ni_name",   selected = character(0))
+      updateSelectizeInput(session, "ni_store",  selected = character(0))
+      updateSelectizeInput(session, "ni_source", selected = character(0))
       updateNumericInput(session, "ni_price", value = NA)
       showNotification(paste0('"', nm, '" added.'), type = "message")
       bump()
@@ -476,12 +504,13 @@ server <- function(input, output, session) {
           showNotification("Enter a valid price.", type = "error"); return()
         }
         wv <- isolate(current_wave())
+        src <- trimws(input[[paste0("upd_src_", iid)]] %||% "")
         db_exec(
-          "INSERT INTO price_records(item_id, user_id, price, wave)
-           VALUES(?,?,?,?)
+          "INSERT INTO price_records(item_id, user_id, price, source, wave)
+           VALUES(?,?,?,?,?)
            ON CONFLICT(item_id, wave) DO UPDATE
-             SET price=excluded.price, recorded_at=CURRENT_TIMESTAMP;",
-          list(iid, uid, pr, as.integer(wv)))
+             SET price=excluded.price, source=excluded.source, recorded_at=CURRENT_TIMESTAMP;",
+          list(iid, uid, pr, if (nzchar(src)) src else NA_character_, as.integer(wv)))
         nm <- items$item_name[items$item_id == iid]
         showNotification(paste0('"', nm, '" saved for Wave ', wv, '.'), type = "message")
         bump()
@@ -669,7 +698,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     db_query("SELECT u.display_name AS Student, u.section AS Section,
                      pr.wave AS Wave, bi.item_name AS Item, bi.category AS Category,
-                     pr.price AS Price, pr.recorded_at AS Submitted
+                     pr.price AS Price, pr.source AS Source, pr.recorded_at AS Submitted
               FROM price_records pr
               JOIN basket_items bi ON pr.item_id = bi.item_id
               JOIN users u ON pr.user_id = u.user_id
