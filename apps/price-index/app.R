@@ -1,38 +1,19 @@
 # app.R — Personal Price Index Activity
 # Students build a basket of goods and track prices across waves.
-# Auth: bcrypt + SQLite, same pattern as final_question_reveal.
-# Credentials: CRED_B64 / CRED_CSV / CRED_PATH env vars (same CSV as other apps).
-# DB backed up to Google Drive on session end.
+# Auth: bcrypt + SQLite — shares finalqdata.sqlite with final_question_reveal.
+# Users (including passwords) come from that shared DB; no separate credentials file needed.
+# DB backed up to Google Drive on session end (same FLEX_PASS_FOLDER_ID as final_question_reveal).
 
 if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 pacman::p_load(
-  shiny, DT, bcrypt, dplyr, tidyr, tibble, readr, forcats,
-  DBI, RSQLite, ggplot2, googlesheets4, googledrive, promises, future
+  shiny, DT, bcrypt, dplyr, tidyr, tibble, forcats,
+  DBI, RSQLite, ggplot2, googledrive, promises, future
 )
 
 future::plan(future::multisession)
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 logf   <- function(...) cat(format(Sys.time()), "-", paste(...), "\n", file = stderr())
-
-# ── Credentials ───────────────────────────────────────────────────────────────
-get_credentials <- function() {
-  b64 <- Sys.getenv("CRED_B64", "")
-  if (nzchar(b64)) {
-    return(read_csv(rawToChar(base64enc::base64decode(b64)),
-                    show_col_types = FALSE, trim_ws = TRUE))
-  }
-  csv <- Sys.getenv("CRED_CSV", "")
-  if (nzchar(csv)) {
-    con <- textConnection(csv); on.exit(close(con))
-    return(read_csv(con, show_col_types = FALSE, trim_ws = TRUE))
-  }
-  path <- Sys.getenv("CRED_PATH", "credentials.csv")
-  if (file.exists(path)) return(read_csv(path, show_col_types = FALSE, trim_ws = TRUE))
-  stop("No credentials found: set CRED_B64, CRED_CSV, or CRED_PATH")
-}
-
-CRED <- get_credentials()
 
 # ── Database ──────────────────────────────────────────────────────────────────
 app_data_dir <- local({
@@ -48,7 +29,8 @@ app_data_dir <- local({
   }
 })
 
-DB_PATH <- file.path(app_data_dir(), "price_index.sqlite")
+# Shared DB with final_question_reveal — same CONNECT_CONTENT_DIR resolution
+DB_PATH <- file.path(app_data_dir(), "finalqdata.sqlite")
 conn    <- NULL
 
 get_con <- function() {
@@ -60,13 +42,10 @@ db_exec  <- function(sql, params = NULL) DBI::dbExecute(get_con(), sql, params =
 db_query <- function(sql, params = NULL) DBI::dbGetQuery(get_con(), sql, params = params)
 
 init_db <- function() {
-  db_exec("CREATE TABLE IF NOT EXISTS users (
-    user_id      TEXT PRIMARY KEY,
-    display_name TEXT,
-    section      TEXT,
-    is_admin     INTEGER DEFAULT 0,
-    pw_hash      TEXT
-  );")
+  # users table is owned by final_question_reveal — do not create or seed here.
+  # Ensure optional columns exist in case this runs before final_question_reveal does.
+  try(db_exec("ALTER TABLE users ADD COLUMN pw_hash  TEXT;"), silent = TRUE)
+  try(db_exec("ALTER TABLE users ADD COLUMN section  TEXT;"), silent = TRUE)
 
   db_exec("CREATE TABLE IF NOT EXISTS app_state (
     id           INTEGER PRIMARY KEY CHECK(id = 1),
@@ -106,27 +85,6 @@ init_db <- function() {
   db_exec("CREATE INDEX IF NOT EXISTS ix_pr_wave  ON price_records(wave);")
   db_exec("CREATE INDEX IF NOT EXISTS ix_bi_user  ON basket_items(user_id);")
 
-  # Seed / refresh users from credentials CSV
-  coerce_admin <- function(x) as.integer(tolower(as.character(x %||% "false")) %in%
-                                           c("true","t","1","yes","y"))
-  purrr::walk(seq_len(nrow(CRED)), function(i) {
-    db_exec(
-      "INSERT INTO users(user_id, display_name, section, is_admin, pw_hash)
-       VALUES(?,?,?,?,?)
-       ON CONFLICT(user_id) DO UPDATE
-         SET display_name = excluded.display_name,
-             section      = excluded.section,
-             is_admin     = excluded.is_admin;",
-      params = list(
-        CRED$user[i],
-        CRED$name[i],
-        as.character(CRED$section[i] %||% NA),
-        coerce_admin(CRED$is_admin[i]),
-        CRED$pw_hash[i]
-      )
-    )
-  })
-
   n <- db_query("SELECT COUNT(*) n FROM app_state WHERE id=1;")$n[1]
   if (!n) db_exec("INSERT INTO app_state(id, current_wave) VALUES(1, 1);")
 }
@@ -152,14 +110,15 @@ google_auth <- function() {
 }
 
 backup_db <- function() {
-  folder_id <- Sys.getenv("PRICE_INDEX_FOLDER_ID", "")
+  # Uses the same folder as final_question_reveal so all DB backups land together.
+  folder_id <- Sys.getenv("FLEX_PASS_FOLDER_ID", "")
   if (!nzchar(folder_id)) {
-    logf("backup_db(): PRICE_INDEX_FOLDER_ID not set — skipping backup.")
+    logf("backup_db(): FLEX_PASS_FOLDER_ID not set — skipping backup.")
     return(invisible(FALSE))
   }
   if (!isTRUE(google_auth())) return(invisible(FALSE))
   try(DBI::dbExecute(get_con(), "PRAGMA wal_checkpoint(FULL);"), silent = TRUE)
-  zf <- file.path(tempdir(), sprintf("price_index_%s.zip", format(Sys.time(), "%Y%m%d_%H%M%S")))
+  zf <- file.path(tempdir(), sprintf("finalqdata_%s.zip", format(Sys.time(), "%Y%m%d_%H%M%S")))
   utils::zip(zf, files = DB_PATH[file.exists(DB_PATH)], flags = "-j")
   googledrive::drive_upload(media = zf, path = googledrive::as_id(folder_id),
                             name = basename(zf), type = "application/zip", overwrite = FALSE)
