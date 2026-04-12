@@ -58,3 +58,4 @@ google_application_credentials.json
 /secrets/
 .env
 *.dcf
+ideas
