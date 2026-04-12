@@ -48,10 +48,14 @@ init_db <- function() {
   try(db_exec("ALTER TABLE users ADD COLUMN section  TEXT;"), silent = TRUE)
 
   db_exec("CREATE TABLE IF NOT EXISTS app_state (
-    id           INTEGER PRIMARY KEY CHECK(id = 1),
-    current_wave INTEGER DEFAULT 1,
-    updated_at   TEXT    DEFAULT (CURRENT_TIMESTAMP)
+    id             INTEGER PRIMARY KEY CHECK(id = 1),
+    current_wave   INTEGER DEFAULT 1,
+    categories     TEXT,
+    price_sources  TEXT,
+    updated_at     TEXT    DEFAULT (CURRENT_TIMESTAMP)
   );")
+  try(db_exec("ALTER TABLE app_state ADD COLUMN categories    TEXT;"), silent = TRUE)
+  try(db_exec("ALTER TABLE app_state ADD COLUMN price_sources TEXT;"), silent = TRUE)
 
   # Each student's item definition (set once in wave 1, immutable after)
   db_exec("CREATE TABLE IF NOT EXISTS basket_items (
@@ -90,6 +94,34 @@ init_db <- function() {
 }
 
 init_db()
+
+# ── List helpers — categories & sources stored in app_state ──────────────────
+encode_list <- function(x) paste(x, collapse = "\n")
+decode_list <- function(s) Filter(nzchar, trimws(strsplit(s %||% "", "\n")[[1]]))
+
+get_categories <- function() {
+  raw <- db_query("SELECT categories FROM app_state WHERE id=1;")$categories[1]
+  lst <- decode_list(raw)
+  if (length(lst)) lst else BLS_CATEGORIES
+}
+
+get_price_sources <- function() {
+  raw <- db_query("SELECT price_sources FROM app_state WHERE id=1;")$price_sources[1]
+  lst <- decode_list(raw)
+  if (length(lst)) lst else PRICE_SOURCES
+}
+
+save_categories <- function(cats) {
+  db_exec(
+    "UPDATE app_state SET categories=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+    list(encode_list(cats)))
+}
+
+save_price_sources <- function(srcs) {
+  db_exec(
+    "UPDATE app_state SET price_sources=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+    list(encode_list(srcs)))
+}
 
 # ── Google Drive backup ───────────────────────────────────────────────────────
 google_auth <- function() {
@@ -145,6 +177,88 @@ BLS_CATEGORIES <- c(
   "Clothing & Apparel",
   "Other"
 )
+
+PRICE_SOURCES <- c(
+  "In store (price tag)",
+  "Store website",
+  "Receipt",
+  "App (Instacart, Amazon, etc.)"
+)
+
+# ── Anonymization (class view) ────────────────────────────────────────────────
+ECONOMISTS <- c(
+  "Adam Smith", "David Ricardo", "John Maynard Keynes", "Milton Friedman",
+  "Paul Samuelson", "Friedrich Hayek", "Alfred Marshall", "Irving Fisher",
+  "Joseph Schumpeter", "Vilfredo Pareto", "Arthur Pigou", "Gary Becker",
+  "George Stigler", "Ronald Coase", "James Tobin", "Robert Solow",
+  "Paul Krugman", "Janet Yellen", "Ben Bernanke", "Lawrence Summers",
+  "Amartya Sen", "Elinor Ostrom", "Kenneth Arrow", "Paul Volcker",
+  "Robert Lucas", "Thomas Sargent", "Eugene Fama", "Robert Shiller",
+  "Angus Deaton", "Esther Duflo", "Abhijit Banerjee", "Michael Spence",
+  "George Akerlof", "Joseph Stiglitz", "Oliver Williamson", "Finn Kydland",
+  "Edward Prescott", "Christopher Sims", "Lars Peter Hansen", "Jean Tirole",
+  "Oliver Hart", "Bengt Holmstrom", "William Nordhaus", "Paul Romer",
+  "Richard Thaler", "Robert Engle", "Clive Granger", "James Heckman",
+  "Daniel Kahneman", "Vernon Smith"
+)
+
+# Deterministic alias per user — stable even when other users join
+economist_for_uid <- function(uid) {
+  h   <- digest::digest(uid, algo = "crc32")
+  idx <- (strtoi(substr(h, 1, 7), 16L) %% length(ECONOMISTS)) + 1L
+  ECONOMISTS[[idx]]
+}
+
+# uid -> alias map; rare hash collisions get a Roman suffix (II, III, …)
+make_anon_map <- function() {
+  uids <- db_query(
+    "SELECT DISTINCT user_id FROM basket_items ORDER BY user_id;")$user_id
+  if (!length(uids)) return(setNames(character(0), character(0)))
+  raw    <- vapply(uids, economist_for_uid, character(1))
+  final  <- raw
+  counts <- integer(length(ECONOMISTS)); names(counts) <- ECONOMISTS
+  sfx    <- c("II", "III", "IV", "V", "VI", "VII")
+  for (i in seq_along(raw)) {
+    base <- raw[[i]]
+    counts[[base]] <- counts[[base]] + 1L
+    if (counts[[base]] > 1L)
+      final[[i]] <- paste(base, sfx[[min(counts[[base]] - 1L, length(sfx))]])
+  }
+  setNames(final, uids)
+}
+
+apply_anon_map <- function(df, anon_map) {
+  if (!nrow(df)) { df$anon_name <- character(0); return(df) }
+  df$anon_name <- anon_map[df$user_id]
+  df$anon_name[is.na(df$anon_name)] <- "Unknown Economist"
+  df
+}
+
+# Per-student per-wave CPI from a (possibly filtered) price data frame.
+# df must have: user_id, anon_name, section, price, times_per_month, wave
+compute_cpi_from_df <- function(df) {
+  if (!nrow(df)) return(tibble::tibble())
+  per_wave <- df |>
+    dplyr::group_by(user_id, anon_name, section, wave) |>
+    dplyr::summarise(basket_cost = sum(price * times_per_month, na.rm = TRUE),
+                     .groups = "drop")
+  base <- per_wave |>
+    dplyr::filter(wave == 1) |>
+    dplyr::select(user_id, base_cost = basket_cost)
+  per_wave |>
+    dplyr::left_join(base, by = "user_id") |>
+    dplyr::filter(!is.na(base_cost), base_cost > 0) |>
+    dplyr::mutate(cpi = round(basket_cost / base_cost * 100, 1))
+}
+
+# Apply category + source filters
+filter_price_df <- function(df, cat_f, src_f) {
+  if (!identical(cat_f, "All") && nzchar(cat_f %||% ""))
+    df <- df[!is.na(df$category) & df$category == cat_f, , drop = FALSE]
+  if (!identical(src_f, "All") && nzchar(src_f %||% ""))
+    df <- df[!is.na(df$source)   & df$source   == src_f, , drop = FALSE]
+  df
+}
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
 get_wave       <- function() db_query("SELECT current_wave FROM app_state WHERE id=1;")$current_wave[1]
@@ -224,6 +338,9 @@ server <- function(input, output, session) {
 
   bump <- function() rv$tick <- rv$tick + 1L
 
+  categories_r <- reactive({ rv$tick; get_categories()    })
+  sources_r    <- reactive({ rv$tick; get_price_sources() })
+
   # ── Auth ────────────────────────────────────────────────────────────────────
   output$app_ui <- renderUI({
     if (!rv$authed) return(login_ui())
@@ -288,7 +405,7 @@ server <- function(input, output, session) {
     },
     valueFunc = function() {
       db_query("
-        SELECT u.display_name, u.section, bi.item_name, bi.store, bi.category,
+        SELECT u.user_id, u.display_name, u.section, bi.item_name, bi.store, bi.category,
                bi.times_per_month, pr.price, pr.source, pr.wave, pr.recorded_at
         FROM price_records pr
         JOIN basket_items bi ON pr.item_id = bi.item_id
@@ -340,14 +457,13 @@ server <- function(input, output, session) {
                 lapply(prior_stores, function(s) tags$option(value = s))),
               tags$script('document.getElementById("ni_store").setAttribute("list","ni_store_list")')
             ),
-            column(3, selectInput("ni_cat", "Category", choices = BLS_CATEGORIES))
+            column(3, selectInput("ni_cat", "Category", choices = categories_r()))
           ),
           fluidRow(
             column(3, numericInput("ni_freq",  "Times/month", value = 4, min = 0.5, step = 0.5)),
             column(3, numericInput("ni_price", "Price today ($)", value = NA, min = 0, step = 0.01)),
             column(4, selectizeInput("ni_source", "Price source",
-                                     choices  = c("In store (price tag)", "Store website",
-                                                  "Receipt", "App (Instacart, Amazon, etc.)"),
+                                     choices  = sources_r(),
                                      selected = NULL,
                                      options  = list(create = TRUE, createOnBlur = TRUE,
                                                      placeholder = "Where did you check?"))),
@@ -386,8 +502,7 @@ server <- function(input, output, session) {
                     tags$td(numericInput(paste0("upd_", r$item_id), NULL,
                                         value = NA, min = 0, step = 0.01, width = "110px")),
                     tags$td(selectizeInput(paste0("upd_src_", r$item_id), NULL,
-                                          choices  = c("In store (price tag)", "Store website",
-                                                       "Receipt", "App (Instacart, Amazon, etc.)"),
+                                          choices  = sources_r(),
                                           selected = NULL,
                                           options  = list(create = TRUE, createOnBlur = TRUE,
                                                           placeholder = "Source"),
@@ -415,7 +530,7 @@ server <- function(input, output, session) {
     uid <- req(rv$user_id)
     nm  <- trimws(input$ni_name   %||% "")
     st  <- trimws(input$ni_store  %||% "")
-    cat <- input$ni_cat    %||% BLS_CATEGORIES[1]
+    cat <- input$ni_cat    %||% categories_r()[1]
     fr  <- as.numeric(input$ni_freq)
     pr  <- as.numeric(input$ni_price)
     src <- trimws(input$ni_source %||% "")
@@ -532,79 +647,284 @@ server <- function(input, output, session) {
   })
 
   # ── Class dashboard ──────────────────────────────────────────────────────────
+  anon_map <- reactive({
+    rv$tick
+    make_anon_map()
+  })
+
   output$dashboard_panel <- renderUI({
+    req(rv$authed)
+    amap       <- anon_map()
+    my_alias   <- if (!is.null(rv$user_id) && rv$user_id %in% names(amap))
+                    amap[[rv$user_id]] else NULL
+    all_aliases <- sort(unique(unname(amap)))
+
     tagList(
       tags$h4("Class Price Index — Live Dashboard"),
+
+      if (!is.null(my_alias))
+        div(class = "alert alert-info",
+          tags$strong(paste0("Your economist alias: ", my_alias)),
+          " — your data appears under this name in the class plots below. ",
+          tags$em("(This is a fake name for anonymization. Only you and your instructor know which alias is yours.)")
+        ),
+
+      wellPanel(
+        tags$h5("Plot Controls"),
+        fluidRow(
+          # ── Left plot controls ──────────────────────────────────────────────
+          column(6,
+            tags$strong("Trend Plot (left)"), tags$hr(),
+            fluidRow(
+              column(6,
+                selectInput("plot1_cat", "Filter by category",
+                  choices  = c("All categories" = "All",
+                               setNames(categories_r(), categories_r())),
+                  selected = "All")
+              ),
+              column(6,
+                selectInput("plot1_src", "Filter by source",
+                  choices  = c("All sources" = "All",
+                               setNames(sources_r(), sources_r())),
+                  selected = "All")
+              )
+            ),
+            radioButtons("plot1_group", "Group by",
+              choices = c("Class average" = "average",
+                          "Each student"  = "student",
+                          "By section"    = "section"),
+              inline  = TRUE),
+            conditionalPanel(
+              condition = "input.plot1_group == 'student'",
+              selectizeInput("plot1_students",
+                "Students to show (blank = all)",
+                choices  = all_aliases,
+                multiple = TRUE,
+                options  = list(placeholder = "All students shown when blank"))
+            )
+          ),
+          # ── Right plot controls ─────────────────────────────────────────────
+          column(6,
+            tags$strong("Latest Wave Plot (right)"), tags$hr(),
+            fluidRow(
+              column(6,
+                selectInput("plot2_cat", "Filter by category",
+                  choices  = c("All categories" = "All",
+                               setNames(categories_r(), categories_r())),
+                  selected = "All")
+              ),
+              column(6,
+                selectInput("plot2_src", "Filter by source",
+                  choices  = c("All sources" = "All",
+                               setNames(sources_r(), sources_r())),
+                  selected = "All")
+              )
+            ),
+            fluidRow(
+              column(6,
+                selectInput("plot2_color", "Color by",
+                  choices  = c("None"           = "none",
+                               "Section"        = "section",
+                               "Primary source" = "source"),
+                  selected = "none")
+              ),
+              column(6,
+                tags$br(),
+                checkboxInput("plot2_avg", "Show class average", value = TRUE)
+              )
+            )
+          )
+        )
+      ),
+
       fluidRow(
         column(6,
-          tags$h6("Items Tracked by Category (Wave 1)"),
-          plotOutput("cat_plot", height = "300px")),
+          tags$h6("CPI Trends Over Waves"),
+          plotOutput("cpi_lines_plot", height = "340px")),
         column(6,
-          tags$h6("Personal CPI by Student (latest wave)"),
-          plotOutput("cpi_plot", height = "300px"))
+          tags$h6("CPI at Latest Wave"),
+          plotOutput("cpi_latest_plot", height = "340px"))
       ),
+
       tags$hr(),
-      tags$h6("All Price Submissions"),
-      DT::DTOutput("all_prices_tbl")
+      tags$details(
+        tags$summary(
+          style = "cursor:pointer; font-weight:600; font-size:1.05em; padding:4px 0;",
+          "All Price Submissions — click to expand"
+        ),
+        tags$br(),
+        DT::DTOutput("all_prices_tbl")
+      )
     )
   })
 
-  output$cat_plot <- renderPlot({
-    df <- all_prices_poll()
-    if (!nrow(df)) return(NULL)
-    df |>
-      dplyr::filter(wave == 1) |>
-      dplyr::count(category) |>
-      dplyr::mutate(category = forcats::fct_reorder(category, n)) |>
-      ggplot(aes(x = n, y = category)) +
-      geom_col(fill = "#951829", alpha = 0.85) +
-      geom_text(aes(label = n), hjust = -0.2, size = 3.5) +
-      scale_x_continuous(expand = expansion(mult = c(0, 0.18))) +
-      labs(x = "Number of items", y = NULL) +
-      theme_minimal(base_size = 12) +
-      theme(panel.grid.major.y = element_blank())
+  # Blank-plot helper reused by both renderers
+  void_plot <- function(msg)
+    ggplot() +
+      annotate("text", x = .5, y = .5, label = msg, size = 5, color = "gray55") +
+      theme_void()
+
+  output$cpi_lines_plot <- renderPlot({
+    df   <- all_prices_poll()
+    amap <- anon_map()
+    if (!nrow(df)) return(void_plot("No data yet"))
+
+    df <- apply_anon_map(df, amap)
+    df <- filter_price_df(df, input$plot1_cat %||% "All", input$plot1_src %||% "All")
+    if (!nrow(df)) return(void_plot("No data for this filter"))
+
+    cpi_df <- compute_cpi_from_df(df)
+    if (!nrow(cpi_df)) return(void_plot("CPI needs Wave 1 data"))
+
+    grp <- input$plot1_group %||% "average"
+
+    plot_df <- if (grp == "average") {
+      cpi_df |>
+        dplyr::group_by(wave) |>
+        dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
+        dplyr::mutate(group_label = "Class Average")
+    } else if (grp == "section") {
+      cpi_df |>
+        dplyr::mutate(grp_val = dplyr::coalesce(
+          ifelse(nzchar(section %||% ""), section, NA_character_), "Unknown")) |>
+        dplyr::group_by(wave, group_label = grp_val) |>
+        dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop")
+    } else {
+      sel <- input$plot1_students
+      if (length(sel) > 0)
+        cpi_df <- cpi_df[cpi_df$anon_name %in% sel, , drop = FALSE]
+      dplyr::rename(cpi_df, group_label = anon_name)
+    }
+
+    if (!nrow(plot_df)) return(void_plot("No data for this selection"))
+    n_groups <- dplyr::n_distinct(plot_df$group_label)
+
+    p_base <- ggplot(plot_df, aes(x = wave, y = cpi, group = group_label)) +
+      geom_hline(yintercept = 100, linetype = "dashed", color = "gray60", linewidth = 0.7)
+
+    p <- if (n_groups > 1) {
+      p_base +
+        geom_line(aes(color  = group_label), linewidth = 1.1) +
+        geom_point(aes(color = group_label), size = 3) +
+        labs(color = NULL) +
+        theme(legend.position = if (n_groups <= 12) "right" else "none")
+    } else {
+      p_base +
+        geom_line(color = "#951829", linewidth = 1.1) +
+        geom_point(color = "#951829", size = 3)
+    }
+
+    p +
+      scale_x_continuous(breaks = seq_len(max(plot_df$wave))) +
+      labs(x = "Wave", y = "CPI (Wave 1 = 100)") +
+      theme_minimal(base_size = 12)
   })
 
-  output$cpi_plot <- renderPlot({
-    cpi_all <- all_personal_cpis()
-    if (is.null(cpi_all) || !nrow(cpi_all)) {
-      return(ggplot() +
-        annotate("text", x=.5, y=.5, label="Personal CPI available\nafter Wave 2",
-                 size=5, color="gray55") + theme_void())
-    }
-    latest <- cpi_all |>
-      dplyr::filter(wave == max(wave)) |>
-      dplyr::mutate(display_name = forcats::fct_reorder(display_name, personal_cpi))
+  output$cpi_latest_plot <- renderPlot({
+    df   <- all_prices_poll()
+    amap <- anon_map()
+    if (!nrow(df)) return(void_plot("No data yet"))
 
-    ggplot(latest, aes(x = personal_cpi, y = display_name)) +
-      geom_vline(xintercept = 100, linetype = "dashed", color = "gray60", linewidth = 0.8) +
-      geom_point(size = 4, color = "#951829") +
-      geom_text(aes(label = sprintf("%.1f", personal_cpi)), hjust = -0.35, size = 3.2) +
-      scale_x_continuous(
-        limits = c(min(93, min(latest$personal_cpi, na.rm=TRUE) - 2),
-                   max(107, max(latest$personal_cpi, na.rm=TRUE) + 6))
-      ) +
-      labs(x = "Personal CPI (baseline = 100)", y = NULL,
-           subtitle = paste0("Wave ", max(latest$wave), " vs. Wave 1")) +
+    df <- apply_anon_map(df, amap)
+
+    cat_f   <- input$plot2_cat %||% "All"
+    src_f   <- input$plot2_src %||% "All"
+    df_filt <- filter_price_df(df, cat_f, src_f)
+    if (!nrow(df_filt)) return(void_plot("No data for this filter"))
+
+    cpi_df <- compute_cpi_from_df(df_filt)
+    if (!nrow(cpi_df)) return(void_plot("CPI needs Wave 1 data"))
+
+    latest_wave <- max(cpi_df$wave)
+    latest      <- dplyr::filter(cpi_df, wave == latest_wave)
+
+    color_by <- input$plot2_color %||% "none"
+    if (color_by == "source") {
+      src_map <- df_filt |>
+        dplyr::filter(!is.na(source), nzchar(source)) |>
+        dplyr::count(user_id, source) |>
+        dplyr::arrange(user_id, dplyr::desc(n)) |>
+        dplyr::group_by(user_id) |>
+        dplyr::slice(1) |>
+        dplyr::ungroup() |>
+        dplyr::select(user_id, color_var = source)
+      latest <- dplyr::left_join(latest, src_map, by = "user_id")
+      latest$color_var[is.na(latest$color_var)] <- "Unknown"
+    } else if (color_by == "section") {
+      latest$color_var <- dplyr::coalesce(
+        ifelse(nzchar(latest$section %||% ""), latest$section, NA_character_), "Unknown")
+    } else {
+      latest$color_var <- "All students"
+    }
+
+    latest   <- dplyr::mutate(latest,
+      anon_name = forcats::fct_reorder(anon_name, cpi))
+    avg_cpi  <- mean(latest$cpi, na.rm = TRUE)
+    n_colors <- dplyr::n_distinct(latest$color_var)
+    x_lo     <- min(93,  min(latest$cpi, na.rm = TRUE) - 3)
+    x_hi     <- max(107, max(latest$cpi, na.rm = TRUE) + 9)
+
+    p <- ggplot(latest, aes(y = anon_name)) +
+      geom_vline(xintercept = 100, linetype = "dashed",
+                 color = "gray60", linewidth = 0.8) +
+      geom_segment(aes(x = 100, xend = cpi, yend = anon_name),
+                   color = "gray75", linewidth = 0.9)
+
+    p <- if (n_colors > 1) {
+      p + geom_point(aes(x = cpi, color = color_var), size = 4) +
+        labs(color = switch(color_by,
+               section = "Section", source = "Primary source", NULL))
+    } else {
+      p + geom_point(aes(x = cpi), size = 4, color = "#951829")
+    }
+
+    p <- p +
+      geom_text(aes(x = cpi, label = sprintf("%.1f", cpi)),
+                hjust = -0.3, size = 3)
+
+    if (isTRUE(input$plot2_avg))
+      p <- p +
+        geom_vline(xintercept = avg_cpi, color = "#1a1a2e",
+                   linewidth = 1, linetype = "solid") +
+        annotate("text", x = avg_cpi, y = Inf,
+                 label = sprintf("Avg: %.1f", avg_cpi),
+                 hjust = -0.1, vjust = 2, size = 3.2, color = "#1a1a2e")
+
+    cat_lbl <- if (!identical(cat_f, "All")) paste0(" | ", cat_f) else ""
+    src_lbl <- if (!identical(src_f, "All")) paste0(" | source: ", src_f) else ""
+
+    p +
+      scale_x_continuous(limits = c(x_lo, x_hi)) +
+      labs(x = "Personal CPI (Wave 1 = 100)", y = NULL,
+           subtitle = paste0("Wave ", latest_wave, " vs. Wave 1",
+                             cat_lbl, src_lbl)) +
       theme_minimal(base_size = 12) +
-      theme(panel.grid.major.y = element_blank())
+      theme(panel.grid.major.y = element_blank(),
+            legend.position    = if (n_colors > 1) "bottom" else "none")
   })
 
   output$all_prices_tbl <- DT::renderDT({
-    df <- all_prices_poll()
+    df   <- all_prices_poll()
+    amap <- anon_map()
     if (!nrow(df)) return(data.frame(Message = "No submissions yet."))
     df |>
+      apply_anon_map(amap) |>
       dplyr::mutate(recorded_at = substr(recorded_at, 1, 16)) |>
-      dplyr::select(Student = display_name, Section = section, Wave = wave,
+      dplyr::select(Economist = anon_name, Section = section, Wave = wave,
                     Category = category, Item = item_name, Store = store,
-                    `Times/mo` = times_per_month, Price = price, Submitted = recorded_at) |>
-      dplyr::arrange(Wave, Student, Category)
+                    `Times/mo` = times_per_month, Price = price,
+                    Source = source, Submitted = recorded_at) |>
+      dplyr::arrange(Wave, Economist, Category)
   }, rownames = FALSE,
-     options = list(pageLength = 25, order = list(list(2, "asc"), list(0, "asc"))))
+     options  = list(pageLength = 25,
+                     order = list(list(2L, "asc"), list(0L, "asc"))))
 
   # ── Admin panel ──────────────────────────────────────────────────────────────
   output$admin_panel <- renderUI({
     req(rv$is_admin)
+    cats <- categories_r()
+    srcs <- sources_r()
+
     tagList(
       tags$h4("Admin Controls"),
       fluidRow(
@@ -623,6 +943,49 @@ server <- function(input, output, session) {
           actionButton("backup_btn", "Backup DB to Drive", class = "btn-sm btn-default")
         ))
       ),
+
+      fluidRow(
+        column(6, wellPanel(
+          tags$h6("Item Categories"),
+          tags$p(style = "font-size:0.85em;color:#555;",
+                 "These appear in the student basket form and all category filters. ",
+                 "Type a new entry and press Enter or Tab to add it; click \u00d7 to remove."),
+          selectizeInput("admin_cats", NULL,
+            choices  = cats,
+            selected = cats,
+            multiple = TRUE,
+            options  = list(create        = TRUE,
+                            createOnBlur  = TRUE,
+                            plugins       = list("remove_button"),
+                            placeholder   = "Add a category…")
+          ),
+          fluidRow(
+            column(6, actionButton("save_cats",  "Save",             class = "btn-primary btn-sm")),
+            column(6, actionButton("reset_cats", "Reset to defaults", class = "btn-default btn-sm"))
+          )
+        )),
+
+        column(6, wellPanel(
+          tags$h6("Price Sources"),
+          tags$p(style = "font-size:0.85em;color:#555;",
+                 "These appear in the source dropdown when students enter prices. ",
+                 "Students can still type a custom source not on this list."),
+          selectizeInput("admin_srcs", NULL,
+            choices  = srcs,
+            selected = srcs,
+            multiple = TRUE,
+            options  = list(create        = TRUE,
+                            createOnBlur  = TRUE,
+                            plugins       = list("remove_button"),
+                            placeholder   = "Add a source…")
+          ),
+          fluidRow(
+            column(6, actionButton("save_srcs",  "Save",             class = "btn-primary btn-sm")),
+            column(6, actionButton("reset_srcs", "Reset to defaults", class = "btn-default btn-sm"))
+          )
+        ))
+      ),
+
       tags$hr(),
       tags$h6("Basket Items"),
       DT::DTOutput("admin_items_tbl"),
@@ -638,6 +1001,38 @@ server <- function(input, output, session) {
     db_exec("UPDATE app_state SET current_wave=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;", list(w))
     showNotification(paste0("Wave set to ", w, "."), type = "message")
     logf("ADMIN wave set to", w)
+  })
+
+  observeEvent(input$save_cats, {
+    req(rv$is_admin)
+    cats <- input$admin_cats
+    if (!length(cats)) { showNotification("Categories cannot be empty.", type = "error"); return() }
+    save_categories(cats)
+    bump()
+    showNotification("Categories saved.", type = "message")
+  })
+
+  observeEvent(input$reset_cats, {
+    req(rv$is_admin)
+    save_categories(BLS_CATEGORIES)
+    bump()
+    showNotification("Categories reset to defaults.", type = "message")
+  })
+
+  observeEvent(input$save_srcs, {
+    req(rv$is_admin)
+    srcs <- input$admin_srcs
+    if (!length(srcs)) { showNotification("Sources cannot be empty.", type = "error"); return() }
+    save_price_sources(srcs)
+    bump()
+    showNotification("Price sources saved.", type = "message")
+  })
+
+  observeEvent(input$reset_srcs, {
+    req(rv$is_admin)
+    save_price_sources(PRICE_SOURCES)
+    bump()
+    showNotification("Price sources reset to defaults.", type = "message")
   })
 
   observeEvent(input$backup_btn, {
