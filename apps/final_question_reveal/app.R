@@ -532,7 +532,11 @@ init_db <- function() {
       shortfall_policy TEXT,
       roundless_mode INTEGER DEFAULT 0,
       max_per_pset REAL DEFAULT 3,
-      max_fp_held  REAL DEFAULT 8
+      max_fp_held  REAL DEFAULT 8,
+      extension_hours REAL DEFAULT 24,
+      question_chance_pct REAL DEFAULT 50,
+      question_point_value REAL DEFAULT 5,
+      question_total_points REAL DEFAULT 100
     );
   ")
 
@@ -543,6 +547,10 @@ init_db <- function() {
   # add delay for older DBs
   try(db_exec("ALTER TABLE settings ADD COLUMN max_per_pset REAL DEFAULT 3;"), silent = TRUE)
   try(db_exec("ALTER TABLE settings ADD COLUMN max_fp_held  REAL DEFAULT 8;"), silent = TRUE)
+  try(db_exec("ALTER TABLE settings ADD COLUMN extension_hours REAL DEFAULT 24;"), silent = TRUE)
+  try(db_exec("ALTER TABLE settings ADD COLUMN question_chance_pct REAL DEFAULT 50;"), silent = TRUE)
+  try(db_exec("ALTER TABLE settings ADD COLUMN question_point_value REAL DEFAULT 5;"), silent = TRUE)
+  try(db_exec("ALTER TABLE settings ADD COLUMN question_total_points REAL DEFAULT 100;"), silent = TRUE)
 
   # Game state (single row)
   db_exec("
@@ -640,8 +648,8 @@ init_db <- function() {
   nset <- db_query("SELECT COUNT(*) n FROM settings WHERE id=1;")$n[1]
   if (is.na(nset) || nset == 0) {
     db_exec("
-      INSERT INTO settings(id, initial_fp, pledge_step, flex_cost, exam_point_cost, question_cost_schedule, shortfall_policy, roundless_mode, exam_names, pset_names)
-      VALUES(1, 5, 0.5, 1, 1, '12,20,30,45,70', 'bank_all', 0, 'Midterm 1,Midterm 2,Final', 'PS1,PS2,PS3,PS4,PS5');
+      INSERT INTO settings(id, initial_fp, pledge_step, flex_cost, exam_point_cost, question_cost_schedule, shortfall_policy, roundless_mode, exam_names, pset_names, extension_hours, question_chance_pct, question_point_value, question_total_points)
+      VALUES(1, 5, 0.5, 1, 1, '12,20,30,45,70', 'bank_all', 0, 'Midterm 1,Midterm 2,Final', 'PS1,PS2,PS3,PS4,PS5', 24, 50, 5, 100);
     ")
   }
 
@@ -1363,8 +1371,13 @@ server <- function(input, output, session) {
 
     tagList(
       p(sprintf("Active exam: %s", active_exam_id)),
-      p(sprintf("You start with %.2f flex passes (and can earn more). You may pledge them to help unlock access to potential exam questions for everyone, purchase bonus points on the final exam, or get an extension of 24 hours on a problem set. Any exam questions purchased with flex passes will have a 50 percent chance of appearing on the next exam and is worth 5 (out of 100) points on the exam. You have %.2f remaining (excluding any open pledge).",
-                as.numeric(s$initial_fp[1]), student_allocation_summary(user_id())$remaining)),
+      p(sprintf("You start with %.2f flex passes (and can earn more). You may pledge them to help unlock access to potential exam questions for everyone, purchase bonus points on the final exam, or get an extension of %g hours on a problem set. Any exam questions purchased with flex passes will have a %g percent chance of appearing on the next exam and is worth %g (out of %g) points on the exam. You have %.2f remaining (excluding any open pledge).",
+                as.numeric(s$initial_fp[1]),
+                as.numeric(s$extension_hours[1] %||% 24),
+                as.numeric(s$question_chance_pct[1] %||% 50),
+                as.numeric(s$question_point_value[1] %||% 5),
+                as.numeric(s$question_total_points[1] %||% 100),
+                student_allocation_summary(user_id())$remaining)),
       p(sprintf("Pledging open: %s", ifelse(as.integer(st$round_open[1]) == 1, "YES", "NO"))),
       p(sprintf("Current question index: %d | Cost to unlock next question: %.2f (schedule: %s)",
                 idx, cost, s$question_cost_schedule[1])),
@@ -1442,7 +1455,7 @@ server <- function(input, output, session) {
         choices = c(
           "Contribute to unlocking exam questions" = "question",
           "Buy exam point(s)" = "exam_point",
-          "Buy a 24-hour extension" = "flex"
+          sprintf("Buy a %g-hour extension", as.numeric(s$extension_hours[1] %||% 24)) = "flex"
         ),
         selected = choice
       ),
@@ -1485,7 +1498,7 @@ server <- function(input, output, session) {
     wellPanel(
       h4("Use your resources"),
       tags$hr(),
-      h5("24-hour extensions"),
+      h5(sprintf("%g-hour extensions", as.numeric(s$extension_hours[1] %||% 24))),
       p(sprintf("Purchased: %d | Declared: %d", flex_purchased, flex_used)),
       if (nrow(rt[rt$resource_type == "flex", , drop=FALSE]))
         tableOutput("my_extensions_table")
@@ -1635,7 +1648,7 @@ server <- function(input, output, session) {
     if (typ == "flex") {
       # Interpret amt as count; require exactly 1 per purchase
       if (abs(amt - 1) > 1e-9) {
-        showNotification("24-hour extension must be purchased as exactly 1.", type="error"); return()
+        showNotification("Extension must be purchased as exactly 1.", type="error"); return()
       }
 
       cost <- suppressWarnings(as.numeric(s$flex_cost[1]))
@@ -1651,7 +1664,7 @@ server <- function(input, output, session) {
       ", list(user_id(), cost, 'extension'))
 
       set_state()
-      showNotification("24-hour extension purchased.", type="message")
+      showNotification(sprintf("%g-hour extension purchased.", suppressWarnings(as.numeric(s$extension_hours[1] %||% 24))), type="message")
       return()
     }
 
@@ -1795,6 +1808,12 @@ server <- function(input, output, session) {
                               "Question cost schedule — comma list (12,20,30) or formula in c (e.g. 11+c^2)",
                               value = as.character(s$question_cost_schedule[1]),
                               placeholder = "e.g. 12,20,30,45,70  or  11+c^2"))
+        ),
+        fluidRow(
+          column(3, numericInput("cfg_extension_hours", "Extension duration (hours)", value = as.numeric(s$extension_hours[1] %||% 24), min = 1)),
+          column(3, numericInput("cfg_question_chance", "Question appearance chance (%)", value = as.numeric(s$question_chance_pct[1] %||% 50), min = 0, max = 100)),
+          column(3, numericInput("cfg_question_pts", "Question worth (points)", value = as.numeric(s$question_point_value[1] %||% 5), min = 0)),
+          column(3, numericInput("cfg_question_total", "Exam total points", value = as.numeric(s$question_total_points[1] %||% 100), min = 1))
         ),
         fluidRow(
           column(4,
@@ -2046,7 +2065,11 @@ server <- function(input, output, session) {
       exam_names = as.character(input$cfg_exam_names %||% ""),
       pset_names = as.character(input$cfg_pset_names %||% ""),
       max_per_pset = as.numeric(input$cfg_max_per_pset),
-      max_fp_held  = as.numeric(input$cfg_max_fp_held)
+      max_fp_held  = as.numeric(input$cfg_max_fp_held),
+      extension_hours = as.numeric(input$cfg_extension_hours %||% 24),
+      question_chance_pct = as.numeric(input$cfg_question_chance %||% 50),
+      question_point_value = as.numeric(input$cfg_question_pts %||% 5),
+      question_total_points = as.numeric(input$cfg_question_total %||% 100)
     )
 
     # If enabling roundless, open round and normalize state + clear stray pledge rounds
