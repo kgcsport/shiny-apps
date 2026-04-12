@@ -1,10 +1,12 @@
-name: Build base image (slow — R packages)
+name: Build app image (fast — code only)
 
 on:
   push:
     branches: [ main ]
     paths:
-      - "Dockerfile.base"
+      - "apps/**"
+      - "shiny-server.conf"
+      - "Dockerfile"
   workflow_dispatch:
 
 permissions:
@@ -12,7 +14,7 @@ permissions:
   packages: write
 
 jobs:
-  build-base:
+  build-app:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,14 +28,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push base image
+      - name: Build and push app image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.base
+          file: Dockerfile
           push: true
           tags: |
-            ghcr.io/kgcsport/shiny-apps-base:latest
-            ghcr.io/kgcsport/shiny-apps-base:${{ github.sha }}
-          cache-from: type=registry,ref=ghcr.io/kgcsport/shiny-apps-base:latest
-          cache-to: type=inline
+            ghcr.io/kgcsport/shiny-apps:latest
+            ghcr.io/kgcsport/shiny-apps:${{ github.sha }}
