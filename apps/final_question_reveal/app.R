@@ -1471,10 +1471,11 @@ server <- function(input, output, session) {
                 pending_q, available_now)),
       selectInput(
         "buy_type", "What are you buying?",
-        choices = c(
-          "Contribute to unlocking exam questions" = "question",
-          "Buy exam point(s)" = "exam_point",
-          sprintf("Buy a %g-hour extension", as.numeric(s$extension_hours[1] %||% 24)) = "flex"
+        choices = setNames(
+          c("question", "exam_point", "flex"),
+          c("Contribute to unlocking exam questions",
+            "Buy exam point(s)",
+            sprintf("Buy a %g-hour extension", as.numeric(s$extension_hours[1] %||% 24)))
         ),
         selected = choice
       ),
