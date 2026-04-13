@@ -1,3 +1,4 @@
+try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 library(shiny)
 library(ggplot2)
 

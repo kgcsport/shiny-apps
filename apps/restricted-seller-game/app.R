@@ -1,3 +1,4 @@
+try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R — Restricted Seller classroom trading game
 # Phase-based workflow: setup > r1_trading > r1_results > r2_setup > r2_trading > r2_results > compare
 # Session-only state (no database — 15-minute exercise)

@@ -1,11 +1,12 @@
+try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R — class-job-picker
 # Data layer migrated from Google Sheets → shared SQLite (finalqdata.sqlite)
 # Google Sheets auth is still used for the summary write-back only.
 #
 # shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/shiny-apps/apps/class-job-picker", port = 3838, host = "127.0.0.1")
 
-if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
-pacman::p_load(shiny, googlesheets4, dplyr, tidyr, tibble, jsonlite, DBI, RSQLite, bcrypt)
+library(shiny); library(googlesheets4); library(dplyr); library(tidyr); library(tibble)
+library(jsonlite); library(DBI); library(RSQLite); library(bcrypt)
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 

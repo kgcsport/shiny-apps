@@ -1,3 +1,4 @@
+try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R — streamlined + bug-fixed
 # ------------------------------------------------------------
 # Exam Question unlock (collective) + Flex passes + Exam points (individual)
@@ -19,11 +20,9 @@
 # Deploy to 3838 port
 # shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/shiny-apps/final_question_reveal", port = 3838, host = "127.0.0.1")
 
-if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
-pacman::p_load(
-  shiny, DT, bcrypt, dplyr, tibble, readr, DBI, RSQLite, stringr,
-  googlesheets4, googledrive, future, promises, digest
-)
+library(shiny); library(DT); library(bcrypt); library(dplyr); library(tibble)
+library(readr); library(DBI); library(RSQLite); library(stringr)
+library(googlesheets4); library(googledrive); library(future); library(promises); library(digest)
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 

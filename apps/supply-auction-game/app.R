@@ -1,3 +1,4 @@
+try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R — Clock/English auction with central SQLite + OPTIONAL Drive backups (stable local dev)
 # --------------------------------------------------------------------------------------
 # What changed vs prior version:
@@ -7,12 +8,8 @@
 # - SQLite is configured with WAL + busy_timeout to reduce "database is locked"
 # - Removed the outer shinyApp tryCatch wrapper that was killing the whole process on error
 
-if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
-
-pacman::p_load(
-  shiny, DT, dplyr, DBI, RSQLite, googledrive,
-  bcrypt, digest
-)
+library(shiny); library(DT); library(dplyr); library(DBI); library(RSQLite)
+library(googledrive); library(bcrypt); library(digest)
 
 # ---- Debug/Crash visibility ----
 options(shiny.error = function() traceback(2))

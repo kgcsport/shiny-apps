@@ -1,3 +1,4 @@
+try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R
 # Shiny app: Demand slope (flat -> steep), Nike-swoosh MC, solve MR=MC,
 # show (i) curves and (ii) revenue/cost overlap boxes (profit/loss leftover)
