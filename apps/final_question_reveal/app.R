@@ -1342,7 +1342,7 @@ server <- function(input, output, session) {
       h4("Your ledger"),
       DTOutput("my_ledger"),
       password_changer,
-      tags$hr(),
+      tags$hr()
     )
   })
 
