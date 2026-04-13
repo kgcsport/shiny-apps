@@ -10,7 +10,7 @@ pacman::p_load(
   DBI, RSQLite, ggplot2, googledrive, promises, future
 )
 
-future::plan(future::multisession)
+future::plan(future::sequential)  # backup_async() is fire-and-forget; no workers needed
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 logf   <- function(...) cat(format(Sys.time()), "-", paste(...), "\n", file = stderr())
@@ -672,6 +672,26 @@ server <- function(input, output, session) {
       wellPanel(
         tags$h5("Plot Controls"),
         fluidRow(
+          # ── Category count chart controls ───────────────────────────────────
+          column(12,
+            tags$strong("Category Count Chart (bottom)"), tags$hr(),
+            fluidRow(
+              column(4,
+                selectInput("plot3_wave", "Wave",
+                  choices  = c("Wave 1 (baseline)" = "1", "All waves" = "all"),
+                  selected = "1")
+              ),
+              column(4,
+                selectInput("plot3_facet", "Facet by",
+                  choices  = c("None" = "none", "Section" = "section",
+                               "Source" = "source", "Wave" = "wave"),
+                  selected = "none")
+              )
+            )
+          )
+        ),
+        tags$hr(),
+        fluidRow(
           # ── Left plot controls ──────────────────────────────────────────────
           column(6,
             tags$strong("Trend Plot (left)"), tags$hr(),
@@ -747,6 +767,10 @@ server <- function(input, output, session) {
       ),
 
       tags$hr(),
+      tags$h6("Items Tracked by Category"),
+      plotOutput("cat_count_plot", height = "280px"),
+
+      tags$hr(),
       tags$details(
         tags$summary(
           style = "cursor:pointer; font-weight:600; font-size:1.05em; padding:4px 0;",
@@ -785,8 +809,7 @@ server <- function(input, output, session) {
         dplyr::mutate(group_label = "Class Average")
     } else if (grp == "section") {
       cpi_df |>
-        dplyr::mutate(grp_val = dplyr::coalesce(
-          ifelse(nzchar(section %||% ""), section, NA_character_), "Unknown")) |>
+        dplyr::mutate(grp_val = ifelse(!is.na(section) & nzchar(section), section, "Unknown")) |>
         dplyr::group_by(wave, group_label = grp_val) |>
         dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop")
     } else {
@@ -901,6 +924,61 @@ server <- function(input, output, session) {
       theme_minimal(base_size = 12) +
       theme(panel.grid.major.y = element_blank(),
             legend.position    = if (n_colors > 1) "bottom" else "none")
+  })
+
+  output$cat_count_plot <- renderPlot({
+    df <- all_prices_poll()
+    if (!nrow(df)) return(void_plot("No data yet"))
+
+    wave_sel <- input$plot3_wave %||% "1"
+    facet_by <- input$plot3_facet %||% "none"
+
+    df_plot <- if (identical(wave_sel, "1")) {
+      dplyr::filter(df, wave == 1)
+    } else {
+      df
+    }
+    if (!nrow(df_plot)) return(void_plot("No data for selected wave"))
+
+    # Normalise facet column
+    if (facet_by == "section") {
+      df_plot$facet_var <- ifelse(!is.na(df_plot$section) & nzchar(df_plot$section),
+                                  df_plot$section, "Unknown")
+    } else if (facet_by == "source") {
+      df_plot$facet_var <- ifelse(!is.na(df_plot$source) & nzchar(df_plot$source),
+                                  df_plot$source, "Unknown")
+    } else if (facet_by == "wave") {
+      df_plot$facet_var <- paste0("Wave ", df_plot$wave)
+    }
+
+    count_df <- if (facet_by == "none") {
+      df_plot |>
+        dplyr::count(category) |>
+        dplyr::mutate(category = forcats::fct_reorder(category, n))
+    } else {
+      df_plot |>
+        dplyr::count(category, facet_var) |>
+        dplyr::mutate(category = forcats::fct_reorder(category, n, .fun = sum))
+    }
+
+    wave_lbl <- if (identical(wave_sel, "1")) "Wave 1" else "All Waves"
+
+    p <- ggplot(count_df, aes(x = n, y = category)) +
+      geom_col(fill = "#951829", alpha = 0.85) +
+      geom_text(aes(label = n), hjust = -0.2, size = 3.5) +
+      scale_x_continuous(expand = expansion(mult = c(0, 0.18))) +
+      labs(x = "Number of items", y = NULL,
+           subtitle = wave_lbl) +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid.major.y = element_blank())
+
+    if (facet_by != "none") {
+      p <- p + facet_wrap(~ facet_var, scales = "free_x") +
+        geom_col(aes(fill = facet_var), alpha = 0.85, show.legend = FALSE) +
+        scale_fill_brewer(palette = "Set2")
+    }
+
+    p
   })
 
   output$all_prices_tbl <- DT::renderDT({
