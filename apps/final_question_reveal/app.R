@@ -727,7 +727,27 @@ get_credentials <- function(
   cred
 } 
 
-CRED <- get_credentials()
+CRED <- tryCatch(
+  get_credentials(),
+  error = function(e) {
+    logf("ERROR: get_credentials() failed:", conditionMessage(e))
+    logf("Trying DB fallback for credentials...")
+    rows <- tryCatch(
+      db_query("SELECT user_id AS user, display_name AS name, pw_hash, is_admin FROM users;"),
+      error = function(e2) {
+        logf("DB credential fallback failed:", conditionMessage(e2))
+        NULL
+      }
+    )
+    if (!is.null(rows) && nrow(rows) > 0) {
+      logf("Loaded", nrow(rows), "users from DB fallback (Google Sheets unavailable)")
+      rows
+    } else {
+      stop("No credentials available. Google Sheets error: ", conditionMessage(e),
+           " | DB also empty or unavailable.")
+    }
+  }
+)
 logf("CRED: %s", paste(CRED$user, collapse = ", "))
 
 
