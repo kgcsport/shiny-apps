@@ -1,14 +1,13 @@
+try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R — Personal Price Index Activity
 # Students build a basket of goods and track prices across waves.
 # Auth: bcrypt + SQLite — shares finalqdata.sqlite with final_question_reveal.
 # Users (including passwords) come from that shared DB; no separate credentials file needed.
 # DB backed up to Google Drive on session end (same FLEX_PASS_FOLDER_ID as final_question_reveal).
 
-if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
-pacman::p_load(
-  shiny, DT, bcrypt, dplyr, tidyr, tibble, forcats,
-  DBI, RSQLite, ggplot2, googledrive, promises, future
-)
+library(shiny); library(DT); library(bcrypt); library(dplyr); library(tidyr)
+library(tibble); library(forcats); library(DBI); library(RSQLite); library(ggplot2)
+library(googledrive); library(promises); library(future)
 
 future::plan(future::sequential)  # backup_async() is fire-and-forget; no workers needed
 

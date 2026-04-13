@@ -1,3 +1,4 @@
+try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R -- Coordination Games (Bonus Pot + Price War / PD)
 # -------------------------------------------------------------------
 # Integrated with the shared Flex Pass SQLite DB + Login.
@@ -33,11 +34,9 @@
 # Packages: shiny, DT, bcrypt, dplyr, DBI, RSQLite, stringr, ggplot2, tidyr
 # -------------------------------------------------------------------
 
-if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
-pacman::p_load(
-  shiny, DT, bcrypt, dplyr, tibble, DBI, RSQLite, stringr, ggplot2, tidyr,
-  googledrive, googlesheets4, digest
-)
+library(shiny); library(DT); library(bcrypt); library(dplyr); library(tibble)
+library(DBI); library(RSQLite); library(stringr); library(ggplot2); library(tidyr)
+library(googledrive); library(googlesheets4); library(digest)
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 

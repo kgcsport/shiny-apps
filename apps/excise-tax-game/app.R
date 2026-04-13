@@ -1,3 +1,4 @@
+try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # apps/excise-tax/app.R
 # -----------------------------------------------------------------------
 # Tax Incidence: Classroom Call-Market Experiment
@@ -17,8 +18,7 @@
 # Run locally:  R -e "shiny::runApp('apps/excise-tax')"
 # -----------------------------------------------------------------------
 
-if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
-pacman::p_load(shiny, DBI, RSQLite, jsonlite, digest)
+library(shiny); library(DBI); library(RSQLite); library(jsonlite); library(digest)
 
 `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 && !all(is.na(a))) a else b
 

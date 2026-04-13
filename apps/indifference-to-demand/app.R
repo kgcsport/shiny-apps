@@ -1,3 +1,4 @@
+try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R
 # Shiny app: Cobb-Douglas, perfect substitutes, complements, quasilinear (linear demand) consumer choice
 # - Left: indifference/budget/optimum for current utility type
