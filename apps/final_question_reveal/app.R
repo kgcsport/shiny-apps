@@ -1832,7 +1832,7 @@ server <- function(input, output, session) {
         fluidRow(
           column(3, numericInput("cfg_extension_hours", "Extension duration (hours)", value = as.numeric(s$extension_hours[1] %||% 24), min = 1)),
           column(3, numericInput("cfg_question_chance", "Question appearance chance (%)", value = as.numeric(s$question_chance_pct[1] %||% 50), min = 0, max = 100)),
-          column(3, numericInput("cfg_question_pts", "Question worth (points)", value = as.numeric(s$question_point_value[1] %||% 5), min = 0)),
+          column(3, numericInput("cfg_question_pts", "Question worth (points)", value = as.numeric(s$question_point_value[1] %||% 10), min = 0)),
           column(3, numericInput("cfg_question_total", "Exam total points", value = as.numeric(s$question_total_points[1] %||% 100), min = 1))
         ),
         fluidRow(
@@ -2088,7 +2088,7 @@ server <- function(input, output, session) {
       max_fp_held  = as.numeric(input$cfg_max_fp_held),
       extension_hours = as.numeric(input$cfg_extension_hours %||% 24),
       question_chance_pct = as.numeric(input$cfg_question_chance %||% 50),
-      question_point_value = as.numeric(input$cfg_question_pts %||% 5),
+      question_point_value = as.numeric(input$cfg_question_pts %||% 10),
       question_total_points = as.numeric(input$cfg_question_total %||% 100)
     )
 
