@@ -7,7 +7,7 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 
 library(shiny); library(DT); library(bcrypt); library(dplyr); library(tidyr)
 library(tibble); library(forcats); library(DBI); library(RSQLite); library(ggplot2)
-library(googledrive); library(promises); library(future)
+library(scales); library(googledrive); library(promises); library(future)
 
 future::plan(future::sequential)  # backup_async() is fire-and-forget; no workers needed
 
@@ -250,13 +250,44 @@ compute_cpi_from_df <- function(df) {
     dplyr::mutate(cpi = round(basket_cost / base_cost * 100, 1))
 }
 
-# Apply category + source filters
-filter_price_df <- function(df, cat_f, src_f) {
-  if (!identical(cat_f, "All") && nzchar(cat_f %||% ""))
-    df <- df[!is.na(df$category) & df$category == cat_f, , drop = FALSE]
+# Apply source filter only (category is now shown via color/facet in the trend plot)
+filter_price_df <- function(df, src_f) {
   if (!identical(src_f, "All") && nzchar(src_f %||% ""))
-    df <- df[!is.na(df$source)   & df$source   == src_f, , drop = FALSE]
+    df <- df[!is.na(df$source) & df$source == src_f, , drop = FALSE]
   df
+}
+
+# Per-user, per-category, per-wave CPI (base = Wave 1 spend in that category)
+compute_cpi_by_category <- function(df) {
+  if (!nrow(df)) return(tibble::tibble())
+  per_wave <- df |>
+    dplyr::group_by(user_id, anon_name, section, category, wave) |>
+    dplyr::summarise(cat_cost = sum(price * times_per_month, na.rm = TRUE),
+                     .groups = "drop")
+  base <- per_wave |>
+    dplyr::filter(wave == 1) |>
+    dplyr::select(user_id, category, base_cost = cat_cost)
+  per_wave |>
+    dplyr::left_join(base, by = c("user_id", "category")) |>
+    dplyr::filter(!is.na(base_cost), base_cost > 0) |>
+    dplyr::mutate(cpi = round(cat_cost / base_cost * 100, 1))
+}
+
+# Average basket share (%) per category across students, for a given price data frame
+compute_basket_shares <- function(df) {
+  if (!nrow(df)) return(tibble::tibble())
+  df |>
+    dplyr::group_by(user_id) |>
+    dplyr::mutate(total_spend = sum(price * times_per_month, na.rm = TRUE)) |>
+    dplyr::group_by(user_id, category) |>
+    dplyr::summarise(
+      cat_spend   = sum(price * times_per_month, na.rm = TRUE),
+      total_spend = dplyr::first(total_spend),
+      .groups     = "drop"
+    ) |>
+    dplyr::mutate(share = ifelse(total_spend > 0, cat_spend / total_spend * 100, 0)) |>
+    dplyr::group_by(category) |>
+    dplyr::summarise(avg_share = round(mean(share, na.rm = TRUE), 1), .groups = "drop")
 }
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
@@ -675,8 +706,15 @@ server <- function(input, output, session) {
         fluidRow(
           # ── Category count chart controls ───────────────────────────────────
           column(12,
-            tags$strong("Category Count Chart (bottom)"), tags$hr(),
+            tags$strong("Category Chart (bottom)"), tags$hr(),
             fluidRow(
+              column(4,
+                radioButtons("plot3_metric", "Show",
+                  choices  = c("Item count"         = "count",
+                               "Avg. basket share %" = "share"),
+                  selected = "count",
+                  inline   = TRUE)
+              ),
               column(4,
                 selectInput("plot3_wave", "Wave",
                   choices  = c("Wave 1 (baseline)" = "1", "All waves" = "all"),
@@ -698,10 +736,11 @@ server <- function(input, output, session) {
             tags$strong("Trend Plot (left)"), tags$hr(),
             fluidRow(
               column(6,
-                selectInput("plot1_cat", "Filter by category",
-                  choices  = c("All categories" = "All",
-                               setNames(categories_r(), categories_r())),
-                  selected = "All")
+                selectInput("plot1_cat_mode", "Show categories",
+                  choices  = c("Total basket"       = "all",
+                               "Color by category"  = "color",
+                               "Facet by category"  = "facet"),
+                  selected = "all")
               ),
               column(6,
                 selectInput("plot1_src", "Filter by source",
@@ -726,32 +765,21 @@ server <- function(input, output, session) {
           ),
           # ── Right plot controls ─────────────────────────────────────────────
           column(6,
-            tags$strong("Latest Wave Plot (right)"), tags$hr(),
+            tags$strong("CPI Distribution — Latest Wave (right)"), tags$hr(),
             fluidRow(
-              column(6,
-                selectInput("plot2_cat", "Filter by category",
-                  choices  = c("All categories" = "All",
-                               setNames(categories_r(), categories_r())),
-                  selected = "All")
+              column(5,
+                sliderInput("plot2_bins", "Number of bins",
+                            min = 3, max = 20, value = 8, step = 1, ticks = FALSE)
               ),
-              column(6,
-                selectInput("plot2_src", "Filter by source",
-                  choices  = c("All sources" = "All",
-                               setNames(sources_r(), sources_r())),
-                  selected = "All")
-              )
-            ),
-            fluidRow(
-              column(6,
-                selectInput("plot2_color", "Color by",
-                  choices  = c("None"           = "none",
-                               "Section"        = "section",
-                               "Primary source" = "source"),
+              column(4,
+                selectInput("plot2_color", "Fill by",
+                  choices  = c("None"    = "none",
+                               "Section" = "section"),
                   selected = "none")
               ),
-              column(6,
+              column(3,
                 tags$br(),
-                checkboxInput("plot2_avg", "Show class average", value = TRUE)
+                checkboxInput("plot2_avg", "Show mean", value = TRUE)
               )
             )
           )
@@ -797,49 +825,87 @@ server <- function(input, output, session) {
     amap <- anon_map()
     if (!nrow(df)) return(void_plot("No data yet"))
 
-    df <- apply_anon_map(df, amap)
-    df <- filter_price_df(df, input$plot1_cat %||% "All", input$plot1_src %||% "All")
+    df      <- apply_anon_map(df, amap)
+    df      <- filter_price_df(df, input$plot1_src %||% "All")
     if (!nrow(df)) return(void_plot("No data for this filter"))
 
-    cpi_df <- compute_cpi_from_df(df)
-    if (!nrow(cpi_df)) return(void_plot("CPI needs Wave 1 data"))
+    cat_mode <- input$plot1_cat_mode %||% "all"
+    grp      <- input$plot1_group    %||% "average"
 
-    grp <- input$plot1_group %||% "average"
+    # ── Build base CPI data (total basket or per category) ─────────────────
+    if (cat_mode == "all") {
+      cpi_base <- compute_cpi_from_df(df)
+      if (!nrow(cpi_base)) return(void_plot("CPI needs Wave 1 data"))
 
-    plot_df <- if (grp == "average") {
-      cpi_df |>
-        dplyr::group_by(wave) |>
-        dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
-        dplyr::mutate(group_label = "Class Average")
-    } else if (grp == "section") {
-      cpi_df |>
-        dplyr::mutate(grp_val = ifelse(!is.na(section) & nzchar(section), section, "Unknown")) |>
-        dplyr::group_by(wave, group_label = grp_val) |>
-        dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop")
+      plot_df <- if (grp == "average") {
+        cpi_base |>
+          dplyr::group_by(wave) |>
+          dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
+          dplyr::mutate(group_label = "Class Average", cat_label = "Total basket")
+      } else if (grp == "section") {
+        cpi_base |>
+          dplyr::mutate(grp_val = dplyr::coalesce(
+            ifelse(nzchar(section %||% ""), section, NA_character_), "Unknown")) |>
+          dplyr::group_by(wave, group_label = grp_val) |>
+          dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
+          dplyr::mutate(cat_label = "Total basket")
+      } else {
+        sel <- input$plot1_students
+        if (length(sel) > 0) cpi_base <- cpi_base[cpi_base$anon_name %in% sel, ]
+        dplyr::rename(cpi_base, group_label = anon_name) |>
+          dplyr::mutate(cat_label = "Total basket")
+      }
+      color_col <- "group_label"
+      facet_col <- NULL
+
     } else {
-      sel <- input$plot1_students
-      if (length(sel) > 0)
-        cpi_df <- cpi_df[cpi_df$anon_name %in% sel, , drop = FALSE]
-      dplyr::rename(cpi_df, group_label = anon_name)
+      # Category-level CPI
+      cpi_cat <- compute_cpi_by_category(df)
+      if (!nrow(cpi_cat)) return(void_plot("CPI needs Wave 1 data"))
+
+      plot_df <- if (grp == "average") {
+        cpi_cat |>
+          dplyr::group_by(wave, category) |>
+          dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
+          dplyr::mutate(group_label = category, cat_label = category)
+      } else if (grp == "section") {
+        cpi_cat |>
+          dplyr::mutate(grp_val = dplyr::coalesce(
+            ifelse(nzchar(section %||% ""), section, NA_character_), "Unknown")) |>
+          dplyr::group_by(wave, category, group_label = grp_val) |>
+          dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
+          dplyr::mutate(cat_label = category)
+      } else {
+        sel <- input$plot1_students
+        if (length(sel) > 0) cpi_cat <- cpi_cat[cpi_cat$anon_name %in% sel, ]
+        dplyr::rename(cpi_cat, group_label = anon_name) |>
+          dplyr::mutate(cat_label = category)
+      }
+      color_col <- "cat_label"
+      facet_col <- if (cat_mode == "facet") "cat_label" else NULL
     }
 
     if (!nrow(plot_df)) return(void_plot("No data for this selection"))
-    n_groups <- dplyr::n_distinct(plot_df$group_label)
 
-    p_base <- ggplot(plot_df, aes(x = wave, y = cpi, group = group_label)) +
+    p <- ggplot(plot_df, aes(x = wave, y = cpi,
+                             group = interaction(group_label, cat_label))) +
       geom_hline(yintercept = 100, linetype = "dashed", color = "gray60", linewidth = 0.7)
 
-    p <- if (n_groups > 1) {
-      p_base +
-        geom_line(aes(color  = group_label), linewidth = 1.1) +
-        geom_point(aes(color = group_label), size = 3) +
+    n_color <- dplyr::n_distinct(plot_df[[color_col]])
+    if (n_color > 1) {
+      p <- p +
+        geom_line(aes(color  = .data[[color_col]]), linewidth = 1.1) +
+        geom_point(aes(color = .data[[color_col]]), size = 3) +
         labs(color = NULL) +
-        theme(legend.position = if (n_groups <= 12) "right" else "none")
+        theme(legend.position = if (n_color <= 14) "right" else "none")
     } else {
-      p_base +
+      p <- p +
         geom_line(color = "#951829", linewidth = 1.1) +
         geom_point(color = "#951829", size = 3)
     }
+
+    if (!is.null(facet_col))
+      p <- p + facet_wrap(~ .data[[facet_col]], scales = "free_y")
 
     p +
       scale_x_continuous(breaks = seq_len(max(plot_df$wave))) +
@@ -852,96 +918,67 @@ server <- function(input, output, session) {
     amap <- anon_map()
     if (!nrow(df)) return(void_plot("No data yet"))
 
-    df <- apply_anon_map(df, amap)
-
-    cat_f   <- input$plot2_cat %||% "All"
-    src_f   <- input$plot2_src %||% "All"
-    df_filt <- filter_price_df(df, cat_f, src_f)
-    if (!nrow(df_filt)) return(void_plot("No data for this filter"))
-
-    cpi_df <- compute_cpi_from_df(df_filt)
+    df     <- apply_anon_map(df, amap)
+    cpi_df <- compute_cpi_from_df(df)
     if (!nrow(cpi_df)) return(void_plot("CPI needs Wave 1 data"))
 
     latest_wave <- max(cpi_df$wave)
     latest      <- dplyr::filter(cpi_df, wave == latest_wave)
+    if (!nrow(latest)) return(void_plot("No data at latest wave"))
 
     color_by <- input$plot2_color %||% "none"
-    if (color_by == "source") {
-      src_map <- df_filt |>
-        dplyr::filter(!is.na(source), nzchar(source)) |>
-        dplyr::count(user_id, source) |>
-        dplyr::arrange(user_id, dplyr::desc(n)) |>
-        dplyr::group_by(user_id) |>
-        dplyr::slice(1) |>
-        dplyr::ungroup() |>
-        dplyr::select(user_id, color_var = source)
-      latest <- dplyr::left_join(latest, src_map, by = "user_id")
-      latest$color_var[is.na(latest$color_var)] <- "Unknown"
-    } else if (color_by == "section") {
-      latest$color_var <- dplyr::coalesce(
+    if (color_by == "section") {
+      latest$fill_var <- dplyr::coalesce(
         ifelse(nzchar(latest$section %||% ""), latest$section, NA_character_), "Unknown")
     } else {
-      latest$color_var <- "All students"
+      latest$fill_var <- "All students"
     }
 
-    latest   <- dplyr::mutate(latest,
-      anon_name = forcats::fct_reorder(anon_name, cpi))
+    n_fills  <- dplyr::n_distinct(latest$fill_var)
     avg_cpi  <- mean(latest$cpi, na.rm = TRUE)
-    n_colors <- dplyr::n_distinct(latest$color_var)
-    x_lo     <- min(93,  min(latest$cpi, na.rm = TRUE) - 3)
-    x_hi     <- max(107, max(latest$cpi, na.rm = TRUE) + 9)
+    nbins    <- input$plot2_bins %||% 8L
 
-    p <- ggplot(latest, aes(y = anon_name)) +
-      geom_vline(xintercept = 100, linetype = "dashed",
-                 color = "gray60", linewidth = 0.8) +
-      geom_segment(aes(x = 100, xend = cpi, yend = anon_name),
-                   color = "gray75", linewidth = 0.9)
+    p <- ggplot(latest, aes(x = cpi))
 
-    p <- if (n_colors > 1) {
-      p + geom_point(aes(x = cpi, color = color_var), size = 4) +
-        labs(color = switch(color_by,
-               section = "Section", source = "Primary source", NULL))
+    p <- if (n_fills > 1) {
+      p + geom_histogram(aes(fill = fill_var),
+                         bins = nbins, color = "white", alpha = 0.85,
+                         position = "identity") +
+        scale_fill_brewer(palette = "Set2", name = "Section")
     } else {
-      p + geom_point(aes(x = cpi), size = 4, color = "#951829")
+      p + geom_histogram(bins = nbins, fill = "#951829",
+                         color = "white", alpha = 0.85)
     }
 
     p <- p +
-      geom_text(aes(x = cpi, label = sprintf("%.1f", cpi)),
-                hjust = -0.3, size = 3)
+      geom_vline(xintercept = 100, linetype = "dashed",
+                 color = "gray55", linewidth = 0.8)
 
     if (isTRUE(input$plot2_avg))
       p <- p +
         geom_vline(xintercept = avg_cpi, color = "#1a1a2e",
-                   linewidth = 1, linetype = "solid") +
+                   linewidth = 1.1, linetype = "solid") +
         annotate("text", x = avg_cpi, y = Inf,
-                 label = sprintf("Avg: %.1f", avg_cpi),
-                 hjust = -0.1, vjust = 2, size = 3.2, color = "#1a1a2e")
-
-    cat_lbl <- if (!identical(cat_f, "All")) paste0(" | ", cat_f) else ""
-    src_lbl <- if (!identical(src_f, "All")) paste0(" | source: ", src_f) else ""
+                 label = sprintf("Mean: %.1f", avg_cpi),
+                 hjust = -0.15, vjust = 2, size = 3.5, color = "#1a1a2e")
 
     p +
-      scale_x_continuous(limits = c(x_lo, x_hi)) +
-      labs(x = "Personal CPI (Wave 1 = 100)", y = NULL,
-           subtitle = paste0("Wave ", latest_wave, " vs. Wave 1",
-                             cat_lbl, src_lbl)) +
+      scale_y_continuous(breaks = scales::breaks_pretty()) +
+      labs(x = "Personal CPI (Wave 1 = 100)", y = "Number of students",
+           subtitle = paste0("Wave ", latest_wave, " vs. Wave 1")) +
       theme_minimal(base_size = 12) +
-      theme(panel.grid.major.y = element_blank(),
-            legend.position    = if (n_colors > 1) "bottom" else "none")
+      theme(legend.position = if (n_fills > 1) "bottom" else "none")
   })
 
   output$cat_count_plot <- renderPlot({
     df <- all_prices_poll()
     if (!nrow(df)) return(void_plot("No data yet"))
 
-    wave_sel <- input$plot3_wave %||% "1"
-    facet_by <- input$plot3_facet %||% "none"
+    wave_sel <- input$plot3_wave   %||% "1"
+    facet_by <- input$plot3_facet  %||% "none"
+    metric   <- input$plot3_metric %||% "count"
 
-    df_plot <- if (identical(wave_sel, "1")) {
-      dplyr::filter(df, wave == 1)
-    } else {
-      df
-    }
+    df_plot <- if (identical(wave_sel, "1")) dplyr::filter(df, wave == 1) else df
     if (!nrow(df_plot)) return(void_plot("No data for selected wave"))
 
     # Normalise facet column
@@ -955,6 +992,59 @@ server <- function(input, output, session) {
       df_plot$facet_var <- paste0("Wave ", df_plot$wave)
     }
 
+    wave_lbl <- if (identical(wave_sel, "1")) "Wave 1" else "All Waves"
+
+    if (metric == "share") {
+      # Average % of basket spend per category, across students
+      # Use Wave 1 prices (or all waves if "all waves" selected — use most recent price per item)
+      share_base <- if (identical(wave_sel, "1")) {
+        df_plot
+      } else {
+        df_plot |>
+          dplyr::arrange(wave) |>
+          dplyr::group_by(user_id, item_name, store) |>
+          dplyr::slice_tail(n = 1) |>
+          dplyr::ungroup()
+      }
+
+      if (facet_by == "none") {
+        plot_df <- compute_basket_shares(share_base) |>
+          dplyr::mutate(category = forcats::fct_reorder(category, avg_share))
+
+        p <- ggplot(plot_df, aes(x = avg_share, y = category)) +
+          geom_col(fill = "#2166ac", alpha = 0.85) +
+          geom_text(aes(label = paste0(round(avg_share, 1), "%")),
+                    hjust = -0.15, size = 3.5) +
+          scale_x_continuous(expand = expansion(mult = c(0, 0.2)),
+                             labels = function(x) paste0(x, "%")) +
+          labs(x = "Average share of monthly basket spend",
+               y = NULL, subtitle = wave_lbl) +
+          theme_minimal(base_size = 12) +
+          theme(panel.grid.major.y = element_blank())
+      } else {
+        plot_df <- share_base |>
+          dplyr::group_by(facet_var) |>
+          dplyr::group_modify(~ compute_basket_shares(.x)) |>
+          dplyr::ungroup() |>
+          dplyr::mutate(category = forcats::fct_reorder(category, avg_share, .fun = mean))
+
+        p <- ggplot(plot_df, aes(x = avg_share, y = category, fill = facet_var)) +
+          geom_col(alpha = 0.85, show.legend = FALSE) +
+          geom_text(aes(label = paste0(round(avg_share, 1), "%")),
+                    hjust = -0.15, size = 3.2) +
+          scale_x_continuous(expand = expansion(mult = c(0, 0.25)),
+                             labels = function(x) paste0(x, "%")) +
+          scale_fill_brewer(palette = "Set2") +
+          facet_wrap(~ facet_var, scales = "free_x") +
+          labs(x = "Average share of monthly basket spend",
+               y = NULL, subtitle = wave_lbl) +
+          theme_minimal(base_size = 12) +
+          theme(panel.grid.major.y = element_blank())
+      }
+      return(p)
+    }
+
+    # ── Count metric (original behavior) ────────────────────────────────────
     count_df <- if (facet_by == "none") {
       df_plot |>
         dplyr::count(category) |>
@@ -965,22 +1055,18 @@ server <- function(input, output, session) {
         dplyr::mutate(category = forcats::fct_reorder(category, n, .fun = sum))
     }
 
-    wave_lbl <- if (identical(wave_sel, "1")) "Wave 1" else "All Waves"
-
     p <- ggplot(count_df, aes(x = n, y = category)) +
       geom_col(fill = "#951829", alpha = 0.85) +
       geom_text(aes(label = n), hjust = -0.2, size = 3.5) +
       scale_x_continuous(expand = expansion(mult = c(0, 0.18))) +
-      labs(x = "Number of items", y = NULL,
-           subtitle = wave_lbl) +
+      labs(x = "Number of items", y = NULL, subtitle = wave_lbl) +
       theme_minimal(base_size = 12) +
       theme(panel.grid.major.y = element_blank())
 
-    if (facet_by != "none") {
+    if (facet_by != "none")
       p <- p + facet_wrap(~ facet_var, scales = "free_x") +
         geom_col(aes(fill = facet_var), alpha = 0.85, show.legend = FALSE) +
         scale_fill_brewer(palette = "Set2")
-    }
 
     p
   })
@@ -1069,6 +1155,17 @@ server <- function(input, output, session) {
       ),
 
       tags$hr(),
+      tags$h6("Assign Student Sections"),
+      tags$p(style = "font-size:0.85em;color:#555;",
+             "Set the section for each student. Section is used for color/facet grouping in class plots."),
+      DT::DTOutput("admin_sections_tbl"),
+      tags$br(),
+      fluidRow(
+        column(3, selectInput("sec_user",    "Student", choices = NULL)),
+        column(3, textInput("sec_value",     "Section (e.g. MWF 10am)", placeholder = "Section label")),
+        column(2, tags$br(), actionButton("sec_save_btn", "Save Section", class = "btn-sm btn-primary"))
+      ),
+      tags$hr(),
       tags$h6("Basket Items"),
       DT::DTOutput("admin_items_tbl"),
       tags$hr(),
@@ -1121,6 +1218,35 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     showNotification("Backup started…", type = "message")
     backup_async()
+  })
+
+  # ── Section assignment ───────────────────────────────────────────────────────
+  output$admin_sections_tbl <- DT::renderDT({
+    req(rv$is_admin); rv$tick
+    db_query("SELECT user_id AS Username, display_name AS Name,
+                     COALESCE(section, '(not set)') AS Section
+              FROM users ORDER BY display_name;")
+  }, rownames = FALSE, selection = "none",
+     options  = list(dom = "t", pageLength = 50))
+
+  # Populate student picker from DB
+  observe({
+    req(rv$is_admin); rv$tick
+    users <- db_query("SELECT user_id, display_name FROM users ORDER BY display_name;")
+    if (!nrow(users)) return()
+    updateSelectInput(session, "sec_user",
+      choices = setNames(users$user_id, users$display_name))
+  })
+
+  observeEvent(input$sec_save_btn, {
+    req(rv$is_admin)
+    uid <- input$sec_user %||% ""
+    sec <- trimws(input$sec_value %||% "")
+    if (!nzchar(uid)) { showNotification("Select a student.", type = "error"); return() }
+    db_exec("UPDATE users SET section=? WHERE user_id=?;",
+            list(if (nzchar(sec)) sec else NA_character_, uid))
+    bump()
+    showNotification(paste0("Section saved for ", uid, "."), type = "message")
   })
 
   output$admin_items_tbl <- DT::renderDT({
