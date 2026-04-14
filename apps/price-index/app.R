@@ -520,7 +520,9 @@ server <- function(input, output, session) {
       tags$h5("Your Basket"),
       DT::DTOutput("my_basket_tbl"),
       tags$hr(),
-      uiOutput("personal_cpi_ui")
+      uiOutput("personal_cpi_ui"),
+      tags$hr(),
+      downloadButton("dl_my_data", "Download my data (.csv)", class = "btn-sm btn-default")
     )
   })
 
@@ -776,6 +778,9 @@ server <- function(input, output, session) {
           "All Price Submissions — click to expand"
         ),
         tags$br(),
+        downloadButton("dl_class_view", "Download class data (anonymized, .csv)",
+                       class = "btn-sm btn-default"),
+        tags$br(), tags$br(),
         DT::DTOutput("all_prices_tbl")
       )
     )
@@ -1150,6 +1155,40 @@ server <- function(input, output, session) {
         JOIN basket_items bi ON pr.item_id = bi.item_id
         JOIN users u         ON pr.user_id = u.user_id
         ORDER BY pr.wave, u.display_name;"), file, row.names = FALSE)
+    }
+  )
+
+  # ── Class view download (economist aliases, no real names) ───────────────────
+  output$dl_class_view <- downloadHandler(
+    filename = function() paste0("class_price_index_", Sys.Date(), ".csv"),
+    content  = function(file) {
+      df   <- all_prices_poll()
+      amap <- make_anon_map()
+      out  <- apply_anon_map(df, amap) |>
+        dplyr::mutate(recorded_at = substr(recorded_at, 1, 16)) |>
+        dplyr::select(economist = anon_name, section, wave, category,
+                      item_name, store, times_per_month, price, source, recorded_at) |>
+        dplyr::arrange(wave, economist, category)
+      write.csv(out, file, row.names = FALSE)
+    }
+  )
+
+  # ── Student's own data download ───────────────────────────────────────────────
+  output$dl_my_data <- downloadHandler(
+    filename = function() paste0("my_price_index_", Sys.Date(), ".csv"),
+    content  = function(file) {
+      uid    <- rv$user_id
+      prices <- get_user_prices(uid)
+      cpi_df <- compute_personal_cpi(uid)
+      out <- prices |>
+        dplyr::select(wave, category, item_name, store,
+                      times_per_month, price, source, recorded_at) |>
+        dplyr::arrange(wave, category, item_name)
+      if (!is.null(cpi_df) && nrow(cpi_df))
+        out <- dplyr::left_join(out,
+          dplyr::select(cpi_df, wave, basket_cost, personal_cpi),
+          by = "wave")
+      write.csv(out, file, row.names = FALSE)
     }
   )
 }
