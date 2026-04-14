@@ -178,6 +178,27 @@ append_log <- function(rows_df) {
 # ----------------------------
 # EXCLUSION HELPERS
 # ----------------------------
+
+# Named integer vector: total job entries per student (all job types).
+student_job_counts <- function(section_id, names) {
+  if (length(names) == 0) return(setNames(integer(0), character(0)))
+  lg <- jdb_query(
+    "SELECT display_name FROM job_log
+     WHERE section=? AND job NOT LIKE 'ADMIN__%'",
+    list(as.character(section_id))
+  )
+  counts <- table(factor(lg$display_name, levels = names))
+  setNames(as.integer(counts), names)
+}
+
+# Weighted sample: weight = 1/(count+1), so 0 jobs -> weight 1, 9 jobs -> weight 0.1.
+# pool must be length >= 1.
+weighted_draw <- function(pool, section_id) {
+  cnts <- student_job_counts(section_id, pool)
+  wts  <- 1 / (cnts + 1)
+  sample(pool, 1, prob = wts / sum(wts))
+}
+
 compute_exclusions <- function(section_id, roster, max_commits = Inf) {
   lg <- jdb_query(
     "SELECT job, display_name FROM job_log
@@ -262,17 +283,23 @@ draw_jobs_day <- function(section_id, jobs, absentees = character(0), exclusions
       cycle_id <- cycle_id + 1L
     }
 
-    avail <- setdiff(bag, picked_today)
-    avail <- setdiff(avail, overcap_excluded)
+    avail <- setdiff(setdiff(bag, picked_today), overcap_excluded)
 
     if (grepl("materials summary", j, ignore.case = TRUE)) {
       avail <- setdiff(avail, matsumm_excluded)
     }
 
+    # Fallback 1: allow a student picked for another job today, but keep overcap exclusion
+    if (length(avail) == 0) {
+      avail <- setdiff(bag, overcap_excluded)
+      if (grepl("materials summary", j, ignore.case = TRUE))
+        avail <- setdiff(avail, matsumm_excluded)
+    }
+    # Fallback 2: everyone is overcap — reluctantly allow overcap students (weighted heavily down)
     if (length(avail) == 0) avail <- setdiff(bag, picked_today)
     if (length(avail) == 0) stop("No eligible student for job: ", j, " in section: ", section_id)
 
-    nm            <- sample(avail, 1)
+    nm            <- weighted_draw(avail, section_id)
     assignments[j] <- nm
     picked_today  <- c(picked_today, nm)
 
@@ -1052,7 +1079,7 @@ server <- function(input, output, session) {
       return()
     }
 
-    rv$cold_current <- sample(pool, 1)
+    rv$cold_current <- weighted_draw(pool, input$section)
   })
 
   # --- Commit jobs ---
@@ -1173,6 +1200,13 @@ server <- function(input, output, session) {
       available <- setdiff(available, rv$exclusions$overcap)
       if (grepl("materials summary", job_to_redraw, ignore.case = TRUE))
         available <- setdiff(available, rv$exclusions$matsumm)
+      # Fallback: allow duplicates today before allowing overcap students
+      if (length(available) == 0) {
+        available <- setdiff(bag, rv$exclusions$overcap)
+        if (grepl("materials summary", job_to_redraw, ignore.case = TRUE))
+          available <- setdiff(available, rv$exclusions$matsumm)
+      }
+      # Last resort: everyone is overcap
       if (length(available) == 0) available <- setdiff(bag, taken_today)
     }
 
@@ -1181,7 +1215,7 @@ server <- function(input, output, session) {
       return()
     }
 
-    new_name <- sample(available, 1)
+    new_name <- weighted_draw(available, input$section)
 
     rv$prev_draft     <- rv$draft
     rv$prev_draft_res <- rv$draft_res
