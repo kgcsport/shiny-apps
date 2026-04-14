@@ -765,19 +765,15 @@ server <- function(input, output, session) {
           ),
           # ── Right plot controls ─────────────────────────────────────────────
           column(6,
-            tags$strong("CPI Distribution — Latest Wave (right)"), tags$hr(),
+            tags$strong("CPI at Latest Wave — by Student (right)"), tags$hr(),
             fluidRow(
-              column(5,
-                sliderInput("plot2_bins", "Number of bins",
-                            min = 3, max = 20, value = 8, step = 1, ticks = FALSE)
-              ),
-              column(4,
+              column(6,
                 selectInput("plot2_color", "Fill by",
                   choices  = c("None"    = "none",
                                "Section" = "section"),
                   selected = "none")
               ),
-              column(3,
+              column(6,
                 tags$br(),
                 checkboxInput("plot2_avg", "Show mean", value = TRUE)
               )
@@ -792,7 +788,7 @@ server <- function(input, output, session) {
           plotOutput("cpi_lines_plot", height = "340px")),
         column(6,
           tags$h6("CPI at Latest Wave"),
-          plotOutput("cpi_latest_plot", height = "340px"))
+          plotOutput("cpi_latest_plot", height = "480px"))
       ),
 
       tags$hr(),
@@ -844,8 +840,8 @@ server <- function(input, output, session) {
           dplyr::mutate(group_label = "Class Average", cat_label = "Total basket")
       } else if (grp == "section") {
         cpi_base |>
-          dplyr::mutate(grp_val = dplyr::coalesce(
-            ifelse(nzchar(section %||% ""), section, NA_character_), "Unknown")) |>
+          dplyr::mutate(grp_val = dplyr::if_else(
+            !is.na(section) & nzchar(section), section, "Unknown")) |>
           dplyr::group_by(wave, group_label = grp_val) |>
           dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
           dplyr::mutate(cat_label = "Total basket")
@@ -870,8 +866,8 @@ server <- function(input, output, session) {
           dplyr::mutate(group_label = category, cat_label = category)
       } else if (grp == "section") {
         cpi_cat |>
-          dplyr::mutate(grp_val = dplyr::coalesce(
-            ifelse(nzchar(section %||% ""), section, NA_character_), "Unknown")) |>
+          dplyr::mutate(grp_val = dplyr::if_else(
+            !is.na(section) & nzchar(section), section, "Unknown")) |>
           dplyr::group_by(wave, category, group_label = grp_val) |>
           dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
           dplyr::mutate(cat_label = category)
@@ -934,20 +930,19 @@ server <- function(input, output, session) {
       latest$fill_var <- "All students"
     }
 
-    n_fills  <- dplyr::n_distinct(latest$fill_var)
-    avg_cpi  <- mean(latest$cpi, na.rm = TRUE)
-    nbins    <- input$plot2_bins %||% 8L
+    n_fills <- dplyr::n_distinct(latest$fill_var)
+    avg_cpi <- mean(latest$cpi, na.rm = TRUE)
 
-    p <- ggplot(latest, aes(x = cpi))
+    latest <- dplyr::mutate(latest,
+      anon_name = forcats::fct_reorder(anon_name, cpi))
+
+    p <- ggplot(latest, aes(x = cpi, y = anon_name))
 
     p <- if (n_fills > 1) {
-      p + geom_histogram(aes(fill = fill_var),
-                         bins = nbins, color = "white", alpha = 0.85,
-                         position = "identity") +
+      p + geom_col(aes(fill = fill_var), alpha = 0.85) +
         scale_fill_brewer(palette = "Set2", name = "Section")
     } else {
-      p + geom_histogram(bins = nbins, fill = "#951829",
-                         color = "white", alpha = 0.85)
+      p + geom_col(fill = "#951829", alpha = 0.85)
     }
 
     p <- p +
@@ -960,14 +955,14 @@ server <- function(input, output, session) {
                    linewidth = 1.1, linetype = "solid") +
         annotate("text", x = avg_cpi, y = Inf,
                  label = sprintf("Mean: %.1f", avg_cpi),
-                 hjust = -0.15, vjust = 2, size = 3.5, color = "#1a1a2e")
+                 hjust = -0.15, vjust = 1.5, size = 3.5, color = "#1a1a2e")
 
     p +
-      scale_y_continuous(breaks = scales::breaks_pretty()) +
-      labs(x = "Personal CPI (Wave 1 = 100)", y = "Number of students",
+      labs(x = "Personal CPI (Wave 1 = 100)", y = NULL,
            subtitle = paste0("Wave ", latest_wave, " vs. Wave 1")) +
       theme_minimal(base_size = 12) +
-      theme(legend.position = if (n_fills > 1) "bottom" else "none")
+      theme(legend.position = if (n_fills > 1) "bottom" else "none",
+            panel.grid.major.y = element_blank())
   })
 
   output$cat_count_plot <- renderPlot({
