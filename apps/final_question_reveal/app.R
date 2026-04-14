@@ -1152,7 +1152,7 @@ ui <- fluidPage(
   conditionalPanel("output.authed",
     tabsetPanel(
       tabPanel("Student", uiOutput("student_ui")),
-      tabPanel("Projector", uiOutput("projector_ui")),
+      tabPanel("Class Progress", uiOutput("class_progress_ui")),
       tabPanel("Admin", uiOutput("admin_ui"))
     )
   )
@@ -1744,7 +1744,7 @@ server <- function(input, output, session) {
   })
 
   # ---------------- Projector ----------------
-  output$projector_ui <- renderUI({
+  output$class_progress_ui <- renderUI({
     req(authed())
     st <- state_poll()
     s  <- settings_poll()
