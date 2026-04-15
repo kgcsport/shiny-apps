@@ -855,8 +855,9 @@ server <- function(input, output, session) {
             fluidRow(
               column(6,
                 selectInput("plot2_color", "Fill by",
-                  choices  = c("None"    = "none",
-                               "Section" = "section"),
+                  choices  = c("None"     = "none",
+                               "Section"  = "section",
+                               "Category" = "category"),
                   selected = "none")
               ),
               column(6,
@@ -1028,9 +1029,52 @@ server <- function(input, output, session) {
       base_label <- paste0(time_unit_xlab(unit), " 1")
 
     color_by <- input$plot2_color %||% "none"
+
+    # ── Category view: class-average CPI per category at latest period ────────
+    if (color_by == "category") {
+      cpi_cat <- compute_cpi_by_category(df)
+      if (!nrow(cpi_cat)) return(void_plot("CPI needs baseline data"))
+      latest_cat <- dplyr::filter(cpi_cat, time_period == max(cpi_cat$time_period))
+      if (!nrow(latest_cat)) return(void_plot("No category data at latest period"))
+
+      avg_cat <- latest_cat |>
+        dplyr::group_by(category) |>
+        dplyr::summarise(cpi      = round(mean(cpi, na.rm = TRUE), 1),
+                         n_students = dplyr::n(),
+                         .groups  = "drop") |>
+        dplyr::mutate(category = forcats::fct_reorder(category, cpi))
+
+      avg_cpi_all <- mean(latest$cpi, na.rm = TRUE)
+
+      p <- ggplot(avg_cat, aes(x = cpi, y = category, fill = category)) +
+        geom_col(alpha = 0.85, show.legend = FALSE) +
+        geom_text(aes(label = sprintf("%.1f  (n=%d)", cpi, n_students)),
+                  hjust = -0.1, size = 3.3) +
+        geom_vline(xintercept = 100, linetype = "dashed",
+                   color = "gray55", linewidth = 0.8) +
+        scale_fill_viridis_d(option = "D", direction = -1) +
+        scale_x_continuous(expand = expansion(mult = c(0, 0.25))) +
+        labs(x = paste0("Avg. category CPI (", base_label, " = 100)"), y = NULL,
+             subtitle = paste0("Class average by category — ", latest_label,
+                               " vs. ", base_label)) +
+        theme_minimal(base_size = 12) +
+        theme(panel.grid.major.y = element_blank())
+
+      if (isTRUE(input$plot2_avg))
+        p <- p +
+          geom_vline(xintercept = avg_cpi_all, color = "#1a1a2e",
+                     linewidth = 1.1, linetype = "solid") +
+          annotate("text", x = avg_cpi_all, y = Inf,
+                   label = sprintf("Overall mean: %.1f", avg_cpi_all),
+                   hjust = -0.1, vjust = 1.5, size = 3.3, color = "#1a1a2e")
+      return(p)
+    }
+
+    # ── Per-student view ──────────────────────────────────────────────────────
     if (color_by == "section") {
-      latest$fill_var <- dplyr::coalesce(
-        ifelse(nzchar(latest$section %||% ""), latest$section, NA_character_), "Unknown")
+      # Vectorised: avoid passing a column to %||%
+      latest$fill_var <- ifelse(!is.na(latest$section) & nzchar(latest$section),
+                                latest$section, "Unknown")
     } else {
       latest$fill_var <- "All students"
     }
