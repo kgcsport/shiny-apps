@@ -780,7 +780,7 @@ server <- function(input, output, session) {
                           "Week (auto, Tue start)" = "week",
                           "Day"                    = "day",
                           "Month"                  = "month"),
-              selected = "wave",
+              selected = "week",
               inline   = TRUE),
             tags$p(style = "font-size:0.82em;color:#666;margin-top:-6px;",
                    tags$strong("Wave"), " uses the instructor-set wave number. ",
@@ -809,7 +809,7 @@ server <- function(input, output, session) {
               column(4,
                 selectInput("plot3_facet", "Facet by",
                   choices  = c("None" = "none", "Section" = "section",
-                               "Source" = "source", "Wave" = "wave"),
+                               "Source" = "source", "Period" = "wave"),
                   selected = "none")
               )
             )
