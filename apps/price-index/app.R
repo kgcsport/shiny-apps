@@ -281,18 +281,25 @@ compute_cpi_by_category <- function(df) {
     dplyr::mutate(cpi = round(cat_cost / base_cost * 100, 1))
 }
 
-# Average basket share (%) per category across students, for a given price data frame
+# Average basket share (%) per category across students, for a given price data frame.
+# Students who don't have a given category are treated as 0% for that category,
+# so shares average to 100% across all categories.
 compute_basket_shares <- function(df) {
   if (!nrow(df)) return(tibble::tibble())
-  df |>
+  user_totals <- df |>
     dplyr::group_by(user_id) |>
-    dplyr::mutate(total_spend = sum(price * times_per_month, na.rm = TRUE)) |>
+    dplyr::summarise(total_spend = sum(price * times_per_month, na.rm = TRUE),
+                     .groups = "drop")
+  cat_spend <- df |>
     dplyr::group_by(user_id, category) |>
-    dplyr::summarise(
-      cat_spend   = sum(price * times_per_month, na.rm = TRUE),
-      total_spend = dplyr::first(total_spend),
-      .groups     = "drop"
-    ) |>
+    dplyr::summarise(cat_spend = sum(price * times_per_month, na.rm = TRUE),
+                     .groups = "drop")
+  # Complete grid so every student has a row for every category (0 if missing)
+  cat_spend |>
+    tidyr::complete(user_id = unique(df$user_id),
+                    category = unique(df$category),
+                    fill = list(cat_spend = 0)) |>
+    dplyr::left_join(user_totals, by = "user_id") |>
     dplyr::mutate(share = ifelse(total_spend > 0, cat_spend / total_spend * 100, 0)) |>
     dplyr::group_by(category) |>
     dplyr::summarise(avg_share = round(mean(share, na.rm = TRUE), 1), .groups = "drop")
