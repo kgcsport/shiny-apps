@@ -399,19 +399,42 @@ generate_summary_table <- function() {
   ) %>% dplyr::rename(name = display_name)
 
   if (nrow(lg) == 0) {
-    return(roster_df %>% dplyr::select(name, section))
+    out <- roster_df %>% dplyr::select(name, section)
+    out$Total       <- 0L
+    out$`Prob. (%)` <- round(100 / pmax(nrow(out), 1), 1)
+    return(out)
   }
 
   lg <- lg %>%
     dplyr::rename(name = display_name) %>%
     dplyr::mutate(job = sub("\\s+[0-9]+$", "", job, ignore.case = TRUE))
 
-  lg %>%
+  # Per-student total (all job types, used for weighted-draw probability)
+  totals <- lg %>%
+    dplyr::group_by(name) %>%
+    dplyr::summarise(Total = dplyr::n(), .groups = "drop")
+
+  wide <- lg %>%
     dplyr::full_join(roster_df, by = c("name", "section")) %>%
     dplyr::group_by(name, section, job) %>%
     dplyr::summarise(count = dplyr::n(), .groups = "drop") %>%
     tidyr::pivot_wider(names_from = job, values_from = count) %>%
-    dplyr::arrange(name, section)
+    dplyr::arrange(name, section) %>%
+    dplyr::left_join(totals, by = "name") %>%
+    dplyr::mutate(Total = dplyr::coalesce(Total, 0L))
+
+  # Weighted-draw probability within section: weight_i = 1/(Total_i + 1)
+  # Prob_i = weight_i / sum(weight_j for j in same section)
+  wide <- wide %>%
+    dplyr::group_by(section) %>%
+    dplyr::mutate(
+      .weight    = 1 / (Total + 1),
+      `Prob. (%)` = round(.weight / sum(.weight) * 100, 1)
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(-.weight)
+
+  wide
 }
 
 rebuild_state_from_log <- function(section_id, upto_date = Sys.Date()) {
