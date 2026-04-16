@@ -365,6 +365,37 @@ make_period_labels <- function(df, unit) {
 time_unit_xlab <- function(unit)
   switch(unit, wave = "Wave", day = "Day", week = "Week", month = "Month", "Wave")
 
+# Balance a panel: keep only items / people present in *every* time period.
+# mode = "none" | "people" | "items"
+# Requires time_period column (call add_time_period first).
+balance_panel <- function(df, mode = "none") {
+  if (mode == "none" || !nrow(df)) return(df)
+  periods   <- sort(unique(df$time_period))
+  n_periods <- length(periods)
+  if (n_periods <= 1L) return(df)   # nothing to balance with only one period
+
+  if (mode == "people") {
+    keep <- df |>
+      dplyr::group_by(user_id) |>
+      dplyr::summarise(np = dplyr::n_distinct(time_period), .groups = "drop") |>
+      dplyr::filter(np == n_periods) |>
+      dplyr::pull(user_id)
+    df[df$user_id %in% keep, , drop = FALSE]
+
+  } else if (mode == "items") {
+    # "item" = unique user_id × item_name × store triple
+    keep_items <- df |>
+      dplyr::group_by(user_id, item_name, store) |>
+      dplyr::summarise(np = dplyr::n_distinct(time_period), .groups = "drop") |>
+      dplyr::filter(np == n_periods) |>
+      dplyr::select(user_id, item_name, store)
+    dplyr::semi_join(df, keep_items, by = c("user_id", "item_name", "store"))
+
+  } else {
+    df
+  }
+}
+
 # ── Query helpers ─────────────────────────────────────────────────────────────
 get_wave       <- function() db_query("SELECT current_wave FROM app_state WHERE id=1;")$current_wave[1]
 get_user_items <- function(uid) db_query(
@@ -796,6 +827,26 @@ server <- function(input, output, session) {
           )
         ),
         tags$hr(),
+        # ── Balanced-panel filter (affects all plots) ────────────────────────
+        fluidRow(
+          column(12,
+            tags$strong("Panel balance"), tags$hr(),
+            radioButtons("balance_panel", NULL,
+              choices = c("Unbalanced (all data)"         = "none",
+                          "Balanced by student"           = "people",
+                          "Balanced by item"              = "items"),
+              selected = "none",
+              inline   = TRUE),
+            tags$p(style = "font-size:0.82em;color:#666;margin-top:-6px;",
+                   tags$strong("Balanced by student"), " keeps only students who ",
+                   "submitted prices in every period. ",
+                   tags$strong("Balanced by item"), " keeps only individual items ",
+                   "re-priced every period. Unbalanced data can ",
+                   tags$em("overstate"), " or ", tags$em("understate"), " price changes ",
+                   "as the composition of the basket shifts — a useful lesson in aggregation.")
+          )
+        ),
+        tags$hr(),
         fluidRow(
           # ── Category count chart controls ───────────────────────────────────
           column(12,
@@ -919,6 +970,7 @@ server <- function(input, output, session) {
     df      <- apply_anon_map(df, amap)
     df      <- filter_price_df(df, input$plot1_src %||% "All")
     df      <- add_time_period(df, unit)
+    df      <- balance_panel(df, input$balance_panel %||% "none")
     if (!nrow(df)) return(void_plot("No data for this filter"))
 
     cat_mode <- input$plot1_cat_mode %||% "all"
@@ -1020,6 +1072,7 @@ server <- function(input, output, session) {
 
     df     <- apply_anon_map(df, amap)
     df     <- add_time_period(df, unit)
+    df     <- balance_panel(df, input$balance_panel %||% "none")
     cpi_df <- compute_cpi_from_df(df)
     if (!nrow(cpi_df)) return(void_plot("CPI needs baseline data"))
 
@@ -1131,6 +1184,7 @@ server <- function(input, output, session) {
     metric     <- input$plot3_metric %||% "count"
 
     df         <- add_time_period(df, unit)
+    df         <- balance_panel(df, input$balance_panel %||% "none")
     df_plot    <- if (identical(period_sel, "1")) dplyr::filter(df, time_period == 1) else df
     if (!nrow(df_plot)) return(void_plot("No data for selected period"))
 
