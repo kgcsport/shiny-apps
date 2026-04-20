@@ -5,7 +5,7 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 # Questions: upload a CSV via Admin tab, or fall back to built-in defaults.
 # Auth: shared finalqdata.sqlite (same users as price-index app).
 
-pacman::p_load(shiny, DBI, RSQLite, bcrypt, dplyr, ggplot2, DT)
+library(shiny); library(DBI); library(RSQLite); library(bcrypt); library(dplyr); library(ggplot2); library(DT)
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 logf   <- function(...) cat(format(Sys.time()), "-", paste(...), "\n", file = stderr())
