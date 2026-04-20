@@ -144,6 +144,11 @@ init_db <- function() {
     UNIQUE(user_id, q_num)
   );")
 
+  db_exec("CREATE TABLE IF NOT EXISTS quiz_aliases (
+    user_id TEXT PRIMARY KEY,
+    alias   TEXT NOT NULL
+  );")
+
   db_exec("CREATE TABLE IF NOT EXISTS quiz_questions (
     q_num   INTEGER PRIMARY KEY,
     topic   TEXT NOT NULL,
@@ -196,8 +201,12 @@ get_state <- function()
 
 get_scores <- function(questions = load_questions()) {
   resps <- db_query("
-    SELECT qr.user_id, u.display_name, qr.q_num, qr.answer
-    FROM quiz_responses qr JOIN users u ON qr.user_id = u.user_id;")
+    SELECT qr.user_id,
+           COALESCE(qa.alias, u.display_name) AS display_name,
+           qr.q_num, qr.answer
+    FROM quiz_responses qr
+    JOIN users u ON qr.user_id = u.user_id
+    LEFT JOIN quiz_aliases qa ON qr.user_id = qa.user_id;")
   if (!nrow(resps)) return(data.frame(user_id=character(), display_name=character(), score=integer()))
   cm <- setNames(
     vapply(questions, `[[`, character(1), "correct"),
@@ -252,7 +261,7 @@ ui <- fluidPage(
 # ── Server ────────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
 
-  rv <- reactiveValues(authed = FALSE, user_id = NULL, name = NULL, is_admin = FALSE)
+  rv <- reactiveValues(authed = FALSE, user_id = NULL, name = NULL, alias = NULL, is_admin = FALSE)
 
   # ── Auth ────────────────────────────────────────────────────────────────────
   output$app_ui <- renderUI({
@@ -287,11 +296,13 @@ server <- function(input, output, session) {
     rv$user_id  <- row$user_id[1]
     rv$name     <- row$display_name[1]
     rv$is_admin <- as.logical(row$is_admin[1])
+    al <- db_query("SELECT alias FROM quiz_aliases WHERE user_id=?;", list(row$user_id[1]))
+    rv$alias <- if (nrow(al)) al$alias[1] else NULL
     logf("LOGIN:", row$user_id[1])
   })
 
   observeEvent(input$logout_btn, {
-    rv$authed <- FALSE; rv$user_id <- NULL; rv$name <- NULL; rv$is_admin <- FALSE
+    rv$authed <- FALSE; rv$user_id <- NULL; rv$name <- NULL; rv$alias <- NULL; rv$is_admin <- FALSE
   })
 
   # ── Reactive polls ───────────────────────────────────────────────────────────
@@ -320,7 +331,7 @@ server <- function(input, output, session) {
     my  <- if (length(my)) my[1] else 0L
     qs  <- state_r()$current_q[1]
     span(class = "score-chip",
-         paste0(rv$name, "  ", my, "/", qs - 1, " correct"))
+         paste0(rv$alias %||% rv$name, "  ", my, "/", qs - 1, " correct"))
   })
 
   # ── Student panel ─────────────────────────────────────────────────────────────
@@ -339,6 +350,15 @@ server <- function(input, output, session) {
     my_ans   <- if (answered) existing$answer[1] else NULL
 
     div(style = "max-width:660px; padding:16px 0;",
+      # Alias input
+      div(style = "display:flex; align-items:center; gap:8px; margin-bottom:12px;",
+        textInput("alias_input", NULL,
+                  value       = rv$alias %||% rv$name,
+                  placeholder = "Leaderboard name",
+                  width       = "220px"),
+        actionButton("save_alias_btn", "Save name",
+                     class = "btn-sm btn-default", style = "margin-top:0;")
+      ),
       # Question header
       tags$p(
         span(class = "topic-pill", q$topic),
@@ -508,7 +528,13 @@ server <- function(input, output, session) {
             tags$br(), tags$br(),
             actionButton("next_btn", "Next \u2192",
                          class = "btn-primary btn-lg", width = "100%",
-                         disabled = if (qnum == length(questions_r())) "disabled" else NULL)
+                         disabled = if (qnum == length(questions_r())) "disabled" else NULL),
+            tags$br(), tags$br(),
+            selectInput("jump_q", NULL,
+              choices  = setNames(
+                seq_len(length(questions_r())),
+                vapply(questions_r(), function(q) paste0("Q", q$num, " — ", q$topic), character(1))),
+              selected = qnum, width = "100%")
           ),
           column(4,
             tags$br(),
@@ -520,17 +546,24 @@ server <- function(input, output, session) {
           )
         )
       ),
-      tags$h5("Current Question"),
-      tags$p(class = "q-text",
-             tags$strong(paste0("Q", qnum, " [", q$topic, "]:  ")), q$text),
-      tags$ul(lapply(names(q$opts), function(ltr) {
-        style <- if (ltr == q$correct)
-          "color:#155724; font-weight:bold;" else "color:#555;"
-        tags$li(style = style,
-                paste0(ltr, ". ", q$opts[[ltr]],
-                       if (ltr == q$correct) "  \u2713" else ""))
-      })),
-      tags$p(class = "explain-box", q$explain),
+      tags$details(
+        tags$summary(
+          style = "cursor:pointer; font-weight:600; font-size:1.05em;
+                   padding:6px 0; list-style:none; user-select:none;",
+          paste0("\u25B6  Q", qnum, " — ", q$topic, " (click to expand)")
+        ),
+        div(style = "padding:10px 0 4px 4px;",
+          tags$p(class = "q-text", q$text),
+          tags$ul(lapply(names(q$opts), function(ltr) {
+            style <- if (ltr == q$correct)
+              "color:#155724; font-weight:bold;" else "color:#555;"
+            tags$li(style = style,
+                    paste0(ltr, ". ", q$opts[[ltr]],
+                           if (ltr == q$correct) "  \u2713" else ""))
+          })),
+          tags$p(class = "explain-box", q$explain)
+        )
+      ),
 
       tags$hr(),
       tags$h5("Upload Question Bank"),
@@ -563,6 +596,14 @@ server <- function(input, output, session) {
     if (qs$current_q[1] < length(questions_r()))
       db_exec("UPDATE quiz_state SET current_q=current_q+1, revealed=0,
                updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+  })
+
+  observeEvent(input$jump_q, {
+    req(rv$is_admin)
+    target <- as.integer(input$jump_q)
+    if (!is.na(target) && target != isolate(state_r())$current_q[1])
+      db_exec("UPDATE quiz_state SET current_q=?, revealed=0,
+               updated_at=CURRENT_TIMESTAMP WHERE id=1;", list(target))
   })
 
   observeEvent(input$prev_btn, {
@@ -643,6 +684,16 @@ server <- function(input, output, session) {
     db_exec("UPDATE quiz_state SET current_q=1, revealed=0,
              updated_at=CURRENT_TIMESTAMP WHERE id=1;")
     showNotification("Restored default questions. Quiz reset to Q1.", type = "message")
+  })
+
+  observeEvent(input$save_alias_btn, {
+    req(rv$user_id)
+    a <- trimws(input$alias_input %||% "")
+    if (!nzchar(a)) { showNotification("Name cannot be blank.", type = "warning"); return() }
+    db_exec("INSERT OR REPLACE INTO quiz_aliases(user_id, alias) VALUES(?, ?);",
+            list(rv$user_id, a))
+    rv$alias <- a
+    showNotification(paste0("Leaderboard name set to: ", a), type = "message")
   })
 
   observeEvent(input$reinit_btn, {
