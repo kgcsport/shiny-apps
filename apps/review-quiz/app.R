@@ -222,6 +222,9 @@ get_scores <- function(questions = load_questions()) {
 quiz_css <- HTML("
   .ans-btn  { width:100%; margin:5px 0; font-size:1.05em; padding:12px 16px;
                text-align:left; border-radius:6px; }
+  .ans-selected { background:#1B4F72 !important; color:#fff !important;
+                  border-color:#1B4F72 !important; opacity:1 !important; }
+  .ans-btn:disabled { opacity:0.45; }
   .q-text   { font-size:1.15em; line-height:1.6; margin:14px 0; }
   .topic-pill { background:#951829; color:#fff; border-radius:12px;
                 padding:2px 10px; font-size:0.82em; font-weight:600; }
@@ -268,7 +271,7 @@ server <- function(input, output, session) {
     if (!rv$authed) return(login_ui())
 
     tabs <- list(
-      tabPanel("My Answer",   uiOutput("student_panel")),
+      tabPanel("My Answer",   uiOutput("alias_ui"), uiOutput("student_panel")),
       tabPanel("Leaderboard", uiOutput("display_panel"))
     )
     if (rv$is_admin) tabs <- c(tabs, list(tabPanel("Admin", uiOutput("admin_panel"))))
@@ -334,9 +337,24 @@ server <- function(input, output, session) {
          paste0(rv$alias %||% rv$name, "  ", my, "/", qs - 1, " correct"))
   })
 
+  # ── Alias input (separate so it isn't wiped by state_r() re-renders) ─────────
+  output$alias_ui <- renderUI({
+    req(rv$authed)
+    div(style = "max-width:660px; padding:10px 0 4px;",
+      div(style = "display:flex; align-items:center; gap:8px;",
+        textInput("alias_input", NULL,
+                  value       = rv$alias %||% rv$name,
+                  placeholder = "Leaderboard name",
+                  width       = "220px"),
+        actionButton("save_alias_btn", "Save name", class = "btn-sm btn-default")
+      )
+    )
+  })
+
   # ── Student panel ─────────────────────────────────────────────────────────────
   output$student_panel <- renderUI({
     req(rv$authed)
+    responses_r()   # invalidate when any response is submitted
     qs   <- state_r()
     qnum <- max(1L, min(as.integer(qs$current_q[1] %||% 1L), length(questions_r())))
     rev  <- as.logical(qs$revealed[1])
@@ -350,15 +368,6 @@ server <- function(input, output, session) {
     my_ans   <- if (answered) existing$answer[1] else NULL
 
     div(style = "max-width:660px; padding:16px 0;",
-      # Alias input
-      div(style = "display:flex; align-items:center; gap:8px; margin-bottom:12px;",
-        textInput("alias_input", NULL,
-                  value       = rv$alias %||% rv$name,
-                  placeholder = "Leaderboard name",
-                  width       = "220px"),
-        actionButton("save_alias_btn", "Save name",
-                     class = "btn-sm btn-default", style = "margin-top:0;")
-      ),
       # Question header
       tags$p(
         span(class = "topic-pill", q$topic),
@@ -376,7 +385,9 @@ server <- function(input, output, session) {
               label   = paste0(ltr, ".  ", q$opts[[ltr]]),
               class   = "btn btn-outline-secondary ans-btn",
               onclick = sprintf(
-                "Shiny.setInputValue('submit_ans','%s',{priority:'event'})", ltr)
+                "this.classList.add('ans-selected');
+                 document.querySelectorAll('.ans-btn').forEach(function(b){b.disabled=true;});
+                 Shiny.setInputValue('submit_ans','%s',{priority:'event'})", ltr)
             )
           }),
           tags$p(style = "color:#888; font-size:0.85em; margin-top:6px;",
