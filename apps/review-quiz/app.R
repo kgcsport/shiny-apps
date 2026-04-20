@@ -119,6 +119,13 @@ get_con <- function() {
 db_exec  <- function(sql, params = NULL) DBI::dbExecute(get_con(), sql, params = params)
 db_query <- function(sql, params = NULL) DBI::dbGetQuery(get_con(), sql, params = params)
 
+ensure_state <- function() {
+  db_exec("INSERT OR REPLACE INTO quiz_state(id, current_q, revealed)
+    SELECT 1,
+      COALESCE((SELECT current_q FROM quiz_state WHERE id=1), 1),
+      COALESCE((SELECT revealed  FROM quiz_state WHERE id=1), 0);")
+}
+
 init_db <- function() {
   db_exec("CREATE TABLE IF NOT EXISTS quiz_state (
     id         INTEGER PRIMARY KEY CHECK(id = 1),
@@ -126,8 +133,7 @@ init_db <- function() {
     revealed   INTEGER DEFAULT 0,
     updated_at TEXT    DEFAULT (CURRENT_TIMESTAMP)
   );")
-  if (!db_query("SELECT COUNT(*) n FROM quiz_state WHERE id=1;")$n[1])
-    db_exec("INSERT INTO quiz_state(id, current_q, revealed) VALUES(1, 1, 0);")
+  ensure_state()
 
   db_exec("CREATE TABLE IF NOT EXISTS quiz_responses (
     response_id  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -321,7 +327,7 @@ server <- function(input, output, session) {
   output$student_panel <- renderUI({
     req(rv$authed)
     qs   <- state_r()
-    qnum <- qs$current_q[1]
+    qnum <- max(1L, min(as.integer(qs$current_q[1] %||% 1L), length(questions_r())))
     rev  <- as.logical(qs$revealed[1])
     q    <- questions_r()[[qnum]]
     uid  <- rv$user_id
@@ -380,7 +386,7 @@ server <- function(input, output, session) {
   observeEvent(input$submit_ans, {
     req(rv$authed)
     qs   <- isolate(state_r())
-    qnum <- qs$current_q[1]
+    qnum <- max(1L, min(as.integer(qs$current_q[1] %||% 1L), length(questions_r())))
     if (as.logical(qs$revealed[1])) {
       showNotification("Answer already revealed — too late!", type = "warning"); return()
     }
@@ -475,7 +481,7 @@ server <- function(input, output, session) {
   output$admin_panel <- renderUI({
     req(rv$is_admin)
     qs   <- state_r()
-    qnum <- qs$current_q[1]
+    qnum <- max(1L, min(as.integer(qs$current_q[1] %||% 1L), length(questions_r())))
     rev  <- as.logical(qs$revealed[1])
     q    <- questions_r()[[qnum]]
 
@@ -507,6 +513,8 @@ server <- function(input, output, session) {
           column(4,
             tags$br(),
             actionButton("reset_btn", "Reset All", class = "btn-danger", width = "100%"),
+            tags$br(), tags$br(),
+            actionButton("reinit_btn", "Fix DB State", class = "btn-warning btn-sm", width = "100%"),
             tags$br(), tags$br(),
             downloadButton("dl_responses", "Download CSV", class = "btn-sm btn-default")
           )
@@ -635,6 +643,12 @@ server <- function(input, output, session) {
     db_exec("UPDATE quiz_state SET current_q=1, revealed=0,
              updated_at=CURRENT_TIMESTAMP WHERE id=1;")
     showNotification("Restored default questions. Quiz reset to Q1.", type = "message")
+  })
+
+  observeEvent(input$reinit_btn, {
+    req(rv$is_admin)
+    ensure_state()
+    showNotification("DB state reinitialized — quiz is back at Q1.", type = "message")
   })
 
   output$dl_responses <- downloadHandler(
