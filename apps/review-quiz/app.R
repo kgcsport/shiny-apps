@@ -376,37 +376,41 @@ server <- function(input, output, session) {
       ),
       tags$p(class = "q-text", q$text),
 
-      if (!answered) {
-        # Answer buttons
+      if (!rev) {
+        # Buttons always shown until reveal — current selection highlighted
         tagList(
           lapply(names(q$opts), function(ltr) {
+            is_sel <- identical(ltr, my_ans)
             actionButton(
               inputId = paste0("ans_btn_", ltr),
               label   = paste0(ltr, ".  ", q$opts[[ltr]]),
-              class   = "btn btn-outline-secondary ans-btn",
+              class   = paste("btn btn-outline-secondary ans-btn",
+                              if (is_sel) "ans-selected" else ""),
               onclick = sprintf(
-                "this.classList.add('ans-selected');
-                 document.querySelectorAll('.ans-btn').forEach(function(b){b.disabled=true;});
-                 Shiny.setInputValue('submit_ans','%s',{priority:'event'})", ltr)
+                "Shiny.setInputValue('submit_ans','%s',{priority:'event'})", ltr)
             )
           }),
-          tags$p(style = "color:#888; font-size:0.85em; margin-top:6px;",
-                 "Tap your answer to lock in — no changes after submission.")
+          if (answered)
+            tags$p(style = "color:#555; font-size:0.85em; margin-top:6px;",
+                   "\u2713  Locked in: ", tags$strong(my_ans),
+                   " \u2014 you can still switch.")
+          else
+            tags$p(style = "color:#888; font-size:0.85em; margin-top:6px;",
+                   "Tap an answer to submit.")
         )
-      } else if (!rev) {
-        div(class = "status-box status-waiting",
-            "\U0001F512  Locked in: ", tags$strong(my_ans),
-            "  \u2014  waiting for reveal\u2026")
       } else {
         # Revealed
-        is_right <- (my_ans == q$correct)
+        is_right <- isTRUE(my_ans == q$correct)
         tagList(
           div(class = paste("status-box", if (is_right) "status-correct" else "status-wrong"),
             if (is_right)
               tagList("\u2705  Correct! — ", tags$strong(q$opts[[q$correct]]))
-            else
+            else if (!is.null(my_ans))
               tagList("\u274C  Your answer: ", tags$strong(my_ans),
                       "  |  Correct: ", tags$strong(q$correct), " — ", q$opts[[q$correct]])
+            else
+              tagList("\u274C  No answer submitted. Correct: ",
+                      tags$strong(q$correct), " — ", q$opts[[q$correct]])
           ),
           div(class = "explain-box", q$explain)
         )
@@ -426,7 +430,7 @@ server <- function(input, output, session) {
     tryCatch(
       db_exec(
         "INSERT INTO quiz_responses(user_id, q_num, answer)
-         VALUES(?,?,?) ON CONFLICT(user_id, q_num) DO NOTHING;",
+         VALUES(?,?,?) ON CONFLICT(user_id, q_num) DO UPDATE SET answer=excluded.answer;",
         list(rv$user_id, as.integer(qnum), ltr)),
       error = function(e) showNotification(paste("Error:", e$message), type = "error")
     )
