@@ -34,7 +34,7 @@ QUESTIONS_DEFAULT <- list(
   list(
     num     = 3L,
     topic   = "Solow Model",
-    text    = "In the Solow model, a higher savings rate permanently raises:",
+    text    = "In the Solow model a higher savings rate permanently raises:",
     opts    = c(A = "The long-run growth rate of output",
                 B = "The steady-state level of output per worker",
                 C = "Both the growth rate and the level",
@@ -44,19 +44,22 @@ QUESTIONS_DEFAULT <- list(
   ),
   list(
     num     = 4L,
-    topic   = "Rule of 70",
-    text    = "Real GDP per capita grows at 3.5% per year. How many years to double?",
-    opts    = c(A = "10 years", B = "14 years", C = "20 years", D = "35 years"),
+    topic   = "Rule of 70 / CAGR",
+    text    = "Real GDP per capita grew from $8,000 to $16,000 over 20 years. Using the Rule of 70, what annual growth rate does this imply?",
+    opts    = c(A = "1.75%", B = "2.5%", C = "3.5%", D = "5%"),
     correct = "C",
-    explain = "70 / 3.5 = 20 years."
+    explain = "GDP doubled in 20 years → g ≈ 70/20 = 3.5%. CAGR formula confirms: (16/8)^(1/20) − 1 = 2^0.05 − 1 ≈ 3.5%."
   ),
   list(
     num     = 5L,
     topic   = "Business Cycle Phases",
-    text    = "GDP is falling and firms are laying off workers. Which business cycle phase is this?",
-    opts    = c(A = "Expansion", B = "Peak", C = "Contraction", D = "Trough"),
-    correct = "C",
-    explain = "Contraction: output falling, unemployment rising. The trough is the bottom — where contraction ends and recovery begins."
+    text    = "GDP has been rising for several quarters and growth this quarter is approximately zero — the economy is about to turn downward. This turning point is called a:",
+    opts    = c(A = "Trough — the end of recession",
+                B = "Recession — output is falling",
+                C = "Expansion — output is rising",
+                D = "Peak — the end of expansion where g ≈ 0"),
+    correct = "D",
+    explain = "Peak = end of expansion (g ≈ 0, about to fall). Trough = end of recession (g ≈ 0, about to rise). Expansion = rising output; contraction/recession = falling output."
   ),
   list(
     num     = 6L,
@@ -76,18 +79,10 @@ QUESTIONS_DEFAULT <- list(
                 C = "Neutral — spending and taxes move together",
                 D = "An automatic stabilizer"),
     correct = "B",
-    explain = "Pro-cyclical: cutting spending during a contraction reduces AD further, deepening the recession."
+    explain = "Pro-cyclical: cutting spending during a contraction reduces AD further and deepens the recession."
   ),
   list(
     num     = 8L,
-    topic   = "Fisher Equation",
-    text    = "Nominal interest rate = 5%, inflation = 3%. Approximate real interest rate?",
-    opts    = c(A = "8%", B = "3%", C = "2%", D = "1.5%"),
-    correct = "C",
-    explain = "r_real ≈ r_nominal − π = 5% − 3% = 2%."
-  ),
-  list(
-    num     = 9L,
     topic   = "Quantity Theory of Money",
     text    = "The money supply M doubles. V and Y remain fixed. The price level P:",
     opts    = c(A = "Stays the same",
@@ -96,17 +91,6 @@ QUESTIONS_DEFAULT <- list(
                 D = "Quadruples"),
     correct = "C",
     explain = "MV = PY → doubling M with V, Y fixed means P must double. Quantity theory: money growth → proportional inflation."
-  ),
-  list(
-    num     = 10L,
-    topic   = "Supply Shock & Phillips Curve",
-    text    = "An energy price spike causes stagflation. On a Phillips curve diagram, this:",
-    opts    = c(A = "Moves the economy along the curve toward lower unemployment",
-                B = "Moves the economy along the curve toward higher unemployment",
-                C = "Shifts the curve outward (higher inflation at every unemployment rate)",
-                D = "Shifts the curve inward"),
-    correct = "C",
-    explain = "A supply shock shifts SRAS left → both higher inflation AND higher unemployment simultaneously → SRPC shifts outward."
   )
 )
 
@@ -186,16 +170,18 @@ load_questions <- function() {
   })
 }
 
-# Parse and validate a CSV data frame → list of question rows, or an error string.
-parse_question_csv <- function(df) {
+# Parse and validate a CSV file path → data frame ready for DB insert, or stop() on error.
+parse_question_csv <- function(path) {
+  df <- tryCatch(read.csv(path, stringsAsFactors = FALSE),
+                 error = function(e) stop("Could not read CSV: ", conditionMessage(e)))
   required <- c("q_num", "topic", "text", "opt_a", "opt_b", "opt_c", "opt_d", "correct")
   missing  <- setdiff(required, names(df))
-  if (length(missing)) return(paste("Missing columns:", paste(missing, collapse = ", ")))
+  if (length(missing)) stop("Missing columns: ", paste(missing, collapse = ", "))
   df$correct <- toupper(trimws(df$correct))
-  bad_correct <- df$correct[!df$correct %in% c("A","B","C","D")]
-  if (length(bad_correct))
-    return(paste("'correct' must be A/B/C/D. Found:", paste(unique(bad_correct), collapse = ", ")))
-  df
+  bad <- df$correct[!df$correct %in% c("A","B","C","D")]
+  if (length(bad)) stop("'correct' must be A/B/C/D. Found: ", paste(unique(bad), collapse = ", "))
+  if (!"explain" %in% names(df)) df$explain <- ""
+  df[, c("q_num","topic","text","opt_a","opt_b","opt_c","opt_d","correct","explain")]
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -615,7 +601,7 @@ server <- function(input, output, session) {
       tagList(
         tags$p(style = "color:green; font-size:0.9em;",
                icon("circle-check"),
-               sprintf(" %d question(s) parsed OK.", length(result))),
+               sprintf(" %d question(s) parsed OK.", nrow(result))),
         actionButton("load_questions_btn", "Load into quiz",
                      class = "btn-warning btn-sm"),
         actionButton("clear_questions_btn", "Restore defaults",
@@ -631,21 +617,14 @@ server <- function(input, output, session) {
       error = function(e) NULL
     )
     req(!is.null(questions))
-    rows <- do.call(rbind, lapply(questions, function(q) {
-      data.frame(q_num = q$num, topic = q$topic, text = q$text,
-                 opt_a = q$opts[1], opt_b = q$opts[2],
-                 opt_c = q$opts[3], opt_d = q$opts[4],
-                 correct = q$correct, explain = q$explain,
-                 stringsAsFactors = FALSE)
-    }))
     con <- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
     on.exit(DBI::dbDisconnect(con))
     DBI::dbExecute(con, "DELETE FROM quiz_questions;")
-    DBI::dbAppendTable(con, "quiz_questions", rows)
+    DBI::dbAppendTable(con, "quiz_questions", questions)
     db_exec("DELETE FROM quiz_responses;")
     db_exec("UPDATE quiz_state SET current_q=1, revealed=0,
              updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-    showNotification(sprintf("%d questions loaded. Quiz reset to Q1.", nrow(rows)),
+    showNotification(sprintf("%d questions loaded. Quiz reset to Q1.", nrow(questions)),
                      type = "message")
   })
 
