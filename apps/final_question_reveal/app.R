@@ -1134,6 +1134,13 @@ ui <- fluidPage(
     a { color: #951829; }
     a:hover { color: #7a1221; }
 
+    /* --- Prevent white-flash on output re-renders --- */
+    .shiny-html-output { min-height: 1px; }
+    .shiny-html-output.recalculating {
+      opacity: 0.6;
+      transition: opacity 0.15s ease;
+    }
+
     /* --- Notifications: top-right, large, bold colors --- */
     .shiny-notification-panel {
       top: 16px; bottom: auto;
@@ -1153,6 +1160,44 @@ ui <- fluidPage(
     .shiny-notification-warning { background: #92400e; }
     .shiny-notification-error   { background: #951829; }
     .shiny-notification-close   { color: rgba(255,255,255,0.8); font-size: 1.2rem; }
+
+    /* --- Student / progress panel styles (static — defined once here) --- */
+    .progress-stat-box {
+      background:#fff; border:1px solid #dee2e6; border-radius:10px;
+      padding:14px 18px; text-align:center; height:100%;
+    }
+    .progress-stat-label {
+      font-size:0.78em; text-transform:uppercase; letter-spacing:.04em;
+      color:#6c757d; margin-bottom:4px;
+    }
+    .progress-stat-value {
+      font-size:1.8em; font-weight:700; line-height:1.1; color:#212529;
+    }
+    .progress-stat-value.highlight { color:#951829; }
+    .unlocked-q-panel {
+      border-left:4px solid #951829; border-radius:6px;
+      background:#fff; padding:16px 20px; margin-bottom:14px;
+      box-shadow:0 1px 4px rgba(0,0,0,.07);
+    }
+    .unlocked-q-label {
+      font-size:0.75em; font-weight:700; text-transform:uppercase;
+      letter-spacing:.05em; color:#951829; margin-bottom:6px;
+    }
+    .student-section {
+      background:#fff; border:1px solid #dee2e6; border-radius:10px;
+      padding:18px 20px; margin-bottom:18px;
+    }
+    .student-section-title {
+      font-size:1em; font-weight:700; margin:0 0 12px;
+      padding-bottom:8px; border-bottom:1px solid #f0f0f0;
+    }
+    .badge-open   { background:#198754; color:#fff; border-radius:12px;
+                    padding:2px 10px; font-size:0.82em; font-weight:600; }
+    .badge-closed { background:#6c757d; color:#fff; border-radius:12px;
+                    padding:2px 10px; font-size:0.82em; font-weight:600; }
+    .resource-row { display:flex; gap:24px; flex-wrap:wrap; margin-bottom:10px; }
+    .resource-row .rl { font-size:0.82em; color:#6c757d; }
+    .resource-row .rv { font-weight:600; font-size:1.05em; }
   "))),
   uiOutput("auth_gate"),
   conditionalPanel("output.authed",
@@ -1283,13 +1328,13 @@ server <- function(input, output, session) {
 
   # Live polling via game_state.updated_at
   state_poll <- reactivePoll(
-    1500, session,
+    2500, session,
     checkFunc = function() db_query("SELECT updated_at FROM game_state WHERE id=1;")$updated_at[1] %||% as.character(Sys.time()),
     valueFunc = function() get_state()
   )
   settings_poll <- reactivePoll(
-    1500, session,
-    checkFunc = function() db_query("SELECT updated_at FROM game_state WHERE id=1;")$updated_at[1] %||% as.character(Sys.time()),
+    15000, session,
+    checkFunc = function() db_query("SELECT updated_at FROM game_state WHERE id=1;")$updated_at[1] %||% "",
     valueFunc = function() get_settings()
   )
 
@@ -1351,44 +1396,6 @@ server <- function(input, output, session) {
   output$student_ui <- renderUI({
     req(authed())
     fluidPage(
-      tags$head(tags$style(HTML("
-        .progress-stat-box {
-          background:#fff; border:1px solid #dee2e6; border-radius:10px;
-          padding:14px 18px; text-align:center; height:100%;
-        }
-        .progress-stat-label {
-          font-size:0.78em; text-transform:uppercase; letter-spacing:.04em;
-          color:#6c757d; margin-bottom:4px;
-        }
-        .progress-stat-value {
-          font-size:1.8em; font-weight:700; line-height:1.1; color:#212529;
-        }
-        .progress-stat-value.highlight { color:#951829; }
-        .unlocked-q-panel {
-          border-left:4px solid #951829; border-radius:6px;
-          background:#fff; padding:16px 20px; margin-bottom:14px;
-          box-shadow:0 1px 4px rgba(0,0,0,.07);
-        }
-        .unlocked-q-label {
-          font-size:0.75em; font-weight:700; text-transform:uppercase;
-          letter-spacing:.05em; color:#951829; margin-bottom:6px;
-        }
-        .student-section {
-          background:#fff; border:1px solid #dee2e6; border-radius:10px;
-          padding:18px 20px; margin-bottom:18px;
-        }
-        .student-section-title {
-          font-size:1em; font-weight:700; margin:0 0 12px;
-          padding-bottom:8px; border-bottom:1px solid #f0f0f0;
-        }
-        .badge-open   { background:#198754; color:#fff; border-radius:12px;
-                        padding:2px 10px; font-size:0.82em; font-weight:600; }
-        .badge-closed { background:#6c757d; color:#fff; border-radius:12px;
-                        padding:2px 10px; font-size:0.82em; font-weight:600; }
-        .resource-row { display:flex; gap:24px; flex-wrap:wrap; margin-bottom:10px; }
-        .resource-row .rl { font-size:0.82em; color:#6c757d; }
-        .resource-row .rv { font-weight:600; font-size:1.05em; }
-      "))),
       uiOutput("whoami"),
       tags$br(),
       uiOutput("student_status"),
@@ -1853,30 +1860,6 @@ server <- function(input, output, session) {
     questions <- get_exam_questions(active_exam_id)
 
     fluidPage(
-      tags$head(tags$style(HTML("
-        .progress-stat-box {
-          background:#fff; border:1px solid #dee2e6; border-radius:10px;
-          padding:14px 18px; text-align:center; height:100%;
-        }
-        .progress-stat-label {
-          font-size:0.78em; text-transform:uppercase; letter-spacing:.04em;
-          color:#6c757d; margin-bottom:4px;
-        }
-        .progress-stat-value {
-          font-size:1.8em; font-weight:700; line-height:1.1; color:#212529;
-        }
-        .progress-stat-value.highlight { color:#951829; }
-        .unlocked-q-panel {
-          border-left:4px solid #951829; border-radius:6px;
-          background:#fff; padding:16px 20px; margin-bottom:14px;
-          box-shadow:0 1px 4px rgba(0,0,0,.07);
-        }
-        .unlocked-q-label {
-          font-size:0.75em; font-weight:700; text-transform:uppercase;
-          letter-spacing:.05em; color:#951829; margin-bottom:6px;
-        }
-      "))),
-
       div(style="display:flex; align-items:baseline; gap:14px; margin-bottom:6px;",
         h3(style="margin:0;", "Class Progress"),
         tags$span(style="color:#6c757d; font-size:0.9em;",
