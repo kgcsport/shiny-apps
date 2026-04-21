@@ -1399,10 +1399,14 @@ server <- function(input, output, session) {
       uiOutput("whoami"),
       tags$br(),
       uiOutput("student_status"),
-      uiOutput("purchase_box"),
-      uiOutput("use_resource_box"),
+      fluidRow(
+        column(6, uiOutput("purchase_box")),
+        column(6, uiOutput("use_resource_box"))
+      ),
       div(class = "student-section",
-        div(class = "student-section-title", "Your flex pass balance"),
+        div(class = "student-section-title", "Flex pass breakdown"),
+        tags$p(style = "color:#6c757d; font-size:0.85em; margin-bottom:10px;",
+               "Running total of passes received, spent, and available."),
         uiOutput("student_alloc_table")
       ),
       div(class = "student-section",
@@ -1558,14 +1562,16 @@ server <- function(input, output, session) {
             "Buy exam point(s)",
             sprintf("Buy a %g-hour extension", as.numeric(s$extension_hours[1] %||% 24)))
         ),
-        selected = choice
+        selected = choice,
+        width = "100%"
       ),
       sliderInput(
         "buy_amt", "How many passes?",
         min = 0,
         max = max_for_slider,
         value = if (identical(choice, "question")) min(pending_q, max_for_slider) else 0,
-        step = step
+        step = step,
+        width = "100%"
       ),
       # if choice is "question", state amount currently pledged
       if (identical(choice, "question")) tags$p(strong(sprintf("Currently pledged: %.2f", alloc$pending_question %||% 0)))
@@ -1613,7 +1619,7 @@ server <- function(input, output, session) {
         p(style = "color:#6c757d; font-size:0.88em;", em("None declared yet."))
       ,
       if (flex_used < flex_purchased) tagList(
-        selectInput("use_flex_pset", "Apply extension to:", choices = s_pset_names),
+        selectInput("use_flex_pset", "Apply extension to:", choices = s_pset_names, width = "100%"),
         actionButton("use_flex_submit", "Add extension", class = "btn-primary btn-sm")
       ) else if (flex_purchased > 0)
         p(style = "color:#6c757d; font-size:0.88em;", em("All purchased extensions have been declared."))
@@ -1634,7 +1640,7 @@ server <- function(input, output, session) {
         p(style = "color:#6c757d; font-size:0.88em;", em("None declared yet."))
       ,
       if (exam_used < exam_purchased) tagList(
-        selectInput("use_exam_name", "Apply bonus point(s) to:", choices = s_exam_names),
+        selectInput("use_exam_name", "Apply bonus point(s) to:", choices = s_exam_names, width = "100%"),
         numericInput("use_exam_qty", "Points to declare:", value = 1, min = 1,
                      max = exam_purchased - exam_used),
         actionButton("use_exam_submit", "Apply", class = "btn-primary btn-sm")
