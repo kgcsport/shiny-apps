@@ -175,8 +175,14 @@ render_unlocked_questions <- function(n_unlocked, questions = QUESTIONS) {
   if (!is.finite(n_unlocked) || n_unlocked <= 0) return(NULL)
   idx <- seq_len(min(as.integer(n_unlocked), length(questions)))
   tagList(
-    h5(if (length(idx) == 1) "Unlocked Question" else sprintf("Unlocked Questions (%d)", length(idx))),
-    lapply(rev(idx), function(i) wellPanel(div(style="font-size:1.1em; line-height:1.45;", questions[[i]])))
+    h5(style = "font-weight:600; margin-bottom:12px;",
+       if (length(idx) == 1) "Unlocked Question" else sprintf("Unlocked Questions (%d)", length(idx))),
+    lapply(rev(idx), function(i) {
+      div(class = "unlocked-q-panel",
+        div(class = "unlocked-q-label", sprintf("Question %d", i)),
+        div(style = "font-size:1.05em; line-height:1.6;", questions[[i]])
+      )
+    })
   )
 }
 
@@ -1345,24 +1351,58 @@ server <- function(input, output, session) {
   output$student_ui <- renderUI({
     req(authed())
     fluidPage(
-      h4("Status"),
+      tags$head(tags$style(HTML("
+        .progress-stat-box {
+          background:#fff; border:1px solid #dee2e6; border-radius:10px;
+          padding:14px 18px; text-align:center; height:100%;
+        }
+        .progress-stat-label {
+          font-size:0.78em; text-transform:uppercase; letter-spacing:.04em;
+          color:#6c757d; margin-bottom:4px;
+        }
+        .progress-stat-value {
+          font-size:1.8em; font-weight:700; line-height:1.1; color:#212529;
+        }
+        .progress-stat-value.highlight { color:#951829; }
+        .unlocked-q-panel {
+          border-left:4px solid #951829; border-radius:6px;
+          background:#fff; padding:16px 20px; margin-bottom:14px;
+          box-shadow:0 1px 4px rgba(0,0,0,.07);
+        }
+        .unlocked-q-label {
+          font-size:0.75em; font-weight:700; text-transform:uppercase;
+          letter-spacing:.05em; color:#951829; margin-bottom:6px;
+        }
+        .student-section {
+          background:#fff; border:1px solid #dee2e6; border-radius:10px;
+          padding:18px 20px; margin-bottom:18px;
+        }
+        .student-section-title {
+          font-size:1em; font-weight:700; margin:0 0 12px;
+          padding-bottom:8px; border-bottom:1px solid #f0f0f0;
+        }
+        .badge-open   { background:#198754; color:#fff; border-radius:12px;
+                        padding:2px 10px; font-size:0.82em; font-weight:600; }
+        .badge-closed { background:#6c757d; color:#fff; border-radius:12px;
+                        padding:2px 10px; font-size:0.82em; font-weight:600; }
+        .resource-row { display:flex; gap:24px; flex-wrap:wrap; margin-bottom:10px; }
+        .resource-row .rl { font-size:0.82em; color:#6c757d; }
+        .resource-row .rv { font-weight:600; font-size:1.05em; }
+      "))),
       uiOutput("whoami"),
-      tags$hr(),
+      tags$br(),
       uiOutput("student_status"),
-      tags$hr(),
       uiOutput("purchase_box"),
-      tags$hr(),
       uiOutput("use_resource_box"),
-      tags$hr(),
-      wellPanel(
-        h5("Your allocations (live)"),
+      div(class = "student-section",
+        div(class = "student-section-title", "Your flex pass balance"),
         uiOutput("student_alloc_table")
       ),
-      tags$hr(),
-      h4("Your ledger"),
-      DTOutput("my_ledger"),
-      password_changer,
-      tags$hr()
+      div(class = "student-section",
+        div(class = "student-section-title", "Your ledger"),
+        DTOutput("my_ledger")
+      ),
+      password_changer
     )
   })
 
@@ -1389,23 +1429,49 @@ server <- function(input, output, session) {
     questions <- get_exam_questions(active_exam_id)
 
     tagList(
-      p(sprintf("Active exam: %s", active_exam_id)),
-      p(sprintf("You start with %.2f flex passes (and can earn more). You may pledge them to help unlock access to potential exam questions for everyone, purchase bonus points on the final exam, or get an extension of %g hours on a problem set. Any exam questions purchased with flex passes will have a %g percent chance of appearing on the next exam and is worth %g (out of %g) points on the exam. You have %.2f remaining (excluding any open pledge).",
-                as.numeric(s$initial_fp[1]),
-                as.numeric(s$extension_hours[1] %||% 24),
-                as.numeric(s$question_chance_pct[1] %||% 50),
-                as.numeric(s$question_point_value[1] %||% 5),
-                as.numeric(s$question_total_points[1] %||% 100),
-                student_allocation_summary(user_id())$remaining)),
-      p(sprintf("Pledging open: %s", ifelse(as.integer(st$round_open[1]) == 1, "YES", "NO"))),
-      p(sprintf("Current question index: %d | Cost to unlock next question: %.2f (schedule: %s)",
-                idx, cost, s$question_cost_schedule[1])),
-      p(sprintf("Carryover into this round: %.2f", as.numeric(st$carryover[1]))),
-      p(sprintf("Pledged currently: %.2f | Effective (pledged + carry): %.2f | Unlocks if closed now: %d",
-                ws$pledged, ws$effective, ws$units)),
-      p(sprintf("Unlocked so far: %d", as.integer(st$unlocked_questions[1]))),
+      div(class = "student-section",
+        div(style = "display:flex; align-items:center; gap:10px; margin-bottom:12px;",
+          div(class = "student-section-title", style = "margin:0; border:none; padding:0;",
+              paste0("Class Status \u2014 ", active_exam_id)),
+          if (as.integer(st$round_open[1]) == 1)
+            span(class = "badge-open",   "Pledging OPEN")
+          else
+            span(class = "badge-closed", "Pledging CLOSED")
+        ),
+        tags$p(style = "color:#555; font-size:0.88em; margin-bottom:14px;",
+          sprintf("Flex passes can be pledged to unlock potential exam questions for everyone, spent on a %g-hour problem set extension, or converted to bonus exam points. Each unlocked question has a %g%% chance of appearing on the exam and is worth %g/%g points.",
+            as.numeric(s$extension_hours[1] %||% 24),
+            as.numeric(s$question_chance_pct[1] %||% 50),
+            as.numeric(s$question_point_value[1] %||% 5),
+            as.numeric(s$question_total_points[1] %||% 100))
+        ),
+        fluidRow(style = "margin-bottom:4px;",
+          column(3, div(class = "progress-stat-box",
+            div(class = "progress-stat-label", "Your remaining FP"),
+            div(class = "progress-stat-value highlight",
+                sprintf("%.2f", student_allocation_summary(user_id())$remaining))
+          )),
+          column(3, div(class = "progress-stat-box",
+            div(class = "progress-stat-label", "Pledged this round"),
+            div(class = "progress-stat-value", sprintf("%.2f", ws$pledged))
+          )),
+          column(3, div(class = "progress-stat-box",
+            div(class = "progress-stat-label", "Cost to unlock next"),
+            div(class = "progress-stat-value", sprintf("%.0f fp", cost))
+          )),
+          column(3, div(class = "progress-stat-box",
+            div(class = "progress-stat-label", "Questions unlocked"),
+            div(class = "progress-stat-value", as.integer(st$unlocked_questions[1]))
+          ))
+        )
+      ),
       if (as.integer(st$unlocked_questions[1]) > 0)
-        render_unlocked_questions(as.integer(st$unlocked_questions[1]), questions)
+        div(class = "student-section",
+          div(class = "student-section-title", "Revealed exam questions"),
+          tags$p(style = "color:#6c757d; font-size:0.85em; margin-bottom:12px;",
+                 "These questions may appear on your next exam."),
+          render_unlocked_questions(as.integer(st$unlocked_questions[1]), questions)
+        )
     )
   })
 
@@ -1465,10 +1531,18 @@ server <- function(input, output, session) {
     # Clamp to sane range for slider (Shiny dislikes negative/NA)
     max_for_slider <- max(0, as.numeric(max_for_slider %||% 0))
 
-    wellPanel(
-      h4("Spend passes"),
-      p(sprintf("Currently pledged to questions: %.2f | Available for immediate purchases: %.2f",
-                pending_q, available_now)),
+    div(class = "student-section",
+      div(class = "student-section-title", "Spend flex passes"),
+      div(class = "resource-row", style = "margin-bottom:14px;",
+        div(
+          div(class = "rl", "Pledged to questions"),
+          div(class = "rv", sprintf("%.2f fp", pending_q))
+        ),
+        div(
+          div(class = "rl", "Available for purchases"),
+          div(class = "rv", sprintf("%.2f fp", available_now))
+        )
+      ),
       selectInput(
         "buy_type", "What are you buying?",
         choices = setNames(
@@ -1491,7 +1565,8 @@ server <- function(input, output, session) {
       ,
       checkboxInput("buy_confirm", "I confirm this purchase/allocation.", value = FALSE),
       actionButton("buy_submit", "Submit", class="btn-primary"),
-      tags$small("Questions = allocation (editable while open). Exam points/extensions = immediate purchases.")
+      tags$p(style = "color:#6c757d; font-size:0.82em; margin-top:8px; margin-bottom:0;",
+             "Questions = pledge (editable while pledging is open). Exam points and extensions = immediate purchases.")
     )
   })
 
@@ -1515,37 +1590,51 @@ server <- function(input, output, session) {
     flex_used <- sum(rt$quantity[rt$resource_type == "flex"])
     exam_used  <- sum(rt$quantity[rt$resource_type == "exam_point"])
 
-    wellPanel(
-      h4("Use your resources"),
-      tags$hr(),
-      h5(sprintf("%g-hour extensions", as.numeric(s$extension_hours[1] %||% 24))),
-      p(sprintf("Purchased: %d | Declared: %d", flex_purchased, flex_used)),
+    div(class = "student-section",
+      div(class = "student-section-title", "Use your resources"),
+
+      # ── Extensions ──
+      h5(style = "margin-bottom:8px;",
+         sprintf("%g-hour extensions", as.numeric(s$extension_hours[1] %||% 24))),
+      div(class = "resource-row",
+        div(div(class = "rl", "Purchased"), div(class = "rv", flex_purchased)),
+        div(div(class = "rl", "Declared"),  div(class = "rv", flex_used))
+      ),
       if (nrow(rt[rt$resource_type == "flex", , drop=FALSE]))
         tableOutput("my_extensions_table")
       else
-        p(em("None declared yet."))
+        p(style = "color:#6c757d; font-size:0.88em;", em("None declared yet."))
       ,
       if (flex_used < flex_purchased) tagList(
         selectInput("use_flex_pset", "Apply extension to:", choices = s_pset_names),
-        actionButton("use_flex_submit", "Add extension", class="btn-primary")
-      ) else if (flex_purchased > 0) p(em("All purchased extensions have been declared."))
-      else p(em("No extensions purchased yet."))
+        actionButton("use_flex_submit", "Add extension", class = "btn-primary btn-sm")
+      ) else if (flex_purchased > 0)
+        p(style = "color:#6c757d; font-size:0.88em;", em("All purchased extensions have been declared."))
+      else
+        p(style = "color:#6c757d; font-size:0.88em;", em("No extensions purchased yet."))
       ,
-      tags$hr(),
-      h5("Exam bonus points"),
-      p(sprintf("Purchased (passes): %d | Declared (passes): %d", exam_purchased, exam_used)),
+      tags$hr(style = "margin:14px 0;"),
+
+      # ── Exam bonus points ──
+      h5(style = "margin-bottom:8px;", "Exam bonus points"),
+      div(class = "resource-row",
+        div(div(class = "rl", "Purchased (passes)"), div(class = "rv", exam_purchased)),
+        div(div(class = "rl", "Declared (passes)"),  div(class = "rv", exam_used))
+      ),
       if (nrow(rt[rt$resource_type == "exam_point", , drop=FALSE]))
         tableOutput("my_exam_pts_table")
       else
-        p(em("None declared yet."))
+        p(style = "color:#6c757d; font-size:0.88em;", em("None declared yet."))
       ,
       if (exam_used < exam_purchased) tagList(
         selectInput("use_exam_name", "Apply bonus point(s) to:", choices = s_exam_names),
-        numericInput("use_exam_qty", "Points to declare:", value=1, min=1,
-                     max=exam_purchased - exam_used),
-        actionButton("use_exam_submit", "Apply", class="btn-primary")
-      ) else if (exam_purchased > 0) p(em("All purchased exam points have been declared."))
-      else p(em("No exam points purchased yet."))
+        numericInput("use_exam_qty", "Points to declare:", value = 1, min = 1,
+                     max = exam_purchased - exam_used),
+        actionButton("use_exam_submit", "Apply", class = "btn-primary btn-sm")
+      ) else if (exam_purchased > 0)
+        p(style = "color:#6c757d; font-size:0.88em;", em("All purchased exam points have been declared."))
+      else
+        p(style = "color:#6c757d; font-size:0.88em;", em("No exam points purchased yet."))
     )
   })
 
@@ -1764,15 +1853,64 @@ server <- function(input, output, session) {
     questions <- get_exam_questions(active_exam_id)
 
     fluidPage(
-      h3("Class Progress"),
-      p(sprintf("Active exam: %s", active_exam_id)),
-      p(sprintf("Question index: %d | Unlocked: %d | Carryover: %.2f",
-                idx, st$unlocked_questions[1], st$carryover[1])),
-      p(sprintf("Pledged currently: %.2f | Effective: %.2f | Cost now: %.2f | Unlocks if closed now: %d",
-                ws$pledged, ws$effective, cost, ws$units)),
-      tags$hr(),
+      tags$head(tags$style(HTML("
+        .progress-stat-box {
+          background:#fff; border:1px solid #dee2e6; border-radius:10px;
+          padding:14px 18px; text-align:center; height:100%;
+        }
+        .progress-stat-label {
+          font-size:0.78em; text-transform:uppercase; letter-spacing:.04em;
+          color:#6c757d; margin-bottom:4px;
+        }
+        .progress-stat-value {
+          font-size:1.8em; font-weight:700; line-height:1.1; color:#212529;
+        }
+        .progress-stat-value.highlight { color:#951829; }
+        .unlocked-q-panel {
+          border-left:4px solid #951829; border-radius:6px;
+          background:#fff; padding:16px 20px; margin-bottom:14px;
+          box-shadow:0 1px 4px rgba(0,0,0,.07);
+        }
+        .unlocked-q-label {
+          font-size:0.75em; font-weight:700; text-transform:uppercase;
+          letter-spacing:.05em; color:#951829; margin-bottom:6px;
+        }
+      "))),
+
+      div(style="display:flex; align-items:baseline; gap:14px; margin-bottom:6px;",
+        h3(style="margin:0;", "Class Progress"),
+        tags$span(style="color:#6c757d; font-size:0.9em;",
+                  paste0("Exam: ", active_exam_id))
+      ),
+      tags$p(style="color:#6c757d; font-size:0.85em; margin-top:0;",
+             "Revealed exam questions appear below as the class unlocks them."),
+      tags$hr(style="margin:10px 0 16px;"),
+
+      fluidRow(style="margin-bottom:18px;",
+        column(3, div(class="progress-stat-box",
+          div(class="progress-stat-label", "Questions unlocked"),
+          div(class=paste("progress-stat-value highlight"),
+              as.integer(st$unlocked_questions[1]))
+        )),
+        column(3, div(class="progress-stat-box",
+          div(class="progress-stat-label", "Cost to unlock next"),
+          div(class="progress-stat-value", sprintf("%.0f fp", cost))
+        )),
+        column(3, div(class="progress-stat-box",
+          div(class="progress-stat-label", "Pledged this round"),
+          div(class="progress-stat-value", sprintf("%.1f", ws$pledged))
+        )),
+        column(3, div(class="progress-stat-box",
+          div(class="progress-stat-label", "Carryover"),
+          div(class="progress-stat-value", sprintf("%.2f", st$carryover[1]))
+        ))
+      ),
+
       if (as.integer(st$unlocked_questions[1]) > 0)
         render_unlocked_questions(as.integer(st$unlocked_questions[1]), questions)
+      else
+        div(style="color:#6c757d; font-style:italic; padding:20px 0;",
+            "No questions unlocked yet. Keep pledging!")
     )
   })
 
