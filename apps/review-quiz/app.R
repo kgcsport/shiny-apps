@@ -120,10 +120,11 @@ db_exec  <- function(sql, params = NULL) DBI::dbExecute(get_con(), sql, params =
 db_query <- function(sql, params = NULL) DBI::dbGetQuery(get_con(), sql, params = params)
 
 ensure_state <- function() {
-  db_exec("INSERT OR REPLACE INTO quiz_state(id, current_q, revealed)
+  db_exec("INSERT OR REPLACE INTO quiz_state(id, current_q, revealed, self_paced)
     SELECT 1,
-      COALESCE((SELECT current_q FROM quiz_state WHERE id=1), 1),
-      COALESCE((SELECT revealed  FROM quiz_state WHERE id=1), 0);")
+      COALESCE((SELECT current_q  FROM quiz_state WHERE id=1), 1),
+      COALESCE((SELECT revealed   FROM quiz_state WHERE id=1), 0),
+      COALESCE((SELECT self_paced FROM quiz_state WHERE id=1), 0);")
 }
 
 init_db <- function() {
@@ -131,8 +132,13 @@ init_db <- function() {
     id         INTEGER PRIMARY KEY CHECK(id = 1),
     current_q  INTEGER DEFAULT 1,
     revealed   INTEGER DEFAULT 0,
+    self_paced INTEGER DEFAULT 0,
     updated_at TEXT    DEFAULT (CURRENT_TIMESTAMP)
   );")
+  tryCatch(
+    db_exec("ALTER TABLE quiz_state ADD COLUMN self_paced INTEGER DEFAULT 0;"),
+    error = function(e) NULL
+  )
   ensure_state()
 
   db_exec("CREATE TABLE IF NOT EXISTS quiz_responses (
@@ -159,6 +165,21 @@ init_db <- function() {
     opt_d   TEXT NOT NULL,
     correct TEXT NOT NULL,
     explain TEXT
+  );")
+
+  db_exec("CREATE TABLE IF NOT EXISTS quiz_submissions (
+    sub_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT NOT NULL,
+    topic        TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    opt_a        TEXT NOT NULL,
+    opt_b        TEXT NOT NULL,
+    opt_c        TEXT NOT NULL,
+    opt_d        TEXT NOT NULL,
+    correct      TEXT NOT NULL,
+    explain      TEXT,
+    submitted_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+    status       TEXT DEFAULT 'pending'
   );")
 }
 init_db()
@@ -197,7 +218,7 @@ parse_question_csv <- function(path) {
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 get_state <- function()
-  db_query("SELECT current_q, revealed FROM quiz_state WHERE id=1;")
+  db_query("SELECT current_q, revealed, self_paced FROM quiz_state WHERE id=1;")
 
 get_scores <- function(questions = load_questions()) {
   resps <- db_query("
@@ -264,15 +285,16 @@ ui <- fluidPage(
 # ── Server ────────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
 
-  rv <- reactiveValues(authed = FALSE, user_id = NULL, name = NULL, alias = NULL, is_admin = FALSE)
+  rv <- reactiveValues(authed = FALSE, user_id = NULL, name = NULL, alias = NULL, is_admin = FALSE, my_q = 1L)
 
   # ── Auth ────────────────────────────────────────────────────────────────────
   output$app_ui <- renderUI({
     if (!rv$authed) return(login_ui())
 
     tabs <- list(
-      tabPanel("My Answer",   uiOutput("alias_ui"), uiOutput("student_panel")),
-      tabPanel("Leaderboard", uiOutput("display_panel"))
+      tabPanel("My Answer",        uiOutput("link_ui"), uiOutput("alias_ui"), uiOutput("student_panel")),
+      tabPanel("Leaderboard",      uiOutput("display_panel")),
+      tabPanel("Submit Question",  uiOutput("submit_q_panel"))
     )
     if (rv$is_admin) tabs <- c(tabs, list(tabPanel("Admin", uiOutput("admin_panel"))))
 
@@ -299,6 +321,7 @@ server <- function(input, output, session) {
     rv$user_id  <- row$user_id[1]
     rv$name     <- row$display_name[1]
     rv$is_admin <- as.logical(row$is_admin[1])
+    rv$my_q     <- 1L
     al <- db_query("SELECT alias FROM quiz_aliases WHERE user_id=?;", list(row$user_id[1]))
     rv$alias <- if (nrow(al)) al$alias[1] else NULL
     logf("LOGIN:", row$user_id[1])
@@ -326,6 +349,13 @@ server <- function(input, output, session) {
     valueFunc = load_questions
   )
 
+  submissions_r <- reactivePoll(5000, session,
+    checkFunc = function()
+      db_query("SELECT COUNT(*) n FROM quiz_submissions WHERE status='pending';")$n[1],
+    valueFunc = function()
+      db_query("SELECT * FROM quiz_submissions WHERE status='pending' ORDER BY submitted_at;")
+  )
+
   # ── Score chip (navbar) ──────────────────────────────────────────────────────
   output$score_chip <- renderUI({
     req(rv$user_id); responses_r()
@@ -335,6 +365,14 @@ server <- function(input, output, session) {
     qs  <- state_r()$current_q[1]
     span(class = "score-chip",
          paste0(rv$alias %||% rv$name, "  ", my, "/", qs - 1, " correct"))
+  })
+
+  # ──  Participate link above alias_ui, left of score chip ──────────────────────
+  output$link_ui <- renderUI({
+    tags$p(style = "color:#888; font-size:0.85em; margin-top:6px;",
+           "To participate, visit: ",
+           tags$a(href = "http://shiny.kylecoombs.com/review-quiz/",
+                  "shiny.kylecoombs.com/review-quiz"))
   })
 
   # ── Alias input (separate so it isn't wiped by state_r() re-renders) ─────────
@@ -355,9 +393,13 @@ server <- function(input, output, session) {
   output$student_panel <- renderUI({
     req(rv$authed)
     responses_r()   # invalidate when any response is submitted
-    qs   <- state_r()
-    qnum <- max(1L, min(as.integer(qs$current_q[1] %||% 1L), length(questions_r())))
-    rev  <- as.logical(qs$revealed[1])
+    qs         <- state_r()
+    sp         <- isTRUE(as.logical(qs$self_paced[1]))
+    n_qs       <- length(questions_r())
+    qnum <- if (sp)
+      max(1L, min(rv$my_q, n_qs))
+    else
+      max(1L, min(as.integer(qs$current_q[1] %||% 1L), n_qs))
     q    <- questions_r()[[qnum]]
     uid  <- rv$user_id
 
@@ -366,18 +408,27 @@ server <- function(input, output, session) {
       list(uid, qnum))
     answered <- nrow(existing) > 0
     my_ans   <- if (answered) existing$answer[1] else NULL
+    rev      <- if (sp) answered else as.logical(qs$revealed[1])
 
     div(style = "max-width:660px; padding:16px 0;",
+      # Self-paced navigation bar
+      if (sp) div(style = "display:flex; align-items:center; gap:8px; margin-bottom:10px;",
+        actionButton("student_prev_btn", "\u2190 Prev", class = "btn-sm btn-default",
+                     disabled = if (qnum <= 1L) "disabled" else NULL),
+        tags$span(style = "color:#555; font-size:0.9em;",
+                  paste0("Q", qnum, " of ", n_qs)),
+        actionButton("student_next_btn", "Next \u2192", class = "btn-sm btn-primary",
+                     disabled = if (qnum >= n_qs) "disabled" else NULL)
+      ),
       # Question header
       tags$p(
         span(class = "topic-pill", q$topic),
-        tags$span(style = "color:#888; margin-left:10px; font-size:0.88em;",
-                  paste0("Q", qnum, " of ", length(questions_r())))
+        if (!sp) tags$span(style = "color:#888; margin-left:10px; font-size:0.88em;",
+                           paste0("Q", qnum, " of ", n_qs))
       ),
       tags$p(class = "q-text", q$text),
 
       if (!rev) {
-        # Buttons always shown until reveal — current selection highlighted
         tagList(
           lapply(names(q$opts), function(ltr) {
             is_sel <- identical(ltr, my_ans)
@@ -393,13 +444,13 @@ server <- function(input, output, session) {
           if (answered)
             tags$p(style = "color:#555; font-size:0.85em; margin-top:6px;",
                    "\u2713  Locked in: ", tags$strong(my_ans),
-                   " \u2014 you can still switch.")
+                   if (sp) " \u2014 answer shown after submission."
+                   else " \u2014 you can still switch.")
           else
             tags$p(style = "color:#888; font-size:0.85em; margin-top:6px;",
                    "Tap an answer to submit.")
         )
       } else {
-        # Revealed
         is_right <- isTRUE(my_ans == q$correct)
         tagList(
           div(class = paste("status-box", if (is_right) "status-correct" else "status-wrong"),
@@ -418,11 +469,25 @@ server <- function(input, output, session) {
     )
   })
 
+  observeEvent(input$student_prev_btn, {
+    req(rv$authed)
+    if (rv$my_q > 1L) rv$my_q <- rv$my_q - 1L
+  })
+
+  observeEvent(input$student_next_btn, {
+    req(rv$authed)
+    if (rv$my_q < length(isolate(questions_r()))) rv$my_q <- rv$my_q + 1L
+  })
+
   observeEvent(input$submit_ans, {
     req(rv$authed)
-    qs   <- isolate(state_r())
-    qnum <- max(1L, min(as.integer(qs$current_q[1] %||% 1L), length(questions_r())))
-    if (as.logical(qs$revealed[1])) {
+    qs <- isolate(state_r())
+    sp <- isTRUE(as.logical(qs$self_paced[1]))
+    qnum <- if (sp)
+      isolate(rv$my_q)
+    else
+      max(1L, min(as.integer(qs$current_q[1] %||% 1L), length(isolate(questions_r()))))
+    if (!sp && as.logical(qs$revealed[1])) {
       showNotification("Answer already revealed — too late!", type = "warning"); return()
     }
     ltr <- input$submit_ans
@@ -512,6 +577,93 @@ server <- function(input, output, session) {
      options  = list(dom = "t", pageLength = 40,
                      order = list(list(0L, "asc"))))
 
+  # ── Submit Question panel (all users) ────────────────────────────────────────
+  output$submit_q_panel <- renderUI({
+    req(rv$authed)
+    div(style = "max-width:660px; padding:16px 0;",
+      tags$h4("Submit a Question"),
+      tags$p(style = "color:#555; font-size:0.9em;",
+             if (rv$is_admin)
+               "As admin your question will be added to the bank immediately."
+             else
+               "Your suggestion will be reviewed by the instructor before it goes live."),
+      wellPanel(style = "padding:14px;",
+        fluidRow(
+          column(6, textInput("sq_topic",   "Topic",   placeholder = "e.g. Fiscal Policy")),
+          column(6, selectInput("sq_correct", "Correct answer", choices = c("A","B","C","D")))
+        ),
+        textAreaInput("sq_text", "Question text", rows = 3, width = "100%",
+                      placeholder = "Full question text\u2026"),
+        fluidRow(
+          column(6, textInput("sq_opt_a", "Option A", placeholder = "Option A text")),
+          column(6, textInput("sq_opt_b", "Option B", placeholder = "Option B text"))
+        ),
+        fluidRow(
+          column(6, textInput("sq_opt_c", "Option C", placeholder = "Option C text")),
+          column(6, textInput("sq_opt_d", "Option D", placeholder = "Option D text"))
+        ),
+        textAreaInput("sq_explain", "Explanation (optional)", rows = 2, width = "100%",
+                      placeholder = "Why is the correct answer correct?"),
+        actionButton("sq_submit_btn",
+                     if (rv$is_admin) "Add to quiz" else "Submit for review",
+                     class = "btn-primary btn-sm"),
+        uiOutput("sq_feedback_ui")
+      )
+    )
+  })
+
+  output$sq_feedback_ui <- renderUI(NULL)
+
+  observeEvent(input$sq_submit_btn, {
+    req(rv$authed)
+    fields <- list(
+      topic   = trimws(input$sq_topic   %||% ""),
+      text    = trimws(input$sq_text    %||% ""),
+      opt_a   = trimws(input$sq_opt_a   %||% ""),
+      opt_b   = trimws(input$sq_opt_b   %||% ""),
+      opt_c   = trimws(input$sq_opt_c   %||% ""),
+      opt_d   = trimws(input$sq_opt_d   %||% ""),
+      correct = input$sq_correct        %||% "A",
+      explain = trimws(input$sq_explain %||% "")
+    )
+    empty <- names(Filter(Negate(nzchar), fields[c("topic","text","opt_a","opt_b","opt_c","opt_d")]))
+    if (length(empty)) {
+      output$sq_feedback_ui <- renderUI(
+        tags$p(style = "color:red; font-size:0.85em; margin-top:6px;",
+               "Missing: ", paste(empty, collapse = ", ")))
+      return()
+    }
+    tryCatch({
+      if (rv$is_admin) {
+        new_num <- as.integer(
+          db_query("SELECT COALESCE(MAX(q_num),0) AS m FROM quiz_questions;")$m[1]) + 1L
+        db_exec(
+          "INSERT INTO quiz_questions(q_num,topic,text,opt_a,opt_b,opt_c,opt_d,correct,explain)
+           VALUES(?,?,?,?,?,?,?,?,?);",
+          list(new_num, fields$topic, fields$text,
+               fields$opt_a, fields$opt_b, fields$opt_c, fields$opt_d,
+               fields$correct, fields$explain))
+        output$sq_feedback_ui <- renderUI(
+          tags$p(style = "color:green; font-size:0.85em; margin-top:6px;",
+                 sprintf("\u2713  Q%d added to quiz: %s", new_num, fields$topic)))
+      } else {
+        db_exec(
+          "INSERT INTO quiz_submissions(user_id,topic,text,opt_a,opt_b,opt_c,opt_d,correct,explain)
+           VALUES(?,?,?,?,?,?,?,?,?);",
+          list(rv$user_id, fields$topic, fields$text,
+               fields$opt_a, fields$opt_b, fields$opt_c, fields$opt_d,
+               fields$correct, fields$explain))
+        output$sq_feedback_ui <- renderUI(
+          tags$p(style = "color:green; font-size:0.85em; margin-top:6px;",
+                 "\u2713  Submitted for review. Thanks!"))
+      }
+    }, error = function(e) {
+      output$sq_feedback_ui <- renderUI(
+        tags$p(style = "color:red; font-size:0.85em; margin-top:6px;",
+               "Error: ", conditionMessage(e)))
+    })
+  })
+
   # ── Admin panel ───────────────────────────────────────────────────────────────
   output$admin_panel <- renderUI({
     req(rv$is_admin)
@@ -553,6 +705,14 @@ server <- function(input, output, session) {
           ),
           column(4,
             tags$br(),
+            actionButton("self_paced_btn",
+              label = if (as.logical(qs$self_paced[1] %||% 0)) "Self-paced: ON \u2713"
+                      else "Self-paced: OFF",
+              class = if (as.logical(qs$self_paced[1] %||% 0)) "btn-success btn-sm"
+                      else "btn-default btn-sm",
+              width = "100%",
+              title = "When ON, students navigate questions at their own pace"),
+            tags$br(), tags$br(),
             actionButton("reset_btn", "Reset All", class = "btn-danger", width = "100%"),
             tags$br(), tags$br(),
             actionButton("reinit_btn", "Fix DB State", class = "btn-warning btn-sm", width = "100%"),
@@ -563,9 +723,13 @@ server <- function(input, output, session) {
       ),
       tags$details(
         tags$summary(
-          style = "cursor:pointer; font-weight:600; font-size:1.05em;
-                   padding:6px 0; list-style:none; user-select:none;",
-          paste0("\u25B6  Q", qnum, " — ", q$topic, " (click to expand)")
+          style = "cursor:pointer; padding:6px 0; list-style:none; user-select:none;",
+          div(
+            tags$span(style = "font-weight:600; font-size:1.05em;",
+                      paste0("Q", qnum, " — ", q$topic)),
+            tags$br(),
+            tags$span(style = "color:#555; font-size:0.9em; font-weight:400;", q$text)
+          )
         ),
         div(style = "padding:10px 0 4px 4px;",
           tags$p(class = "q-text", q$text),
@@ -576,7 +740,11 @@ server <- function(input, output, session) {
                     paste0(ltr, ". ", q$opts[[ltr]],
                            if (ltr == q$correct) "  \u2713" else ""))
           })),
-          tags$p(class = "explain-box", q$explain)
+          tags$p(class = "explain-box", q$explain),
+          tags$br(),
+          actionButton("delete_q_btn",
+            label = paste0("Delete Q", qnum),
+            class = "btn-danger btn-sm")
         )
       ),
 
@@ -590,7 +758,11 @@ server <- function(input, output, session) {
                 placeholder = "Choose CSV file\u2026"),
       uiOutput("upload_preview_ui"),
       tags$p(style = "font-size:0.85em; color:#888;",
-             "Loading a new bank resets to Q1 and clears all student responses.")
+             "Loading a new bank resets to Q1 and clears all student responses."),
+
+      tags$hr(),
+      tags$h5("Pending Submissions"),
+      uiOutput("submissions_review_ui")
     )
   })
 
@@ -627,6 +799,40 @@ server <- function(input, output, session) {
     if (qs$current_q[1] > 1L)
       db_exec("UPDATE quiz_state SET current_q=current_q-1, revealed=0,
                updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+  })
+
+  observeEvent(input$delete_q_btn, {
+    req(rv$is_admin)
+    qs   <- isolate(state_r())
+    qnum <- max(1L, min(as.integer(qs$current_q[1] %||% 1L), length(isolate(questions_r()))))
+    q    <- isolate(questions_r())[[qnum]]
+    showModal(modalDialog(
+      title  = paste0("Delete Q", qnum, "?"),
+      tags$p("This will permanently remove:"),
+      tags$p(tags$strong(q$topic), " — ", q$text),
+      tags$p(style = "color:#888; font-size:0.85em;",
+             "Student responses for this question are also deleted."),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirm_delete_q", "Yes, delete it", class = "btn-danger")
+      )
+    ))
+  })
+
+  observeEvent(input$confirm_delete_q, {
+    req(rv$is_admin)
+    qs   <- isolate(state_r())
+    qnum <- max(1L, min(as.integer(qs$current_q[1] %||% 1L), length(isolate(questions_r()))))
+    q    <- isolate(questions_r())[[qnum]]
+    db_exec("DELETE FROM quiz_questions WHERE q_num=?;", list(q$num))
+    db_exec("DELETE FROM quiz_responses  WHERE q_num=?;", list(q$num))
+    # step back if we deleted the last question
+    new_total <- length(isolate(questions_r())) - 1L
+    if (new_total > 0L && qnum > new_total)
+      db_exec("UPDATE quiz_state SET current_q=?, revealed=0,
+               updated_at=CURRENT_TIMESTAMP WHERE id=1;", list(new_total))
+    removeModal()
+    showNotification(paste0("Q", qnum, " deleted: ", q$topic), type = "message")
   })
 
   observeEvent(input$reset_btn, {
@@ -692,6 +898,68 @@ server <- function(input, output, session) {
                      type = "message")
   })
 
+  output$submissions_review_ui <- renderUI({
+    req(rv$is_admin)
+    subs <- submissions_r()
+    if (!nrow(subs))
+      return(tags$p(style = "color:#888; font-size:0.9em;", "No pending submissions."))
+    tagList(lapply(seq_len(nrow(subs)), function(i) {
+      s <- subs[i, ]
+      wellPanel(style = "padding:10px; margin-bottom:8px;",
+        div(style = "display:flex; justify-content:space-between; align-items:baseline;",
+          tags$strong(s$topic),
+          tags$span(style = "color:#888; font-size:0.82em;",
+                    paste0(s$user_id, " \u2022 ", substr(s$submitted_at, 1, 16)))
+        ),
+        tags$p(style = "margin:6px 0 4px;", s$text),
+        tags$ul(style = "margin:0 0 6px; padding-left:18px;",
+          lapply(c("A","B","C","D"), function(ltr) {
+            val <- s[[paste0("opt_", tolower(ltr))]]
+            ok  <- ltr == s$correct
+            tags$li(style = if (ok) "color:#155724; font-weight:bold;" else "color:#555;",
+                    paste0(ltr, ". ", val, if (ok) "  \u2713" else ""))
+          })
+        ),
+        if (nzchar(s$explain %||% ""))
+          tags$p(class = "explain-box", style = "margin-bottom:8px;", s$explain),
+        div(style = "display:flex; gap:8px;",
+          actionButton("approve_sub", "Approve",
+            class   = "btn-success btn-sm",
+            onclick = sprintf("Shiny.setInputValue('approve_sub',%d,{priority:'event'})", s$sub_id)),
+          actionButton("reject_sub", "Reject",
+            class   = "btn-danger btn-sm",
+            onclick = sprintf("Shiny.setInputValue('reject_sub',%d,{priority:'event'})", s$sub_id))
+        )
+      )
+    }))
+  })
+
+  observeEvent(input$approve_sub, {
+    req(rv$is_admin)
+    id  <- as.integer(input$approve_sub)
+    sub <- db_query("SELECT * FROM quiz_submissions WHERE sub_id=?;", list(id))
+    if (!nrow(sub)) return()
+    new_num <- as.integer(
+      db_query("SELECT COALESCE(MAX(q_num),0) AS m FROM quiz_questions;")$m[1]) + 1L
+    tryCatch({
+      db_exec(
+        "INSERT INTO quiz_questions(q_num,topic,text,opt_a,opt_b,opt_c,opt_d,correct,explain)
+         VALUES(?,?,?,?,?,?,?,?,?);",
+        list(new_num, sub$topic, sub$text,
+             sub$opt_a, sub$opt_b, sub$opt_c, sub$opt_d,
+             sub$correct, sub$explain %||% ""))
+      db_exec("UPDATE quiz_submissions SET status='approved' WHERE sub_id=?;", list(id))
+      showNotification(sprintf("Q%d approved: %s", new_num, sub$topic), type = "message")
+    }, error = function(e) showNotification(paste("Error:", e$message), type = "error"))
+  })
+
+  observeEvent(input$reject_sub, {
+    req(rv$is_admin)
+    id <- as.integer(input$reject_sub)
+    db_exec("UPDATE quiz_submissions SET status='rejected' WHERE sub_id=?;", list(id))
+    showNotification("Submission rejected.", type = "warning")
+  })
+
   observeEvent(input$clear_questions_btn, {
     req(rv$is_admin)
     db_exec("DELETE FROM quiz_questions;")
@@ -709,6 +977,15 @@ server <- function(input, output, session) {
             list(rv$user_id, a))
     rv$alias <- a
     showNotification(paste0("Leaderboard name set to: ", a), type = "message")
+  })
+
+  observeEvent(input$self_paced_btn, {
+    req(rv$is_admin)
+    sp <- isTRUE(as.logical(isolate(state_r())$self_paced[1]))
+    set_state("self_paced", if (sp) 0L else 1L)
+    showNotification(if (sp) "Sync mode: instructor controls pacing."
+                     else "Self-paced mode: students navigate independently.",
+                     type = "message")
   })
 
   observeEvent(input$reinit_btn, {
