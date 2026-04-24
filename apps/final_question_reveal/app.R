@@ -1491,7 +1491,21 @@ server <- function(input, output, session) {
       ,
       checkboxInput("buy_confirm", "I confirm this purchase/allocation.", value = FALSE),
       actionButton("buy_submit", "Submit", class="btn-primary"),
-      tags$small("Questions = allocation (editable while open). Exam points/extensions = immediate purchases.")
+      tags$br(), tags$br(),
+      tags$details(
+        tags$summary(style = "cursor:pointer; color:#555; font-size:0.9em;",
+                     "What do purchase, pledge, and declare mean?"),
+        tags$div(style = "font-size:0.88em; color:#444; margin-top:8px; line-height:1.6;",
+          tags$p(tags$strong("Purchase"), " — spend passes immediately and permanently. ",
+            "Extensions and exam bonus points work this way: the passes leave your balance the moment you click Submit."),
+          tags$p(tags$strong("Pledge"), " — allocate passes toward unlocking exam questions. ",
+            "The passes are reserved but ", tags$em("not charged"), " until your instructor closes the round. ",
+            "You can raise or lower your pledge any time while the round is open."),
+          tags$p(tags$strong("Declare"), " — tell the system which exam or problem set you want to apply a resource you have already purchased. ",
+            "Declaring costs nothing extra; it just records your choice. ",
+            "Example: you purchased an extension last week — declaring applies it to a specific problem set.")
+        )
+      )
     )
   })
 
@@ -1731,16 +1745,23 @@ server <- function(input, output, session) {
     s  <- get_settings()
     pr <- pledge_bucket_round(st, s)
     pending_label <- if (is_roundless(s)) "pledge (current open question)" else "pledge (current round)"
+
+    # Flip sign for display: grants become +, spending becomes −
+    df$amount <- -df$amount
+
     pending <- tibble(
       created_at = NA_character_,
       purpose = pending_label,
       round = pr,
-      amount = round_pledge(user_id(), pr),
+      amount = -round_pledge(user_id(), pr),  # pending pledge is a future debit
       meta = if (as.integer(st$round_open[1]) == 1) "pending (not charged yet)" else "round closed"
     )
 
     out <- bind_rows(pending, df)
-    DT::datatable(out, rownames = FALSE, options = list(pageLength = 10))
+    DT::datatable(out, rownames = FALSE,
+      options = list(pageLength = 10),
+      colnames = c("Date", "Purpose", "Round", "Passes (+ = received, − = spent)", "Notes")
+    )
   })
 
   # ---------------- Projector ----------------
@@ -1976,7 +1997,8 @@ server <- function(input, output, session) {
           column(3, numericInput("grant_amt", "Flex passes to grant", value = 1, min = 0)),
           column(3, br(), actionButton("do_grant", "Grant", class="btn-success"))
         ),
-        tags$small("Grants are recorded as negative ledger amounts (credits).")
+        textInput("grant_reason", "Reason (shown in student ledger)", placeholder = "e.g. Extra credit, makeup, participation"),
+        tags$small("Grants are recorded as positive amounts in the student ledger.")
       ),
 
       wellPanel(
@@ -2148,10 +2170,12 @@ server <- function(input, output, session) {
       return()
     }
     amt <- min(amt, cap - current_held)
+    reason <- trimws(input$grant_reason %||% "")
+    meta   <- if (nzchar(reason)) paste0("admin_grant: ", reason) else "admin_grant"
     db_exec("
       INSERT INTO ledger(user_id, round, purpose, amount, meta)
-      VALUES(?, NULL, 'grant', ?, 'admin_grant');
-    ", list(uid, -amt))
+      VALUES(?, NULL, 'grant', ?, ?);
+    ", list(uid, -amt, meta))
     set_state()
     showNotification(sprintf("Granted %.2f flex pass(es).", amt), type="message")
   })
