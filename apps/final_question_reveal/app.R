@@ -171,6 +171,18 @@ QUESTIONS <- list(
   HTML("<b>Q24.</b> True/False/Uncertain: After a patent expires and other firms enter the market, total surplus will rise.")
 )
 
+# Convert simple Markdown to HTML for question display.
+# Handles **bold**, *italic*, and blank-line paragraph breaks -> <br>.
+md_to_html <- function(md, qnum = NULL) {
+  html <- trimws(md)
+  html <- gsub("\n\n+", "<br> ", html)
+  html <- gsub("\n", " ", html)
+  html <- gsub("\\*\\*(.+?)\\*\\*", "<b>\\1</b>", html)
+  html <- gsub("\\*([^*]+?)\\*", "<i>\\1</i>", html)
+  if (!is.null(qnum) && !is.na(qnum)) html <- paste0("<b>Q", qnum, ".</b> ", html)
+  html
+}
+
 render_unlocked_questions <- function(n_unlocked, questions = QUESTIONS) {
   if (!is.finite(n_unlocked) || n_unlocked <= 0) return(NULL)
   idx <- seq_len(min(as.integer(n_unlocked), length(questions)))
@@ -2052,7 +2064,8 @@ server <- function(input, output, session) {
             ),
             tags$hr(),
             h6("Upload questions for an exam"),
-            p(tags$small("CSV must have a ", tags$code("question"), " column (HTML allowed). Optional ",
+            p(tags$small("CSV column: ", tags$code("question_md"), " (Markdown, auto-formatted) or ",
+              tags$code("question_html"), " / ", tags$code("question"), " (raw HTML). Optional ",
               tags$code("question_num"), " column; if absent, rows are numbered in order.")),
             fluidRow(
               column(3, textInput("upload_exam_id", "Exam ID", placeholder = "e.g. exam1")),
@@ -2562,13 +2575,14 @@ server <- function(input, output, session) {
     )
     if (is.null(df)) return()
 
-    # Accept 'question_html' or 'question' column
-    qcol <- intersect(c("question_html", "question"), names(df))
+    # Accept 'question_md' (Markdown, auto-formatted) or 'question_html'/'question' (raw HTML)
+    qcol <- intersect(c("question_html", "question", "question_md"), names(df))
     if (!length(qcol)) {
-      showNotification("CSV must have a 'question' or 'question_html' column.", type = "error")
+      showNotification("CSV must have a 'question_md', 'question_html', or 'question' column.", type = "error")
       return()
     }
     qcol <- qcol[1]
+    is_md <- qcol == "question_md"
 
     nums <- if ("question_num" %in% names(df)) {
       suppressWarnings(as.integer(df$question_num))
@@ -2576,6 +2590,7 @@ server <- function(input, output, session) {
       seq_len(nrow(df))
     }
     texts <- as.character(df[[qcol]])
+    if (is_md) texts <- mapply(md_to_html, texts, nums, SIMPLIFY = TRUE)
     valid <- !is.na(texts) & nzchar(texts) & !is.na(nums)
 
     if (!any(valid)) {
