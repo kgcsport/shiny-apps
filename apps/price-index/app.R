@@ -7,7 +7,7 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 
 library(shiny); library(DT); library(bcrypt); library(dplyr); library(tidyr)
 library(tibble); library(forcats); library(DBI); library(RSQLite); library(ggplot2)
-library(googledrive); library(promises); library(future)
+library(scales); library(googledrive); library(promises); library(future)
 
 future::plan(future::sequential)  # backup_async() is fire-and-forget; no workers needed
 
@@ -33,8 +33,11 @@ DB_PATH <- file.path(app_data_dir(), "finalqdata.sqlite")
 conn    <- NULL
 
 get_con <- function() {
-  if (is.null(conn) || !DBI::dbIsValid(conn))
+  if (is.null(conn) || !DBI::dbIsValid(conn)) {
     conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
+    DBI::dbExecute(conn, "PRAGMA journal_mode = WAL;")
+    DBI::dbExecute(conn, "PRAGMA busy_timeout = 5000;")
+  }
   conn
 }
 db_exec  <- function(sql, params = NULL) DBI::dbExecute(get_con(), sql, params = params)
@@ -233,30 +236,167 @@ apply_anon_map <- function(df, anon_map) {
   df
 }
 
-# Per-student per-wave CPI from a (possibly filtered) price data frame.
-# df must have: user_id, anon_name, section, price, times_per_month, wave
+# Per-student per-period CPI from a (possibly filtered) price data frame.
+# df must have: user_id, anon_name, section, price, times_per_month, time_period
+# (call add_time_period() first to populate time_period from wave or recorded_at)
 compute_cpi_from_df <- function(df) {
   if (!nrow(df)) return(tibble::tibble())
-  per_wave <- df |>
-    dplyr::group_by(user_id, anon_name, section, wave) |>
+  if (!"time_period" %in% names(df)) df$time_period <- df$wave
+  per_period <- df |>
+    dplyr::group_by(user_id, anon_name, section, time_period) |>
     dplyr::summarise(basket_cost = sum(price * times_per_month, na.rm = TRUE),
                      .groups = "drop")
-  base <- per_wave |>
-    dplyr::filter(wave == 1) |>
+  # Base = each student's earliest period (CPI = 100 there)
+  base <- per_period |>
+    dplyr::group_by(user_id) |>
+    dplyr::filter(time_period == min(time_period)) |>
+    dplyr::ungroup() |>
     dplyr::select(user_id, base_cost = basket_cost)
-  per_wave |>
+  per_period |>
     dplyr::left_join(base, by = "user_id") |>
     dplyr::filter(!is.na(base_cost), base_cost > 0) |>
     dplyr::mutate(cpi = round(basket_cost / base_cost * 100, 1))
 }
 
-# Apply category + source filters
-filter_price_df <- function(df, cat_f, src_f) {
-  if (!identical(cat_f, "All") && nzchar(cat_f %||% ""))
-    df <- df[!is.na(df$category) & df$category == cat_f, , drop = FALSE]
+# Apply source filter only (category is now shown via color/facet in the trend plot)
+filter_price_df <- function(df, src_f) {
   if (!identical(src_f, "All") && nzchar(src_f %||% ""))
-    df <- df[!is.na(df$source)   & df$source   == src_f, , drop = FALSE]
+    df <- df[!is.na(df$source) & df$source == src_f, , drop = FALSE]
   df
+}
+
+# Per-user, per-category, per-period CPI (base = earliest period spend in that category)
+compute_cpi_by_category <- function(df) {
+  if (!nrow(df)) return(tibble::tibble())
+  if (!"time_period" %in% names(df)) df$time_period <- df$wave
+  per_period <- df |>
+    dplyr::group_by(user_id, anon_name, section, category, time_period) |>
+    dplyr::summarise(cat_cost = sum(price * times_per_month, na.rm = TRUE),
+                     .groups = "drop")
+  base <- per_period |>
+    dplyr::group_by(user_id, category) |>
+    dplyr::filter(time_period == min(time_period)) |>
+    dplyr::ungroup() |>
+    dplyr::select(user_id, category, base_cost = cat_cost)
+  per_period |>
+    dplyr::left_join(base, by = c("user_id", "category")) |>
+    dplyr::filter(!is.na(base_cost), base_cost > 0) |>
+    dplyr::mutate(cpi = round(cat_cost / base_cost * 100, 1))
+}
+
+# Average basket share (%) per category across students, for a given price data frame.
+# Students who don't have a given category are treated as 0% for that category,
+# so shares average to 100% across all categories.
+compute_basket_shares <- function(df) {
+  if (!nrow(df)) return(tibble::tibble())
+  user_totals <- df |>
+    dplyr::group_by(user_id) |>
+    dplyr::summarise(total_spend = sum(price * times_per_month, na.rm = TRUE),
+                     .groups = "drop")
+  cat_spend <- df |>
+    dplyr::group_by(user_id, category) |>
+    dplyr::summarise(cat_spend = sum(price * times_per_month, na.rm = TRUE),
+                     .groups = "drop")
+  # Complete grid so every student has a row for every category (0 if missing)
+  cat_spend |>
+    tidyr::complete(user_id = unique(df$user_id),
+                    category = unique(df$category),
+                    fill = list(cat_spend = 0)) |>
+    dplyr::left_join(user_totals, by = "user_id") |>
+    dplyr::mutate(share = ifelse(total_spend > 0, cat_spend / total_spend * 100, 0)) |>
+    dplyr::group_by(category) |>
+    dplyr::summarise(avg_share = round(mean(share, na.rm = TRUE), 1), .groups = "drop")
+}
+
+# ── Time-period helpers ───────────────────────────────────────────────────────
+# Adds integer `time_period` to df derived from recorded_at (or wave when unit="wave").
+# Weeks are anchored to Tuesday (user preference).
+add_time_period <- function(df, unit = "wave") {
+  if (unit == "wave" || !"recorded_at" %in% names(df)) {
+    df$time_period <- df$wave
+    return(df)
+  }
+  dates    <- as.Date(substr(df$recorded_at, 1, 10))
+  min_date <- min(dates, na.rm = TRUE)
+  df$time_period <- switch(unit,
+    day = as.integer(difftime(dates, min_date, units = "days")) + 1L,
+    week = {
+      # Roll back to the most recent Tuesday on or before min_date
+      dow       <- as.integer(format(min_date, "%w"))   # 0=Sun … 6=Sat; Tue=2
+      first_tue <- min_date - (dow - 2L + 7L) %% 7L
+      as.integer(difftime(dates, first_tue, units = "days")) %/% 7L + 1L
+    },
+    month = {
+      min_ym <- as.integer(format(min_date, "%Y")) * 12L +
+                as.integer(format(min_date, "%m")) - 1L
+      ym     <- as.integer(format(dates, "%Y")) * 12L +
+                as.integer(format(dates, "%m")) - 1L
+      ym - min_ym + 1L
+    },
+    df$wave   # fallback
+  )
+  df
+}
+
+# Named character vector: period_integer -> display label for scale_x_continuous
+make_period_labels <- function(df, unit) {
+  periods <- sort(unique(df$time_period))
+  if (unit == "wave") return(setNames(paste0("Wave ", periods), as.character(periods)))
+  dates    <- as.Date(substr(df$recorded_at, 1, 10))
+  min_date <- min(dates, na.rm = TRUE)
+  switch(unit,
+    day = {
+      actual <- min_date + (periods - 1L)
+      setNames(format(actual, "%b %d"), as.character(periods))
+    },
+    week = {
+      dow       <- as.integer(format(min_date, "%w"))
+      first_tue <- min_date - (dow - 2L + 7L) %% 7L
+      wk_starts <- first_tue + (periods - 1L) * 7L
+      setNames(paste0("Wk ", periods, "\n", format(wk_starts, "%b %d")),
+               as.character(periods))
+    },
+    month = {
+      per_date <- tapply(as.character(dates), df$time_period, min)
+      setNames(format(as.Date(per_date[as.character(periods)]), "%b '%y"),
+               as.character(periods))
+    },
+    setNames(paste0("Wave ", periods), as.character(periods))   # fallback
+  )
+}
+
+time_unit_xlab <- function(unit)
+  switch(unit, wave = "Wave", day = "Day", week = "Week", month = "Month", "Wave")
+
+# Balance a panel: keep only items / people present in *every* time period.
+# mode = "none" | "people" | "items"
+# Requires time_period column (call add_time_period first).
+balance_panel <- function(df, mode = "none") {
+  if (mode == "none" || !nrow(df)) return(df)
+  periods   <- sort(unique(df$time_period))
+  n_periods <- length(periods)
+  if (n_periods <= 1L) return(df)   # nothing to balance with only one period
+
+  if (mode == "people") {
+    keep <- df |>
+      dplyr::group_by(user_id) |>
+      dplyr::summarise(np = dplyr::n_distinct(time_period), .groups = "drop") |>
+      dplyr::filter(np == n_periods) |>
+      dplyr::pull(user_id)
+    df[df$user_id %in% keep, , drop = FALSE]
+
+  } else if (mode == "items") {
+    # "item" = unique user_id × item_name × store triple
+    keep_items <- df |>
+      dplyr::group_by(user_id, item_name, store) |>
+      dplyr::summarise(np = dplyr::n_distinct(time_period), .groups = "drop") |>
+      dplyr::filter(np == n_periods) |>
+      dplyr::select(user_id, item_name, store)
+    dplyr::semi_join(df, keep_items, by = c("user_id", "item_name", "store"))
+
+  } else {
+    df
+  }
 }
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
@@ -672,20 +812,65 @@ server <- function(input, output, session) {
 
       wellPanel(
         tags$h5("Plot Controls"),
+        # ── Global time-axis selector (affects all three plots) ──────────────
+        fluidRow(
+          column(12,
+            tags$strong("Time Axis"), tags$hr(),
+            radioButtons("time_unit", NULL,
+              choices = c("Wave (manual)"          = "wave",
+                          "Week (auto, Tue start)" = "week",
+                          "Day"                    = "day",
+                          "Month"                  = "month"),
+              selected = "week",
+              inline   = TRUE),
+            tags$p(style = "font-size:0.82em;color:#666;margin-top:-6px;",
+                   tags$strong("Wave"), " uses the instructor-set wave number. ",
+                   tags$strong("Week/Day/Month"), " derive automatically from each ",
+                   "submission\u2019s timestamp (weeks start on Tuesday).")
+          )
+        ),
+        tags$hr(),
+        # ── Balanced-panel filter (affects all plots) ────────────────────────
+        fluidRow(
+          column(12,
+            tags$strong("Panel balance"), tags$hr(),
+            radioButtons("balance_panel", NULL,
+              choices = c("Unbalanced (all data)"         = "none",
+                          "Balanced by student"           = "people",
+                          "Balanced by item"              = "items"),
+              selected = "none",
+              inline   = TRUE),
+            tags$p(style = "font-size:0.82em;color:#666;margin-top:-6px;",
+                   tags$strong("Balanced by student"), " keeps only students who ",
+                   "submitted prices in every period. ",
+                   tags$strong("Balanced by item"), " keeps only individual items ",
+                   "re-priced every period. Unbalanced data can ",
+                   tags$em("overstate"), " or ", tags$em("understate"), " price changes ",
+                   "as the composition of the basket shifts — a useful lesson in aggregation.")
+          )
+        ),
+        tags$hr(),
         fluidRow(
           # ── Category count chart controls ───────────────────────────────────
           column(12,
-            tags$strong("Category Count Chart (bottom)"), tags$hr(),
+            tags$strong("Category Chart (bottom)"), tags$hr(),
             fluidRow(
               column(4,
-                selectInput("plot3_wave", "Wave",
-                  choices  = c("Wave 1 (baseline)" = "1", "All waves" = "all"),
+                radioButtons("plot3_metric", "Show",
+                  choices  = c("Item count"         = "count",
+                               "Avg. basket share %" = "share"),
+                  selected = "count",
+                  inline   = TRUE)
+              ),
+              column(4,
+                selectInput("plot3_period", "Period",
+                  choices  = c("Period 1 (baseline)" = "1", "All periods" = "all"),
                   selected = "1")
               ),
               column(4,
                 selectInput("plot3_facet", "Facet by",
                   choices  = c("None" = "none", "Section" = "section",
-                               "Source" = "source", "Wave" = "wave"),
+                               "Source" = "source", "Period" = "wave"),
                   selected = "none")
               )
             )
@@ -698,10 +883,11 @@ server <- function(input, output, session) {
             tags$strong("Trend Plot (left)"), tags$hr(),
             fluidRow(
               column(6,
-                selectInput("plot1_cat", "Filter by category",
-                  choices  = c("All categories" = "All",
-                               setNames(categories_r(), categories_r())),
-                  selected = "All")
+                selectInput("plot1_cat_mode", "Show categories",
+                  choices  = c("Total basket"       = "all",
+                               "Color by category"  = "color",
+                               "Facet by category"  = "facet"),
+                  selected = "all")
               ),
               column(6,
                 selectInput("plot1_src", "Filter by source",
@@ -726,32 +912,18 @@ server <- function(input, output, session) {
           ),
           # ── Right plot controls ─────────────────────────────────────────────
           column(6,
-            tags$strong("Latest Wave Plot (right)"), tags$hr(),
+            tags$strong("CPI at Latest Wave — by Student (right)"), tags$hr(),
             fluidRow(
               column(6,
-                selectInput("plot2_cat", "Filter by category",
-                  choices  = c("All categories" = "All",
-                               setNames(categories_r(), categories_r())),
-                  selected = "All")
-              ),
-              column(6,
-                selectInput("plot2_src", "Filter by source",
-                  choices  = c("All sources" = "All",
-                               setNames(sources_r(), sources_r())),
-                  selected = "All")
-              )
-            ),
-            fluidRow(
-              column(6,
-                selectInput("plot2_color", "Color by",
-                  choices  = c("None"           = "none",
-                               "Section"        = "section",
-                               "Primary source" = "source"),
+                selectInput("plot2_color", "Fill by",
+                  choices  = c("None"     = "none",
+                               "Section"  = "section",
+                               "Category" = "category"),
                   selected = "none")
               ),
               column(6,
                 tags$br(),
-                checkboxInput("plot2_avg", "Show class average", value = TRUE)
+                checkboxInput("plot2_avg", "Show mean", value = TRUE)
               )
             )
           )
@@ -764,7 +936,7 @@ server <- function(input, output, session) {
           plotOutput("cpi_lines_plot", height = "340px")),
         column(6,
           tags$h6("CPI at Latest Wave"),
-          plotOutput("cpi_latest_plot", height = "340px"))
+          plotOutput("cpi_latest_plot", height = "480px"))
       ),
 
       tags$hr(),
@@ -795,154 +967,231 @@ server <- function(input, output, session) {
   output$cpi_lines_plot <- renderPlot({
     df   <- all_prices_poll()
     amap <- anon_map()
+    unit <- input$time_unit %||% "wave"
     if (!nrow(df)) return(void_plot("No data yet"))
 
-    df <- apply_anon_map(df, amap)
-    df <- filter_price_df(df, input$plot1_cat %||% "All", input$plot1_src %||% "All")
+    df      <- apply_anon_map(df, amap)
+    df      <- filter_price_df(df, input$plot1_src %||% "All")
+    df      <- add_time_period(df, unit)
+    df      <- balance_panel(df, input$balance_panel %||% "none")
     if (!nrow(df)) return(void_plot("No data for this filter"))
 
-    cpi_df <- compute_cpi_from_df(df)
-    if (!nrow(cpi_df)) return(void_plot("CPI needs Wave 1 data"))
+    cat_mode <- input$plot1_cat_mode %||% "all"
+    grp      <- input$plot1_group    %||% "average"
 
-    grp <- input$plot1_group %||% "average"
+    # ── Build base CPI data (total basket or per category) ─────────────────
+    if (cat_mode == "all") {
+      cpi_base <- compute_cpi_from_df(df)
+      if (!nrow(cpi_base)) return(void_plot("CPI needs baseline data"))
 
-    plot_df <- if (grp == "average") {
-      cpi_df |>
-        dplyr::group_by(wave) |>
-        dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
-        dplyr::mutate(group_label = "Class Average")
-    } else if (grp == "section") {
-      cpi_df |>
-        dplyr::mutate(grp_val = ifelse(!is.na(section) & nzchar(section), section, "Unknown")) |>
-        dplyr::group_by(wave, group_label = grp_val) |>
-        dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop")
+      plot_df <- if (grp == "average") {
+        cpi_base |>
+          dplyr::group_by(time_period) |>
+          dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
+          dplyr::mutate(group_label = "Class Average", cat_label = "Total basket")
+      } else if (grp == "section") {
+        cpi_base |>
+          dplyr::mutate(grp_val = dplyr::if_else(
+            !is.na(section) & nzchar(section), section, "Unknown")) |>
+          dplyr::group_by(time_period, group_label = grp_val) |>
+          dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
+          dplyr::mutate(cat_label = "Total basket")
+      } else {
+        sel <- input$plot1_students
+        if (length(sel) > 0) cpi_base <- cpi_base[cpi_base$anon_name %in% sel, ]
+        dplyr::rename(cpi_base, group_label = anon_name) |>
+          dplyr::mutate(cat_label = "Total basket")
+      }
+      color_col <- "group_label"
+      facet_col <- NULL
+
     } else {
-      sel <- input$plot1_students
-      if (length(sel) > 0)
-        cpi_df <- cpi_df[cpi_df$anon_name %in% sel, , drop = FALSE]
-      dplyr::rename(cpi_df, group_label = anon_name)
+      # Category-level CPI
+      cpi_cat <- compute_cpi_by_category(df)
+      if (!nrow(cpi_cat)) return(void_plot("CPI needs baseline data"))
+
+      plot_df <- if (grp == "average") {
+        cpi_cat |>
+          dplyr::group_by(time_period, category) |>
+          dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
+          dplyr::mutate(group_label = category, cat_label = category)
+      } else if (grp == "section") {
+        cpi_cat |>
+          dplyr::mutate(grp_val = dplyr::if_else(
+            !is.na(section) & nzchar(section), section, "Unknown")) |>
+          dplyr::group_by(time_period, category, group_label = grp_val) |>
+          dplyr::summarise(cpi = mean(cpi, na.rm = TRUE), .groups = "drop") |>
+          dplyr::mutate(cat_label = category)
+      } else {
+        sel <- input$plot1_students
+        if (length(sel) > 0) cpi_cat <- cpi_cat[cpi_cat$anon_name %in% sel, ]
+        dplyr::rename(cpi_cat, group_label = anon_name) |>
+          dplyr::mutate(cat_label = category)
+      }
+      color_col <- "cat_label"
+      facet_col <- if (cat_mode == "facet") "cat_label" else NULL
     }
 
     if (!nrow(plot_df)) return(void_plot("No data for this selection"))
-    n_groups <- dplyr::n_distinct(plot_df$group_label)
 
-    p_base <- ggplot(plot_df, aes(x = wave, y = cpi, group = group_label)) +
+    per_labels  <- make_period_labels(df, unit)
+    plot_breaks <- sort(unique(plot_df$time_period))
+    base_lbl    <- switch(unit, wave="Wave 1", day="Day 1", week="Week 1", month="Month 1", "Period 1")
+
+    p <- ggplot(plot_df, aes(x = time_period, y = cpi,
+                             group = interaction(group_label, cat_label))) +
       geom_hline(yintercept = 100, linetype = "dashed", color = "gray60", linewidth = 0.7)
 
-    p <- if (n_groups > 1) {
-      p_base +
-        geom_line(aes(color  = group_label), linewidth = 1.1) +
-        geom_point(aes(color = group_label), size = 3) +
+    n_color <- dplyr::n_distinct(plot_df[[color_col]])
+    if (n_color > 1) {
+      p <- p +
+        geom_line(aes(color  = .data[[color_col]]), linewidth = 1.1) +
+        geom_point(aes(color = .data[[color_col]]), size = 3) +
         labs(color = NULL) +
-        theme(legend.position = if (n_groups <= 12) "right" else "none")
+        theme(legend.position = if (n_color <= 14) "right" else "none")
     } else {
-      p_base +
+      p <- p +
         geom_line(color = "#951829", linewidth = 1.1) +
         geom_point(color = "#951829", size = 3)
     }
 
+    if (!is.null(facet_col))
+      p <- p + facet_wrap(~ .data[[facet_col]], scales = "free_y")
+
     p +
-      scale_x_continuous(breaks = seq_len(max(plot_df$wave))) +
-      labs(x = "Wave", y = "CPI (Wave 1 = 100)") +
+      scale_x_continuous(
+        breaks = plot_breaks,
+        labels = unname(per_labels[as.character(plot_breaks)])
+      ) +
+      labs(x = time_unit_xlab(unit), y = paste0("CPI (", base_lbl, " = 100)")) +
       theme_minimal(base_size = 12)
   })
 
   output$cpi_latest_plot <- renderPlot({
     df   <- all_prices_poll()
     amap <- anon_map()
+    unit <- input$time_unit %||% "wave"
     if (!nrow(df)) return(void_plot("No data yet"))
 
-    df <- apply_anon_map(df, amap)
+    df     <- apply_anon_map(df, amap)
+    df     <- add_time_period(df, unit)
+    df     <- balance_panel(df, input$balance_panel %||% "none")
+    cpi_df <- compute_cpi_from_df(df)
+    if (!nrow(cpi_df)) return(void_plot("CPI needs baseline data"))
 
-    cat_f   <- input$plot2_cat %||% "All"
-    src_f   <- input$plot2_src %||% "All"
-    df_filt <- filter_price_df(df, cat_f, src_f)
-    if (!nrow(df_filt)) return(void_plot("No data for this filter"))
+    latest_period <- max(cpi_df$time_period)
+    latest        <- dplyr::filter(cpi_df, time_period == latest_period)
+    if (!nrow(latest)) return(void_plot("No data at latest period"))
 
-    cpi_df <- compute_cpi_from_df(df_filt)
-    if (!nrow(cpi_df)) return(void_plot("CPI needs Wave 1 data"))
-
-    latest_wave <- max(cpi_df$wave)
-    latest      <- dplyr::filter(cpi_df, wave == latest_wave)
+    per_labels   <- make_period_labels(df, unit)
+    latest_label <- gsub("\n", " ", unname(per_labels[as.character(latest_period)]))
+    base_label   <- gsub("\n", " ", unname(per_labels["1"]))
+    if (!length(latest_label) || is.na(latest_label))
+      latest_label <- paste0(time_unit_xlab(unit), " ", latest_period)
+    if (!length(base_label) || is.na(base_label))
+      base_label <- paste0(time_unit_xlab(unit), " 1")
 
     color_by <- input$plot2_color %||% "none"
-    if (color_by == "source") {
-      src_map <- df_filt |>
-        dplyr::filter(!is.na(source), nzchar(source)) |>
-        dplyr::count(user_id, source) |>
-        dplyr::arrange(user_id, dplyr::desc(n)) |>
-        dplyr::group_by(user_id) |>
-        dplyr::slice(1) |>
-        dplyr::ungroup() |>
-        dplyr::select(user_id, color_var = source)
-      latest <- dplyr::left_join(latest, src_map, by = "user_id")
-      latest$color_var[is.na(latest$color_var)] <- "Unknown"
-    } else if (color_by == "section") {
-      latest$color_var <- dplyr::coalesce(
-        ifelse(nzchar(latest$section %||% ""), latest$section, NA_character_), "Unknown")
-    } else {
-      latest$color_var <- "All students"
+
+    # ── Category view: class-average CPI per category at latest period ────────
+    if (color_by == "category") {
+      cpi_cat <- compute_cpi_by_category(df)
+      if (!nrow(cpi_cat)) return(void_plot("CPI needs baseline data"))
+      latest_cat <- dplyr::filter(cpi_cat, time_period == max(cpi_cat$time_period))
+      if (!nrow(latest_cat)) return(void_plot("No category data at latest period"))
+
+      avg_cat <- latest_cat |>
+        dplyr::group_by(category) |>
+        dplyr::summarise(cpi      = round(mean(cpi, na.rm = TRUE), 1),
+                         n_students = dplyr::n(),
+                         .groups  = "drop") |>
+        dplyr::mutate(category = forcats::fct_reorder(category, cpi))
+
+      avg_cpi_all <- mean(latest$cpi, na.rm = TRUE)
+
+      p <- ggplot(avg_cat, aes(x = cpi, y = category, fill = category)) +
+        geom_col(alpha = 0.85, show.legend = FALSE) +
+        geom_text(aes(label = sprintf("%.1f  (n=%d)", cpi, n_students)),
+                  hjust = -0.1, size = 3.3) +
+        geom_vline(xintercept = 100, linetype = "dashed",
+                   color = "gray55", linewidth = 0.8) +
+        scale_fill_viridis_d(option = "D", direction = -1) +
+        scale_x_continuous(expand = expansion(mult = c(0, 0.25))) +
+        labs(x = paste0("Avg. category CPI (", base_label, " = 100)"), y = NULL,
+             subtitle = paste0("Class average by category — ", latest_label,
+                               " vs. ", base_label)) +
+        theme_minimal(base_size = 12) +
+        theme(panel.grid.major.y = element_blank())
+
+      if (isTRUE(input$plot2_avg))
+        p <- p +
+          geom_vline(xintercept = avg_cpi_all, color = "#1a1a2e",
+                     linewidth = 1.1, linetype = "solid") +
+          annotate("text", x = avg_cpi_all, y = Inf,
+                   label = sprintf("Overall mean: %.1f", avg_cpi_all),
+                   hjust = -0.1, vjust = 1.5, size = 3.3, color = "#1a1a2e")
+      return(p)
     }
 
-    latest   <- dplyr::mutate(latest,
-      anon_name = forcats::fct_reorder(anon_name, cpi))
-    avg_cpi  <- mean(latest$cpi, na.rm = TRUE)
-    n_colors <- dplyr::n_distinct(latest$color_var)
-    x_lo     <- min(93,  min(latest$cpi, na.rm = TRUE) - 3)
-    x_hi     <- max(107, max(latest$cpi, na.rm = TRUE) + 9)
-
-    p <- ggplot(latest, aes(y = anon_name)) +
-      geom_vline(xintercept = 100, linetype = "dashed",
-                 color = "gray60", linewidth = 0.8) +
-      geom_segment(aes(x = 100, xend = cpi, yend = anon_name),
-                   color = "gray75", linewidth = 0.9)
-
-    p <- if (n_colors > 1) {
-      p + geom_point(aes(x = cpi, color = color_var), size = 4) +
-        labs(color = switch(color_by,
-               section = "Section", source = "Primary source", NULL))
+    # ── Per-student view ──────────────────────────────────────────────────────
+    if (color_by == "section") {
+      # Vectorised: avoid passing a column to %||%
+      latest$fill_var <- ifelse(!is.na(latest$section) & nzchar(latest$section),
+                                latest$section, "Unknown")
     } else {
-      p + geom_point(aes(x = cpi), size = 4, color = "#951829")
+      latest$fill_var <- "All students"
+    }
+
+    n_fills <- dplyr::n_distinct(latest$fill_var)
+    avg_cpi <- mean(latest$cpi, na.rm = TRUE)
+
+    latest <- dplyr::mutate(latest,
+      anon_name = forcats::fct_reorder(anon_name, cpi))
+
+    p <- ggplot(latest, aes(x = cpi, y = anon_name))
+
+    p <- if (n_fills > 1) {
+      p + geom_col(aes(fill = fill_var), alpha = 0.85) +
+        scale_fill_brewer(palette = "Set2", name = "Section")
+    } else {
+      p + geom_col(fill = "#951829", alpha = 0.85)
     }
 
     p <- p +
-      geom_text(aes(x = cpi, label = sprintf("%.1f", cpi)),
-                hjust = -0.3, size = 3)
+      geom_vline(xintercept = 100, linetype = "dashed",
+                 color = "gray55", linewidth = 0.8)
 
     if (isTRUE(input$plot2_avg))
       p <- p +
         geom_vline(xintercept = avg_cpi, color = "#1a1a2e",
-                   linewidth = 1, linetype = "solid") +
+                   linewidth = 1.1, linetype = "solid") +
         annotate("text", x = avg_cpi, y = Inf,
-                 label = sprintf("Avg: %.1f", avg_cpi),
-                 hjust = -0.1, vjust = 2, size = 3.2, color = "#1a1a2e")
-
-    cat_lbl <- if (!identical(cat_f, "All")) paste0(" | ", cat_f) else ""
-    src_lbl <- if (!identical(src_f, "All")) paste0(" | source: ", src_f) else ""
+                 label = sprintf("Mean: %.1f", avg_cpi),
+                 hjust = -0.15, vjust = 1.5, size = 3.5, color = "#1a1a2e")
 
     p +
-      scale_x_continuous(limits = c(x_lo, x_hi)) +
-      labs(x = "Personal CPI (Wave 1 = 100)", y = NULL,
-           subtitle = paste0("Wave ", latest_wave, " vs. Wave 1",
-                             cat_lbl, src_lbl)) +
+      labs(x = paste0("Personal CPI (", base_label, " = 100)"), y = NULL,
+           subtitle = paste0(latest_label, " vs. ", base_label)) +
       theme_minimal(base_size = 12) +
-      theme(panel.grid.major.y = element_blank(),
-            legend.position    = if (n_colors > 1) "bottom" else "none")
+      theme(legend.position = if (n_fills > 1) "bottom" else "none",
+            panel.grid.major.y = element_blank())
   })
 
   output$cat_count_plot <- renderPlot({
     df <- all_prices_poll()
     if (!nrow(df)) return(void_plot("No data yet"))
 
-    wave_sel <- input$plot3_wave %||% "1"
-    facet_by <- input$plot3_facet %||% "none"
+    unit       <- input$time_unit    %||% "wave"
+    period_sel <- input$plot3_period %||% "1"
+    facet_by   <- input$plot3_facet  %||% "none"
+    metric     <- input$plot3_metric %||% "count"
 
-    df_plot <- if (identical(wave_sel, "1")) {
-      dplyr::filter(df, wave == 1)
-    } else {
-      df
-    }
-    if (!nrow(df_plot)) return(void_plot("No data for selected wave"))
+    df         <- add_time_period(df, unit)
+    df         <- balance_panel(df, input$balance_panel %||% "none")
+    df_plot    <- if (identical(period_sel, "1")) dplyr::filter(df, time_period == 1) else df
+    if (!nrow(df_plot)) return(void_plot("No data for selected period"))
+
+    per_labels <- make_period_labels(df, unit)
 
     # Normalise facet column
     if (facet_by == "section") {
@@ -952,9 +1201,64 @@ server <- function(input, output, session) {
       df_plot$facet_var <- ifelse(!is.na(df_plot$source) & nzchar(df_plot$source),
                                   df_plot$source, "Unknown")
     } else if (facet_by == "wave") {
-      df_plot$facet_var <- paste0("Wave ", df_plot$wave)
+      df_plot$facet_var <- unname(per_labels[as.character(df_plot$time_period)])
+      df_plot$facet_var[is.na(df_plot$facet_var)] <- paste0(time_unit_xlab(unit), " ?")
     }
 
+    period_1_lbl <- gsub("\n", " ", unname(per_labels["1"]) %||% paste0(time_unit_xlab(unit), " 1"))
+    period_lbl   <- if (identical(period_sel, "1")) period_1_lbl else paste0("All ", time_unit_xlab(unit), "s")
+
+    if (metric == "share") {
+      # Average % of basket spend per category, across students
+      # Period 1: use as-is; all periods: use most recent price per item
+      share_base <- if (identical(period_sel, "1")) {
+        df_plot
+      } else {
+        df_plot |>
+          dplyr::arrange(time_period) |>
+          dplyr::group_by(user_id, item_name, store) |>
+          dplyr::slice_tail(n = 1) |>
+          dplyr::ungroup()
+      }
+
+      if (facet_by == "none") {
+        plot_df <- compute_basket_shares(share_base) |>
+          dplyr::mutate(category = forcats::fct_reorder(category, avg_share))
+
+        p <- ggplot(plot_df, aes(x = avg_share, y = category)) +
+          geom_col(fill = "#2166ac", alpha = 0.85) +
+          geom_text(aes(label = paste0(round(avg_share, 1), "%")),
+                    hjust = -0.15, size = 3.5) +
+          scale_x_continuous(expand = expansion(mult = c(0, 0.2)),
+                             labels = function(x) paste0(x, "%")) +
+          labs(x = "Average share of monthly basket spend",
+               y = NULL, subtitle = period_lbl) +
+          theme_minimal(base_size = 12) +
+          theme(panel.grid.major.y = element_blank())
+      } else {
+        plot_df <- share_base |>
+          dplyr::group_by(facet_var) |>
+          dplyr::group_modify(~ compute_basket_shares(.x)) |>
+          dplyr::ungroup() |>
+          dplyr::mutate(category = forcats::fct_reorder(category, avg_share, .fun = mean))
+
+        p <- ggplot(plot_df, aes(x = avg_share, y = category, fill = facet_var)) +
+          geom_col(alpha = 0.85, show.legend = FALSE) +
+          geom_text(aes(label = paste0(round(avg_share, 1), "%")),
+                    hjust = -0.15, size = 3.2) +
+          scale_x_continuous(expand = expansion(mult = c(0, 0.25)),
+                             labels = function(x) paste0(x, "%")) +
+          scale_fill_brewer(palette = "Set2") +
+          facet_wrap(~ facet_var, scales = "free_x") +
+          labs(x = "Average share of monthly basket spend",
+               y = NULL, subtitle = period_lbl) +
+          theme_minimal(base_size = 12) +
+          theme(panel.grid.major.y = element_blank())
+      }
+      return(p)
+    }
+
+    # ── Count metric (original behavior) ────────────────────────────────────
     count_df <- if (facet_by == "none") {
       df_plot |>
         dplyr::count(category) |>
@@ -965,22 +1269,18 @@ server <- function(input, output, session) {
         dplyr::mutate(category = forcats::fct_reorder(category, n, .fun = sum))
     }
 
-    wave_lbl <- if (identical(wave_sel, "1")) "Wave 1" else "All Waves"
-
     p <- ggplot(count_df, aes(x = n, y = category)) +
       geom_col(fill = "#951829", alpha = 0.85) +
       geom_text(aes(label = n), hjust = -0.2, size = 3.5) +
       scale_x_continuous(expand = expansion(mult = c(0, 0.18))) +
-      labs(x = "Number of items", y = NULL,
-           subtitle = wave_lbl) +
+      labs(x = "Number of items", y = NULL, subtitle = period_lbl) +
       theme_minimal(base_size = 12) +
       theme(panel.grid.major.y = element_blank())
 
-    if (facet_by != "none") {
+    if (facet_by != "none")
       p <- p + facet_wrap(~ facet_var, scales = "free_x") +
         geom_col(aes(fill = facet_var), alpha = 0.85, show.legend = FALSE) +
         scale_fill_brewer(palette = "Set2")
-    }
 
     p
   })
@@ -1069,6 +1369,17 @@ server <- function(input, output, session) {
       ),
 
       tags$hr(),
+      tags$h6("Assign Student Sections"),
+      tags$p(style = "font-size:0.85em;color:#555;",
+             "Set the section for each student. Section is used for color/facet grouping in class plots."),
+      DT::DTOutput("admin_sections_tbl"),
+      tags$br(),
+      fluidRow(
+        column(3, selectInput("sec_user",    "Student", choices = NULL)),
+        column(3, textInput("sec_value",     "Section (e.g. MWF 10am)", placeholder = "Section label")),
+        column(2, tags$br(), actionButton("sec_save_btn", "Save Section", class = "btn-sm btn-primary"))
+      ),
+      tags$hr(),
       tags$h6("Basket Items"),
       DT::DTOutput("admin_items_tbl"),
       tags$hr(),
@@ -1121,6 +1432,35 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     showNotification("Backup started…", type = "message")
     backup_async()
+  })
+
+  # ── Section assignment ───────────────────────────────────────────────────────
+  output$admin_sections_tbl <- DT::renderDT({
+    req(rv$is_admin); rv$tick
+    db_query("SELECT user_id AS Username, display_name AS Name,
+                     COALESCE(section, '(not set)') AS Section
+              FROM users ORDER BY display_name;")
+  }, rownames = FALSE, selection = "none",
+     options  = list(dom = "t", pageLength = 50))
+
+  # Populate student picker from DB
+  observe({
+    req(rv$is_admin); rv$tick
+    users <- db_query("SELECT user_id, display_name FROM users ORDER BY display_name;")
+    if (!nrow(users)) return()
+    updateSelectInput(session, "sec_user",
+      choices = setNames(users$user_id, users$display_name))
+  })
+
+  observeEvent(input$sec_save_btn, {
+    req(rv$is_admin)
+    uid <- input$sec_user %||% ""
+    sec <- trimws(input$sec_value %||% "")
+    if (!nzchar(uid)) { showNotification("Select a student.", type = "error"); return() }
+    db_exec("UPDATE users SET section=? WHERE user_id=?;",
+            list(if (nzchar(sec)) sec else NA_character_, uid))
+    bump()
+    showNotification(paste0("Section saved for ", uid, "."), type = "message")
   })
 
   output$admin_items_tbl <- DT::renderDT({

@@ -90,6 +90,31 @@ save_max_commits_setting <- function(val) {
   }, error = function(e) NULL)
 }
 
+get_weight_params_setting <- function() {
+  tryCatch({
+    r <- jdb_query("SELECT key, value FROM app_settings WHERE key IN ('wt_A','wt_B')")
+    A <- if ("wt_A" %in% r$key) as.numeric(r$value[r$key == "wt_A"]) else 1
+    B <- if ("wt_B" %in% r$key) as.numeric(r$value[r$key == "wt_B"]) else 2
+    list(A = A, B = B)
+  }, error = function(e) list(A = 1, B = 2))
+}
+
+save_weight_params_setting <- function(A, B) {
+  tryCatch({
+    jdb_exec("CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY, value TEXT)")
+    jdb_exec(
+      "INSERT INTO app_settings(key,value) VALUES('wt_A',?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      list(as.character(as.numeric(A)))
+    )
+    jdb_exec(
+      "INSERT INTO app_settings(key,value) VALUES('wt_B',?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      list(as.character(as.numeric(B)))
+    )
+  }, error = function(e) NULL)
+}
+
 sections_from_db <- function() {
   tryCatch(
     jdb_query("SELECT DISTINCT section FROM users
@@ -178,6 +203,27 @@ append_log <- function(rows_df) {
 # ----------------------------
 # EXCLUSION HELPERS
 # ----------------------------
+
+# Named integer vector: total job entries per student (all job types).
+student_job_counts <- function(section_id, names) {
+  if (length(names) == 0) return(setNames(integer(0), character(0)))
+  lg <- jdb_query(
+    "SELECT display_name FROM job_log
+     WHERE section=? AND job NOT LIKE 'ADMIN__%'",
+    list(as.character(section_id))
+  )
+  counts <- table(factor(lg$display_name, levels = names))
+  setNames(as.integer(counts), names)
+}
+
+# Weighted sample: weight = 1 / (A * Total^B + 1).
+# Defaults A=1, B=2. pool must be length >= 1.
+weighted_draw <- function(pool, section_id, wt_A = 1, wt_B = 2) {
+  cnts <- student_job_counts(section_id, pool)
+  wts  <- 1 / (wt_A * cnts^wt_B + 1)
+  sample(pool, 1, prob = wts / sum(wts))
+}
+
 compute_exclusions <- function(section_id, roster, max_commits = Inf) {
   lg <- jdb_query(
     "SELECT job, display_name FROM job_log
@@ -233,7 +279,7 @@ ensure_bag_job <- function(section_id, job_id, absentees = character(0)) {
   list(roster = roster, cycle_id = cycle_id, bag = bag)
 }
 
-draw_jobs_day <- function(section_id, jobs, absentees = character(0), exclusions = NULL) {
+draw_jobs_day <- function(section_id, jobs, absentees = character(0), exclusions = NULL, wt_A = 1, wt_B = 2) {
   roster <- read_roster(section_id)
   if (length(absentees) > 0) roster <- setdiff(roster, absentees)
   state  <- read_state(section_id)
@@ -262,17 +308,23 @@ draw_jobs_day <- function(section_id, jobs, absentees = character(0), exclusions
       cycle_id <- cycle_id + 1L
     }
 
-    avail <- setdiff(bag, picked_today)
-    avail <- setdiff(avail, overcap_excluded)
+    avail <- setdiff(setdiff(bag, picked_today), overcap_excluded)
 
     if (grepl("materials summary", j, ignore.case = TRUE)) {
       avail <- setdiff(avail, matsumm_excluded)
     }
 
+    # Fallback 1: allow a student picked for another job today, but keep overcap exclusion
+    if (length(avail) == 0) {
+      avail <- setdiff(bag, overcap_excluded)
+      if (grepl("materials summary", j, ignore.case = TRUE))
+        avail <- setdiff(avail, matsumm_excluded)
+    }
+    # Fallback 2: everyone is overcap — reluctantly allow overcap students (weighted heavily down)
     if (length(avail) == 0) avail <- setdiff(bag, picked_today)
     if (length(avail) == 0) stop("No eligible student for job: ", j, " in section: ", section_id)
 
-    nm            <- sample(avail, 1)
+    nm            <- weighted_draw(avail, section_id, wt_A = wt_A, wt_B = wt_B)
     assignments[j] <- nm
     picked_today  <- c(picked_today, nm)
 
@@ -362,7 +414,10 @@ deterministic_shuffle <- function(x, seed_string) {
   sample(x, length(x), replace = FALSE)
 }
 
-generate_summary_table <- function() {
+generate_summary_table <- function(wt_A = NULL, wt_B = NULL) {
+  if (is.null(wt_A) || is.null(wt_B)) {
+    wp <- get_weight_params_setting(); wt_A <- wp$A; wt_B <- wp$B
+  }
   lg <- jdb_query(
     "SELECT logged_date, section, job, display_name FROM job_log
      WHERE job NOT LIKE 'ADMIN__%'"
@@ -372,19 +427,42 @@ generate_summary_table <- function() {
   ) %>% dplyr::rename(name = display_name)
 
   if (nrow(lg) == 0) {
-    return(roster_df %>% dplyr::select(name, section))
+    out <- roster_df %>% dplyr::select(name, section)
+    out$Total       <- 0L
+    out$`Prob. (%)` <- round(100 / pmax(nrow(out), 1), 1)
+    return(out)
   }
 
   lg <- lg %>%
     dplyr::rename(name = display_name) %>%
     dplyr::mutate(job = sub("\\s+[0-9]+$", "", job, ignore.case = TRUE))
 
-  lg %>%
+  # Per-student total (all job types, used for weighted-draw probability)
+  totals <- lg %>%
+    dplyr::group_by(name) %>%
+    dplyr::summarise(Total = dplyr::n(), .groups = "drop")
+
+  wide <- lg %>%
     dplyr::full_join(roster_df, by = c("name", "section")) %>%
     dplyr::group_by(name, section, job) %>%
     dplyr::summarise(count = dplyr::n(), .groups = "drop") %>%
     tidyr::pivot_wider(names_from = job, values_from = count) %>%
-    dplyr::arrange(name, section)
+    dplyr::arrange(name, section) %>%
+    dplyr::left_join(totals, by = "name") %>%
+    dplyr::mutate(Total = dplyr::coalesce(Total, 0L))
+
+  # Weighted-draw probability within section: weight_i = 1 / (A * Total_i^B + 1)
+  # Prob_i = weight_i / sum(weight_j for j in same section)
+  wide <- wide %>%
+    dplyr::group_by(section) %>%
+    dplyr::mutate(
+      .weight    = 1 / (wt_A * Total^wt_B + 1),
+      `Prob. (%)` = round(.weight / sum(.weight) * 100, 1)
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(-.weight)
+
+  wide
 }
 
 rebuild_state_from_log <- function(section_id, upto_date = Sys.Date()) {
@@ -706,6 +784,14 @@ app_ui <- tagList(
             numericInput("max_commits", "Max commits before exclusion",
                          value = 10, min = 1, step = 1),
             hr(),
+            h5("Weighted draw parameters"),
+            tags$p(style = "font-size:12px; color:#666; margin-bottom:6px;",
+                   HTML("weight = 1 / (A &times; Total<sup>B</sup> + 1)")),
+            fluidRow(
+              column(6, numericInput("wt_A", "A (scale)",    value = 1,   min = 0.01, step = 0.1)),
+              column(6, numericInput("wt_B", "B (exponent)", value = 2,   min = 0.1,  step = 0.1))
+            ),
+            hr(),
             uiOutput("exclusion_info")
           )
         )
@@ -814,6 +900,17 @@ server <- function(input, output, session) {
     save_max_commits_setting(input$max_commits)
   }, ignoreInit = TRUE)
 
+  # Persist weight params whenever admin changes them
+  observeEvent(input$wt_A, {
+    req(authed(), !is.null(input$wt_A), !is.null(input$wt_B))
+    save_weight_params_setting(input$wt_A, input$wt_B)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$wt_B, {
+    req(authed(), !is.null(input$wt_A), !is.null(input$wt_B))
+    save_weight_params_setting(input$wt_A, input$wt_B)
+  }, ignoreInit = TRUE)
+
   output$student_summary <- renderTable({
     vs <- view_student(); req(!is.null(vs))
     lg <- student_points_data(vs)
@@ -912,6 +1009,12 @@ server <- function(input, output, session) {
     }
 
     init_job_defaults(secs, DEFAULT_JOBS)
+
+    mc <- get_max_commits_setting()
+    updateNumericInput(session, "max_commits", value = mc)
+    wp <- get_weight_params_setting()
+    updateNumericInput(session, "wt_A", value = wp$A)
+    updateNumericInput(session, "wt_B", value = wp$B)
   }, ignoreInit = FALSE, once = TRUE)
 
   # Update job choices when section changes
@@ -1024,7 +1127,8 @@ server <- function(input, output, session) {
     rv$exclusions <- exclusions
 
     res      <- draw_jobs_day(input$section, jobs, absentees = absentees,
-                              exclusions = exclusions)
+                              exclusions = exclusions,
+                              wt_A = input$wt_A %||% 1, wt_B = input$wt_B %||% 2)
     rv$prev_draft     <- rv$draft
     rv$prev_draft_res <- rv$draft_res
     rv$draft_res      <- res
@@ -1052,7 +1156,8 @@ server <- function(input, output, session) {
       return()
     }
 
-    rv$cold_current <- sample(pool, 1)
+    rv$cold_current <- weighted_draw(pool, input$section,
+                                     wt_A = input$wt_A %||% 1, wt_B = input$wt_B %||% 2)
   })
 
   # --- Commit jobs ---
@@ -1173,6 +1278,13 @@ server <- function(input, output, session) {
       available <- setdiff(available, rv$exclusions$overcap)
       if (grepl("materials summary", job_to_redraw, ignore.case = TRUE))
         available <- setdiff(available, rv$exclusions$matsumm)
+      # Fallback: allow duplicates today before allowing overcap students
+      if (length(available) == 0) {
+        available <- setdiff(bag, rv$exclusions$overcap)
+        if (grepl("materials summary", job_to_redraw, ignore.case = TRUE))
+          available <- setdiff(available, rv$exclusions$matsumm)
+      }
+      # Last resort: everyone is overcap
       if (length(available) == 0) available <- setdiff(bag, taken_today)
     }
 
@@ -1181,7 +1293,8 @@ server <- function(input, output, session) {
       return()
     }
 
-    new_name <- sample(available, 1)
+    new_name <- weighted_draw(available, input$section,
+                               wt_A = input$wt_A %||% 1, wt_B = input$wt_B %||% 2)
 
     rv$prev_draft     <- rv$draft
     rv$prev_draft_res <- rv$draft_res
@@ -1255,7 +1368,7 @@ server <- function(input, output, session) {
 
   # --- Admin: generate summary ---
   observeEvent(input$admin_generate_summary, {
-    summary_table <- generate_summary_table()
+    summary_table <- generate_summary_table(wt_A = input$wt_A %||% 1, wt_B = input$wt_B %||% 2)
     if (nzchar(SHEET_ID)) {
       tryCatch(
         write_sheet(summary_table, ss = SHEET_ID, sheet = "summary"),
