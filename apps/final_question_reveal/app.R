@@ -1577,9 +1577,13 @@ server <- function(input, output, session) {
         step = step,
         width = "100%"
       ),
-      # if choice is "question", state amount currently pledged
-      if (identical(choice, "question")) tags$p(strong(sprintf("Currently pledged: %.2f", alloc$pending_question %||% 0)))
-      ,
+      # if choice is "question", state amount currently pledged + unpledge option
+      if (identical(choice, "question")) tagList(
+        tags$p(strong(sprintf("Currently pledged: %.2f", alloc$pending_question %||% 0))),
+        if (isTRUE(as.integer(st$round_open[1]) == 1) && pending_q > 0)
+          actionButton("unpledge_btn", "Unpledge (set to 0)", class = "btn-warning btn-sm",
+                       style = "margin-bottom:8px;")
+      ),
       checkboxInput("buy_confirm", "I confirm this purchase/allocation.", value = FALSE),
       actionButton("buy_submit", "Submit", class="btn-primary"),
       tags$p(style = "color:#6c757d; font-size:0.82em; margin-top:8px; margin-bottom:0;",
@@ -1609,6 +1613,10 @@ server <- function(input, output, session) {
 
     div(class = "student-section",
       div(class = "student-section-title", "Use your resources"),
+      div(style = "color:#b00020; font-weight:600; margin-bottom:12px;",
+        tags$strong("Important:"),
+        " Extensions and bonus points must be declared BEFORE the problem set or exam deadline."
+      ),
 
       # ── Extensions ──
       h5(style = "margin-bottom:8px;",
@@ -1820,6 +1828,19 @@ server <- function(input, output, session) {
     }
 
     showNotification("Unknown purchase type.", type="error")
+  })
+
+  observeEvent(input$unpledge_btn, {
+    req(authed())
+    st <- get_state()
+    s  <- get_settings()
+    if (!isTRUE(as.integer(st$round_open[1]) == 1)) {
+      showNotification("Pledging is not currently open.", type = "error"); return()
+    }
+    pr <- pledge_bucket_round(st, s)
+    db_exec("DELETE FROM pledges WHERE user_id=? AND round=?;", list(user_id(), as.integer(pr)))
+    set_state()
+    showNotification("Your pledge has been removed.", type = "message")
   })
 
   output$my_ledger <- DT::renderDT({
