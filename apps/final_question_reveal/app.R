@@ -682,6 +682,18 @@ init_db <- function() {
 
   # Upsert roster from CRED (seed pw_hash if missing; always update admin flag & name)
   upsert_cred_to_db(CRED)
+
+  # Demo account: view-only, hardcoded, independent of credentials sheet/CSV.
+  # Password: "password". Hash regenerated from a fixed bcrypt string — change the
+  # hash here if you ever want to rotate the demo password.
+  db_exec("
+    INSERT INTO users(user_id, display_name, is_admin, pw_hash)
+    VALUES('demo', 'Demo Account', 0, '$2a$12$vcgWWznt30RO7IDUZEtqjerDLK6TQ8byLV6u95VJelxJxdO3AeDka')
+    ON CONFLICT(user_id) DO UPDATE SET
+      display_name = 'Demo Account',
+      is_admin     = 0,
+      pw_hash      = '$2a$12$vcgWWznt30RO7IDUZEtqjerDLK6TQ8byLV6u95VJelxJxdO3AeDka';
+  ")
 }
 
 upsert_cred_to_db <- function(cred) {
@@ -1341,6 +1353,7 @@ server <- function(input, output, session) {
     if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_name)) rv$impersonate_name else rv$name
   })
   is_admin <- reactive(rv$is_admin)
+  is_demo  <- reactive(isTRUE(rv$user == "demo"))
 
   # Live polling via game_state.updated_at
   state_poll <- reactivePoll(
@@ -1369,6 +1382,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$pw_change_btn, {
     req(authed())
+    if (isTRUE(is_demo())) { showNotification("Demo accounts are view-only.", type = "warning"); return() }
     if (isTRUE(rv$impersonate)) {
       showNotification("Stop impersonating before changing passwords.", type = "error"); return()
     }
@@ -1704,6 +1718,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$use_flex_submit, {
     req(authed())
+    if (isTRUE(is_demo())) { showNotification("Demo accounts are view-only.", type = "warning"); return() }
     s <- get_settings()
     alloc <- student_allocation_summary(user_id())
     flex_purchased <- as.integer(alloc$spent_flex %||% 0)
@@ -1738,6 +1753,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$use_exam_submit, {
     req(authed())
+    if (isTRUE(is_demo())) { showNotification("Demo accounts are view-only.", type = "warning"); return() }
     alloc <- student_allocation_summary(user_id())
     exam_purchased <- as.integer(alloc$spent_exam %||% 0)
     exam_used <- db_query(
@@ -1762,6 +1778,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$buy_submit, {
     req(authed())
+    if (isTRUE(is_demo())) { showNotification("Demo accounts are view-only.", type = "warning"); return() }
     if (!isTRUE(input$buy_confirm)) {
       showNotification("Please confirm before submitting.", type="error"); return()
     }
@@ -1857,6 +1874,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$unpledge_btn, {
     req(authed())
+    if (isTRUE(is_demo())) { showNotification("Demo accounts are view-only.", type = "warning"); return() }
     st <- get_state()
     s  <- get_settings()
     if (!isTRUE(as.integer(st$round_open[1]) == 1)) {
