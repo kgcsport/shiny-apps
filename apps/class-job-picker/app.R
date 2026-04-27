@@ -423,11 +423,11 @@ generate_summary_table <- function(wt_A = NULL, wt_B = NULL) {
      WHERE job NOT LIKE 'ADMIN__%'"
   )
   roster_df <- jdb_query(
-    "SELECT display_name, section FROM users WHERE COALESCE(is_admin,0)=0"
+    "SELECT user_id, display_name, section FROM users WHERE COALESCE(is_admin,0)=0"
   ) %>% dplyr::rename(name = display_name)
 
   if (nrow(lg) == 0) {
-    out <- roster_df %>% dplyr::select(name, section)
+    out <- roster_df %>% dplyr::select(name, user_id, section)
     out$Total       <- 0L
     out$`Prob. (%)` <- round(100 / pmax(nrow(out), 1), 1)
     return(out)
@@ -460,7 +460,9 @@ generate_summary_table <- function(wt_A = NULL, wt_B = NULL) {
       `Prob. (%)` = round(.weight / sum(.weight) * 100, 1)
     ) %>%
     dplyr::ungroup() %>%
-    dplyr::select(-.weight)
+    dplyr::select(-.weight) %>%
+    dplyr::left_join(dplyr::select(roster_df, name, user_id), by = "name") %>%
+    dplyr::select(name, user_id, section, dplyr::everything())
 
   wide
 }
