@@ -23,8 +23,11 @@ JOB_DB_PATH <- local({
 
 job_conn <- NULL
 get_job_con <- function() {
-  if (is.null(job_conn) || !DBI::dbIsValid(job_conn))
+  if (is.null(job_conn) || !DBI::dbIsValid(job_conn)) {
     job_conn <<- DBI::dbConnect(RSQLite::SQLite(), JOB_DB_PATH)
+    DBI::dbExecute(job_conn, "PRAGMA journal_mode = WAL;")
+    DBI::dbExecute(job_conn, "PRAGMA busy_timeout = 5000;")
+  }
   job_conn
 }
 jdb_exec  <- function(sql, p = NULL) DBI::dbExecute(get_job_con(), sql, params = p)

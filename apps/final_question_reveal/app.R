@@ -622,8 +622,9 @@ init_db <- function() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
   ")
-  db_exec("CREATE INDEX IF NOT EXISTS ix_ledger_user ON ledger(user_id);")
+  db_exec("CREATE INDEX IF NOT EXISTS ix_ledger_user    ON ledger(user_id);")
   db_exec("CREATE INDEX IF NOT EXISTS ix_ledger_purpose ON ledger(purpose);")
+  db_exec("CREATE INDEX IF NOT EXISTS ix_ledger_user_purpose ON ledger(user_id, purpose);")
 
   # Resource targets (where students apply already-purchased passes)
   db_exec("
@@ -1356,16 +1357,13 @@ server <- function(input, output, session) {
   is_demo  <- reactive(isTRUE(rv$user == "demo"))
 
   # Live polling via game_state.updated_at
-  state_poll <- reactivePoll(
+  game_poll <- reactivePoll(
     3500, session,
     checkFunc = function() db_query("SELECT updated_at FROM game_state WHERE id=1;")$updated_at[1] %||% as.character(Sys.time()),
-    valueFunc = function() get_state()
+    valueFunc = function() list(state = get_state(), settings = get_settings())
   )
-  settings_poll <- reactivePoll(
-    15000, session,
-    checkFunc = function() db_query("SELECT updated_at FROM game_state WHERE id=1;")$updated_at[1] %||% "",
-    valueFunc = function() get_settings()
-  )
+  state_poll    <- reactive(game_poll()$state)
+  settings_poll <- reactive(game_poll()$settings)
 
   # Password changer panel (reused on Student + Admin)
   password_changer <- wellPanel(
