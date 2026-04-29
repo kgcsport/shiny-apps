@@ -405,7 +405,7 @@ get_user_items <- function(uid) db_query(
   "SELECT * FROM basket_items WHERE user_id=? ORDER BY category, item_name;", list(uid))
 
 get_user_prices <- function(uid, wave = NULL) {
-  sql <- "SELECT pr.record_id, pr.item_id, pr.wave, pr.price, pr.recorded_at,
+  sql <- "SELECT pr.record_id, pr.item_id, pr.wave, pr.price, pr.source, pr.recorded_at,
                  bi.item_name, bi.store, bi.category, bi.times_per_month
           FROM price_records pr
           JOIN basket_items bi ON pr.item_id = bi.item_id
