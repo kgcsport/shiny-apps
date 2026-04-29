@@ -468,11 +468,12 @@ ui <- fluidPage(uiOutput("app_ui"))
 server <- function(input, output, session) {
 
   rv <- reactiveValues(
-    authed   = FALSE,
-    user_id  = NULL,
-    name     = NULL,
-    is_admin = FALSE,
-    tick     = 0L   # increment to force reactive refresh after writes
+    authed          = FALSE,
+    user_id         = NULL,
+    name            = NULL,
+    is_admin        = FALSE,
+    tick            = 0L,   # increment to force reactive refresh after writes
+    editing_item_id = NULL  # item_id currently open in edit modal
   )
 
   bump <- function() rv$tick <- rv$tick + 1L
@@ -661,8 +662,9 @@ server <- function(input, output, session) {
       DT::DTOutput("my_basket_tbl"),
       tags$hr(),
       uiOutput("personal_cpi_ui"),
+      uiOutput("manage_items_ui"),
       tags$hr(),
-      downloadButton("dl_my_data", "Download my data (.csv)", class = "btn-sm btn-default")
+      uiOutput("dl_btn_ui")
     )
   })
 
@@ -708,13 +710,14 @@ server <- function(input, output, session) {
     }, error = function(e) showNotification(paste("Error:", e$message), type = "error"))
   })
 
-  # ── Wave 2+ price updates — dynamic observers ────────────────────────────────
+  # ── Wave 2+ price updates and item edit/delete — dynamic observers ───────────
   # Observers are cheap and idempotent; re-register on items change is fine here.
   observeEvent(my_items(), {
     items <- my_items()
     w     <- isolate(current_wave())
     uid   <- isolate(rv$user_id)
     lapply(items$item_id, function(iid) {
+      # Wave 2+ price update
       btn_id <- paste0("upd_btn_", iid)
       observeEvent(input[[btn_id]], ignoreInit = TRUE, {
         pr <- as.numeric(input[[paste0("upd_", iid)]])
@@ -733,7 +736,141 @@ server <- function(input, output, session) {
         showNotification(paste0('"', nm, '" saved for Wave ', wv, '.'), type = "message")
         bump()
       })
+
+      # Edit item — open modal
+      observeEvent(input[[paste0("edit_item_", iid)]], ignoreInit = TRUE, {
+        rv$editing_item_id <- iid
+        row <- items[items$item_id == iid, ]
+        prices <- get_user_prices(uid)
+        waves  <- sort(unique(prices$wave))
+        wave_inputs <- lapply(waves, function(wv) {
+          cur <- prices$price[prices$item_id == iid & prices$wave == wv]
+          cur <- if (length(cur)) cur[1] else NA_real_
+          fluidRow(
+            column(3, tags$label(paste0("Wave ", wv, " price ($)"))),
+            column(4, numericInput(paste0("edit_price_w", wv), NULL,
+                                   value = cur, min = 0, step = 0.01))
+          )
+        })
+        showModal(modalDialog(
+          title = "Edit Item",
+          textInput("edit_item_name",  "Item name", value = row$item_name),
+          textInput("edit_item_store", "Store",     value = row$store),
+          selectInput("edit_item_cat", "Category",
+                      choices = categories_r(), selected = row$category),
+          numericInput("edit_item_freq", "Times/month",
+                       value = row$times_per_month, min = 0.5, step = 0.5),
+          if (length(wave_inputs)) tagList(tags$hr(), tags$strong("Prices"), wave_inputs),
+          footer = tagList(
+            modalButton("Cancel"),
+            actionButton("save_edit_btn", "Save Changes", class = "btn-primary")
+          ),
+          easyClose = TRUE
+        ))
+      })
+
+      # Delete item
+      observeEvent(input[[paste0("del_item_", iid)]], ignoreInit = TRUE, {
+        nm <- items$item_name[items$item_id == iid]
+        showModal(modalDialog(
+          title = "Confirm Delete",
+          tags$p("Delete ", tags$strong(nm), " and all its price records? This cannot be undone."),
+          footer = tagList(
+            modalButton("Cancel"),
+            actionButton(paste0("confirm_del_", iid), "Delete", class = "btn-danger")
+          ),
+          easyClose = TRUE
+        ))
+      })
+
+      observeEvent(input[[paste0("confirm_del_", iid)]], ignoreInit = TRUE, {
+        db_exec("DELETE FROM price_records WHERE item_id=?;", list(iid))
+        db_exec("DELETE FROM basket_items   WHERE item_id=?;", list(iid))
+        nm <- items$item_name[items$item_id == iid]
+        removeModal()
+        showNotification(paste0('"', nm, '" deleted.'), type = "message")
+        bump()
+      })
     })
+  })
+
+  # ── Save edit modal ──────────────────────────────────────────────────────────
+  observeEvent(input$save_edit_btn, {
+    iid <- req(rv$editing_item_id)
+    uid <- req(rv$user_id)
+    nm  <- trimws(input$edit_item_name  %||% "")
+    st  <- trimws(input$edit_item_store %||% "")
+    cat <- input$edit_item_cat   %||% ""
+    fr  <- as.numeric(input$edit_item_freq)
+
+    if (!nzchar(nm)) { showNotification("Item name required.", type = "error"); return() }
+    if (!nzchar(st)) { showNotification("Store required.",     type = "error"); return() }
+    if (is.na(fr) || fr <= 0) { showNotification("Times/month must be > 0.", type = "error"); return() }
+
+    tryCatch({
+      db_exec(
+        "UPDATE basket_items SET item_name=?, store=?, category=?, times_per_month=?
+         WHERE item_id=? AND user_id=?;",
+        list(nm, st, cat, fr, iid, uid))
+
+      prices <- get_user_prices(uid)
+      waves  <- sort(unique(prices$wave[prices$item_id == iid]))
+      for (wv in waves) {
+        new_pr <- as.numeric(input[[paste0("edit_price_w", wv)]])
+        if (!is.na(new_pr) && new_pr >= 0) {
+          db_exec(
+            "UPDATE price_records SET price=?, recorded_at=CURRENT_TIMESTAMP
+             WHERE item_id=? AND wave=?;",
+            list(new_pr, iid, as.integer(wv)))
+        }
+      }
+      rv$editing_item_id <- NULL
+      removeModal()
+      showNotification(paste0('"', nm, '" updated.'), type = "message")
+      bump()
+    }, error = function(e) showNotification(paste("Error:", e$message), type = "error"))
+  })
+
+  # ── Download button (separate renderUI so the handler binding survives re-renders) ──
+  output$dl_btn_ui <- renderUI({
+    req(rv$user_id)
+    downloadButton("dl_my_data", "Download my data (.csv)", class = "btn-sm btn-default")
+  })
+
+  # ── Manage items (edit / delete) ─────────────────────────────────────────────
+  output$manage_items_ui <- renderUI({
+    req(rv$user_id); rv$tick
+    items <- my_items()
+    if (!nrow(items)) return(NULL)
+
+    tagList(
+      tags$hr(),
+      tags$h5("Edit or Remove Items"),
+      tags$p(style = "color:#555;font-size:0.9em;",
+             "Correct a mistake or delete an item you no longer want to track."),
+      tags$table(class = "table table-sm",
+        tags$thead(tags$tr(
+          tags$th("Item"), tags$th("Store"), tags$th("Category"),
+          tags$th("Times/mo"), tags$th(""), tags$th("")
+        )),
+        tags$tbody(
+          lapply(seq_len(nrow(items)), function(i) {
+            r <- items[i, ]
+            tags$tr(
+              tags$td(tags$strong(r$item_name)),
+              tags$td(r$store),
+              tags$td(tags$span(class = "badge bg-secondary", r$category)),
+              tags$td(r$times_per_month),
+              tags$td(actionButton(paste0("edit_item_", r$item_id), "Edit",
+                                   class = "btn-sm btn-outline-secondary",
+                                   style = "margin-right:4px;")),
+              tags$td(actionButton(paste0("del_item_",  r$item_id), "Delete",
+                                   class = "btn-sm btn-outline-danger"))
+            )
+          })
+        )
+      )
+    )
   })
 
   # ── My basket table ─────────────────────────────────────────────────────────
@@ -1517,7 +1654,7 @@ server <- function(input, output, session) {
   output$dl_my_data <- downloadHandler(
     filename = function() paste0("my_price_index_", Sys.Date(), ".csv"),
     content  = function(file) {
-      uid    <- rv$user_id
+      uid    <- req(rv$user_id)
       prices <- get_user_prices(uid)
       cpi_df <- compute_personal_cpi(uid)
       out <- prices |>
