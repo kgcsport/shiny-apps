@@ -15,6 +15,7 @@ APP_NAMES <- c(
   "core-arcade"            = "CORE Arcade",
   "final_question_reveal"  = "Flex Pass Accounting",
   "indifference-to-demand" = "Indifference to Demand",
+  "sloman-trading-game"    = "Sloman Trading Game",
   "tax-incidence"          = "Tax Incidence",
   "theory-of-firm"         = "Theory of the Firm"
 )
