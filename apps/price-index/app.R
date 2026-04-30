@@ -87,9 +87,10 @@ init_db <- function() {
   if (!"source" %in% cols)
     db_exec("ALTER TABLE price_records ADD COLUMN source TEXT;")
 
-  db_exec("CREATE INDEX IF NOT EXISTS ix_pr_user  ON price_records(user_id);")
-  db_exec("CREATE INDEX IF NOT EXISTS ix_pr_wave  ON price_records(wave);")
-  db_exec("CREATE INDEX IF NOT EXISTS ix_bi_user  ON basket_items(user_id);")
+  db_exec("CREATE INDEX IF NOT EXISTS ix_pr_user      ON price_records(user_id);")
+  db_exec("CREATE INDEX IF NOT EXISTS ix_pr_wave      ON price_records(wave);")
+  db_exec("CREATE INDEX IF NOT EXISTS ix_pr_user_wave ON price_records(user_id, wave);")
+  db_exec("CREATE INDEX IF NOT EXISTS ix_bi_user      ON basket_items(user_id);")
 
   n <- db_query("SELECT COUNT(*) n FROM app_state WHERE id=1;")$n[1]
   if (!n) db_exec("INSERT INTO app_state(id, current_wave) VALUES(1, 1);")

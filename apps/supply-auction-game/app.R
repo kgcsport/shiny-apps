@@ -628,10 +628,19 @@ server <- function(input, output, session) {
     tryCatch(advance_tick_if_needed(), error = function(e) logf("Tick loop error:", conditionMessage(e)))
   })
 
+  auction_live_poll <- reactivePoll(
+    250, session,
+    checkFunc = function() {
+      st <- db_query("SELECT current_price, units_remaining, running FROM auction_state WHERE id=1;")
+      paste0(st$current_price[1], "|", st$units_remaining[1], "|", st$running[1])
+    },
+    valueFunc = function() list(state = get_state(), settings = get_settings())
+  )
+
   output$auction_status <- renderUI({
-    invalidateLater(250, session)
-    st <- get_state()
-    s  <- get_settings()
+    gp <- auction_live_poll()
+    st <- gp$state
+    s  <- gp$settings
     running <- nrow(st) > 0 && isTRUE(safe_int(st$running[1], 0L) == 1L)
     div(
       p(tags$b("Item: "), s$item_name[1] %||% ""),

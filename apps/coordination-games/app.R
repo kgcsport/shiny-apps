@@ -70,7 +70,11 @@ logf("DB_PATH:", DB_PATH)
 
 conn <- NULL
 get_con <- function() {
-  if (is.null(conn) || !DBI::dbIsValid(conn)) conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
+  if (is.null(conn) || !DBI::dbIsValid(conn)) {
+    conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
+    DBI::dbExecute(conn, "PRAGMA journal_mode = WAL;")
+    DBI::dbExecute(conn, "PRAGMA busy_timeout = 5000;")
+  }
   conn
 }
 db_exec  <- function(sql, params = NULL) DBI::dbExecute(get_con(), sql, params = params)
