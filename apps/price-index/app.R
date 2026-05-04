@@ -452,12 +452,36 @@ all_personal_cpis <- function() {
 login_ui <- function(msg = NULL) {
   fluidPage(
     titlePanel("Personal Price Index"),
-    if (!is.null(msg)) div(style = "color:#b00020;font-weight:bold;margin-bottom:10px;", msg),
-    div(style = "max-width:320px;",
-      textInput("login_user", "Username"),
-      passwordInput("login_pw", "Password"),
-      actionButton("login_btn", "Sign in", class = "btn-primary"),
-      tags$p(tags$small("Use the username and password from your instructor."))
+    fluidRow(
+      column(4,
+        if (!is.null(msg)) div(style = "color:#b00020;font-weight:bold;margin-bottom:10px;", msg),
+        div(
+          textInput("login_user", "Username"),
+          passwordInput("login_pw", "Password"),
+          actionButton("login_btn", "Sign in", class = "btn-primary"),
+          tags$p(tags$small("Use the username and password from your instructor."))
+        )
+      ),
+      column(7, offset = 1,
+        wellPanel(
+          tags$h5("How this works"),
+          tags$ol(
+            tags$li(tags$strong("Wave 1 — Build your basket:"),
+              " Add the items you buy regularly (groceries, gas, coffee, etc.) and record today's price for each one. Be specific — include the brand, size, and store so you can find the same item again later."),
+            tags$li(tags$strong("Waves 2, 3, … — Track prices over time:"),
+              " Return to the same stores and enter the current price for each item in your basket. Select the correct wave from the dropdown before saving."),
+            tags$li(tags$strong("You can go back and fill in any wave at any time."),
+              " Missed Wave 1? No problem — select Wave 1 from the dropdown and add your baseline prices later."),
+            tags$li(tags$strong("Your basket tab"),
+              " shows all your items and a personal price index comparing each wave to your Wave 1 baseline."),
+            tags$li(tags$strong("The Class View tab"),
+              " shows a combined index built from everyone's baskets.")
+          ),
+          tags$p(style = "color:#666;font-size:0.85em;margin-bottom:0;",
+            tags$strong("Tip:"), " The more specific your item descriptions, the more accurate your index will be.",
+            " '12oz Folgers Classic Roast, Stop & Shop' is better than just 'coffee'.")
+        )
+      )
     )
   )
 }
