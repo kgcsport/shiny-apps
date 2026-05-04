@@ -2196,6 +2196,8 @@ server <- function(input, output, session) {
                                  value = 1, min = -100, max = 100, step = 0.5)),
           column(4, br(), actionButton("do_bulk_grant", "Apply to selected", class = "btn-success"))
         ),
+        textInput("bulk_grant_reason", "Reason (shown in each student's ledger)",
+                  placeholder = "e.g. Extra credit, class participation, makeup"),
         tags$small("Each selected student receives this adjustment. Recorded in ledger with purpose 'grant'.")
       ),
 
@@ -2697,7 +2699,9 @@ server <- function(input, output, session) {
     if (!is.finite(amt) || amt == 0) {
       showNotification("Amount must be nonzero.", type = "error"); return()
     }
-    meta <- if (amt > 0) "admin_bulk_grant" else "admin_bulk_deduct"
+    reason <- trimws(input$bulk_grant_reason %||% "")
+    base_meta <- if (amt > 0) "admin_bulk_grant" else "admin_bulk_deduct"
+    meta <- if (nzchar(reason)) paste0(base_meta, ": ", reason) else base_meta
     cap <- as.numeric(get_settings()$max_fp_held[1] %||% 8)
     granted_count <- 0L
     capped_count  <- 0L

@@ -273,14 +273,11 @@ server <- function(input, output, session) {
   # ── Standing prices: only updates when a round is RECORDED (or settings change)
   # Does NOT read qty inputs, so typing quantities never moves the price cards.
   standing_prices <- reactive({
-    b     <- bases()
-    slope <- as.numeric(input$slope %||% 0.25)
-    h     <- rv$history
-    list(
-      sq   = calc_price(b$sq,   if (nrow(h)) sum(h$sq_n)   else 0L, slope),
-      tri  = calc_price(b$tri,  if (nrow(h)) sum(h$tri_n)  else 0L, slope),
-      rect = calc_price(b$rect, if (nrow(h)) sum(h$rect_n) else 0L, slope)
-    )
+    b <- bases()
+    h <- rv$history
+    if (!nrow(h)) return(list(sq = b$sq, tri = b$tri, rect = b$rect))
+    lr <- h[h$round == max(h$round), ][1, ]
+    list(sq = lr$sq_p, tri = lr$tri_p, rect = lr$rect_p)
   })
 
   # ── Team name labels in the grid ────────────────────────────────────────
@@ -355,24 +352,36 @@ server <- function(input, output, session) {
 
   # ── Record round ──────────────────────────────────────────────────────────
   observeEvent(input$btn_record, {
-    n      <- max(2L, min(MAX_TEAMS, as.integer(isolate(input$n_teams) %||% 4L)))
-    pr     <- isolate(standing_prices())   # prices locked in at moment of recording
-    teams  <- isolate(team_names())
+    n     <- max(2L, min(MAX_TEAMS, as.integer(isolate(input$n_teams) %||% 4L)))
+    b     <- isolate(bases())
+    slope <- as.numeric(isolate(input$slope) %||% 0.25)
+    teams <- isolate(team_names())
+
+    qtys <- lapply(seq_len(n), function(i) {
+      list(
+        sq   = max(0L, as.integer(isolate(input[[qty_id(i, "square")]])    %||% 0L)),
+        tri  = max(0L, as.integer(isolate(input[[qty_id(i, "triangle")]])  %||% 0L)),
+        rect = max(0L, as.integer(isolate(input[[qty_id(i, "rectangle")]]) %||% 0L))
+      )
+    })
+
+    pr <- list(
+      sq   = calc_price(b$sq,   sum(sapply(qtys, `[[`, "sq")),   slope),
+      tri  = calc_price(b$tri,  sum(sapply(qtys, `[[`, "tri")),  slope),
+      rect = calc_price(b$rect, sum(sapply(qtys, `[[`, "rect")), slope)
+    )
 
     rows <- lapply(seq_len(n), function(i) {
-      # Read qty inputs with isolate to avoid reactive dependency side-effects
-      sq   <- max(0L, as.integer(isolate(input[[qty_id(i, "square")]])    %||% 0L))
-      tri  <- max(0L, as.integer(isolate(input[[qty_id(i, "triangle")]])  %||% 0L))
-      rect <- max(0L, as.integer(isolate(input[[qty_id(i, "rectangle")]]) %||% 0L))
-      earn <- sq * pr$sq + tri * pr$tri + rect * pr$rect
+      q    <- qtys[[i]]
+      earn <- q$sq * pr$sq + q$tri * pr$tri + q$rect * pr$rect
 
       # unname() prevents named-vector corruption when rbinding data.frames
       data.frame(
         round  = unname(rv$round),
         team   = unname(teams[i]),
-        sq_n   = unname(sq),
-        tri_n  = unname(tri),
-        rect_n = unname(rect),
+        sq_n   = unname(q$sq),
+        tri_n  = unname(q$tri),
+        rect_n = unname(q$rect),
         sq_p   = unname(pr$sq),
         tri_p  = unname(pr$tri),
         rect_p = unname(pr$rect),
