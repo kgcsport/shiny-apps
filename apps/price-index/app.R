@@ -617,7 +617,7 @@ server <- function(input, output, session) {
         # Wave 2+ — student may submit prices for any wave up to the current one
         sel_wave <- {
           sw <- suppressWarnings(as.integer(input$entry_wave))
-          if (is.na(sw) || sw < 1 || sw > w) w else sw
+          if (length(sw) == 1L && !is.na(sw) && sw >= 1L && sw <= w) sw else w
         }
 
         already <- db_query(
@@ -749,7 +749,11 @@ server <- function(input, output, session) {
         if (is.na(pr) || pr < 0) {
           showNotification("Enter a valid price.", type = "error"); return()
         }
-        wv  <- as.integer(isolate(input$entry_wave) %||% isolate(current_wave()))
+        wv  <- {
+          sw <- suppressWarnings(as.integer(isolate(input$entry_wave)))
+          cw <- isolate(current_wave())
+          if (length(sw) == 1L && !is.na(sw) && sw >= 1L) sw else cw
+        }
         src <- trimws(input[[paste0("upd_src_", iid)]] %||% "")
         db_exec(
           "INSERT INTO price_records(item_id, user_id, price, source, wave)
