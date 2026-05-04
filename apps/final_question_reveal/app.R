@@ -115,13 +115,15 @@ backup_to_sheets <- function() {
   users_df   <- db_query("SELECT * FROM users ORDER BY is_admin DESC, display_name;")
   settings_df<- db_query("SELECT * FROM settings WHERE id=1;")
   state_df   <- db_query("SELECT * FROM game_state WHERE id=1;")
-  pledges_df <- db_query("SELECT * FROM pledges ORDER BY round, user_id;")
+  exam_state_df <- tryCatch(db_query("SELECT * FROM exam_state ORDER BY exam_id;"), error = function(e) tibble())
+  pledges_df <- db_query("SELECT * FROM pledges ORDER BY exam_id, round, user_id;")
   ledger_df  <- db_query("SELECT * FROM ledger ORDER BY datetime(created_at) DESC;")
   export_df  <- tryCatch(admin_student_summary(), error = function(e) tibble())
 
   overwrite_ws(ss, "users", users_df)
   overwrite_ws(ss, "settings", settings_df)
   overwrite_ws(ss, "game_state", state_df)
+  overwrite_ws(ss, "exam_state", exam_state_df)
   overwrite_ws(ss, "pledges", pledges_df)
   overwrite_ws(ss, "ledger", ledger_df)
   overwrite_ws(ss, "admin_export", export_df)
@@ -598,17 +600,66 @@ init_db <- function() {
     );
   ")
 
-  # Pledges (allocations for questions; charged only on close)
+  # Per-exam reveal state. This prevents unlocked Q1/Q2/etc. from one exam
+  # revealing Q1/Q2/etc. in another exam when the active question bank changes.
   db_exec("
-    CREATE TABLE IF NOT EXISTS pledges (
-      user_id TEXT,
-      round INTEGER,
-      pledge REAL,
-      submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (user_id, round)
+    CREATE TABLE IF NOT EXISTS exam_state (
+      exam_id TEXT PRIMARY KEY,
+      round INTEGER DEFAULT 1,
+      round_open INTEGER DEFAULT 0,
+      carryover REAL DEFAULT 0,
+      unlocked_questions INTEGER DEFAULT 0,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
   ")
-  db_exec("CREATE INDEX IF NOT EXISTS ix_pledges_round ON pledges(round);")
+
+  # Seed the active exam's per-exam state from the legacy global game_state row.
+  db_exec("
+    INSERT INTO exam_state(exam_id, round, round_open, carryover, unlocked_questions)
+    SELECT COALESCE(active_exam, 'exam1'),
+           COALESCE(round, 1), COALESCE(round_open, 0),
+           COALESCE(carryover, 0), COALESCE(unlocked_questions, 0)
+    FROM game_state WHERE id=1
+    ON CONFLICT(exam_id) DO NOTHING;
+  ")
+
+  # Pledges (allocations for questions; charged only on close), scoped by exam.
+  # Migrate older DBs where pledges were keyed only by user_id + round.
+  pledge_cols <- tryCatch(db_query("PRAGMA table_info(pledges);"), error = function(e) data.frame())
+  if (nrow(pledge_cols) && !("exam_id" %in% pledge_cols$name)) {
+    active_exam <- tryCatch(
+      db_query("SELECT COALESCE(active_exam, 'exam1') AS x FROM game_state WHERE id=1;")$x[1],
+      error = function(e) "exam1"
+    )
+    db_exec("ALTER TABLE pledges RENAME TO pledges_old;")
+    db_exec("
+      CREATE TABLE pledges (
+        user_id TEXT,
+        exam_id TEXT DEFAULT 'exam1',
+        round INTEGER,
+        pledge REAL,
+        submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, exam_id, round)
+      );
+    ")
+    db_exec("
+      INSERT OR REPLACE INTO pledges(user_id, exam_id, round, pledge, submitted_at)
+      SELECT user_id, ?, round, pledge, submitted_at FROM pledges_old;
+    ", list(as.character(active_exam %||% "exam1")))
+    db_exec("DROP TABLE pledges_old;")
+  } else {
+    db_exec("
+      CREATE TABLE IF NOT EXISTS pledges (
+        user_id TEXT,
+        exam_id TEXT DEFAULT 'exam1',
+        round INTEGER,
+        pledge REAL,
+        submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, exam_id, round)
+      );
+    ")
+  }
+  db_exec("CREATE INDEX IF NOT EXISTS ix_pledges_exam_round ON pledges(exam_id, round);")
 
   # Ledger (all spending/grants; grants stored as negative amounts)
   db_exec("
@@ -818,19 +869,64 @@ set_settings <- function(...) {
   invisible(TRUE)
 }
 
-get_state <- function() db_query("SELECT * FROM game_state WHERE id=1;")
+ensure_exam_state <- function(exam_id, carryover_seed = 0) {
+  exam_id <- as.character(exam_id %||% "exam1")
+  if (!nzchar(exam_id)) exam_id <- "exam1"
+  db_exec("
+    INSERT INTO exam_state(exam_id, round, round_open, carryover, unlocked_questions)
+    VALUES(?, 1, 0, ?, 0)
+    ON CONFLICT(exam_id) DO NOTHING;
+  ", list(exam_id, as.numeric(carryover_seed %||% 0)))
+  invisible(exam_id)
+}
+
+get_state <- function() {
+  gs <- db_query("SELECT * FROM game_state WHERE id=1;")
+  if (!nrow(gs)) stop("Missing game_state row.")
+  exam_id <- as.character(gs$active_exam[1] %||% "exam1")
+  ensure_exam_state(exam_id)
+  es <- db_query("SELECT * FROM exam_state WHERE exam_id=?;", list(exam_id))
+  # Return a game_state-shaped row, but with round/reveal fields from the active exam.
+  for (nm in c("round", "round_open", "carryover", "unlocked_questions", "updated_at")) {
+    if (nm %in% names(es)) gs[[nm]] <- es[[nm]]
+  }
+  gs$active_exam <- exam_id
+  gs
+}
 
 set_state <- function(...) {
   dots <- list(...)
+  gs <- db_query("SELECT COALESCE(active_exam, 'exam1') AS active_exam FROM game_state WHERE id=1;")
+  exam_id <- if (nrow(gs)) as.character(gs$active_exam[1] %||% "exam1") else "exam1"
+  ensure_exam_state(exam_id)
+
   if (!length(dots)) {
     db_exec("UPDATE game_state SET updated_at = CURRENT_TIMESTAMP WHERE id=1;")
+    db_exec("UPDATE exam_state SET updated_at = CURRENT_TIMESTAMP WHERE exam_id=?;", list(exam_id))
     return(invisible(TRUE))
   }
-  nm <- names(dots)
-  sql <- paste0("UPDATE game_state SET ",
-                paste0(nm, " = ?", collapse = ", "),
-                ", updated_at = CURRENT_TIMESTAMP WHERE id=1;")
-  db_exec(sql, unname(dots))
+
+  exam_cols <- c("round", "round_open", "carryover", "unlocked_questions")
+  exam_dots <- dots[names(dots) %in% exam_cols]
+  game_dots <- dots[!(names(dots) %in% exam_cols)]
+
+  if (length(exam_dots)) {
+    nm <- names(exam_dots)
+    sql <- paste0("UPDATE exam_state SET ",
+                  paste0(nm, " = ?", collapse = ", "),
+                  ", updated_at = CURRENT_TIMESTAMP WHERE exam_id=?;")
+    db_exec(sql, c(unname(exam_dots), list(exam_id)))
+  }
+
+  if (length(game_dots)) {
+    nm <- names(game_dots)
+    sql <- paste0("UPDATE game_state SET ",
+                  paste0(nm, " = ?", collapse = ", "),
+                  ", updated_at = CURRENT_TIMESTAMP WHERE id=1;")
+    db_exec(sql, unname(game_dots))
+  } else {
+    db_exec("UPDATE game_state SET updated_at = CURRENT_TIMESTAMP WHERE id=1;")
+  }
   invisible(TRUE)
 }
 
@@ -932,21 +1028,23 @@ remaining_fp <- function(uid) {
   pmax(0, initial - spent_total(uid))
 }
 
-round_pledge <- function(uid, round) {
+round_pledge <- function(uid, exam_id, round) {
   if (is.null(uid) || !nzchar(uid)) return(0)
-  x <- db_query("SELECT COALESCE(pledge,0) AS p FROM pledges WHERE user_id=? AND round=?;",
-                list(uid, as.integer(round)))$p[1]
+  exam_id <- as.character(exam_id %||% "exam1")
+  x <- db_query("SELECT COALESCE(pledge,0) AS p FROM pledges WHERE user_id=? AND exam_id=? AND round=?;",
+                list(uid, exam_id, as.integer(round)))$p[1]
   x <- suppressWarnings(as.numeric(x))
   if (!is.finite(x)) 0 else x
 }
 
-round_totals <- function(round) {
-  db_query("SELECT COALESCE(SUM(pledge),0) AS pledged, COUNT(*) AS n FROM pledges WHERE round=?;",
-           list(as.integer(round)))
+round_totals <- function(exam_id, round) {
+  exam_id <- as.character(exam_id %||% "exam1")
+  db_query("SELECT COALESCE(SUM(pledge),0) AS pledged, COUNT(*) AS n FROM pledges WHERE exam_id=? AND round=?;",
+           list(exam_id, as.integer(round)))
 }
 
-compute_unlocks <- function(round, carryover, cost) {
-  pledged <- as.numeric(round_totals(round)$pledged[1] %||% 0)
+compute_unlocks <- function(exam_id, round, carryover, cost) {
+  pledged <- as.numeric(round_totals(exam_id, round)$pledged[1] %||% 0)
   eff <- pledged + as.numeric(carryover %||% 0)
   units <- floor(eff / cost)
   carry <- eff - units * cost
@@ -969,7 +1067,7 @@ student_allocation_summary <- function(uid) {
   if (!is.finite(init)) init <- 5
 
   pr <- pledge_bucket_round(st, s)
-  pending_q <- if (isTRUE(as.integer(st$round_open[1]) == 1)) round_pledge(uid, pr) else 0
+  pending_q <- if (isTRUE(as.integer(st$round_open[1]) == 1)) round_pledge(uid, st$active_exam[1], pr) else 0
 
   agg <- db_query("
     SELECT purpose, COALESCE(SUM(amount),0) AS amt
@@ -1463,7 +1561,7 @@ server <- function(input, output, session) {
     idx <- current_question_index(st, s)
     pr  <- pledge_bucket_round(st, s)
     cost <- question_cost_for_round(idx, s$question_cost_schedule[1])
-    ws <- compute_unlocks(pr, st$carryover[1], cost)
+    ws <- compute_unlocks(st$active_exam[1], pr, st$carryover[1], cost)
     active_exam_id <- as.character(st$active_exam[1] %||% "exam1")
     questions <- get_exam_questions(active_exam_id)
 
@@ -1807,12 +1905,12 @@ server <- function(input, output, session) {
       pr <- pledge_bucket_round(st, s)
 
       db_exec("
-        INSERT INTO pledges(user_id, round, pledge, submitted_at)
-        VALUES(?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_id, round) DO UPDATE SET
+        INSERT INTO pledges(user_id, exam_id, round, pledge, submitted_at)
+        VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id, exam_id, round) DO UPDATE SET
           pledge = excluded.pledge,
           submitted_at = CURRENT_TIMESTAMP;
-      ", list(user_id(), as.integer(pr), as.numeric(amt)))
+      ", list(user_id(), as.character(st$active_exam[1] %||% "exam1"), as.integer(pr), as.numeric(amt)))
 
       set_state()
       showNotification("Your question pledge/allocation was updated.", type="message")
@@ -1879,7 +1977,7 @@ server <- function(input, output, session) {
       showNotification("Pledging is not currently open.", type = "error"); return()
     }
     pr <- pledge_bucket_round(st, s)
-    db_exec("DELETE FROM pledges WHERE user_id=? AND round=?;", list(user_id(), as.integer(pr)))
+    db_exec("DELETE FROM pledges WHERE user_id=? AND exam_id=? AND round=?;", list(user_id(), as.character(st$active_exam[1] %||% "exam1"), as.integer(pr)))
     set_state()
     showNotification("Your pledge has been removed.", type = "message")
   })
@@ -1907,7 +2005,7 @@ server <- function(input, output, session) {
       created_at = NA_character_,
       purpose = pending_label,
       round = pr,
-      amount = -round_pledge(user_id(), pr),  # pending pledge is a future debit
+      amount = -round_pledge(user_id(), st$active_exam[1], pr),  # pending pledge is a future debit
       meta = if (as.integer(st$round_open[1]) == 1) "pending (not charged yet)" else "round closed"
     )
 
@@ -1934,7 +2032,7 @@ server <- function(input, output, session) {
     idx <- current_question_index(st, s)
     pr  <- pledge_bucket_round(st, s)
     cost <- question_cost_for_round(idx, s$question_cost_schedule[1])
-    ws <- compute_unlocks(pr, st$carryover[1], cost)
+    ws <- compute_unlocks(st$active_exam[1], pr, st$carryover[1], cost)
     active_exam_id <- as.character(st$active_exam[1] %||% "exam1")
     questions <- get_exam_questions(active_exam_id)
 
@@ -2067,7 +2165,7 @@ server <- function(input, output, session) {
           tagList(
             p(sprintf("Active exam: %s", active_exam_id)),
             div(style = "background:#fff3cd; border:1px solid #ffc107; padding:8px; margin-bottom:8px; border-radius:4px; font-size:0.9em;",
-              tags$strong("Note:"), " Switching exam only changes the active question bank. Round, unlocked questions, carryover, and pledge status are not affected."
+              tags$strong("Note:"), " Switching exam changes the active question bank and uses that exam's own unlocked-question count. Any carryover/spillover from the previous active exam is moved to the newly active exam."
             ),
             fluidRow(
               column(4,
@@ -2298,7 +2396,7 @@ server <- function(input, output, session) {
 
     # If enabling roundless, open round and normalize state + clear stray pledge rounds
     if (!is_roundless(old) && isTRUE(input$cfg_roundless)) {
-      try(db_exec("DELETE FROM pledges WHERE round <> 1;"), silent = TRUE)
+      try(db_exec("DELETE FROM pledges WHERE exam_id = (SELECT COALESCE(active_exam, 'exam1') FROM game_state WHERE id=1) AND round <> 1;"), silent = TRUE)
       try(set_state(round = 1, round_open = 1), silent = TRUE)
     }
 
@@ -2427,7 +2525,7 @@ server <- function(input, output, session) {
     idx <- current_question_index(st, s)
     pr  <- pledge_bucket_round(st, s)
     cost <- question_cost_for_round(idx, s$question_cost_schedule[1])
-    ws <- compute_unlocks(pr, st$carryover[1], cost)
+    ws <- compute_unlocks(st$active_exam[1], pr, st$carryover[1], cost)
     funded <- ws$units > 0
 
     if (funded || identical(as.character(s$shortfall_policy[1]), "bank_all")) {
@@ -2435,8 +2533,8 @@ server <- function(input, output, session) {
         INSERT INTO ledger(user_id, round, purpose, amount, meta)
         SELECT user_id, round, 'question', COALESCE(pledge,0), 'settlement'
         FROM pledges
-        WHERE round=?;
-      ", list(as.integer(pr)))
+        WHERE exam_id=? AND round=?;
+      ", list(as.character(st$active_exam[1] %||% "exam1"), as.integer(pr)))
       new_carry <- ws$carry
     } else {
       new_carry <- as.numeric(st$carryover[1])
@@ -2452,7 +2550,7 @@ server <- function(input, output, session) {
 
     # In roundless mode, clear the pledge bucket after settlement so it doesn't auto-recharge next close
     if (is_roundless(s)) {
-      try(db_exec("DELETE FROM pledges WHERE round=?;", list(as.integer(pr))), silent = TRUE)
+      try(db_exec("DELETE FROM pledges WHERE exam_id=? AND round=?;", list(as.character(st$active_exam[1] %||% "exam1"), as.integer(pr))), silent = TRUE)
     }
 
     showNotification(
@@ -2468,12 +2566,12 @@ server <- function(input, output, session) {
     st <- state_poll(); s <- settings_poll()
     pr <- pledge_bucket_round(st, s)
     df <- db_query("
-      SELECT p.user_id, u.display_name, p.round, p.pledge, p.submitted_at
+      SELECT p.exam_id, p.user_id, u.display_name, p.round, p.pledge, p.submitted_at
       FROM pledges p
       LEFT JOIN users u ON u.user_id = p.user_id
-      WHERE p.round=?
+      WHERE p.exam_id=? AND p.round=?
       ORDER BY p.pledge DESC, p.submitted_at DESC;
-    ", list(as.integer(pr)))
+    ", list(as.character(st$active_exam[1] %||% "exam1"), as.integer(pr)))
     DT::datatable(df, rownames = FALSE, options = list(pageLength = 12))
   })
 
@@ -2483,7 +2581,7 @@ server <- function(input, output, session) {
     idx <- current_question_index(st, s)
     pr  <- pledge_bucket_round(st, s)
     cost <- question_cost_for_round(idx, s$question_cost_schedule[1])
-    ws <- compute_unlocks(pr, st$carryover[1], cost)
+    ws <- compute_unlocks(st$active_exam[1], pr, st$carryover[1], cost)
     data.frame(
       Metric = c("Pledging open", "Question index", "Cost now", "Carryover", "Pledged", "Effective", "Unlocks if closed"),
       Value  = c(as.integer(st$round_open[1]) == 1, idx, sprintf("%.2f", cost),
@@ -2548,7 +2646,7 @@ server <- function(input, output, session) {
   output$dl_pledges <- downloadHandler(
     filename = function() "pledges.csv",
     content = function(file) {
-      df <- db_query("SELECT * FROM pledges ORDER BY round, user_id;")
+      df <- db_query("SELECT * FROM pledges ORDER BY exam_id, round, user_id;")
       readr::write_csv(df, file)
     }
   )
@@ -2564,14 +2662,31 @@ server <- function(input, output, session) {
 
   observeEvent(input$adm_switch_exam, {
     req(is_admin())
-    exam_id <- trimws(as.character(input$adm_active_exam %||% ""))
-    if (!nzchar(exam_id)) { showNotification("Select an exam first.", type = "error"); return() }
+    new_exam_id <- trimws(as.character(input$adm_active_exam %||% ""))
+    if (!nzchar(new_exam_id)) { showNotification("Select an exam first.", type = "error"); return() }
+
+    old_st <- get_state()
+    old_exam_id <- as.character(old_st$active_exam[1] %||% "exam1")
+    old_carry <- suppressWarnings(as.numeric(old_st$carryover[1] %||% 0))
+    if (!is.finite(old_carry)) old_carry <- 0
+
+    ensure_exam_state(new_exam_id)
+
+    # Carryover/spillover should follow the class to the next active exam, but
+    # unlocked questions should remain attached to the exam that bought them.
+    if (!identical(old_exam_id, new_exam_id) && old_carry != 0) {
+      db_exec("UPDATE exam_state SET carryover = COALESCE(carryover,0) + ?, updated_at=CURRENT_TIMESTAMP WHERE exam_id=?;",
+              list(old_carry, new_exam_id))
+      db_exec("UPDATE exam_state SET carryover = 0, updated_at=CURRENT_TIMESTAMP WHERE exam_id=?;",
+              list(old_exam_id))
+    }
+
     db_exec(
       "UPDATE game_state SET active_exam=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
-      list(exam_id)
+      list(new_exam_id)
     )
     showNotification(
-      sprintf("Switched to exam '%s'. Round, carryover, and unlocked questions unchanged.", exam_id),
+      sprintf("Switched to exam '%s'. Revealed questions are exam-specific; %.2f carryover moved forward.", new_exam_id, old_carry),
       type = "message"
     )
   })
