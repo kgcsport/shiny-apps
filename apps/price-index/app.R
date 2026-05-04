@@ -614,48 +614,72 @@ server <- function(input, output, session) {
           )
         )
       } else {
-        # Wave 2+ — price update form for all items
-        already <- db_query("SELECT item_id FROM price_records WHERE user_id=? AND wave=?;",
-                            list(rv$user_id, as.integer(w)))$item_id
+        # Wave 2+ — student may submit prices for any wave up to the current one
+        sel_wave <- {
+          sw <- suppressWarnings(as.integer(input$entry_wave))
+          if (is.na(sw) || sw < 1 || sw > w) w else sw
+        }
+
+        already <- db_query(
+          "SELECT item_id FROM price_records WHERE user_id=? AND wave=?;",
+          list(rv$user_id, sel_wave))$item_id
         pending <- items[!items$item_id %in% already, , drop = FALSE]
 
-        if (!nrow(pending)) {
-          div(class = "alert alert-success",
-              icon("circle-check"),
-              tags$strong(paste0(" All prices submitted for Wave ", w, "!")))
-        } else {
+        tagList(
           wellPanel(
-            tags$h5(paste0("Update Prices — Wave ", w)),
-            tags$p(style = "color:#555;font-size:0.9em;",
-                   nrow(pending), " item(s) need a price. Go to the same store as Wave 1."),
-            tags$table(class = "table table-sm",
-              tags$thead(tags$tr(
-                tags$th("Item"), tags$th("Store"), tags$th("Category"),
-                tags$th("New Price ($)"), tags$th("Source"), tags$th("")
-              )),
-              tags$tbody(
-                lapply(seq_len(nrow(pending)), function(i) {
-                  r <- pending[i, ]
-                  tags$tr(
-                    tags$td(tags$strong(r$item_name)),
-                    tags$td(r$store),
-                    tags$td(tags$span(class="badge bg-secondary", r$category)),
-                    tags$td(numericInput(paste0("upd_", r$item_id), NULL,
-                                        value = NA, min = 0, step = 0.01, width = "110px")),
-                    tags$td(selectizeInput(paste0("upd_src_", r$item_id), NULL,
-                                          choices  = sources_r(),
-                                          selected = NULL,
-                                          options  = list(create = TRUE, createOnBlur = TRUE,
-                                                          placeholder = "Source"),
-                                          width = "180px")),
-                    tags$td(actionButton(paste0("upd_btn_", r$item_id), "Save",
-                                        class = "btn-sm btn-primary"))
-                  )
-                })
+            fluidRow(
+              column(4,
+                selectInput("entry_wave", "Submitting prices for wave:",
+                  choices  = setNames(seq_len(w), paste("Wave", seq_len(w))),
+                  selected = sel_wave,
+                  width    = "180px"
+                )
+              ),
+              column(8,
+                if (!nrow(pending))
+                  div(class = "alert alert-success", style = "margin-top:6px;",
+                      icon("check"), tags$strong(paste0(" All prices submitted for Wave ", sel_wave, "!")))
+                else
+                  div(class = "alert alert-info", style = "margin-top:6px;",
+                      nrow(pending), " item(s) still need a price for Wave ", sel_wave, ".")
               )
             )
-          )
-        }
+          ),
+
+          if (nrow(pending)) {
+            wellPanel(
+              tags$h5(paste0("Update Prices — Wave ", sel_wave)),
+              tags$p(style = "color:#555;font-size:0.9em;",
+                     nrow(pending), " item(s) need a price. Go to the same store as Wave 1."),
+              tags$table(class = "table table-sm",
+                tags$thead(tags$tr(
+                  tags$th("Item"), tags$th("Store"), tags$th("Category"),
+                  tags$th("New Price ($)"), tags$th("Source"), tags$th("")
+                )),
+                tags$tbody(
+                  lapply(seq_len(nrow(pending)), function(i) {
+                    r <- pending[i, ]
+                    tags$tr(
+                      tags$td(tags$strong(r$item_name)),
+                      tags$td(r$store),
+                      tags$td(tags$span(class="badge bg-secondary", r$category)),
+                      tags$td(numericInput(paste0("upd_", r$item_id), NULL,
+                                          value = NA, min = 0, step = 0.01, width = "110px")),
+                      tags$td(selectizeInput(paste0("upd_src_", r$item_id), NULL,
+                                            choices  = sources_r(),
+                                            selected = NULL,
+                                            options  = list(create = TRUE, createOnBlur = TRUE,
+                                                            placeholder = "Source"),
+                                            width = "180px")),
+                      tags$td(actionButton(paste0("upd_btn_", r$item_id), "Save",
+                                          class = "btn-sm btn-primary"))
+                    )
+                  })
+                )
+              )
+            )
+          }
+        )
       },
 
       tags$hr(),
@@ -725,14 +749,14 @@ server <- function(input, output, session) {
         if (is.na(pr) || pr < 0) {
           showNotification("Enter a valid price.", type = "error"); return()
         }
-        wv <- isolate(current_wave())
+        wv  <- as.integer(isolate(input$entry_wave) %||% isolate(current_wave()))
         src <- trimws(input[[paste0("upd_src_", iid)]] %||% "")
         db_exec(
           "INSERT INTO price_records(item_id, user_id, price, source, wave)
            VALUES(?,?,?,?,?)
            ON CONFLICT(item_id, wave) DO UPDATE
              SET price=excluded.price, source=excluded.source, recorded_at=CURRENT_TIMESTAMP;",
-          list(iid, uid, pr, if (nzchar(src)) src else NA_character_, as.integer(wv)))
+          list(iid, uid, pr, if (nzchar(src)) src else NA_character_, wv))
         nm <- items$item_name[items$item_id == iid]
         showNotification(paste0('"', nm, '" saved for Wave ', wv, '.'), type = "message")
         bump()
