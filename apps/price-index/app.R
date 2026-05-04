@@ -558,128 +558,130 @@ server <- function(input, output, session) {
   # ── Student panel ────────────────────────────────────────────────────────────
   output$student_panel <- renderUI({
     req(rv$authed)
-    w     <- current_wave()
-    items <- my_items()
+    n_waves <- current_wave()   # admin-set total number of waves in the study
+    items   <- my_items()
 
-    wave_badge <- if (w == 1)
-      div(class = "alert alert-info",
-          tags$strong("Wave 1 — Baseline:"),
-          " Add the items you buy regularly and record today's prices.")
-    else
-      div(class = "alert alert-warning",
-          tags$strong(paste0("Wave ", w, " — Price Update:")),
-          " Return to the same store and record today's price for each item.")
+    sel_wave <- {
+      sw <- suppressWarnings(as.integer(input$entry_wave))
+      if (length(sw) == 1L && !is.na(sw) && sw >= 1L && sw <= n_waves) sw else 1L
+    }
+
+    already <- db_query(
+      "SELECT item_id FROM price_records WHERE user_id=? AND wave=?;",
+      list(rv$user_id, sel_wave))$item_id
+    pending <- items[!items$item_id %in% already, , drop = FALSE]
+
+    price_row <- function(r) {
+      tags$tr(
+        tags$td(tags$strong(r$item_name)),
+        tags$td(r$store),
+        tags$td(tags$span(class = "badge bg-secondary", r$category)),
+        tags$td(numericInput(paste0("upd_", r$item_id), NULL,
+                             value = NA, min = 0, step = 0.01, width = "110px")),
+        tags$td(selectizeInput(paste0("upd_src_", r$item_id), NULL,
+                               choices  = sources_r(), selected = NULL,
+                               options  = list(create = TRUE, createOnBlur = TRUE,
+                                               placeholder = "Source"),
+                               width = "180px")),
+        tags$td(actionButton(paste0("upd_btn_", r$item_id), "Save",
+                             class = "btn-sm btn-primary"))
+      )
+    }
 
     tagList(
       tags$h4(paste0("Welcome, ", rv$name)),
-      wave_badge,
-      tags$hr(),
 
-      # ── Entry form ──
-      if (w == 1) {
-        prior_names  <- sort(unique(items$item_name))
-        prior_stores <- sort(unique(items$store))
-        wellPanel(
-          tags$h5("Add an Item"),
-          tags$p(style = "color:#555;font-size:0.9em;",
-            "Be specific: brand, size, store location.",
-            tags$em(" E.g. '32oz Gatorade Fruit Punch, CVS Main St.' not just 'Gatorade'.")),
-          fluidRow(
-            column(5,
-              textInput("ni_name", "Item (brand & size)",
-                        placeholder = "32oz Gatorade Fruit Punch"),
-              tags$datalist(id = "ni_name_list",
-                lapply(prior_names, function(n) tags$option(value = n))),
-              tags$script('document.getElementById("ni_name").setAttribute("list","ni_name_list")')
-            ),
-            column(4,
-              textInput("ni_store", "Store", placeholder = "CVS Main St."),
-              tags$datalist(id = "ni_store_list",
-                lapply(prior_stores, function(s) tags$option(value = s))),
-              tags$script('document.getElementById("ni_store").setAttribute("list","ni_store_list")')
-            ),
-            column(3, selectInput("ni_cat", "Category", choices = categories_r()))
+      wellPanel(
+        fluidRow(
+          column(4,
+            selectInput("entry_wave", "Submitting prices for wave:",
+              choices  = setNames(seq_len(n_waves), paste("Wave", seq_len(n_waves))),
+              selected = sel_wave, width = "180px")
           ),
-          fluidRow(
-            column(3, numericInput("ni_freq",  "Times/month", value = 4, min = 0.5, step = 0.5)),
-            column(3, numericInput("ni_price", "Price today ($)", value = NA, min = 0, step = 0.01)),
-            column(4, selectizeInput("ni_source", "Price source",
-                                     choices  = sources_r(),
-                                     selected = NULL,
-                                     options  = list(create = TRUE, createOnBlur = TRUE,
-                                                     placeholder = "Where did you check?"))),
-            column(2, tags$br(),
-                   actionButton("add_item_btn", "Add Item",
-                                class = "btn-success", style = "margin-top:4px;"))
+          column(8, style = "padding-top:6px;",
+            if (sel_wave == 1L)
+              div(class = "alert alert-info", style = "margin-bottom:0;",
+                  tags$strong("Wave 1 — Baseline:"), " ",
+                  if (!nrow(pending)) "All baseline prices recorded!"
+                  else paste0(nrow(pending), " item(s) still need a baseline price."))
+            else
+              div(class = "alert alert-warning", style = "margin-bottom:0;",
+                  tags$strong(paste0("Wave ", sel_wave, " — Price Update:")), " ",
+                  if (!nrow(pending)) paste0("All prices submitted for Wave ", sel_wave, "!")
+                  else paste0(nrow(pending), " item(s) still need a price."))
           )
         )
-      } else {
-        # Wave 2+ — student may submit prices for any wave up to the current one
-        sel_wave <- {
-          sw <- suppressWarnings(as.integer(input$entry_wave))
-          if (length(sw) == 1L && !is.na(sw) && sw >= 1L && sw <= w) sw else w
-        }
+      ),
 
-        already <- db_query(
-          "SELECT item_id FROM price_records WHERE user_id=? AND wave=?;",
-          list(rv$user_id, sel_wave))$item_id
-        pending <- items[!items$item_id %in% already, , drop = FALSE]
-
+      # ── Wave 1: add new items + price any unpriced ones ──
+      if (sel_wave == 1L) {
+        prior_names  <- sort(unique(items$item_name))
+        prior_stores <- sort(unique(items$store))
         tagList(
           wellPanel(
+            tags$h5("Add an Item"),
+            tags$p(style = "color:#555;font-size:0.9em;",
+              "Be specific: brand, size, store location.",
+              tags$em(" E.g. '32oz Gatorade Fruit Punch, CVS Main St.' not just 'Gatorade'.")),
             fluidRow(
-              column(4,
-                selectInput("entry_wave", "Submitting prices for wave:",
-                  choices  = setNames(seq_len(w), paste("Wave", seq_len(w))),
-                  selected = sel_wave,
-                  width    = "180px"
-                )
+              column(5,
+                textInput("ni_name", "Item (brand & size)",
+                          placeholder = "32oz Gatorade Fruit Punch"),
+                tags$datalist(id = "ni_name_list",
+                  lapply(prior_names, function(n) tags$option(value = n))),
+                tags$script('document.getElementById("ni_name").setAttribute("list","ni_name_list")')
               ),
-              column(8,
-                if (!nrow(pending))
-                  div(class = "alert alert-success", style = "margin-top:6px;",
-                      icon("check"), tags$strong(paste0(" All prices submitted for Wave ", sel_wave, "!")))
-                else
-                  div(class = "alert alert-info", style = "margin-top:6px;",
-                      nrow(pending), " item(s) still need a price for Wave ", sel_wave, ".")
-              )
+              column(4,
+                textInput("ni_store", "Store", placeholder = "CVS Main St."),
+                tags$datalist(id = "ni_store_list",
+                  lapply(prior_stores, function(s) tags$option(value = s))),
+                tags$script('document.getElementById("ni_store").setAttribute("list","ni_store_list")')
+              ),
+              column(3, selectInput("ni_cat", "Category", choices = categories_r()))
+            ),
+            fluidRow(
+              column(3, numericInput("ni_freq",  "Times/month", value = 4, min = 0.5, step = 0.5)),
+              column(3, numericInput("ni_price", "Price today ($)", value = NA, min = 0, step = 0.01)),
+              column(4, selectizeInput("ni_source", "Price source",
+                                       choices  = sources_r(), selected = NULL,
+                                       options  = list(create = TRUE, createOnBlur = TRUE,
+                                                       placeholder = "Where did you check?"))),
+              column(2, tags$br(),
+                     actionButton("add_item_btn", "Add Item",
+                                  class = "btn-success", style = "margin-top:4px;"))
             )
           ),
-
           if (nrow(pending)) {
             wellPanel(
-              tags$h5(paste0("Update Prices — Wave ", sel_wave)),
+              tags$h5("Record Baseline Prices"),
               tags$p(style = "color:#555;font-size:0.9em;",
-                     nrow(pending), " item(s) need a price. Go to the same store as Wave 1."),
+                     nrow(pending), " item(s) were added without a Wave 1 price yet."),
               tags$table(class = "table table-sm",
                 tags$thead(tags$tr(
                   tags$th("Item"), tags$th("Store"), tags$th("Category"),
-                  tags$th("New Price ($)"), tags$th("Source"), tags$th("")
+                  tags$th("Price ($)"), tags$th("Source"), tags$th("")
                 )),
-                tags$tbody(
-                  lapply(seq_len(nrow(pending)), function(i) {
-                    r <- pending[i, ]
-                    tags$tr(
-                      tags$td(tags$strong(r$item_name)),
-                      tags$td(r$store),
-                      tags$td(tags$span(class="badge bg-secondary", r$category)),
-                      tags$td(numericInput(paste0("upd_", r$item_id), NULL,
-                                          value = NA, min = 0, step = 0.01, width = "110px")),
-                      tags$td(selectizeInput(paste0("upd_src_", r$item_id), NULL,
-                                            choices  = sources_r(),
-                                            selected = NULL,
-                                            options  = list(create = TRUE, createOnBlur = TRUE,
-                                                            placeholder = "Source"),
-                                            width = "180px")),
-                      tags$td(actionButton(paste0("upd_btn_", r$item_id), "Save",
-                                          class = "btn-sm btn-primary"))
-                    )
-                  })
-                )
+                tags$tbody(lapply(seq_len(nrow(pending)), function(i) price_row(pending[i, ])))
               )
             )
           }
         )
+      } else {
+        # ── Waves 2+: update prices for existing basket items ──
+        if (nrow(pending)) {
+          wellPanel(
+            tags$h5(paste0("Update Prices — Wave ", sel_wave)),
+            tags$p(style = "color:#555;font-size:0.9em;",
+                   nrow(pending), " item(s) need a price. Go to the same store as Wave 1."),
+            tags$table(class = "table table-sm",
+              tags$thead(tags$tr(
+                tags$th("Item"), tags$th("Store"), tags$th("Category"),
+                tags$th("New Price ($)"), tags$th("Source"), tags$th("")
+              )),
+              tags$tbody(lapply(seq_len(nrow(pending)), function(i) price_row(pending[i, ])))
+            )
+          )
+        }
       },
 
       tags$hr(),
@@ -735,14 +737,13 @@ server <- function(input, output, session) {
     }, error = function(e) showNotification(paste("Error:", e$message), type = "error"))
   })
 
-  # ── Wave 2+ price updates and item edit/delete — dynamic observers ───────────
+  # ── Price-update and item edit/delete — dynamic observers ───────────────────
   # Observers are cheap and idempotent; re-register on items change is fine here.
   observeEvent(my_items(), {
     items <- my_items()
-    w     <- isolate(current_wave())
     uid   <- isolate(rv$user_id)
     lapply(items$item_id, function(iid) {
-      # Wave 2+ price update
+      # Save price for whatever wave the student has selected
       btn_id <- paste0("upd_btn_", iid)
       observeEvent(input[[btn_id]], ignoreInit = TRUE, {
         pr <- as.numeric(input[[paste0("upd_", iid)]])
@@ -751,8 +752,7 @@ server <- function(input, output, session) {
         }
         wv  <- {
           sw <- suppressWarnings(as.integer(isolate(input$entry_wave)))
-          cw <- isolate(current_wave())
-          if (length(sw) == 1L && !is.na(sw) && sw >= 1L) sw else cw
+          if (length(sw) == 1L && !is.na(sw) && sw >= 1L) sw else 1L
         }
         src <- trimws(input[[paste0("upd_src_", iid)]] %||% "")
         db_exec(
@@ -1477,12 +1477,12 @@ server <- function(input, output, session) {
       tags$h4("Admin Controls"),
       fluidRow(
         column(4, wellPanel(
-          tags$h6("Current Wave"),
+          tags$h6("Number of Waves"),
           numericInput("admin_wave", NULL, value = isolate(current_wave()),
-                       min = 1, max = 10, step = 1, width = "100px"),
-          actionButton("set_wave_btn", "Set Wave", class = "btn-warning"),
+                       min = 1, max = 26, step = 1, width = "100px"),
+          actionButton("set_wave_btn", "Set", class = "btn-warning"),
           tags$p(style="font-size:0.85em;color:#666;margin-top:6px;",
-                 "Wave 1 = baseline entry. Wave 2, 3, … = price updates.")
+                 "Total weeks in the study. Students can submit to any wave at any time.")
         )),
         column(4, wellPanel(
           tags$h6("Export"),
