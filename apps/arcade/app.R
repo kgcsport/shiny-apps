@@ -88,49 +88,49 @@ db_exec("CREATE TABLE IF NOT EXISTS pledges (
 );")
 
 # ── Game catalog ──────────────────────────────────────────────────────────────
-# embedded = TRUE  → arcade renders the game UI inline in the active slot
+# type:
+#   "session"  — live during class only; stays visible but inactive otherwise
+#   "semester" — persistent all-semester tool
+#   "either"   — can be activated for a session slot OR used between classes
+# embedded = TRUE  → arcade renders game UI inline when active
 # embedded = FALSE → arcade shows a Launch card linking to the standalone app
 GAMES <- list(
-  list(id = "bonus_pot",
-       label = "Bonus Pot",
-       embedded = TRUE,
+  # ── Either/or: session slot OR semester use ──────────────────────────────
+  list(id = "bonus_pot",        type = "either",
+       label = "Bonus Pot",     embedded = TRUE,
        desc = "Contribute flex passes to a shared pot. The group earns back more when participation is high — but individual incentives push the other way."),
-  list(id = "prisoners_dilemma",
-       label = "Prisoner's Dilemma",
-       embedded = TRUE,
+  list(id = "prisoners_dilemma", type = "either",
+       label = "Prisoner's Dilemma", embedded = TRUE,
        desc = "Cooperate or defect? See how individual incentives produce outcomes that are collectively worse."),
-  list(id = "price_war",
-       label = "Price War",
-       embedded = TRUE,
+  list(id = "price_war",        type = "either",
+       label = "Price War",     embedded = TRUE,
        desc = "Set prices in a duopoly. Can you sustain collusion, or does competition drive prices to the floor?"),
-  list(id = "price-index",
-       label = "Price Index",
-       embedded = FALSE, url = "/price-index/",
-       desc = "Build a basket of goods and track prices across waves to construct a personal inflation index."),
-  list(id = "supply-auction-game",
-       label = "Supply Auction",
-       embedded = FALSE, url = "/supply-auction-game/",
+  list(id = "supply-auction-game", type = "either",
+       label = "Supply Auction", embedded = FALSE, url = "/supply-auction-game/",
        desc = "Bid in a live ascending-price auction. Win units at the market-clearing price."),
-  list(id = "excise-tax-game",
-       label = "Excise Tax Market",
-       embedded = FALSE, url = "/excise-tax-game/",
+  list(id = "review-quiz",      type = "either",
+       label = "Review Quiz",   embedded = FALSE, url = "/review-quiz/",
+       desc = "Answer quiz questions and see the live class histogram. Used periodically through the semester."),
+  # ── Semester-long: persistent all-semester ───────────────────────────────
+  list(id = "price-index",      type = "semester",
+       label = "Price Index",   embedded = FALSE, url = "/price-index/",
+       desc = "Build a basket of goods and track prices across waves to measure your personal inflation rate."),
+  list(id = "flex-pass-app",    type = "semester",
+       label = "Flex Pass Accounting", embedded = FALSE, url = "/final_question_reveal/",
+       desc = "See the full exam-question unlock panel, purchase exam points, and view your complete ledger history."),
+  # ── Session-only: live in class, no lasting footprint ────────────────────
+  list(id = "excise-tax-game",  type = "session",
+       label = "Excise Tax Market", embedded = FALSE, url = "/excise-tax-game/",
        desc = "Trade in a call market before and after an excise tax. See where the burden lands."),
-  list(id = "sloman-trading-game",
-       label = "Sloman Trading Game",
-       embedded = FALSE, url = "/sloman-trading-game/",
+  list(id = "sloman-trading-game", type = "session",
+       label = "Sloman Trading Game", embedded = FALSE, url = "/sloman-trading-game/",
        desc = "Produce shapes and see how market prices respond to your team's supply decisions."),
-  list(id = "airplanes-game",
-       label = "Airplanes",
-       embedded = FALSE, url = "/airplanes-game/",
+  list(id = "airplanes-game",   type = "session",
+       label = "Airplanes",     embedded = FALSE, url = "/airplanes-game/",
        desc = "Enter production data in a live classroom experiment on division of labour."),
-  list(id = "club-insurance-game",
-       label = "Clubs & Insurance",
-       embedded = FALSE, url = "/club-insurance-game/",
-       desc = "Choose your insurance level in a group risk pool and explore adverse selection."),
-  list(id = "review-quiz",
-       label = "Review Quiz",
-       embedded = FALSE, url = "/review-quiz/",
-       desc = "Answer instructor-paced quiz questions and see the live class histogram.")
+  list(id = "club-insurance-game", type = "session",
+       label = "Clubs & Insurance", embedded = FALSE, url = "/club-insurance-game/",
+       desc = "Choose your insurance level in a group risk pool and explore adverse selection.")
 )
 
 game_info <- function(id) Find(function(g) g$id == id, GAMES)
@@ -185,7 +185,7 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
                 text-decoration: none; white-space: nowrap; }
 .btn-launch:hover { background: #7a1320; color: #fff; text-decoration: none; }
 
-/* Game library cards */
+/* Game cards — shared base */
 .game-card { background: #fff; border-radius: 10px; padding: .9rem 1.1rem;
              border: 1px solid #e8e8e8; margin-bottom: .5rem;
              display: flex; align-items: center; gap: .9rem; }
@@ -195,6 +195,20 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
 .badge-live { background: #951829; color: #fff; font-size: .7rem;
               padding: .15rem .45rem; border-radius: 999px; vertical-align: middle; margin-left: .4rem; }
 .arcade-only { color: #bbb; font-size: .8rem; white-space: nowrap; }
+
+/* Session-only cards — faded when inactive */
+.game-card-session        { opacity: .55; }
+.game-card-session.is-live { opacity: 1; }
+
+/* Semester panel grid */
+.semester-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+                 gap: .65rem; margin-bottom: .5rem; }
+.semester-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px;
+                 padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .35rem; }
+.semester-card-label { font-weight: 600; font-size: .95rem; }
+.semester-card-desc  { color: #666; font-size: .82rem; flex: 1; }
+.semester-card-foot  { display: flex; align-items: center; justify-content: flex-end;
+                       margin-top: .4rem; gap: .5rem; }
 
 /* Wallet */
 .bal-big   { font-size: 2.4rem; font-weight: 700; color: #951829; line-height: 1.1; }
@@ -376,42 +390,82 @@ server <- function(input, output, session) {
     as.numeric(sum(wp$ledger$amount, na.rm = TRUE))
   })
 
-  # ── Play tab ──────────────────────────────────────────────────────────────────
+  # ── Play tab — three sections ─────────────────────────────────────────────────
   output$play_tab <- renderUI({
     req(rv$authed)
-    as     <- arcade_poll()
-    active <- as$active_game[1]
-    has_active <- !is.null(active) && !is.na(active) && nzchar(active %||% "")
+    active     <- arcade_poll()$active_game[1] %||% ""
+    has_active <- nzchar(active)
+
+    semester_games <- Filter(function(g) g$type %in% c("semester", "either"), GAMES)
+    session_games  <- Filter(function(g) g$type == "session",  GAMES)
 
     tagList(
-      div(class = "slot-card",
-        div(class = "slot-header", "Active Game"),
-        if (!has_active)
-          div(class = "no-game",
-              "No game active right now. Check back when your instructor starts one.")
-        else
+      # ── Active slot (only shown when something is running) ──
+      if (has_active)
+        div(class = "slot-card",
+          div(class = "slot-header", "▶ Active Now"),
           uiOutput("active_slot_inner")
+        ),
+
+      # ── Semester / either-or resources ──
+      div(class = "sec-label", "Semester Resources"),
+      div(class = "semester-grid",
+        lapply(semester_games, function(g) {
+          is_live <- identical(g$id, active)
+          div(class = "semester-card",
+            div(class = "semester-card-label", g$label,
+                if (is_live) span(class = "badge-live", "LIVE")),
+            div(class = "semester-card-desc", g$desc),
+            div(class = "semester-card-foot",
+              if (is_live && g$embedded)
+                span(style = "color:#951829;font-size:.82rem;", "↑ Active above")
+              else if (g$embedded)
+                span(style = "color:#bbb;font-size:.82rem;", "Instructor-activated")
+              else
+                tags$a(href = g$url, target = "_blank",
+                       class = "btn btn-sm btn-outline-secondary", "Open →")
+            )
+          )
+        })
       ),
-      div(class = "sec-label", "Game Library"),
-      uiOutput("game_library_ui")
+
+      # ── Session-only games ──
+      div(class = "sec-label", "Session Games"),
+      tags$p(style = "color:#888;font-size:.85rem;margin-top:-.4rem;margin-bottom:.6rem;",
+             "Played live during class. Inactive until your instructor starts one."),
+      tagList(lapply(session_games, function(g) {
+        is_live <- identical(g$id, active)
+        div(class = paste("game-card game-card-session", if (is_live) "is-live"),
+          div(class = "game-card-text",
+            div(class = "game-card-label", g$label,
+                if (is_live) span(class = "badge-live", "LIVE")),
+            div(class = "game-card-desc", g$desc)
+          ),
+          if (is_live)
+            tags$a(href = g$url, target = "_blank",
+                   class = "btn btn-sm btn-primary", "Launch →")
+          else
+            tags$a(href = g$url, target = "_blank",
+                   class = "btn btn-sm btn-outline-secondary",
+                   style = "opacity:.6;", "Preview →")
+        )
+      }))
     )
   })
 
   output$active_slot_inner <- renderUI({
     req(rv$authed)
-    as     <- arcade_poll()
-    active <- as$active_game[1]
-    if (is.null(active) || is.na(active) || !nzchar(active %||% ""))
-      return(div(class = "no-game", "No game active."))
+    active <- arcade_poll()$active_game[1] %||% ""
+    if (!nzchar(active)) return(div(class = "no-game", "No game active."))
 
     ginfo <- game_info(active)
     if (is.null(ginfo)) return(div(class = "no-game", "Unknown game."))
 
     if (ginfo$embedded) {
       switch(active,
-        bonus_pot          = uiOutput("embedded_bonus_pot"),
-        prisoners_dilemma  = uiOutput("embedded_pd"),
-        price_war          = uiOutput("embedded_pd"),
+        bonus_pot         = uiOutput("embedded_bonus_pot"),
+        prisoners_dilemma = uiOutput("embedded_pd"),
+        price_war         = uiOutput("embedded_pd"),
         div(class = "no-game", "Embedded UI coming soon.")
       )
     } else {
@@ -423,26 +477,6 @@ server <- function(input, output, session) {
         tags$a(class = "btn-launch", href = ginfo$url, target = "_blank", "Launch →")
       )
     }
-  })
-
-  output$game_library_ui <- renderUI({
-    req(rv$authed)
-    active <- arcade_poll()$active_game[1] %||% ""
-    tagList(lapply(GAMES, function(g) {
-      is_live <- identical(g$id, active)
-      div(class = "game-card",
-        div(class = "game-card-text",
-          div(class = "game-card-label", g$label,
-              if (is_live) span(class = "badge-live", "LIVE")),
-          div(class = "game-card-desc", g$desc)
-        ),
-        if (g$embedded)
-          span(class = "arcade-only", if (is_live) "↑ Active" else "In-arcade")
-        else
-          tags$a(href = g$url, target = "_blank",
-                 class = "btn btn-sm btn-outline-secondary", "Open →")
-      )
-    }))
   })
 
   # ── Embedded: Bonus Pot ───────────────────────────────────────────────────────
@@ -786,28 +820,39 @@ server <- function(input, output, session) {
   # ── Games tab ──────────────────────────────────────────────────────────────────
   output$games_tab <- renderUI({
     req(rv$authed)
-    tagList(
-      tags$p(style = "color:#555;",
-        "All classroom games. Your instructor activates one at a time — it'll appear on the ",
-        tags$strong("Play"), " tab. You can always open any game directly below."),
-      br(),
-      tagList(lapply(GAMES, function(g) {
-        wellPanel(style = "padding:.9rem 1.1rem;",
-          fluidRow(
-            column(9,
-              tags$strong(g$label),
-              tags$p(style = "color:#555;font-size:.88em;margin-bottom:0;", g$desc)
-            ),
-            column(3, style = "text-align:right;padding-top:.4rem;",
-              if (!g$embedded)
-                tags$a(href = g$url, target = "_blank",
-                       class = "btn btn-sm btn-outline-secondary", "Open app →")
-              else
-                span(style = "color:#951829;font-size:.83rem;", "Plays in arcade")
+
+    game_section <- function(type_id, heading, note) {
+      games <- Filter(function(g) g$type == type_id, GAMES)
+      tagList(
+        div(class = "sec-label", heading),
+        tags$p(style = "color:#888;font-size:.85rem;margin-top:-.4rem;margin-bottom:.6rem;", note),
+        tagList(lapply(games, function(g) {
+          wellPanel(style = "padding:.8rem 1rem;",
+            fluidRow(
+              column(9,
+                tags$strong(g$label),
+                tags$p(style = "color:#555;font-size:.87em;margin-bottom:0;", g$desc)
+              ),
+              column(3, style = "text-align:right;padding-top:.3rem;",
+                if (!g$embedded)
+                  tags$a(href = g$url, target = "_blank",
+                         class = "btn btn-sm btn-outline-secondary", "Open →")
+                else
+                  span(style = "color:#951829;font-size:.82rem;", "Plays in arcade")
+              )
             )
           )
-        )
-      }))
+        }))
+      )
+    }
+
+    tagList(
+      game_section("either",   "Either / Or",
+        "Can be activated for a live session or left open for use between classes."),
+      game_section("semester", "Semester-Long",
+        "Persistent tools available throughout the semester."),
+      game_section("session",  "Session Only",
+        "Played live during class. No lasting footprint — just the experience.")
     )
   })
 
@@ -824,9 +869,17 @@ server <- function(input, output, session) {
     op     <- olig_poll()
     s      <- op$settings
 
+    make_group <- function(type_id, heading) {
+      gs <- Filter(function(g) g$type == type_id, GAMES)
+      if (!length(gs)) return(NULL)
+      setNames(sapply(gs, `[[`, "id"),
+               paste0(sapply(gs, `[[`, "label"), " [", heading, "]"))
+    }
     all_game_choices <- c(
-      "(none)" = "",
-      setNames(sapply(GAMES, `[[`, "id"), sapply(GAMES, `[[`, "label"))
+      list("(none)" = ""),
+      make_group("either",   "either/or"),
+      make_group("semester", "semester"),
+      make_group("session",  "session")
     )
 
     tagList(
