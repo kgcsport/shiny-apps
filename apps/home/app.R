@@ -30,7 +30,8 @@ is_game <- function(slug) grepl("-games?$", slug)
 list_apps <- function(root = "/srv/shiny-server") {
   dirs <- list.dirs(root, full.names = FALSE, recursive = FALSE)
   dirs <- dirs[nzchar(dirs)]
-  hide <- c("appdata", "_logs", "_shared", "home", "sample-apps", "default-apps", "bonus-entry")
+  hide <- c("appdata", "_logs", "_shared", "home", "arcade",
+            "sample-apps", "default-apps", "bonus-entry")
   dirs[!dirs %in% hide]
 }
 
@@ -108,7 +109,14 @@ ui <- fluidPage(
     }
   "))),
   div(class = "page-title", "Class Apps"),
-  div(class = "subtitle", "Pick an app to get started."),
+  div(class = "subtitle", "Pick an app to get started, or go to the Arcade for everything in one place."),
+  tags$a(href = "/arcade/",
+    style = paste("display:inline-flex;align-items:center;gap:.6rem;",
+                  "background:#951829;color:#fff;text-decoration:none;",
+                  "padding:.7rem 1.4rem;border-radius:10px;font-size:1.05rem;",
+                  "font-weight:600;margin-bottom:1.5rem;"),
+    "🎮 Open Arcade", tags$span(style = "opacity:.7;", "→")
+  ),
   uiOutput("app_list"),
   div(class = "footer-note",
     "Tip: you can bookmark individual apps directly, e.g. ",
