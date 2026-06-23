@@ -62,3 +62,4 @@ ideas
 /.quarto/
 **/*.quarto_ipynb
 brown-bag-research-infrastructure*
+_metadata.yml
