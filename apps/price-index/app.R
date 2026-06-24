@@ -1,9 +1,9 @@
 try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R — Personal Price Index Activity
 # Students build a basket of goods and track prices across waves.
-# Auth: bcrypt + SQLite — shares finalqdata.sqlite with final_question_reveal.
+# Auth: bcrypt + SQLite — shares finalqdata.sqlite with flex_pass_actions.
 # Users (including passwords) come from that shared DB; no separate credentials file needed.
-# DB backed up to Google Drive on session end (same FLEX_PASS_FOLDER_ID as final_question_reveal).
+# DB backed up to Google Drive on session end (same FLEX_PASS_FOLDER_ID as flex_pass_actions).
 
 library(shiny); library(DT); library(bcrypt); library(dplyr); library(tidyr)
 library(tibble); library(forcats); library(DBI); library(RSQLite); library(ggplot2)
@@ -28,7 +28,7 @@ app_data_dir <- local({
   }
 })
 
-# Shared DB with final_question_reveal — same CONNECT_CONTENT_DIR resolution
+# Shared DB with flex_pass_actions — same CONNECT_CONTENT_DIR resolution
 DB_PATH <- file.path(app_data_dir(), "finalqdata.sqlite")
 conn    <- NULL
 
@@ -44,10 +44,11 @@ db_exec  <- function(sql, params = NULL) DBI::dbExecute(get_con(), sql, params =
 db_query <- function(sql, params = NULL) DBI::dbGetQuery(get_con(), sql, params = params)
 
 init_db <- function() {
-  # users table is owned by final_question_reveal — do not create or seed here.
-  # Ensure optional columns exist in case this runs before final_question_reveal does.
+  # users table is owned by flex_pass_actions — do not create or seed here.
+  # Ensure optional columns exist in case this runs before flex_pass_actions does.
   try(db_exec("ALTER TABLE users ADD COLUMN pw_hash  TEXT;"), silent = TRUE)
   try(db_exec("ALTER TABLE users ADD COLUMN section  TEXT;"), silent = TRUE)
+  try(db_exec("ALTER TABLE users ADD COLUMN active   INTEGER DEFAULT 1;"), silent = TRUE)
 
   db_exec("CREATE TABLE IF NOT EXISTS app_state (
     id             INTEGER PRIMARY KEY CHECK(id = 1),
@@ -145,7 +146,7 @@ google_auth <- function() {
 }
 
 backup_db <- function() {
-  # Uses the same folder as final_question_reveal so all DB backups land together.
+  # Uses the same folder as flex_pass_actions so all DB backups land together.
   folder_id <- Sys.getenv("FLEX_PASS_FOLDER_ID", "")
   if (!nzchar(folder_id)) {
     logf("backup_db(): FLEX_PASS_FOLDER_ID not set — skipping backup.")
@@ -530,8 +531,11 @@ server <- function(input, output, session) {
       showNotification("Enter username and password.", type = "error"); return()
     }
     row <- db_query(
-      "SELECT user_id, display_name, is_admin, pw_hash FROM users WHERE user_id=?;", list(u))
+      "SELECT user_id, display_name, is_admin, pw_hash, active FROM users WHERE user_id=?;", list(u))
     if (!nrow(row)) { showNotification("User not found.", type = "error"); return() }
+    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
+      showNotification("This account has been archived. Contact your instructor.", type = "error"); return()
+    }
     ok <- tryCatch(bcrypt::checkpw(p, row$pw_hash[1]), error = function(e) FALSE)
     if (!ok) { showNotification("Incorrect password.", type = "error"); return() }
     rv$authed   <- TRUE
@@ -1629,14 +1633,14 @@ server <- function(input, output, session) {
     req(rv$is_admin); rv$tick
     db_query("SELECT user_id AS Username, display_name AS Name,
                      COALESCE(section, '(not set)') AS Section
-              FROM users ORDER BY display_name;")
+              FROM users WHERE COALESCE(active,1)=1 ORDER BY display_name;")
   }, rownames = FALSE, selection = "none",
      options  = list(dom = "t", pageLength = 50))
 
   # Populate student picker from DB
   observe({
     req(rv$is_admin); rv$tick
-    users <- db_query("SELECT user_id, display_name FROM users ORDER BY display_name;")
+    users <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(active,1)=1 ORDER BY display_name;")
     if (!nrow(users)) return()
     updateSelectInput(session, "sec_user",
       choices = setNames(users$user_id, users$display_name))

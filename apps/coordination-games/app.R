@@ -84,6 +84,10 @@ db_query <- function(sql, params = NULL) DBI::dbGetQuery(get_con(), sql, params 
 # Init tables for coordination games module
 # -------------------------
 init_olig <- function() {
+  # Defensive: other apps own the users table, but make sure 'active' exists
+  # regardless of which app starts first against a fresh DB.
+  try(db_exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1;"), silent = TRUE)
+
   # settings singleton
   db_exec("
     CREATE TABLE IF NOT EXISTS olig_settings (
@@ -215,6 +219,7 @@ sections_from_users <- function() {
     SELECT section, COUNT(*) AS class_size
     FROM users
     WHERE section IS NOT NULL AND section != ''
+      AND COALESCE(active,1) = 1
     GROUP BY section
     ORDER BY section;
   ")
@@ -231,7 +236,7 @@ sections_choices <- function() {
 # Enrolled count for a section from the users table; NA if not found
 section_class_size <- function(section_id) {
   if (!nzchar(section_id %||% "")) return(NA_integer_)
-  x <- db_query("SELECT COUNT(*) AS n FROM users WHERE section=?;", list(section_id))
+  x <- db_query("SELECT COUNT(*) AS n FROM users WHERE section=? AND COALESCE(active,1)=1;", list(section_id))
   cs <- suppressWarnings(as.integer(x$n[1]))
   if (is.na(cs) || cs <= 0) NA_integer_ else cs
 }
@@ -614,8 +619,12 @@ server <- function(input, output, session) {
     u <- trimws(input$login_user %||% "")
     p <- input$login_pw %||% ""
 
-    row <- db_query("SELECT user_id, display_name, is_admin, pw_hash FROM users WHERE user_id=?;", list(u))
+    row <- db_query("SELECT user_id, display_name, is_admin, pw_hash, active FROM users WHERE user_id=?;", list(u))
     if (nrow(row) != 1) { showNotification("Login failed.", type = "error"); return() }
+
+    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
+      showNotification("This account has been archived. Contact your instructor.", type = "error"); return()
+    }
 
     ph <- row$pw_hash[1] %||% ""
     ok <- tryCatch(bcrypt::checkpw(p, ph), error = function(e) FALSE)
@@ -993,7 +1002,7 @@ server <- function(input, output, session) {
         fluidRow(
           column(6, selectInput("impersonate_select", "Student to impersonate",
             choices = {
-              us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+              us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 ORDER BY display_name;")
               setNames(us$user_id, us$display_name)
             }
           )),

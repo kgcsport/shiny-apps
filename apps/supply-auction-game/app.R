@@ -25,7 +25,7 @@ logf <- function(...) {
 
 APP_CONFIG <- list(
   folder_id      = Sys.getenv("AUCTION_FOLDER_ID", ""),      # Drive folder for THIS auction app backups
-  flex_folder_id = Sys.getenv("FLEX_PASS_FOLDER_ID", ""),     # Drive folder where final_question_reveal backups live
+  flex_folder_id = Sys.getenv("FLEX_PASS_FOLDER_ID", ""),     # Drive folder where flex_pass_actions backups live
   cred_db_path   = "finalqdata_latest_backup.zip",
   gsa_json       = Sys.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", ""),
   gsa_path       = Sys.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
@@ -258,13 +258,17 @@ read_credentials_from_flex_snapshot <- function() {
     stop("Credentials DB users table missing columns: ", paste(setdiff(need, cols$name), collapse = ", "))
   }
 
-  u <- DBI::dbGetQuery(con, "SELECT user_id, display_name, pw_hash, is_admin FROM users;") |>
+  has_active <- "active" %in% cols$name
+  sel <- paste("SELECT user_id, display_name, pw_hash, is_admin",
+               if (has_active) ", active" else "", "FROM users;")
+  u <- DBI::dbGetQuery(con, sel) |>
     as.data.frame() |>
     mutate(
       user_id = trimws(as.character(user_id)),
       display_name = as.character(display_name),
       pw_hash = as.character(pw_hash),
-      is_admin = as.integer(is_admin)
+      is_admin = as.integer(is_admin),
+      active = if (has_active) ifelse(is.na(active), 1L, as.integer(active)) else 1L
     )
 
   logf("Users in credentials DB: ", paste(u$user_id, collapse = ", "))
@@ -525,7 +529,7 @@ server <- function(input, output, session) {
   }
   tryCatch(refresh_creds(), error = function(e) {
     logf("Credential load failed:", conditionMessage(e))
-    cred_cache$users <- data.frame(user_id=character(), display_name=character(), pw_hash=character(), is_admin=integer())
+    cred_cache$users <- data.frame(user_id=character(), display_name=character(), pw_hash=character(), is_admin=integer(), active=integer())
     cred_cache$when  <- NA_character_
   })
 
@@ -546,6 +550,10 @@ server <- function(input, output, session) {
     users <- cred_cache$users
     row <- users |> filter(.data$user_id == u)
     if (nrow(row) != 1) { output$auth_gate <- renderUI(login_ui("Unknown username.")); return() }
+
+    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
+      output$auth_gate <- renderUI(login_ui("This account has been archived. Contact your instructor.")); return()
+    }
 
     ph <- row$pw_hash[1] %||% ""
     if (!nzchar(ph)) { output$auth_gate <- renderUI(login_ui("Password not set for this user.")); return() }

@@ -45,6 +45,10 @@ db_exec("
 if (!db_query("SELECT COUNT(*) n FROM arcade_state WHERE id=1;")$n[1])
   db_exec("INSERT INTO arcade_state(id, active_game) VALUES(1, NULL);")
 
+# Defensive: other apps own the users table, but make sure 'active' exists
+# regardless of which app starts first against a fresh DB.
+try(db_exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1;"), silent = TRUE)
+
 # Ensure olig tables exist so the arcade works even before coordination-games runs
 db_exec("
   CREATE TABLE IF NOT EXISTS olig_settings (
@@ -116,7 +120,7 @@ GAMES <- list(
        label = "Price Index",   embedded = FALSE, url = "/price-index/",
        desc = "Build a basket of goods and track prices across waves to measure your personal inflation rate."),
   list(id = "flex-pass-app",    type = "semester",
-       label = "Flex Pass Accounting", embedded = FALSE, url = "/final_question_reveal/",
+       label = "Flex Pass Accounting", embedded = FALSE, url = "/flex_pass_actions/",
        desc = "See the full exam-question unlock panel, purchase exam points, and view your complete ledger history."),
   # ── Session-only: live in class, no lasting footprint ────────────────────
   list(id = "excise-tax-game",  type = "session",
@@ -239,6 +243,10 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
               margin-bottom: 1.5rem; text-align: center; }
 .login-note { font-size: .82rem; color: #999; text-align: center; margin-top: .75rem; }
 .btn-block  { width: 100%; }
+.login-howto { margin-top: 1.25rem; font-size: .85rem; color: #666; }
+.login-howto summary { cursor: pointer; font-weight: 600; color: #951829; text-align: center; }
+.login-howto ul { margin: .6rem 0 0; padding-left: 1.1rem; }
+.login-howto li { margin-bottom: .35rem; }
 "
 
 # ── UI ────────────────────────────────────────────────────────────────────────
@@ -272,7 +280,16 @@ server <- function(input, output, session) {
           textInput("login_user", NULL, placeholder = "Username"),
           passwordInput("login_pw", NULL, placeholder = "Password"),
           actionButton("login_btn", "Sign in", class = "btn btn-primary btn-block"),
-          tags$p(class = "login-note", "Use the credentials from your instructor.")
+          tags$p(class = "login-note", "Use the credentials from your instructor."),
+          tags$details(class = "login-howto",
+            tags$summary("How CORE Arcade works"),
+            tags$ul(
+              tags$li(tags$strong("Play"), " — shows whatever game your instructor has activated for the current class, plus semester-long resources that are always open."),
+              tags$li(tags$strong("Wallet"), " — your flex pass balance, any pending pledges, and your full transaction history."),
+              tags$li(tags$strong("Profile"), " — set your display name and see your class job history."),
+              tags$li(tags$strong("Games"), " — every app in one catalog, with a description of how each one works.")
+            )
+          )
         )
       )
     } else {
@@ -313,10 +330,13 @@ server <- function(input, output, session) {
       showNotification("Enter username and password.", type = "error"); return()
     }
     row <- db_query(
-      "SELECT user_id, display_name, pw_hash, is_admin, section
+      "SELECT user_id, display_name, pw_hash, is_admin, section, active
        FROM users WHERE LOWER(user_id) = LOWER(?);", list(u))
     if (!nrow(row) || !bcrypt::checkpw(p, row$pw_hash[1])) {
       showNotification("Incorrect username or password.", type = "error"); return()
+    }
+    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
+      showNotification("This account has been archived. Contact your instructor.", type = "error"); return()
     }
     rv$authed   <- TRUE
     rv$user_id  <- row$user_id[1]
@@ -748,7 +768,7 @@ server <- function(input, output, session) {
     }
     exam_id <- gs$active_exam[1] %||% "exam1"
     round   <- as.integer(gs$ex_round[1] %||% 1L)
-    # Upsert pledge (replaces existing; ledger debit happens in final_question_reveal on close)
+    # Upsert pledge (replaces existing; ledger debit happens in flex_pass_actions on close)
     db_exec(
       "INSERT INTO pledges(user_id, exam_id, round, pledge)
        VALUES(?,?,?,?)
@@ -936,6 +956,7 @@ server <- function(input, output, session) {
       FROM users u
       LEFT JOIN ledger l ON l.user_id = u.user_id
       WHERE (u.is_admin IS NULL OR u.is_admin = 0)
+        AND COALESCE(u.active,1) = 1
       GROUP BY u.user_id
       ORDER BY u.section, u.display_name;")
     if (!nrow(rows)) return(div(style = "color:#999;", "No students found."))

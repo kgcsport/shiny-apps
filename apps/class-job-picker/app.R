@@ -11,12 +11,12 @@ library(jsonlite); library(DBI); library(RSQLite); library(bcrypt)
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 
 # ----------------------------
-# SQLite CONNECTION (shared with final_question_reveal)
+# SQLite CONNECTION (shared with flex_pass_actions)
 # ----------------------------
 JOB_DB_PATH <- local({
   root <- Sys.getenv("CONNECT_CONTENT_DIR", unset = {
     # local dev: walk up to sibling app directory
-    file.path(dirname(normalizePath(getwd())), "final_question_reveal")
+    file.path(dirname(normalizePath(getwd())), "flex_pass_actions")
   })
   file.path(root, "data", "finalqdata.sqlite")
 })
@@ -32,6 +32,10 @@ get_job_con <- function() {
 }
 jdb_exec  <- function(sql, p = NULL) DBI::dbExecute(get_job_con(), sql, params = p)
 jdb_query <- function(sql, p = NULL) DBI::dbGetQuery(get_job_con(), sql, params = p)
+
+# Defensive: other apps own the users table, but make sure 'active' exists
+# regardless of which app starts first against a fresh DB.
+try(jdb_exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1;"), silent = TRUE)
 
 # ----------------------------
 # CONFIG (Google Sheets for summary write-back only)
@@ -123,6 +127,7 @@ sections_from_db <- function() {
     jdb_query("SELECT DISTINCT section FROM users
                WHERE section IS NOT NULL AND section != ''
                AND COALESCE(is_admin,0)=0
+               AND COALESCE(active,1)=1
                ORDER BY section;")$section,
     error = function(e) character(0)
   )
@@ -155,7 +160,7 @@ parse_bag <- function(bag_json) {
 read_roster <- function(section_id) {
   jdb_query(
     "SELECT display_name FROM users
-     WHERE section=? AND COALESCE(is_admin,0)=0
+     WHERE section=? AND COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1
      ORDER BY display_name",
     list(as.character(section_id))
   )$display_name
@@ -426,7 +431,7 @@ generate_summary_table <- function(wt_A = NULL, wt_B = NULL) {
      WHERE job NOT LIKE 'ADMIN__%'"
   )
   roster_df <- jdb_query(
-    "SELECT user_id, display_name, section FROM users WHERE COALESCE(is_admin,0)=0"
+    "SELECT user_id, display_name, section FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1"
   ) %>% dplyr::rename(name = display_name)
 
   if (nrow(lg) == 0) {
@@ -865,13 +870,15 @@ server <- function(input, output, session) {
       # DB path: check pw_hash in users table (works for both students and admins)
       row <- tryCatch(
         jdb_query(
-          "SELECT display_name, pw_hash, COALESCE(is_admin,0) AS is_admin FROM users WHERE user_id=?",
+          "SELECT display_name, pw_hash, COALESCE(is_admin,0) AS is_admin, active FROM users WHERE user_id=?",
           list(uname)
         ),
         error = function(e) data.frame()
       )
       if (nrow(row) == 0) {
         showNotification("Username not found.", type = "error")
+      } else if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
+        showNotification("This account has been archived. Contact your instructor.", type = "error")
       } else {
         ph <- row$pw_hash[1] %||% ""
         if (!nzchar(ph)) {
@@ -960,7 +967,7 @@ server <- function(input, output, session) {
   output$impersonate_select_ui <- renderUI({
     req(authed())
     students <- tryCatch(
-      jdb_query("SELECT display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name"),
+      jdb_query("SELECT display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 ORDER BY display_name"),
       error = function(e) data.frame(display_name = character(0))
     )
     selectInput("impersonate_select", label = NULL,

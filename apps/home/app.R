@@ -13,7 +13,7 @@ APP_NAMES <- c(
   "supply-auction-game"    = "Supply Auction",
   "class-job-picker"       = "Class Job Picker (see times picked/volunteered for job assignments)",
   "core-arcade"            = "CORE Arcade",
-  "final_question_reveal"  = "Flex Pass Accounting",
+  "flex_pass_actions"      = "Flex Pass Accounting",
   "indifference-to-demand" = "Indifference to Demand",
   "sloman-trading-game"    = "Sloman Trading Game",
   "tax-incidence"          = "Tax Incidence",
@@ -107,6 +107,19 @@ ui <- fluidPage(
       font-size: .88rem;
       margin-top: 2.5rem;
     }
+    .howto {
+      background: #fff;
+      border: 1px solid #e8e8e8;
+      border-left: 4px solid #951829;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      font-size: .92rem;
+      color: #444;
+    }
+    .howto strong { color: #951829; }
+    .howto ul { margin: .5rem 0 0; padding-left: 1.2rem; }
+    .howto li { margin-bottom: .3rem; }
   "))),
   div(class = "page-title", "Class Apps"),
   div(class = "subtitle", "Pick an app to get started, or go to the Arcade for everything in one place."),
@@ -116,6 +129,16 @@ ui <- fluidPage(
                   "padding:.7rem 1.4rem;border-radius:10px;font-size:1.05rem;",
                   "font-weight:600;margin-bottom:1.5rem;"),
     "🎮 Open Arcade", tags$span(style = "opacity:.7;", "→")
+  ),
+  div(class = "howto",
+    tags$strong("New here? "), "CORE Arcade is the single hub for class games and tools — log in once with the username and password your instructor gave you.",
+    tags$ul(
+      tags$li(tags$strong("Play"), " — whatever your instructor has activated for the current class session, plus always-on semester resources."),
+      tags$li(tags$strong("Wallet"), " — your flex pass balance, pledges, and full transaction history."),
+      tags$li(tags$strong("Profile"), " — your display name and class job history."),
+      tags$li(tags$strong("Games"), " — the full catalog of every app, with a description of each.")
+    ),
+    "Individual app links below also work on their own if you'd rather skip the Arcade."
   ),
   uiOutput("app_list"),
   div(class = "footer-note",

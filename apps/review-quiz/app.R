@@ -131,6 +131,10 @@ ensure_state <- function() {
 }
 
 init_db <- function() {
+  # Defensive: other apps own the users table, but make sure 'active' exists
+  # regardless of which app starts first against a fresh DB.
+  try(db_exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1;"), silent = TRUE)
+
   db_exec("CREATE TABLE IF NOT EXISTS quiz_state (
     id         INTEGER PRIMARY KEY CHECK(id = 1),
     current_q  INTEGER DEFAULT 1,
@@ -316,8 +320,11 @@ server <- function(input, output, session) {
       showNotification("Enter username and password.", type = "error"); return()
     }
     row <- db_query(
-      "SELECT user_id, display_name, is_admin, pw_hash FROM users WHERE user_id=?;", list(u))
+      "SELECT user_id, display_name, is_admin, pw_hash, active FROM users WHERE user_id=?;", list(u))
     if (!nrow(row)) { showNotification("User not found.", type = "error"); return() }
+    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
+      showNotification("This account has been archived. Contact your instructor.", type = "error"); return()
+    }
     ok <- tryCatch(bcrypt::checkpw(p, row$pw_hash[1]), error = function(e) FALSE)
     if (!ok) { showNotification("Incorrect password.", type = "error"); return() }
     rv$authed   <- TRUE
@@ -793,7 +800,7 @@ server <- function(input, output, session) {
                    "Default: all students. Deselect to award within one section only."),
             {
               all_students <- tryCatch(
-                db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;"),
+                db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 ORDER BY display_name;"),
                 error = function(e) data.frame(user_id=character(), display_name=character())
               )
               selectInput("fp_students", NULL,

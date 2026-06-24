@@ -18,7 +18,7 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 # - Question "pledges" are allocations (not charged) until admin closes the round.
 # - Ledger records actual spending/grants. Grants are stored as negative amounts.
 # Deploy to 3838 port
-# shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/shiny-apps/final_question_reveal", port = 3838, host = "127.0.0.1")
+# shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/shiny-apps/apps/flex_pass_actions", port = 3838, host = "127.0.0.1")
 
 library(shiny); library(DT); library(bcrypt); library(dplyr); library(tibble)
 library(readr); library(DBI); library(RSQLite); library(stringr)
@@ -542,6 +542,7 @@ init_db <- function() {
   # Ensure optional columns exist (safe no-ops if already present)
   try(db_exec("ALTER TABLE users ADD COLUMN pw_hash TEXT;"), silent = TRUE)
   try(db_exec("ALTER TABLE users ADD COLUMN section TEXT;"), silent = TRUE)
+  try(db_exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1;"), silent = TRUE)
 
   # Settings (single row)
   db_exec("
@@ -1406,13 +1407,19 @@ server <- function(input, output, session) {
     p <- input$login_pw %||% ""
 
     row <- db_query(
-      "SELECT user_id, display_name, is_admin, pw_hash FROM users WHERE user_id=?;",
+      "SELECT user_id, display_name, is_admin, pw_hash, active FROM users WHERE user_id=?;",
       list(u)
     )
 
     if (nrow(row) != 1) {
       logf("LOGIN FAIL: user not found in DB:", u)
       showNotification("Login failed.", type="error")
+      return()
+    }
+
+    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
+      logf("LOGIN FAIL: account archived:", u)
+      showNotification("This account has been archived. Contact your instructor.", type="error")
       return()
     }
 
@@ -2101,7 +2108,7 @@ server <- function(input, output, session) {
         fluidRow(
           column(6, selectInput("impersonate_select", "Student to impersonate",
             choices = {
-              us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+              us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 ORDER BY display_name;")
               setNames(us$user_id, us$display_name)
             }
           )),
@@ -2267,7 +2274,7 @@ server <- function(input, output, session) {
           column(6,
             selectInput("grant_user", "Student",
               choices = {
-                us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+                us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 ORDER BY display_name;")
                 setNames(us$user_id, us$display_name)
               }
             )
@@ -2284,7 +2291,7 @@ server <- function(input, output, session) {
         p("Select students and apply a uniform amount to each. Positive = grant more passes; negative = deduct."),
         selectInput("bulk_grant_users", "Students",
           choices = {
-            us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+            us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 ORDER BY display_name;")
             setNames(us$user_id, us$display_name)
           },
           multiple = TRUE
@@ -2305,7 +2312,7 @@ server <- function(input, output, session) {
           column(8,
             selectInput("remove_user", "Student",
               choices = {
-                us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY display_name;")
+                us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 ORDER BY display_name;")
                 setNames(us$user_id, us$display_name)
               }
             )
@@ -2323,6 +2330,43 @@ server <- function(input, output, session) {
         p("Add the student to the ", tags$code("credentials"), " tab in the Google Sheet (with columns: user, name, pw_hash, is_admin), then click below."),
         actionButton("sync_cred_btn", "Sync from credentials sheet", class = "btn-secondary"),
         tags$small("Adds new users and updates names/admin flags. Never overwrites existing passwords.")
+      ),
+
+      wellPanel(
+        h5("Create user directly"),
+        p("Creates a login without needing a row in the credentials Google Sheet first — handy for one-off accounts like student-worker test logins."),
+        fluidRow(
+          column(4, textInput("new_user_id", "Username")),
+          column(4, textInput("new_user_name", "Display name")),
+          column(4, passwordInput("new_user_pw", "Password"))
+        ),
+        checkboxInput("new_user_admin", "Grant admin access", value = FALSE),
+        actionButton("create_user_btn", "Create user", class = "btn-success"),
+        tags$small("Password must be at least 8 characters.")
+      ),
+
+      wellPanel(
+        h5("Archive prior students"),
+        p("Blocks login for every current non-admin student and hides them from the pickers above. Ledger and job history are kept for auditing, and accounts can be restored below. Use this when starting a new class so the old roster doesn't linger."),
+        actionButton("archive_all_btn", "Archive all current students", class = "btn-danger",
+          onclick = "if(!confirm('Archive ALL active non-admin students? They will be unable to log in until restored.')) event.stopPropagation();"),
+        tags$small("Reversible — restore individual accounts below.")
+      ),
+
+      wellPanel(
+        h5("Restore archived student"),
+        fluidRow(
+          column(8,
+            selectInput("restore_user", "Student",
+              choices = {
+                us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=0 ORDER BY display_name;")
+                setNames(us$user_id, us$display_name)
+              }
+            )
+          ),
+          column(4, br(), actionButton("do_restore_user", "Restore", class = "btn-secondary"))
+        ),
+        tags$small("Re-enables login for this account.")
       ),
 
       tags$details(
@@ -2492,6 +2536,48 @@ server <- function(input, output, session) {
       sprintf("Synced %d users from credentials sheet (%d new).", nrow(new_cred), added),
       type = "message"
     )
+  })
+
+  observeEvent(input$create_user_btn, {
+    req(is_admin())
+    uid <- trimws(input$new_user_id %||% "")
+    nm  <- trimws(input$new_user_name %||% "")
+    pw  <- input$new_user_pw %||% ""
+    if (!nzchar(uid) || !nzchar(nm)) {
+      showNotification("Username and display name are required.", type = "error"); return()
+    }
+    if (!nzchar(pw) || nchar(pw) < 8) {
+      showNotification("Password must be at least 8 characters.", type = "error"); return()
+    }
+    existing <- db_query("SELECT 1 AS x FROM users WHERE user_id=?;", list(uid))
+    if (nrow(existing)) {
+      showNotification(sprintf("User '%s' already exists.", uid), type = "error"); return()
+    }
+    h <- bcrypt::hashpw(pw)
+    db_exec(
+      "INSERT INTO users(user_id, display_name, is_admin, pw_hash, active)
+       VALUES(?, ?, ?, ?, 1);",
+      list(uid, nm, as.integer(isTRUE(input$new_user_admin)), h)
+    )
+    updateTextInput(session, "new_user_id", value = "")
+    updateTextInput(session, "new_user_name", value = "")
+    updateTextInput(session, "new_user_pw", value = "")
+    set_state()
+    showNotification(sprintf("Created user '%s'.", uid), type = "message")
+  })
+
+  observeEvent(input$archive_all_btn, {
+    req(is_admin())
+    n <- db_exec("UPDATE users SET active=0 WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1;")
+    set_state()
+    showNotification(sprintf("Archived %d student(s).", n), type = "message")
+  })
+
+  observeEvent(input$do_restore_user, {
+    req(is_admin(), input$restore_user)
+    db_exec("UPDATE users SET active=1 WHERE user_id=?;", list(as.character(input$restore_user)))
+    set_state()
+    showNotification(sprintf("Restored %s.", input$restore_user), type = "message")
   })
 
   observeEvent(input$open_round, {

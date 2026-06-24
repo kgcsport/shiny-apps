@@ -4,14 +4,14 @@ pacman::p_load(tidyverse, bcrypt, googledrive, googlesheets4)
 
 # Step 1. Your plain-text roster (temporary)
 
-read_csv('final_question_reveal/roster.csv') %>%
+read_csv('flex_pass_actions/roster.csv') %>%
     rowwise() %>%
     mutate(pw_hash=bcrypt::hashpw(password)) %>%
     select(-password) %>%
     ungroup() %>%
     googlesheets4::sheet_write(sheet_id, sheet = "credentials")
 
-# txt <- readChar("final_question_reveal/credentials.csv", file.info("final_question_reveal/credentials.csv")$size, useBytes = TRUE)
+# txt <- readChar("flex_pass_actions/credentials.csv", file.info("flex_pass_actions/credentials.csv")$size, useBytes = TRUE)
 # txt_b64 <- base64enc::base64encode(charToRaw(txt))
 # # add to Renviron
 # Sys.setenv(CRED_B64=txt_b64)
