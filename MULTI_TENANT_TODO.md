@@ -1,6 +1,23 @@
 # Future: self-serve multi-tenant platform on Reclaim Cloud
 
-Status: not started — planning placeholder on branch `feature/multi-tenant-self-serve`.
+Status: tenant isolation (the `class_id` data model below) — not started.
+First milestone — **removing required Google Cloud config for normal
+operation** — done on this branch:
+
+- `flex_pass_actions/app.R`: a brand-new deployment with an empty DB and no
+  Google Sheets configured can now bootstrap its first admin account via
+  `BOOTSTRAP_ADMIN_USER` / `BOOTSTRAP_ADMIN_PASSWORD` instead of hard-failing.
+- `supply-auction-game/app.R`: no longer requires `FLEX_PASS_FOLDER_ID` /
+  Google Drive for login — it reads the shared `users` table directly from
+  `finalqdata.sqlite`, same as every other app. Fixes the credential
+  staleness lag as a side effect.
+- `GOOGLE_SERVICE_ACCOUNT_JSON`/`GOOGLE_APPLICATION_CREDENTIALS`,
+  `FLEX_PASS_SHEET_ID`, `FLEX_PASS_FOLDER_ID`, `AUCTION_FOLDER_ID`,
+  `CLASS_JOB_SHEET_ID` are now fully optional everywhere — see the root
+  `README.md` Deployment section for the current required-vs-optional list.
+
+The `class`/tenant scoping work below is still not started — that's the
+next, larger milestone, deliberately kept separate from this one.
 
 ## Goal
 
@@ -22,7 +39,7 @@ today needs all of these set:
 |---|---|---|
 | `GOOGLE_SERVICE_ACCOUNT_JSON` / `GOOGLE_APPLICATION_CREDENTIALS` | class-job-picker, coordination-games, flex_pass_actions, price-index, supply-auction-game | Google service-account auth |
 | `FLEX_PASS_SHEET_ID` | coordination-games, flex_pass_actions | Credentials Google Sheet |
-| `FLEX_PASS_FOLDER_ID` | coordination-games, flex_pass_actions, price-index, supply-auction-game | Drive backup folder |
+| `FLEX_PASS_FOLDER_ID` | coordination-games, flex_pass_actions, price-index | Drive backup folder (optional) |
 | `AUCTION_FOLDER_ID` | supply-auction-game | Drive backup folder |
 | `CLASS_JOB_SHEET_ID` | class-job-picker | Summary write-back sheet |
 | `PUB_ECON_FOLDER_ID`, `FINALQ_SHEET_ID`, `CRED_CSV`, `CRED_PATH` | flex_pass_actions | Legacy credential sources |
