@@ -707,6 +707,25 @@ app_ui <- tagList(
         )
       )
     ),
+    tabPanel("Volunteer",
+      fluidRow(
+        column(12,
+          div(class = "panel",
+            h4("Log a volunteer (one at a time)"),
+            p("Logs today's date, the current section, and job type \"voluntary answer\" automatically — just pick the student."),
+            fluidRow(
+              column(6, uiOutput("volunteer_name_ui")),
+              column(6,
+                div(style = "padding-top: 24px;",
+                  actionButton("log_volunteer", "Log volunteer", class = "btn-primary"),
+                  uiOutput("undo_volunteer_ui")
+                )
+              )
+            )
+          )
+        )
+      )
+    ),
     tabPanel("Manual Entry",
       fluidRow(
         column(12,
@@ -958,7 +977,9 @@ server <- function(input, output, session) {
     cold_current = "",
     jobs_committed = FALSE,
     exclusions   = NULL,
-    bag_summary  = ""
+    bag_summary  = "",
+    last_volunteer_id   = NULL,
+    last_volunteer_name = NULL
   )
 
   rv_absent <- reactiveVal(character(0))
@@ -1214,6 +1235,51 @@ server <- function(input, output, session) {
     append_log(rows)
     rv$cold_current <- ""
     showNotification("Cold call committed.", type = "message")
+  })
+
+  # --- Volunteer (quick entry) ---
+  output$volunteer_name_ui <- renderUI({
+    roster <- read_roster(input$section)
+    selectizeInput("volunteer_name", "Student", choices = roster, multiple = FALSE,
+                   options = list(placeholder = "Type a name…"))
+  })
+
+  observeEvent(input$log_volunteer, {
+    nm <- input$volunteer_name
+    if (is.null(nm) || nm == "") {
+      showNotification("Pick a name.", type = "warning")
+      return()
+    }
+
+    st       <- read_state(input$section, "voluntary answer")
+    cycle_id <- if (nrow(st) == 0) 0L else as.integer(st$cycle_id[1])
+
+    jdb_exec(
+      "INSERT INTO job_log(logged_date, section, job, display_name, cycle_id)
+       VALUES(?,?,?,?,?)",
+      list(as.character(Sys.Date()), as.character(input$section),
+           "voluntary answer", nm, cycle_id)
+    )
+    new_id <- jdb_query("SELECT last_insert_rowid() AS id;")$id[1]
+
+    rv$last_volunteer_id   <- new_id
+    rv$last_volunteer_name <- nm
+    showNotification(paste0("Logged: ", nm, " volunteered."), type = "message")
+  })
+
+  output$undo_volunteer_ui <- renderUI({
+    req(rv$last_volunteer_id)
+    actionButton("undo_volunteer",
+                 paste0("Undo (", rv$last_volunteer_name, ")"),
+                 class = "btn-warning")
+  })
+
+  observeEvent(input$undo_volunteer, {
+    req(rv$last_volunteer_id)
+    jdb_exec("DELETE FROM job_log WHERE id=?", list(rv$last_volunteer_id))
+    showNotification(paste0("Removed: ", rv$last_volunteer_name), type = "message")
+    rv$last_volunteer_id   <- NULL
+    rv$last_volunteer_name <- NULL
   })
 
   # --- Manual entry ---
