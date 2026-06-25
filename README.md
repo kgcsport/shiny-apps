@@ -6,9 +6,18 @@ Shiny apps I build largely for classroom use.
 `Dockerfile.base`) runs every app under one Shiny Server container, sharing
 one `data/finalqdata.sqlite` (mounted via the `appdata` volume).
 
-**Nothing is required to get a working deployment.** On first boot with an
-empty database, set these two env vars once to create your own admin login,
-then unset them — every later boot uses the account already in the DB:
+**One env var is required**, because each app's own directory under
+`/srv/shiny-server/` is root-owned and not writable by the `shiny` user —
+without this, apps can't even create their local SQLite file and 500 on
+first request:
+
+- `CONNECT_CONTENT_DIR=/srv/shiny-server/appdata` — point every app at the
+  writable, volume-mounted `appdata` directory instead of its own
+  read-only source folder. Set this once for the whole container.
+
+On first boot with an empty database, also set these two env vars once to
+create your own admin login, then unset them — every later boot uses the
+account already in the DB:
 
 - `BOOTSTRAP_ADMIN_USER`
 - `BOOTSTRAP_ADMIN_PASSWORD`
@@ -30,7 +39,6 @@ Everything else is **optional**, for legacy/extra functionality only:
 | `PUB_ECON_FOLDER_ID`, `FINALQ_SHEET_ID`, `CRED_CSV`, `CRED_PATH` | flex_pass_actions | Legacy alternate credential sources |
 | `DB_PATH_OVERRIDE` | coordination-games | Override the shared DB path |
 | `SHINY_PASSWORD` | bonus-entry, class-job-picker, club-insurance-game | Shared admin password for those apps |
-| `CONNECT_CONTENT_DIR` | nearly every app | Where the shared `data/` dir lives (set once for the whole container) |
 
 See `MULTI_TENANT_TODO.md` for the (not yet started) plan to let other
 professors run their own classes on one shared deployment.

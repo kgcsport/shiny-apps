@@ -1,11 +1,18 @@
 services:
   shiny:
     image: ghcr.io/kgcsport/shiny-apps:latest
+    build: .
     restart: always
     ports:
       - "80:3838"
     volumes:
-      - ./google_application_credentials.json:/run/secrets/gcp.json:ro
+      # Optional: only needed if you want Google Drive backups/Sheets sync
+      # via a credentials *file*. Simpler alternative: set
+      # GOOGLE_SERVICE_ACCOUNT_JSON (the raw JSON content) in .env instead —
+      # no file or mount required. Uncomment below if you specifically want
+      # the file-based path and have google_application_credentials.json
+      # in this directory:
+      # - ./google_application_credentials.json:/run/secrets/gcp.json:ro
       - ./appdata:/srv/shiny-server/appdata
       - ./shiny-server.conf:/etc/shiny-server/shiny-server.conf:ro
       - ./shiny-logs:/var/log/shiny-server
