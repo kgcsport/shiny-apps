@@ -25,15 +25,12 @@ logf <- function(...) {
 
 APP_CONFIG <- list(
   folder_id      = Sys.getenv("AUCTION_FOLDER_ID", ""),      # Drive folder for THIS auction app backups
-  flex_folder_id = Sys.getenv("FLEX_PASS_FOLDER_ID", ""),     # Drive folder where flex_pass_actions backups live
-  cred_db_path   = "finalqdata_latest_backup.zip",
   gsa_json       = Sys.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", ""),
   gsa_path       = Sys.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 )
 
 logf("CONFIG:",
      "AUCTION_FOLDER_ID present:", nzchar(APP_CONFIG$folder_id),
-     "| FLEX_PASS_FOLDER_ID present:", nzchar(APP_CONFIG$flex_folder_id),
      "| gsa_json present:", nzchar(APP_CONFIG$gsa_json),
      "| gsa_path:", APP_CONFIG$gsa_path)
 
@@ -91,10 +88,8 @@ google_auth <- function() {
 }
 
 drive_folder_id <- function() APP_CONFIG$folder_id
-flex_folder_id  <- function() APP_CONFIG$flex_folder_id
 
 latest_zip_name <- function() "auction_latest_backup.zip"
-FLEX_LATEST_ZIP <- APP_CONFIG$cred_db_path
 
 # ---- Drive helpers ----
 drive_ls_with_times <- function(folder_id) {
@@ -229,33 +224,27 @@ restore_db_from_drive <- function(filename = latest_zip_name()) {
   TRUE
 }
 
-# ---- Credentials: READ ONLY from flex-pass game Drive snapshot ----
-read_credentials_from_flex_snapshot <- function() {
-  if (!google_auth()) stop("read_credentials_from_flex_snapshot(): google_auth() failed")
-  folder <- flex_folder_id()
-  if (!nzchar(folder)) stop("read_credentials_from_flex_snapshot(): FLEX_PASS_FOLDER_ID not set")
+# ---- Credentials: read directly from the shared finalqdata.sqlite ----
+# Every other app in this monorepo (price-index, class-job-picker, etc.)
+# reads `users` straight from the shared DB instead of via a Drive backup.
+# Doing the same here removes the hard Google Drive dependency for login
+# and the staleness lag of waiting on the next snapshot.
+SHARED_DB_PATH <- local({
+  root <- Sys.getenv("CONNECT_CONTENT_DIR", unset = {
+    # local dev: walk up to sibling app directory
+    file.path(dirname(normalizePath(getwd())), "flex_pass_actions")
+  })
+  file.path(root, "data", "finalqdata.sqlite")
+})
 
-  info <- pick_latest_file_id(folder, FLEX_LATEST_ZIP)
-  if (!nzchar(info$id) || is.na(info$id)) stop("No credentials snapshot found named ", FLEX_LATEST_ZIP)
-
-  zipfile <- file.path(tempdir(), FLEX_LATEST_ZIP)
-  googledrive::drive_download(file = info$id, path = zipfile, overwrite = TRUE)
-
-  exdir <- file.path(tempdir(), paste0("flexcred_", as.integer(Sys.time())))
-  dir.create(exdir, recursive = TRUE, showWarnings = FALSE)
-  utils::unzip(zipfile, exdir = exdir)
-
-  dbs <- list.files(exdir, pattern = "\\.sqlite$", full.names = TRUE, recursive = TRUE)
-  if (!length(dbs)) stop("Could not find any .sqlite inside ", FLEX_LATEST_ZIP)
-
-  cred_db <- dbs[1]
-  con <- DBI::dbConnect(RSQLite::SQLite(), cred_db)
+read_shared_users <- function() {
+  con <- DBI::dbConnect(RSQLite::SQLite(), SHARED_DB_PATH)
   on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
 
   cols <- DBI::dbGetQuery(con, "PRAGMA table_info(users);")
   need <- c("user_id", "display_name", "pw_hash", "is_admin")
   if (!all(need %in% cols$name)) {
-    stop("Credentials DB users table missing columns: ", paste(setdiff(need, cols$name), collapse = ", "))
+    stop("Shared users table missing columns: ", paste(setdiff(need, cols$name), collapse = ", "))
   }
 
   has_active <- "active" %in% cols$name
@@ -271,8 +260,8 @@ read_credentials_from_flex_snapshot <- function() {
       active = if (has_active) ifelse(is.na(active), 1L, as.integer(active)) else 1L
     )
 
-  logf("Users in credentials DB: ", paste(u$user_id, collapse = ", "))
-  list(users = u, snapshot_when = info$when %||% NA_character_)
+  logf("Users in shared DB: ", paste(u$user_id, collapse = ", "))
+  list(users = u, snapshot_when = format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
 }
 
 # ---- SQLite connection (auction db) ----
@@ -519,13 +508,13 @@ server <- function(input, output, session) {
   # Ensure schema exists
   init_db()
 
-  # Load credentials from flex snapshot
+  # Load credentials from the shared finalqdata.sqlite
   cred_cache <- reactiveValues(users = NULL, when = NA_character_)
   refresh_creds <- function() {
-    out <- read_credentials_from_flex_snapshot()
+    out <- read_shared_users()
     cred_cache$users <- out$users
     cred_cache$when  <- out$snapshot_when
-    logf("Loaded credentials:", nrow(out$users), "| snapshot when:", out$snapshot_when %||% "NA")
+    logf("Loaded credentials:", nrow(out$users), "| fetched at:", out$snapshot_when %||% "NA")
   }
   tryCatch(refresh_creds(), error = function(e) {
     logf("Credential load failed:", conditionMessage(e))
@@ -587,7 +576,7 @@ server <- function(input, output, session) {
             h3("Clock Auction"),
             p(class="muted",
               "Price ticks up automatically. Click 'Accept' if you're willing to buy one unit at the current price."),
-            p(class="muted", paste0("Credentials snapshot time: ", cred_cache$when %||% "NA")),
+            p(class="muted", paste0("Roster last loaded: ", cred_cache$when %||% "NA")),
             if (!drive_enabled()) p(class="muted", "Drive backups: OFF (local dev / missing env vars)"),
             if (drive_enabled())  p(class="muted", "Drive backups: ON (backup occurs on Accept/Start/Stop/Round/Manual)"),
             uiOutput("auction_status"),
@@ -766,7 +755,7 @@ server <- function(input, output, session) {
           br(), br(),
           actionButton("reset_btn", "RESET auction (clears accepts + resets state)", class="btn-danger"),
           br(), br(),
-          actionButton("refresh_creds", "Refresh credentials from FLEX snapshot", class="btn-default"),
+          actionButton("refresh_creds", "Refresh roster from shared database", class="btn-default"),
           verbatimTextOutput("admin_msg")
         )
       )
@@ -869,7 +858,7 @@ server <- function(input, output, session) {
     req(authed(), is_admin())
     tryCatch({
       refresh_creds()
-      admin_msg(paste0("Refreshed credentials. Snapshot time: ", cred_cache$when %||% "NA"))
+      admin_msg(paste0("Refreshed roster. Loaded at: ", cred_cache$when %||% "NA"))
     }, error = function(e) admin_msg(paste0("ERROR: ", conditionMessage(e))))
   })
 

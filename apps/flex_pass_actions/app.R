@@ -830,8 +830,27 @@ CRED <- tryCatch(
       logf("Loaded", nrow(rows), "users from DB fallback (Google Sheets unavailable)")
       rows
     } else {
-      stop("No credentials available. Google Sheets error: ", conditionMessage(e),
-           " | DB also empty or unavailable.")
+      # Zero-config bootstrap: lets a brand-new deployment (empty DB, no
+      # Google Sheets configured) create its first admin account without
+      # any Google Cloud setup at all. Once that admin exists, every
+      # future restart hits the DB fallback above instead.
+      boot_user <- Sys.getenv("BOOTSTRAP_ADMIN_USER", "")
+      boot_pw   <- Sys.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+      if (nzchar(boot_user) && nzchar(boot_pw)) {
+        logf("Bootstrapping first admin account from BOOTSTRAP_ADMIN_USER/PASSWORD:", boot_user)
+        data.frame(
+          user     = boot_user,
+          name     = Sys.getenv("BOOTSTRAP_ADMIN_NAME", boot_user),
+          pw_hash  = bcrypt::hashpw(boot_pw),
+          is_admin = TRUE,
+          stringsAsFactors = FALSE
+        )
+      } else {
+        stop("No credentials available. Google Sheets error: ", conditionMessage(e),
+             " | DB also empty or unavailable.",
+             " | To bootstrap a fresh deployment without Google Sheets, set",
+             " BOOTSTRAP_ADMIN_USER and BOOTSTRAP_ADMIN_PASSWORD.")
+      }
     }
   }
 )
