@@ -64,11 +64,13 @@ setting_defaults <- list(
   public_good_enabled = "1",
   reweight_good_enabled = "1",
   extension_prices_json = '{"24":3,"48":5}',
-  extension_price_per_hour = "0",
+  extension_price_per_hour = "0.125",
+  extension_hour_increment = "24",
   extension_max_hours = "48",
   extension_allow_after_solutions = "0",
   public_good_multiplier = "1.5",
   public_good_manual_threshold = "",
+  public_good_threshold_formula = "enrolled_students * 1.5",
   reweight_cost_schedule = "1:2,2:5,3:9,4:14,5:20",
   grade_reweight_categories = "Homework,Midterm,Final",
   initial_category_wage = "3",
@@ -713,6 +715,14 @@ extension_cost <- function(hours) {
   if (nrow(hit)) hit$price[1] else NA_real_
 }
 
+extension_hour_choices <- function() {
+  max_hours <- max(1, num0(get_setting("extension_max_hours", 48)))
+  inc <- max(1, num0(get_setting("extension_hour_increment", 24)))
+  choices <- seq(inc, max_hours, by = inc)
+  if (!length(choices)) choices <- max_hours
+  choices
+}
+
 can_buy_extension <- function(ps, hours) {
   if (!nrow(ps)) return("Problem set not found.")
   if (num0(hours) > num0(get_setting("extension_max_hours", 48))) return("Requested hours exceed the configured maximum.")
@@ -733,10 +743,41 @@ public_good_threshold <- function(pg_id) {
   pg <- db_query("SELECT * FROM public_goods WHERE id=?", list(pg_id))
   if (!nrow(pg)) return(0)
   if (!is.na(num0(pg$threshold[1])) && num0(pg$threshold[1]) > 0) return(num0(pg$threshold[1]))
-  manual <- get_setting("public_good_manual_threshold", "")
-  if (nzchar(manual)) return(num0(manual))
   enrolled <- db_query("SELECT COUNT(*) n FROM students WHERE COALESCE(active,1)=1;")$n[1]
-  enrolled * num0(get_setting("public_good_multiplier", 1.5))
+  multiplier <- num0(get_setting("public_good_multiplier", 1.5))
+  formula <- get_setting("public_good_threshold_formula", "enrolled_students * 1.5")
+  val <- tryCatch(
+    eval(parse(text = formula), envir = list(enrolled_students = enrolled, multiplier = multiplier, n = enrolled)),
+    error = function(e) NA_real_
+  )
+  val <- num0(val)
+  if (val > 0) val else enrolled * multiplier
+}
+
+parse_named_numbers <- function(txt) {
+  parts <- trimws(strsplit(txt %||% "", ",")[[1]])
+  parts <- parts[nzchar(parts)]
+  out <- list()
+  for (p in parts) {
+    bits <- trimws(strsplit(p, ":", fixed = TRUE)[[1]])
+    if (length(bits) == 2 && nzchar(bits[1])) out[[bits[1]]] <- num0(bits[2])
+  }
+  out
+}
+
+live_wage_settings <- function() {
+  x <- tryCatch(jsonlite::fromJSON(get_setting("live_wages_json", "{}")), error = function(e) list())
+  if (!length(x)) x <- jsonlite::fromJSON(setting_defaults$live_wages_json)
+  if (is.null(x[["voluntary contribution"]])) x[["voluntary contribution"]] <- x[["answer/comment"]] %||% 1
+  x
+}
+
+save_live_wage <- function(event_type, wage) {
+  event_type <- trimws(event_type %||% "")
+  if (!nzchar(event_type)) stop("Choose or enter an event type.")
+  x <- live_wage_settings()
+  x[[event_type]] <- num0(wage)
+  set_setting("live_wages_json", jsonlite::toJSON(x, auto_unbox = TRUE))
 }
 
 reweight_cost <- function(points) {
@@ -810,13 +851,19 @@ csv_download <- function(table_name, filename) {
 init_db()
 
 CSS <- "
-body { font-size: 15px; }
+body { font-size: 14px; }
 .btn-primary { background-color:#951829; border-color:#7a1221; }
 .btn-success { background-color:#2d6a4f; border-color:#245c43; }
-.panel { background:#fff; border:1px solid #ddd; border-radius:8px; padding:12px; margin:10px 0; }
-.metric { border:1px solid #ddd; border-radius:8px; padding:10px; min-height:74px; }
-.metric .value { font-size:24px; font-weight:700; }
+.container-fluid { max-width: 1500px; }
+.panel { background:#fff; border:1px solid #ddd; border-radius:8px; padding:10px; margin:8px 0; }
+.metric { border:1px solid #ddd; border-radius:8px; padding:8px; min-height:64px; }
+.metric .value { font-size:22px; font-weight:700; }
 .muted { color:#666; }
+.helptext { color:#555; margin:4px 0 10px; }
+.compact-row .form-group { margin-bottom:6px; }
+.spend-panel { display:none; }
+.spend-panel.active { display:block; }
+details.panel summary { cursor:pointer; font-weight:600; }
 .wide-control .form-group { margin-bottom:8px; }
 "
 
@@ -881,6 +928,14 @@ server <- function(input, output, session) {
     setNames(r$id, paste0("#", r$id, " - ", r$label, " (", r$assignment_mode, ")"))
   })
 
+  round_choices_for_mode <- function(mode) {
+    refresh_key()
+    r <- rounds_df()
+    r <- r[r$assignment_mode == mode, , drop = FALSE]
+    if (!nrow(r)) return(character(0))
+    setNames(r$id, paste0("#", r$id, " - ", r$label))
+  }
+
   output$role_banner <- renderUI({
     if (authed_admin()) {
       div(class = "muted", "Instructor view")
@@ -902,11 +957,10 @@ server <- function(input, output, session) {
         tabPanel("Dashboard", uiOutput("dashboard_ui")),
         tabPanel("Job setup", uiOutput("job_setup_ui")),
         tabPanel("Assignment runner", uiOutput("runner_ui")),
-        tabPanel("Wage bids", uiOutput("wage_admin_ui")),
-        tabPanel("Application bids", uiOutput("app_admin_ui")),
+        tabPanel("Bid assignment", uiOutput("bid_admin_ui")),
         tabPanel("Live tracker", uiOutput("live_ui")),
         tabPanel("Job completion", uiOutput("completion_ui")),
-        tabPanel("Token ledger", DTOutput("ledger_table")),
+        tabPanel("Token ledger", uiOutput("ledger_ui")),
         tabPanel("Public goods", uiOutput("public_goods_ui")),
         tabPanel("Extensions", uiOutput("extensions_ui")),
         tabPanel("Grade reweighting", uiOutput("reweight_admin_ui")),
@@ -916,12 +970,10 @@ server <- function(input, output, session) {
     } else {
       tabsetPanel(
         tabPanel("My jobs", uiOutput("student_jobs_ui")),
-        tabPanel("Wage bids", uiOutput("student_wage_ui")),
-        tabPanel("Application bids", uiOutput("student_app_ui")),
+        tabPanel("Bids", uiOutput("student_bids_ui")),
         tabPanel("My tokens", uiOutput("student_tokens_ui")),
         tabPanel("Spend tokens", uiOutput("student_spend_ui")),
-        tabPanel("Public good status", uiOutput("student_public_ui")),
-        tabPanel("Reweighting preview", uiOutput("student_reweight_ui"))
+        tabPanel("Public good status", uiOutput("student_public_ui"))
       )
     }
   })
@@ -936,6 +988,7 @@ server <- function(input, output, session) {
       column(3, div(class = "metric", "Spendable", div(class = "value", round(sum(b$spendable_balance), 1)))),
       column(3, div(class = "metric", "Rounds", div(class = "value", nrow(r))))
     ) %>% tagList(
+      p(class = "helptext", "Audit balances here. Lifetime earned drives participation credit; spendable balance is what students can spend."),
       h4("Balances"),
       DTOutput("balances_table")
     )
@@ -951,6 +1004,7 @@ server <- function(input, output, session) {
     cats <- db_query("SELECT * FROM job_categories ORDER BY display_order, name;")
     rounds <- round_choices()
     tagList(
+      p(class = "helptext", "Create a weekly round, maintain job categories and wages, then post the exact jobs students can be assigned to."),
       fluidRow(
         column(4, div(class = "panel",
           h4("Create weekly round"),
@@ -1058,6 +1112,7 @@ server <- function(input, output, session) {
 
   output$runner_ui <- renderUI({
     tagList(
+      p(class = "helptext", "Preview random assignments for the selected round. Commit only after the preview looks right."),
       div(class = "panel",
         selectInput("runner_round", "Round", choices = round_choices()),
         actionButton("preview_random", "Preview random assignment", class = "btn-primary"),
@@ -1096,9 +1151,13 @@ server <- function(input, output, session) {
   })
 
   output$wage_admin_ui <- renderUI({
+    wage_rounds <- round_choices_for_mode("wage_bidding")
+    if (!length(wage_rounds)) return(NULL)
     tagList(
+      p(class = "helptext", "Preview wage-bid clearing by category. Accepted students fill posted job slots under the selected wage rule."),
       div(class = "panel",
-        selectInput("wage_round", "Round", choices = round_choices()),
+        h4("Wage bidding"),
+        selectInput("wage_round", "Round", choices = wage_rounds),
         selectInput("wage_rule", "Rule", c("pay_as_bid", "highest_accepted_bid", "lowest_rejected_bid", "median_bid", "instructor_override"), selected = get_setting("wage_clearing_rule", "highest_accepted_bid")),
         numericInput("wage_override", "Instructor override wage", value = num0(get_setting("initial_category_wage", 3)), min = 0, step = 0.5),
         actionButton("preview_wage", "Preview clearing", class = "btn-primary"),
@@ -1124,10 +1183,27 @@ server <- function(input, output, session) {
     datatable(wage_preview(), rownames = FALSE, options = list(pageLength = 30))
   })
 
-  output$app_admin_ui <- renderUI({
+  output$bid_admin_ui <- renderUI({
+    has_wage <- length(round_choices_for_mode("wage_bidding")) > 0
+    has_app <- length(round_choices_for_mode("application_bidding")) > 0
+    if (!has_wage && !has_app) {
+      return(p(class = "helptext", "No bidding rounds are active. Create a wage-bidding or application-bidding round on Job setup."))
+    }
     tagList(
+      p(class = "helptext", "Use this page only for rounds that collect bids. Random-assignment rounds do not need a bid workflow."),
+      uiOutput("wage_admin_ui"),
+      uiOutput("app_admin_ui")
+    )
+  })
+
+  output$app_admin_ui <- renderUI({
+    app_rounds <- round_choices_for_mode("application_bidding")
+    if (!length(app_rounds)) return(NULL)
+    tagList(
+      p(class = "helptext", "Preview weighted-random assignments from application tickets. Round settings control duplicate jobs and unfilled slots."),
       div(class = "panel",
-        selectInput("app_round", "Round", choices = round_choices()),
+        h4("Application bidding"),
+        selectInput("app_round", "Round", choices = app_rounds),
         actionButton("preview_app_assign", "Preview ticket assignment", class = "btn-primary"),
         actionButton("commit_app_assign", "Commit ticket assignments", class = "btn-success")
       ),
@@ -1151,9 +1227,7 @@ server <- function(input, output, session) {
   })
 
   live_wages <- reactive({
-    x <- tryCatch(jsonlite::fromJSON(get_setting("live_wages_json", "{}")), error = function(e) list(other = 1))
-    if (is.null(x[["voluntary contribution"]])) x[["voluntary contribution"]] <- x[["answer/comment"]] %||% 1
-    x
+    live_wage_settings()
   })
 
   log_live_participation <- function(user_id, event_type, credit = "full", note = "") {
@@ -1174,6 +1248,7 @@ server <- function(input, output, session) {
     ev <- names(live_wages())
     stu <- roster()
     tagList(
+      p(class = "helptext", "Choose the event type once, then click a student for full-credit live participation. Use the lower form for half/no wage or notes."),
       div(class = "panel",
         selectInput("live_event", "Event type", choices = ev),
         h4("Quick full-credit log"),
@@ -1222,17 +1297,20 @@ server <- function(input, output, session) {
     rows <- assignments_df()
     rows <- rows[is.na(rows$awarded_ledger_id) | rows$status != "closed", , drop = FALSE]
     if (!nrow(rows)) return(p("No open assignments."))
-    tagList(lapply(seq_len(nrow(rows)), function(i) {
-      id <- rows$id[i]
-      div(class = "panel",
-        strong(paste(rows$display_name[i], "-", rows$job_name[i])),
-        span(class = "muted", sprintf(" wage %.1f, round %s", rows$assigned_wage[i], rows$round_label[i])),
-        br(),
-        actionButton(paste0("complete_", id), "Complete", class = "btn-success"),
-        actionButton(paste0("tried_", id), "Tried"),
-        actionButton(paste0("missed_", id), "Missed")
-      )
-    }))
+    tagList(
+      p(class = "helptext", "Close each assigned job as Complete, Tried, or Missed. Complete and Tried write earning transactions to the token ledger."),
+      lapply(seq_len(nrow(rows)), function(i) {
+        id <- rows$id[i]
+        div(class = "panel",
+          strong(paste(rows$display_name[i], "-", rows$job_name[i])),
+          span(class = "muted", sprintf(" wage %.1f, round %s", rows$assigned_wage[i], rows$round_label[i])),
+          br(),
+          actionButton(paste0("complete_", id), "Complete", class = "btn-success"),
+          actionButton(paste0("tried_", id), "Tried"),
+          actionButton(paste0("missed_", id), "Missed")
+        )
+      })
+    )
   })
 
   observe({
@@ -1263,14 +1341,22 @@ server <- function(input, output, session) {
     datatable(db_query("SELECT * FROM token_ledger ORDER BY id DESC;"), rownames = FALSE, options = list(pageLength = 30))
   })
 
+  output$ledger_ui <- renderUI({
+    tagList(
+      p(class = "helptext", "Audit every token transaction. Positive earning rows count toward lifetime earned; negative spending rows reduce only spendable balance."),
+      DTOutput("ledger_table")
+    )
+  })
+
   output$public_goods_ui <- renderUI({
     if (int0(get_setting("public_good_enabled", 1)) != 1L) return(p("Public-good token spending is disabled."))
     tagList(
+      p(class = "helptext", "Create public-good funds and track class progress. Leave the fund-specific threshold at 0 to use the Settings formula."),
       div(class = "panel",
         h4("Create public good"),
         textInput("pg_name", "Name", value = "Exam-style reveal fund"),
         textAreaInput("pg_desc", "Description", rows = 2),
-        numericInput("pg_threshold", "Manual threshold (0 uses formula)", value = 0, min = 0, step = 1),
+        numericInput("pg_threshold", "Fund-specific threshold (0 uses formula)", value = 0, min = 0, step = 1),
         actionButton("create_pg", "Create", class = "btn-primary")
       ),
       DTOutput("pg_table")
@@ -1304,6 +1390,7 @@ server <- function(input, output, session) {
   output$extensions_ui <- renderUI({
     if (int0(get_setting("extension_good_enabled", 1)) != 1L) return(p("Problem set extensions are disabled."))
     tagList(
+      p(class = "helptext", "Create problem sets that students can buy extensions for. Timing rules and price-per-hour live in Settings."),
       div(class = "panel",
         h4("Problem set setup"),
         textInput("ps_name", "Problem set", value = "PS1"),
@@ -1341,6 +1428,7 @@ server <- function(input, output, session) {
   output$reweight_admin_ui <- renderUI({
     if (int0(get_setting("reweight_good_enabled", 1)) != 1L) return(p("Grade reweighting is disabled."))
     tagList(
+      p(class = "helptext", "Maintain grade categories and current weights for the reweighting calculator. Participation is always excluded."),
       div(class = "panel",
         h4("Grade categories"),
         textInput("gc_name", "Name"),
@@ -1372,9 +1460,12 @@ server <- function(input, output, session) {
   output$rw_requests_table <- renderDT({ refresh_key(); datatable(db_query("SELECT * FROM grade_reweight_requests ORDER BY id DESC;"), rownames = FALSE) })
 
   output$settings_ui <- renderUI({
+    refresh_key()
     s <- settings_list()
+    wages <- live_wage_settings()
     tagList(
       div(class = "panel",
+        p(class = "helptext", "Adjust the defaults that drive rounds, awards, and token spending. Use the small editors below instead of raw configuration text."),
         fluidRow(
           column(4, textInput("set_token_name", "Token name", value = s$token_name)),
           column(4, textInput("set_thresholds", "Participation thresholds", value = s$participation_thresholds)),
@@ -1391,16 +1482,29 @@ server <- function(input, output, session) {
           column(4, checkboxInput("set_pg_enabled", "Enable public goods", int0(s$public_good_enabled) == 1L)),
           column(4, checkboxInput("set_rw_enabled", "Enable grade reweighting", int0(s$reweight_good_enabled) == 1L))
         ),
-        textAreaInput("set_live_wages", "Live spot wages JSON", value = s$live_wages_json, rows = 3),
-        textAreaInput("set_ext_prices", "Extension fixed prices JSON", value = s$extension_prices_json, rows = 2),
-        fluidRow(
-          column(4, numericInput("set_ext_pph", "Extension price per hour (0 uses fixed)", value = num0(s$extension_price_per_hour), min = 0, step = 0.1)),
-          column(4, numericInput("set_ext_max", "Max extension hours", value = num0(s$extension_max_hours), min = 0, step = 1)),
-          column(4, checkboxInput("set_after_solutions", "Allow after solutions posted", int0(s$extension_allow_after_solutions) == 1L))
+        hr(),
+        h4("Live spot wages"),
+        p(class = "helptext", "Choose an existing event or type a new one, then set the full-credit token award."),
+        fluidRow(class = "compact-row",
+          column(4, selectInput("set_live_event", "Existing event", choices = names(wages))),
+          column(4, textInput("set_live_event_new", "New event name", value = "")),
+          column(2, numericInput("set_live_wage", "Wage", value = num0(wages[[1]]), min = 0, step = 0.5)),
+          column(2, br(), actionButton("save_live_wage", "Save wage", class = "btn-primary"))
         ),
+        tableOutput("spot_wage_table"),
+        hr(),
+        h4("Extensions"),
+        p(class = "helptext", "Students buy hours in the configured increment. Cost equals hours times cost per hour."),
         fluidRow(
-          column(4, numericInput("set_pg_mult", "Public-good enrolled multiplier", value = num0(s$public_good_multiplier), min = 0, step = 0.1)),
-          column(4, textInput("set_pg_manual", "Public-good manual threshold", value = s$public_good_manual_threshold)),
+          column(4, numericInput("set_ext_pph", "Extension cost per hour", value = num0(s$extension_price_per_hour), min = 0, step = 0.01)),
+          column(4, numericInput("set_ext_increment", "Purchasable hour increment", value = num0(s$extension_hour_increment %||% 24), min = 1, step = 1)),
+          column(4, numericInput("set_ext_max", "Max extension hours", value = num0(s$extension_max_hours), min = 0, step = 1)),
+          column(12, checkboxInput("set_after_solutions", "Allow purchases after solutions are posted", int0(s$extension_allow_after_solutions) == 1L))
+        ),
+        hr(),
+        h4("Public goods and reweighting"),
+        fluidRow(
+          column(6, textInput("set_pg_formula", "Public-good threshold formula", value = s$public_good_threshold_formula %||% "enrolled_students * 1.5")),
           column(4, textInput("set_rw_schedule", "Reweight cost schedule", value = s$reweight_cost_schedule))
         ),
         textInput("set_rw_categories", "Eligible reweight category names", value = s$grade_reweight_categories),
@@ -1421,13 +1525,11 @@ server <- function(input, output, session) {
       extension_good_enabled = int0(input$set_ext_enabled),
       public_good_enabled = int0(input$set_pg_enabled),
       reweight_good_enabled = int0(input$set_rw_enabled),
-      live_wages_json = input$set_live_wages,
-      extension_prices_json = input$set_ext_prices,
       extension_price_per_hour = input$set_ext_pph,
+      extension_hour_increment = input$set_ext_increment,
       extension_max_hours = input$set_ext_max,
       extension_allow_after_solutions = int0(input$set_after_solutions),
-      public_good_multiplier = input$set_pg_mult,
-      public_good_manual_threshold = input$set_pg_manual,
+      public_good_threshold_formula = input$set_pg_formula,
       reweight_cost_schedule = input$set_rw_schedule,
       grade_reweight_categories = input$set_rw_categories
     )
@@ -1436,8 +1538,34 @@ server <- function(input, output, session) {
     touch()
   })
 
+  observeEvent(input$set_live_event, {
+    wages <- live_wage_settings()
+    ev <- input$set_live_event %||% names(wages)[1]
+    updateNumericInput(session, "set_live_wage", value = num0(wages[[ev]]))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$save_live_wage, {
+    ev <- trimws(input$set_live_event_new %||% "")
+    if (!nzchar(ev)) ev <- input$set_live_event
+    out <- tryCatch(save_live_wage(ev, input$set_live_wage), error = function(e) e)
+    if (inherits(out, "error")) {
+      showNotification(out$message, type = "error")
+      return()
+    }
+    updateTextInput(session, "set_live_event_new", value = "")
+    showNotification("Spot wage saved.", type = "message")
+    touch()
+  })
+
+  output$spot_wage_table <- renderTable({
+    refresh_key()
+    wages <- live_wage_settings()
+    data.frame(event = names(wages), wage = as.numeric(unlist(wages)), row.names = NULL)
+  }, striped = TRUE, hover = TRUE)
+
   output$exports_ui <- renderUI({
     tagList(
+      p(class = "helptext", "Download raw CSV snapshots for auditing, backup, or spreadsheet review."),
       downloadButton("dl_students", "students.csv"),
       downloadButton("dl_rounds", "weekly_rounds.csv"),
       downloadButton("dl_jobs", "job_posts.csv"),
@@ -1473,7 +1601,11 @@ server <- function(input, output, session) {
     uid <- student_user()
     rows <- assignments_df()
     rows <- rows[rows$user_id == uid, , drop = FALSE]
-    tagList(h4("My jobs"), DTOutput("student_jobs_table"))
+    tagList(
+      p(class = "helptext", "See your assigned jobs, posted wages, completion status, and tokens awarded."),
+      h4("My jobs"),
+      DTOutput("student_jobs_table")
+    )
   })
   output$student_jobs_table <- renderDT({
     refresh_key()
@@ -1484,10 +1616,14 @@ server <- function(input, output, session) {
 
   output$student_wage_ui <- renderUI({
     refresh_key()
+    wage_rounds <- round_choices_for_mode("wage_bidding")
+    if (!length(wage_rounds)) return(NULL)
     cats <- db_query("SELECT * FROM job_categories WHERE COALESCE(active,1)=1 ORDER BY display_order, name;")
     tagList(
+      p(class = "helptext", "Submit the lowest wage you would accept for a category. If wage bidding is used, lower bids clear first."),
       div(class = "panel",
-        selectInput("stu_wage_round", "Round", choices = round_choices()),
+        h4("Wage bidding"),
+        selectInput("stu_wage_round", "Round", choices = wage_rounds),
         selectInput("stu_wage_cat", "Job category", choices = setNames(cats$id, cats$name)),
         numericInput("stu_min_wage", "Minimum wage", value = 1, min = 0, step = 0.5),
         actionButton("submit_wage_bid", "Submit bid", class = "btn-primary")
@@ -1515,12 +1651,29 @@ server <- function(input, output, session) {
     ", list(student_user())), rownames = FALSE)
   })
 
+  output$student_bids_ui <- renderUI({
+    has_wage <- length(round_choices_for_mode("wage_bidding")) > 0
+    has_app <- length(round_choices_for_mode("application_bidding")) > 0
+    if (!has_wage && !has_app) {
+      return(p(class = "helptext", "No bidding rounds are open. For random-assignment rounds, you do not need to submit bids."))
+    }
+    tagList(
+      p(class = "helptext", "Submit bids only for the assignment method used by the selected round. If your class uses both methods in different rounds, both panels appear here."),
+      uiOutput("student_wage_ui"),
+      uiOutput("student_app_ui")
+    )
+  })
+
   output$student_app_ui <- renderUI({
     refresh_key()
+    app_rounds <- round_choices_for_mode("application_bidding")
+    if (!length(app_rounds)) return(NULL)
     cats <- db_query("SELECT * FROM job_categories WHERE COALESCE(active,1)=1 ORDER BY display_order, name;")
     tagList(
+      p(class = "helptext", "Allocate your round tickets across job pools. More tickets means a higher chance in that pool."),
       div(class = "panel",
-        selectInput("stu_app_round", "Round", choices = round_choices()),
+        h4("Application bidding"),
+        selectInput("stu_app_round", "Round", choices = app_rounds),
         selectInput("stu_app_cat", "Job pool", choices = setNames(cats$id, cats$name)),
         numericInput("stu_tickets", "Tickets", value = 1, min = 0, step = 1),
         actionButton("submit_app_bid", "Allocate tickets", class = "btn-primary")
@@ -1562,6 +1715,7 @@ server <- function(input, output, session) {
     refresh_key()
     bal <- student_balance(student_user())
     tagList(
+      p(class = "helptext", "Lifetime earned counts toward participation credit. Spendable balance can be used for enabled token goods."),
       fluidRow(
         column(6, div(class = "metric", "Lifetime earned", div(class = "value", round(bal$lifetime_earned[1], 1)))),
         column(6, div(class = "metric", "Spendable balance", div(class = "value", round(bal$spendable_balance[1], 1))))
@@ -1574,31 +1728,81 @@ server <- function(input, output, session) {
     datatable(db_query("SELECT amount, earning, source_type, note, created_at FROM token_ledger WHERE user_id=? ORDER BY id DESC;", list(student_user())), rownames = FALSE)
   })
 
+  output$extension_cost_preview <- renderUI({
+    req(input$buy_hours)
+    cost <- extension_cost(num0(input$buy_hours))
+    if (is.na(cost)) return(p(class = "muted", "No cost is configured for this extension length."))
+    p(class = "muted", sprintf("Cost: %.2f tokens", cost))
+  })
+
   output$student_spend_ui <- renderUI({
     s <- settings_list()
-    pieces <- list()
+    goods <- c()
+    panels <- list()
     if (int0(s$extension_good_enabled) == 1L) {
       ps <- db_query("SELECT * FROM problem_sets WHERE COALESCE(active,1)=1 ORDER BY id DESC;")
-      prices <- parse_prices()
-      hours_choices <- if (nrow(prices)) prices$hours else c(24, 48)
-      pieces[[length(pieces) + 1]] <- div(class = "panel",
+      hours_choices <- extension_hour_choices()
+      goods <- c(goods, "Problem set extension" = "extension")
+      panels[[length(panels) + 1]] <- conditionalPanel(
+        "input.spend_good == 'extension'",
+        div(class = "panel",
         h4("Problem set extension"),
+        p(class = "helptext", "Choose a problem set and extension length. The purchase writes a negative token transaction and does not change lifetime earned tokens."),
         selectInput("buy_ps", "Problem set", choices = setNames(ps$id, ps$name)),
         selectInput("buy_hours", "Hours", choices = hours_choices),
+        uiOutput("extension_cost_preview"),
         actionButton("buy_extension", "Purchase extension", class = "btn-primary")
+      )
       )
     }
     if (int0(s$public_good_enabled) == 1L) {
       pgs <- db_query("SELECT * FROM public_goods WHERE COALESCE(active,1)=1 ORDER BY id DESC;")
-      pieces[[length(pieces) + 1]] <- div(class = "panel",
+      goods <- c(goods, "Public good contribution" = "public_good")
+      panels[[length(panels) + 1]] <- conditionalPanel(
+        "input.spend_good == 'public_good'",
+        div(class = "panel",
         h4("Public good contribution"),
+        p(class = "helptext", "Contribute spendable tokens to a class fund. Contributions reduce spendable balance only."),
         selectInput("contrib_pg", "Fund", choices = setNames(pgs$id, pgs$name)),
         numericInput("contrib_amount", "Tokens", value = 1, min = 0, step = 1),
         actionButton("make_contribution", "Contribute", class = "btn-primary")
       )
+      )
     }
-    if (!length(pieces)) pieces <- list(p("Token goods are currently disabled."))
-    tagList(pieces)
+    if (int0(s$reweight_good_enabled) == 1L) {
+      cats <- eligible_grade_categories()
+      goods <- c(goods, "Grade reweighting" = "reweight")
+      panels[[length(panels) + 1]] <- conditionalPanel(
+        "input.spend_good == 'reweight'",
+        div(class = "panel",
+          h4("Grade reweighting"),
+          p(class = "helptext", "Preview a weight shift, test grade hypotheticals, then submit to spend tokens. Participation is excluded."),
+          fluidRow(
+            column(4, selectInput("rw_from", "Shift weight from", choices = cats$name)),
+            column(4, selectInput("rw_to", "Shift weight to", choices = cats$name)),
+            column(4, numericInput("rw_points", "Percentage points", value = 1, min = 0, step = 1))
+          ),
+          actionButton("preview_rw", "Preview reweighting", class = "btn-primary"),
+          actionButton("submit_rw", "Submit and spend", class = "btn-success"),
+          uiOutput("rw_preview_ui"),
+          tableOutput("rw_preview_weights"),
+          tags$details(class = "panel", open = TRUE,
+            tags$summary("Grade calculator"),
+            p(class = "helptext", "Enter hypothetical category grades to compare the current weights with the previewed weights."),
+            uiOutput("grade_calc_inputs"),
+            tableOutput("grade_calc_table")
+          )
+        )
+      )
+    }
+    if (!length(goods)) return(p("Token goods are currently disabled."))
+    tagList(
+      p(class = "helptext", "Choose one enabled token good. Every purchase spends tokens from spendable balance and leaves lifetime earned unchanged."),
+      div(class = "panel",
+        selectInput("spend_good", "Spend tokens on", choices = goods)
+      ),
+      panels
+    )
   })
 
   observeEvent(input$buy_extension, {
@@ -1644,7 +1848,9 @@ server <- function(input, output, session) {
       GROUP BY pg.id ORDER BY pg.id DESC;
     ")
     if (!nrow(pg)) return(p("No public goods are active."))
-    tagList(lapply(seq_len(nrow(pg)), function(i) {
+    tagList(
+      p(class = "helptext", "Track class fund progress toward each public-good threshold."),
+      lapply(seq_len(nrow(pg)), function(i) {
       th <- public_good_threshold(pg$id[i])
       div(class = "panel",
         strong(pg$name[i]),
@@ -1654,6 +1860,33 @@ server <- function(input, output, session) {
       )
     }))
   })
+
+  output$grade_calc_inputs <- renderUI({
+    cats <- eligible_grade_categories()
+    fluidRow(lapply(seq_len(nrow(cats)), function(i) {
+      column(4, numericInput(paste0("grade_calc_", i), paste0(cats$name[i], " grade (%)"), value = 85, min = 0, max = 100, step = 1))
+    }))
+  })
+
+  output$grade_calc_table <- renderTable({
+    cats <- eligible_grade_categories()
+    if (!nrow(cats)) return(NULL)
+    preview <- rw_preview_state()
+    weights <- if (is.null(preview)) {
+      cats$new_weight <- cats$current_weight
+      cats
+    } else {
+      preview$weights
+    }
+    grades <- vapply(seq_len(nrow(weights)), function(i) num0(input[[paste0("grade_calc_", i)]] %||% 0), numeric(1))
+    current_total <- sum(num0(weights$current_weight) * grades) / 100
+    preview_total <- sum(num0(weights$new_weight) * grades) / 100
+    rbind(
+      data.frame(category = weights$name, current_weight = weights$current_weight, preview_weight = weights$new_weight, grade = grades, stringsAsFactors = FALSE),
+      data.frame(category = "Final grade", current_weight = NA, preview_weight = NA, grade = round(preview_total, 2), stringsAsFactors = FALSE),
+      data.frame(category = "Change from current", current_weight = NA, preview_weight = NA, grade = round(preview_total - current_total, 2), stringsAsFactors = FALSE)
+    )
+  }, striped = TRUE, hover = TRUE)
 
   output$student_reweight_ui <- renderUI({
     if (int0(get_setting("reweight_good_enabled", 1)) != 1L) return(p("Grade reweighting is disabled."))
