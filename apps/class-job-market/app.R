@@ -1046,6 +1046,70 @@ csv_download <- function(table_name, filename) {
   )
 }
 
+presentation_public_goods <- function() {
+  pg <- db_query("
+    SELECT pg.id, pg.name, pg.description, COALESCE(SUM(pgc.amount),0) AS contributed
+    FROM public_goods pg
+    LEFT JOIN public_good_contributions pgc ON pgc.public_good_id=pg.id
+    WHERE COALESCE(pg.active,1)=1
+    GROUP BY pg.id
+    ORDER BY pg.id DESC;
+  ")
+  if (!nrow(pg)) return(pg)
+  unlocks <- lapply(pg$id, public_good_unlock_state)
+  pg$threshold <- vapply(pg$id, public_good_threshold, numeric(1))
+  pg$fund_pct <- ifelse(pg$threshold > 0, round(pmin(100, pg$contributed / pg$threshold * 100), 1), NA_real_)
+  pg$questions_unlocked <- vapply(unlocks, `[[`, integer(1), "unlocked")
+  pg$questions_available <- vapply(unlocks, `[[`, integer(1), "n_questions")
+  pg$next_question_cost <- vapply(unlocks, function(x) ifelse(is.na(x$next_cost), NA_real_, x$next_cost), numeric(1))
+  pg$question_carryover <- vapply(unlocks, `[[`, numeric(1), "carry")
+  pg
+}
+
+presentation_wage_bids <- function() {
+  db_query("
+    SELECT wr.label AS round, wr.status, jc.name AS category,
+           COUNT(DISTINCT wb.user_id) AS bidders,
+           ROUND(MIN(wb.min_wage), 2) AS min_bid,
+           ROUND(AVG(wb.min_wage), 2) AS avg_bid,
+           ROUND(MAX(wb.min_wage), 2) AS max_bid
+    FROM wage_bids wb
+    LEFT JOIN weekly_rounds wr ON wr.id=wb.round_id
+    LEFT JOIN job_categories jc ON jc.id=wb.category_id
+    GROUP BY wb.round_id, wb.category_id
+    ORDER BY wr.start_date DESC, jc.display_order, jc.name;
+  ")
+}
+
+presentation_application_bids <- function() {
+  db_query("
+    SELECT wr.label AS round, wr.status, jc.name AS category,
+           COUNT(DISTINCT ab.user_id) AS applicants,
+           ROUND(SUM(ab.tickets), 2) AS tickets,
+           ROUND(AVG(ab.tickets), 2) AS avg_tickets
+    FROM application_bids ab
+    LEFT JOIN weekly_rounds wr ON wr.id=ab.round_id
+    LEFT JOIN job_categories jc ON jc.id=ab.category_id
+    GROUP BY ab.round_id, ab.category_id
+    ORDER BY wr.start_date DESC, jc.display_order, jc.name;
+  ")
+}
+
+presentation_assignment_summary <- function() {
+  db_query("
+    SELECT wr.label AS round, wr.assignment_mode, wr.status,
+           COUNT(ja.id) AS assigned,
+           SUM(CASE WHEN ja.status='closed' THEN 1 ELSE 0 END) AS closed,
+           SUM(CASE WHEN ja.outcome='Complete' THEN 1 ELSE 0 END) AS complete,
+           SUM(CASE WHEN ja.outcome='Tried' THEN 1 ELSE 0 END) AS tried,
+           SUM(CASE WHEN ja.outcome='Missed' THEN 1 ELSE 0 END) AS missed
+    FROM weekly_rounds wr
+    LEFT JOIN job_assignments ja ON ja.round_id=wr.id
+    GROUP BY wr.id
+    ORDER BY wr.start_date DESC;
+  ")
+}
+
 init_db()
 
 CSS <- "
@@ -1154,6 +1218,7 @@ server <- function(input, output, session) {
     if (authed_admin()) {
       tabsetPanel(
         tabPanel("Dashboard", uiOutput("dashboard_ui")),
+        tabPanel("Presentation", uiOutput("presentation_ui")),
         tabPanel("Instructions", uiOutput("instructions_ui")),
         tabPanel("Job setup", uiOutput("job_setup_ui")),
         tabPanel("Assignment runner", uiOutput("runner_ui")),
@@ -1197,6 +1262,65 @@ server <- function(input, output, session) {
   output$balances_table <- renderDT({
     refresh_key()
     datatable(balances(), rownames = FALSE, options = list(pageLength = 25))
+  })
+
+  output$presentation_ui <- renderUI({
+    refresh_key()
+    pg <- presentation_public_goods()
+    tagList(
+      p(class = "helptext", "Project this tab during class. It shows aggregate progress for public goods, bidding activity, applications, and assignment status."),
+      h4("Public good progress"),
+      if (!nrow(pg)) {
+        div(class = "panel", "No active public goods.")
+      } else {
+        tagList(lapply(seq_len(nrow(pg)), function(i) {
+          max_val <- max(pg$threshold[i], pg$contributed[i], 1)
+          div(class = "panel",
+            h4(pg$name[i]),
+            if (nzchar(pg$description[i] %||% "")) p(pg$description[i]),
+            tags$progress(value = pg$contributed[i], max = max_val),
+            fluidRow(
+              column(3, div(class = "metric", "Contributed", div(class = "value", round(pg$contributed[i], 1)))),
+              column(3, div(class = "metric", "Fund threshold", div(class = "value", round(pg$threshold[i], 1)))),
+              column(3, div(class = "metric", "Questions revealed", div(class = "value", paste0(pg$questions_unlocked[i], "/", pg$questions_available[i])))),
+              column(3, div(class = "metric", "Next question", div(class = "value", ifelse(is.na(pg$next_question_cost[i]), "done", round(pg$next_question_cost[i], 1)))))
+            )
+          )
+        }))
+      },
+      h4("Bidding activity"),
+      fluidRow(
+        column(6,
+          div(class = "panel",
+            h4("Wage bids by category"),
+            DTOutput("presentation_wage_table")
+          )
+        ),
+        column(6,
+          div(class = "panel",
+            h4("Application tickets by category"),
+            DTOutput("presentation_app_table")
+          )
+        )
+      ),
+      h4("Assignment status"),
+      div(class = "panel", DTOutput("presentation_assignment_table"))
+    )
+  })
+
+  output$presentation_wage_table <- renderDT({
+    refresh_key()
+    datatable(presentation_wage_bids(), rownames = FALSE, options = list(dom = "t", pageLength = 10))
+  })
+
+  output$presentation_app_table <- renderDT({
+    refresh_key()
+    datatable(presentation_application_bids(), rownames = FALSE, options = list(dom = "t", pageLength = 10))
+  })
+
+  output$presentation_assignment_table <- renderDT({
+    refresh_key()
+    datatable(presentation_assignment_summary(), rownames = FALSE, options = list(dom = "t", pageLength = 10))
   })
 
   output$instructions_ui <- renderUI({
