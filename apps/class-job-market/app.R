@@ -1150,10 +1150,32 @@ server <- function(input, output, session) {
   SHINY_PASSWORD <- Sys.getenv("SHINY_PASSWORD", "")
   authed_admin <- reactiveVal(!nzchar(SHINY_PASSWORD))
   student_user <- reactiveVal(NULL)
+  impersonated_user <- reactiveVal(NULL)
   preview_assignments <- reactiveVal(data.frame())
   refresh_key <- reactiveVal(Sys.time())
 
   touch <- function() refresh_key(Sys.time())
+
+  active_student_user <- reactive({
+    impersonated_user() %||% student_user()
+  })
+
+  student_display_name <- function(uid) {
+    if (is.null(uid) || !nzchar(uid)) return("")
+    row <- db_query("SELECT display_name FROM students WHERE user_id=?", list(uid))
+    nm <- row$display_name[1]
+    if (length(nm) && !is.na(nm) && nzchar(nm)) nm else uid
+  }
+
+  student_choice_list <- reactive({
+    refresh_key()
+    s <- db_query("SELECT user_id, display_name, section FROM students WHERE COALESCE(active,1)=1 ORDER BY section, display_name, user_id;")
+    if (!nrow(s)) return(character(0))
+    section <- ifelse(is.na(s$section), "", s$section)
+    name <- ifelse(is.na(s$display_name) | !nzchar(s$display_name), s$user_id, s$display_name)
+    label <- ifelse(nzchar(section), paste0(name, " (", section, ")"), name)
+    setNames(s$user_id, label)
+  })
 
   output$main_ui <- renderUI({
     if (authed_admin() || !is.null(student_user())) app_ui else login_ui
@@ -1200,25 +1222,56 @@ server <- function(input, output, session) {
   }
 
   output$role_banner <- renderUI({
-    if (authed_admin()) {
+    if (authed_admin() && !is.null(impersonated_user())) {
+      div(
+        class = "muted",
+        paste("Instructor impersonating student:", student_display_name(impersonated_user())),
+        actionLink("stop_impersonation", "Return to instructor view")
+      )
+    } else if (authed_admin()) {
       div(class = "muted", "Instructor view")
     } else {
       uid <- student_user()
-      nm <- db_query("SELECT display_name FROM students WHERE user_id=?", list(uid))$display_name[1] %||% uid
+      nm <- student_display_name(uid)
       div(class = "muted", paste("Student view:", nm), actionLink("logout", "Log out"))
     }
   })
 
   observeEvent(input$logout, {
+    impersonated_user(NULL)
     student_user(NULL)
     authed_admin(!nzchar(SHINY_PASSWORD))
   })
 
+  observeEvent(input$stop_impersonation, {
+    impersonated_user(NULL)
+  })
+
+  observeEvent(input$start_impersonation, {
+    req(input$impersonate_student)
+    impersonated_user(input$impersonate_student)
+    showNotification(paste("Now viewing as", student_display_name(input$impersonate_student)), type = "message")
+  })
+
+  student_tabs <- function() {
+    tabsetPanel(
+      tabPanel("My jobs", uiOutput("student_jobs_ui")),
+      tabPanel("Bids", uiOutput("student_bids_ui")),
+      tabPanel("My tokens", uiOutput("student_tokens_ui")),
+      tabPanel("Spend tokens", uiOutput("student_spend_ui")),
+      tabPanel("Public good status", uiOutput("student_public_ui"))
+    )
+  }
+
   output$main_tabs <- renderUI({
+    if (authed_admin() && !is.null(impersonated_user())) {
+      return(student_tabs())
+    }
     if (authed_admin()) {
       tabsetPanel(
         tabPanel("Dashboard", uiOutput("dashboard_ui")),
         tabPanel("Presentation", uiOutput("presentation_ui")),
+        tabPanel("Impersonate", uiOutput("impersonate_ui")),
         tabPanel("Instructions", uiOutput("instructions_ui")),
         tabPanel("Job setup", uiOutput("job_setup_ui")),
         tabPanel("Assignment runner", uiOutput("runner_ui")),
@@ -1233,14 +1286,25 @@ server <- function(input, output, session) {
         tabPanel("CSV exports", uiOutput("exports_ui"))
       )
     } else {
-      tabsetPanel(
-        tabPanel("My jobs", uiOutput("student_jobs_ui")),
-        tabPanel("Bids", uiOutput("student_bids_ui")),
-        tabPanel("My tokens", uiOutput("student_tokens_ui")),
-        tabPanel("Spend tokens", uiOutput("student_spend_ui")),
-        tabPanel("Public good status", uiOutput("student_public_ui"))
-      )
+      student_tabs()
     }
+  })
+
+  output$impersonate_ui <- renderUI({
+    choices <- student_choice_list()
+    tagList(
+      p(class = "helptext", "Select a student to see the student interface and submit bids, contributions, extension purchases, and reweighting requests as that student."),
+      div(class = "panel",
+        if (!length(choices)) {
+          p("No active students are available.")
+        } else {
+          tagList(
+            selectInput("impersonate_student", "Student", choices = choices),
+            actionButton("start_impersonation", "Open student view", class = "btn-warning")
+          )
+        }
+      )
+    )
   })
 
   output$dashboard_ui <- renderUI({
@@ -2007,13 +2071,13 @@ server <- function(input, output, session) {
   output$dl_reweights <- csv_download("grade_reweight_requests", "grade_reweight_requests.csv")
 
   current_student <- reactive({
-    req(student_user())
-    db_query("SELECT * FROM students WHERE user_id=?", list(student_user()))
+    req(active_student_user())
+    db_query("SELECT * FROM students WHERE user_id=?", list(active_student_user()))
   })
 
   output$student_jobs_ui <- renderUI({
     refresh_key()
-    uid <- student_user()
+    uid <- active_student_user()
     rows <- assignments_df()
     rows <- rows[rows$user_id == uid, , drop = FALSE]
     tagList(
@@ -2025,7 +2089,7 @@ server <- function(input, output, session) {
   output$student_jobs_table <- renderDT({
     refresh_key()
     rows <- assignments_df()
-    rows <- rows[rows$user_id == student_user(), c("round_label", "job_name", "category", "assigned_wage", "status", "outcome", "awarded_tokens"), drop = FALSE]
+    rows <- rows[rows$user_id == active_student_user(), c("round_label", "job_name", "category", "assigned_wage", "status", "outcome", "awarded_tokens"), drop = FALSE]
     datatable(rows, rownames = FALSE)
   })
 
@@ -2047,7 +2111,7 @@ server <- function(input, output, session) {
     )
   })
   observeEvent(input$submit_wage_bid, {
-    req(student_user(), input$stu_wage_round, input$stu_wage_cat)
+    req(active_student_user(), input$stu_wage_round, input$stu_wage_cat)
     if (!round_is_open(input$stu_wage_round)) {
       showNotification("This bidding round is locked.", type = "warning")
       touch()
@@ -2056,7 +2120,7 @@ server <- function(input, output, session) {
     db_exec("
       INSERT INTO wage_bids(round_id, category_id, user_id, min_wage) VALUES(?,?,?,?)
       ON CONFLICT(round_id,category_id,user_id) DO UPDATE SET min_wage=excluded.min_wage, submitted_at=CURRENT_TIMESTAMP;
-    ", list(int0(input$stu_wage_round), int0(input$stu_wage_cat), student_user(), num0(input$stu_min_wage)))
+    ", list(int0(input$stu_wage_round), int0(input$stu_wage_cat), active_student_user(), num0(input$stu_min_wage)))
     showNotification("Wage bid saved.", type = "message")
     touch()
   })
@@ -2068,7 +2132,7 @@ server <- function(input, output, session) {
       LEFT JOIN weekly_rounds wr ON wr.id=wb.round_id
       LEFT JOIN job_categories jc ON jc.id=wb.category_id
       WHERE wb.user_id=? ORDER BY wb.submitted_at DESC;
-    ", list(student_user())), rownames = FALSE)
+    ", list(active_student_user())), rownames = FALSE)
   })
 
   output$student_bids_ui <- renderUI({
@@ -2103,13 +2167,13 @@ server <- function(input, output, session) {
     )
   })
   observeEvent(input$submit_app_bid, {
-    req(student_user(), input$stu_app_round, input$stu_app_cat)
+    req(active_student_user(), input$stu_app_round, input$stu_app_cat)
     if (!round_is_open(input$stu_app_round)) {
       showNotification("This bidding round is locked.", type = "warning")
       touch()
       return()
     }
-    uid <- student_user(); rid <- int0(input$stu_app_round)
+    uid <- active_student_user(); rid <- int0(input$stu_app_round)
     existing <- db_query("SELECT COALESCE(SUM(tickets),0) n FROM application_bids WHERE round_id=? AND user_id=? AND category_id<>?;",
                          list(rid, uid, int0(input$stu_app_cat)))$n[1]
     total <- num0(existing) + num0(input$stu_tickets)
@@ -2133,12 +2197,12 @@ server <- function(input, output, session) {
       LEFT JOIN weekly_rounds wr ON wr.id=ab.round_id
       LEFT JOIN job_categories jc ON jc.id=ab.category_id
       WHERE ab.user_id=? ORDER BY ab.submitted_at DESC;
-    ", list(student_user())), rownames = FALSE)
+    ", list(active_student_user())), rownames = FALSE)
   })
 
   output$student_tokens_ui <- renderUI({
     refresh_key()
-    bal <- student_balance(student_user())
+    bal <- student_balance(active_student_user())
     tagList(
       p(class = "helptext", "Lifetime earned counts toward participation credit. Spendable balance can be used for enabled token goods."),
       fluidRow(
@@ -2150,7 +2214,7 @@ server <- function(input, output, session) {
   })
   output$my_ledger <- renderDT({
     refresh_key()
-    datatable(db_query("SELECT amount, earning, source_type, note, created_at FROM token_ledger WHERE user_id=? ORDER BY id DESC;", list(student_user())), rownames = FALSE)
+    datatable(db_query("SELECT amount, earning, source_type, note, created_at FROM token_ledger WHERE user_id=? ORDER BY id DESC;", list(active_student_user())), rownames = FALSE)
   })
 
   output$extension_cost_preview <- renderUI({
@@ -2235,16 +2299,16 @@ server <- function(input, output, session) {
       showNotification("Problem set extensions are disabled.", type = "warning")
       return()
     }
-    req(student_user(), input$buy_ps, input$buy_hours)
+    req(active_student_user(), input$buy_ps, input$buy_hours)
     ps <- db_query("SELECT * FROM problem_sets WHERE id=?", list(int0(input$buy_ps)))
     ok <- can_buy_extension(ps, num0(input$buy_hours))
     if (!isTRUE(ok)) { showNotification(ok, type = "error"); return() }
     cost <- extension_cost(num0(input$buy_hours))
     if (is.na(cost)) { showNotification("No price is configured for those hours.", type = "error"); return() }
-    lid <- tryCatch(spend_tokens(student_user(), cost, "extension_purchase", int0(input$buy_ps), NA, paste(input$buy_hours, "hour extension")), error = function(e) e)
+    lid <- tryCatch(spend_tokens(active_student_user(), cost, "extension_purchase", int0(input$buy_ps), NA, paste(input$buy_hours, "hour extension")), error = function(e) e)
     if (inherits(lid, "error")) { showNotification(lid$message, type = "error"); return() }
     db_exec("INSERT INTO extension_purchases(problem_set_id,user_id,hours,cost,ledger_id) VALUES(?,?,?,?,?);",
-            list(int0(input$buy_ps), student_user(), num0(input$buy_hours), cost, lid))
+            list(int0(input$buy_ps), active_student_user(), num0(input$buy_hours), cost, lid))
     showNotification("Extension purchased.", type = "message")
     touch()
   })
@@ -2254,11 +2318,11 @@ server <- function(input, output, session) {
       showNotification("Public-good token spending is disabled.", type = "warning")
       return()
     }
-    req(student_user(), input$contrib_pg)
-    lid <- tryCatch(spend_tokens(student_user(), num0(input$contrib_amount), "public_good_contribution", int0(input$contrib_pg), NA, "public good"), error = function(e) e)
+    req(active_student_user(), input$contrib_pg)
+    lid <- tryCatch(spend_tokens(active_student_user(), num0(input$contrib_amount), "public_good_contribution", int0(input$contrib_pg), NA, "public good"), error = function(e) e)
     if (inherits(lid, "error")) { showNotification(lid$message, type = "error"); return() }
     db_exec("INSERT INTO public_good_contributions(public_good_id,user_id,amount,ledger_id) VALUES(?,?,?,?);",
-            list(int0(input$contrib_pg), student_user(), num0(input$contrib_amount), lid))
+            list(int0(input$contrib_pg), active_student_user(), num0(input$contrib_amount), lid))
     showNotification("Contribution recorded.", type = "message")
     touch()
   })
@@ -2382,12 +2446,13 @@ server <- function(input, output, session) {
     if (is.null(rw_preview_state())) { showNotification("Preview first.", type = "warning"); return() }
     x <- tryCatch(reweight_preview(input$rw_from, input$rw_to, num0(input$rw_points)), error = function(e) e)
     if (inherits(x, "error")) { showNotification(x$message, type = "error"); return() }
-    lid <- tryCatch(spend_tokens(student_user(), x$cost, "grade_reweight", NA, NA, paste(input$rw_from, "to", input$rw_to)), error = function(e) e)
+    req(active_student_user())
+    lid <- tryCatch(spend_tokens(active_student_user(), x$cost, "grade_reweight", NA, NA, paste(input$rw_from, "to", input$rw_to)), error = function(e) e)
     if (inherits(lid, "error")) { showNotification(lid$message, type = "error"); return() }
     db_exec("
       INSERT INTO grade_reweight_requests(user_id, from_category, to_category, points, cost, ledger_id, status)
       VALUES(?,?,?,?,?,?, 'submitted');
-    ", list(student_user(), input$rw_from, input$rw_to, num0(input$rw_points), x$cost, lid))
+    ", list(active_student_user(), input$rw_from, input$rw_to, num0(input$rw_points), x$cost, lid))
     showNotification("Reweighting request submitted.", type = "message")
     touch()
   })
