@@ -1617,7 +1617,10 @@ server <- function(input, output, session) {
           column(2, numericInput("set_live_wage", "Wage", value = num0(wages[[1]]), min = 0, step = 0.5)),
           column(2, br(), actionButton("save_live_wage", "Save wage", class = "btn-primary"))
         ),
-        tableOutput("spot_wage_table"),
+        tags$details(class = "panel",
+          tags$summary("Current spot wages"),
+          tableOutput("spot_wage_table")
+        ),
         hr(),
         h4("Extensions"),
         p(class = "helptext", "Students buy hours in the configured increment. Cost equals hours times cost per hour."),
@@ -1699,7 +1702,9 @@ server <- function(input, output, session) {
   output$spot_wage_table <- renderTable({
     refresh_key()
     wages <- live_wage_settings()
-    data.frame(event = names(wages), wage = as.numeric(unlist(wages)), row.names = NULL)
+    out <- as.data.frame(as.list(as.numeric(unlist(wages))), check.names = FALSE)
+    names(out) <- names(wages)
+    out
   }, striped = TRUE, hover = TRUE)
 
   output$exports_ui <- renderUI({
