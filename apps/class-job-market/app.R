@@ -55,6 +55,9 @@ setting_defaults <- list(
   token_name = "participation token",
   participation_thresholds = "A:80,B:65,C:50,D:35",
   assignment_mode = "random",
+  round_window_preset = "Thu-Sun",
+  round_open_weekday = "Thursday",
+  round_close_weekday = "Sunday",
   wage_clearing_rule = "highest_accepted_bid",
   half_wage_multiplier = "0.5",
   tickets_per_round = "10",
@@ -123,6 +126,8 @@ init_db <- function() {
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
   ")
+  try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN bid_open_date TEXT;"), silent = TRUE)
+  try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN bid_close_date TEXT;"), silent = TRUE)
 
   db_exec("
     CREATE TABLE IF NOT EXISTS job_categories (
@@ -407,26 +412,115 @@ category_id <- function(name) {
   as.integer(r$id[1])
 }
 
-ensure_current_round <- function() {
-  r <- db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
-  if (nrow(r)) return(as.integer(r$id[1]))
-  mode <- get_setting("assignment_mode", "random")
+weekday_offsets <- c(Monday = 0, Tuesday = 1, Wednesday = 2, Thursday = 3, Friday = 4, Saturday = 5, Sunday = 6)
+
+week_start_date <- function(date = Sys.Date()) {
+  d <- as.Date(date)
+  d - ((as.POSIXlt(d)$wday + 6) %% 7)
+}
+
+round_window_dates <- function(week_start) {
+  open_day <- get_setting("round_open_weekday", "Thursday")
+  close_day <- get_setting("round_close_weekday", "Sunday")
+  open_offset <- weekday_offsets[[open_day]] %||% 3
+  close_offset <- weekday_offsets[[close_day]] %||% 6
+  open_date <- as.Date(week_start) + open_offset
+  close_date <- as.Date(week_start) + close_offset
+  if (close_date < open_date) close_date <- close_date + 7
+  list(open = open_date, close = close_date)
+}
+
+round_status_for_dates <- function(open_date, close_date, today = Sys.Date()) {
+  today <- as.Date(today)
+  if (today < as.Date(open_date)) "scheduled" else if (today <= as.Date(close_date)) "open" else "locked"
+}
+
+apply_round_window_preset <- function(preset) {
+  if (identical(preset, "Fri-Mon")) {
+    set_setting("round_open_weekday", "Friday")
+    set_setting("round_close_weekday", "Monday")
+  } else {
+    set_setting("round_open_weekday", "Thursday")
+    set_setting("round_close_weekday", "Sunday")
+  }
+  set_setting("round_window_preset", preset)
+}
+
+upsert_weekly_round <- function(week_date = Sys.Date(), section = sections()[1], mode = get_setting("assignment_mode", "random")) {
+  week_start <- week_start_date(week_date)
+  week_end <- week_start + 6
+  win <- round_window_dates(week_start)
+  status <- round_status_for_dates(win$open, win$close)
+  label <- paste("Week of", week_start)
+  existing <- db_query(
+    "SELECT id FROM weekly_rounds WHERE start_date=? AND COALESCE(section,'')=COALESCE(?, '') LIMIT 1;",
+    list(as.character(week_start), as.character(section))
+  )
+  if (nrow(existing)) {
+    db_exec("
+      UPDATE weekly_rounds
+      SET label=?, end_date=?, assignment_mode=?, wage_rule=?, tickets_per_student=?,
+          allow_multiple_jobs_per_round=?, unfilled_slot_behavior=?,
+          bid_open_date=?, bid_close_date=?, status=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=?;
+    ", list(
+      label, as.character(week_end), mode, get_setting("wage_clearing_rule", "highest_accepted_bid"),
+      num0(get_setting("tickets_per_round", 10)), int0(get_setting("allow_multiple_jobs_per_round", 0)),
+      get_setting("unfilled_slot_behavior", "leave_empty"), as.character(win$open), as.character(win$close),
+      status, existing$id[1]
+    ))
+    return(as.integer(existing$id[1]))
+  }
   db_exec("
     INSERT INTO weekly_rounds(label, section, start_date, end_date, assignment_mode, wage_rule, tickets_per_student,
-                              allow_multiple_jobs_per_round, unfilled_slot_behavior)
-    VALUES(?,?,?,?,?,?,?,?,?);
+                              allow_multiple_jobs_per_round, unfilled_slot_behavior, bid_open_date, bid_close_date, status)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?);
   ", list(
-    paste("Week of", Sys.Date()), sections()[1], as.character(Sys.Date()), as.character(Sys.Date() + 6),
-    mode, get_setting("wage_clearing_rule", "highest_accepted_bid"),
-    num0(get_setting("tickets_per_round", 10)),
-    int0(get_setting("allow_multiple_jobs_per_round", 0)),
-    get_setting("unfilled_slot_behavior", "leave_empty")
+    label, as.character(section), as.character(week_start), as.character(week_end), mode,
+    get_setting("wage_clearing_rule", "highest_accepted_bid"), num0(get_setting("tickets_per_round", 10)),
+    int0(get_setting("allow_multiple_jobs_per_round", 0)), get_setting("unfilled_slot_behavior", "leave_empty"),
+    as.character(win$open), as.character(win$close), status
   ))
   DBI::dbGetQuery(get_con(), "SELECT last_insert_rowid() id;")$id[1]
 }
 
+ensure_current_round <- function() {
+  upsert_weekly_round(Sys.Date(), sections()[1], get_setting("assignment_mode", "random"))
+}
+
+refresh_round_statuses <- function() {
+  rows <- db_query("SELECT id, start_date, bid_open_date, bid_close_date FROM weekly_rounds;")
+  if (!nrow(rows)) return(invisible(TRUE))
+  for (i in seq_len(nrow(rows))) {
+    win <- if (nzchar(rows$bid_open_date[i] %||% "") && nzchar(rows$bid_close_date[i] %||% "")) {
+      list(open = as.Date(rows$bid_open_date[i]), close = as.Date(rows$bid_close_date[i]))
+    } else {
+      round_window_dates(as.Date(rows$start_date[i]))
+    }
+    db_exec(
+      "UPDATE weekly_rounds SET bid_open_date=?, bid_close_date=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?;",
+      list(as.character(win$open), as.character(win$close), round_status_for_dates(win$open, win$close), rows$id[i])
+    )
+  }
+  invisible(TRUE)
+}
+
 rounds_df <- function() {
+  current_week <- week_start_date(Sys.Date())
+  current_section <- sections()[1]
+  exists <- db_query(
+    "SELECT id FROM weekly_rounds WHERE start_date=? AND COALESCE(section,'')=COALESCE(?, '') LIMIT 1;",
+    list(as.character(current_week), as.character(current_section))
+  )
+  if (!nrow(exists)) upsert_weekly_round(Sys.Date(), current_section, get_setting("assignment_mode", "random"))
+  refresh_round_statuses()
   db_query("SELECT * FROM weekly_rounds ORDER BY id DESC;")
+}
+
+round_is_open <- function(round_id) {
+  r <- db_query("SELECT bid_open_date, bid_close_date, status FROM weekly_rounds WHERE id=?", list(round_id))
+  if (!nrow(r)) return(FALSE)
+  identical(round_status_for_dates(as.Date(r$bid_open_date[1]), as.Date(r$bid_close_date[1])), "open")
 }
 
 active_round_id <- function(input_round) {
@@ -925,15 +1019,16 @@ server <- function(input, output, session) {
   round_choices <- reactive({
     refresh_key()
     r <- rounds_df()
-    setNames(r$id, paste0("#", r$id, " - ", r$label, " (", r$assignment_mode, ")"))
+    setNames(r$id, paste0(r$label, " - ", r$assignment_mode, " - ", r$status))
   })
 
-  round_choices_for_mode <- function(mode) {
+  round_choices_for_mode <- function(mode, open_only = FALSE) {
     refresh_key()
     r <- rounds_df()
     r <- r[r$assignment_mode == mode, , drop = FALSE]
+    if (isTRUE(open_only)) r <- r[r$status == "open", , drop = FALSE]
     if (!nrow(r)) return(character(0))
-    setNames(r$id, paste0("#", r$id, " - ", r$label))
+    setNames(r$id, paste0(r$label, " - ", r$status))
   }
 
   output$role_banner <- renderUI({
@@ -955,6 +1050,7 @@ server <- function(input, output, session) {
     if (authed_admin()) {
       tabsetPanel(
         tabPanel("Dashboard", uiOutput("dashboard_ui")),
+        tabPanel("Instructions", uiOutput("instructions_ui")),
         tabPanel("Job setup", uiOutput("job_setup_ui")),
         tabPanel("Assignment runner", uiOutput("runner_ui")),
         tabPanel("Bid assignment", uiOutput("bid_admin_ui")),
@@ -999,45 +1095,77 @@ server <- function(input, output, session) {
     datatable(balances(), rownames = FALSE, options = list(pageLength = 25))
   })
 
+  output$instructions_ui <- renderUI({
+    tagList(
+      div(class = "panel",
+        h4("Weekly flow"),
+        tags$ol(
+          tags$li("In Job setup, choose the week and set its assignment mode: random, wage bidding, or application bidding."),
+          tags$li("For bidding rounds, students submit bids only while the configured bid window is open. After the close day, the round locks."),
+          tags$li("Post or edit job categories and job posts for that week."),
+          tags$li("Use Assignment runner for random rounds, or Bid assignment for wage/application rounds."),
+          tags$li("Use Job completion and Live tracker to award earning transactions."),
+          tags$li("Students spend only from spendable balance; spending never reduces lifetime earned tokens.")
+        )
+      ),
+      div(class = "panel",
+        h4("Bid windows"),
+        p(sprintf("Current preset: %s. Open day: %s. Lock after: %s.",
+                  get_setting("round_window_preset", "Thu-Sun"),
+                  get_setting("round_open_weekday", "Thursday"),
+                  get_setting("round_close_weekday", "Sunday"))),
+        p("Use Thu-Sun for a Thursday posting cycle, or Fri-Mon for a Monday/Wednesday rhythm. You can override the exact open and lock days in Settings.")
+      )
+    )
+  })
+
   output$job_setup_ui <- renderUI({
     refresh_key()
     cats <- db_query("SELECT * FROM job_categories ORDER BY display_order, name;")
     rounds <- round_choices()
+    win <- round_window_dates(week_start_date(input$round_week %||% Sys.Date()))
     tagList(
-      p(class = "helptext", "Create a weekly round, maintain job categories and wages, then post the exact jobs students can be assigned to."),
-      fluidRow(
-        column(4, div(class = "panel",
-          h4("Create weekly round"),
-          textInput("round_label", "Label", value = paste("Week of", Sys.Date())),
-          selectInput("round_section", "Section", choices = sections()),
-          dateInput("round_start", "Start date", value = Sys.Date()),
-          dateInput("round_end", "End date", value = Sys.Date() + 6),
-          selectInput("round_mode", "Assignment mode", c("random", "wage_bidding", "application_bidding"), selected = get_setting("assignment_mode", "random")),
-          actionButton("create_round", "Create round", class = "btn-primary")
-        )),
-        column(4, div(class = "panel",
+      p(class = "helptext", "Set each week to random, wage bidding, or application bidding. Rounds are created automatically for the selected week and use the configured open/lock window."),
+      div(class = "panel",
+        h4("Set weekly round mode"),
+        fluidRow(
+          column(3, selectInput("round_section", "Section", choices = sections())),
+          column(3, dateInput("round_week", "Week containing", value = Sys.Date())),
+          column(3, selectInput("round_mode", "Assignment mode", c("random", "wage_bidding", "application_bidding"), selected = get_setting("assignment_mode", "random"))),
+          column(3, br(), actionButton("create_round", "Save weekly mode", class = "btn-primary"))
+        ),
+        p(class = "muted", sprintf("Bid window for this week: %s to %s. Random rounds ignore bids.", win$open, win$close))
+      ),
+      div(class = "panel",
           h4("Add/edit category"),
-          selectInput("category_edit_id", "Existing category", choices = c("New" = "", setNames(cats$id, cats$name))),
-          textInput("category_name", "Name"),
-          numericInput("category_wage", "Default wage", value = num0(get_setting("initial_category_wage", 3)), min = 0, step = 0.5),
-          textAreaInput("category_desc", "Description", rows = 2),
-          numericInput("category_order", "Display order", value = 100, step = 1),
-          checkboxInput("category_active", "Active", TRUE),
+          fluidRow(
+            column(3, selectInput("category_edit_id", "Existing category", choices = c("New" = "", setNames(cats$id, cats$name)))),
+            column(3, textInput("category_name", "Name")),
+            column(2, numericInput("category_wage", "Default wage", value = num0(get_setting("initial_category_wage", 3)), min = 0, step = 0.5)),
+            column(2, numericInput("category_order", "Display order", value = 100, step = 1)),
+            column(2, checkboxInput("category_active", "Active", TRUE))
+          ),
+          textAreaInput("category_desc", "Description", rows = 1),
           actionButton("save_category", "Save category", class = "btn-primary")
-        )),
-        column(4, div(class = "panel",
-          h4("Add job post"),
-          selectInput("job_round", "Round", choices = rounds),
-          dateInput("job_date", "Date if relevant", value = Sys.Date()),
-          textInput("job_name", "Job name"),
-          selectInput("job_category", "Category", choices = setNames(cats$id, cats$name)),
-          textAreaInput("job_desc", "Description", rows = 2),
-          numericInput("job_slots", "Slots", value = 1, min = 1, step = 1),
-          numericInput("job_wage_override", "Override wage (blank uses category)", value = NA, min = 0, step = 0.5),
-          numericInput("job_order", "Display order", value = 100, step = 1),
-          checkboxInput("job_active", "Active", TRUE),
+      ),
+      div(class = "panel",
+        h4("Add job post"),
+        fluidRow(
+          column(3, selectInput("job_round", "Round", choices = rounds)),
+          column(3, dateInput("job_date", "Date if relevant", value = Sys.Date())),
+          column(3, textInput("job_name", "Job name")),
+          column(3, selectInput("job_category", "Category", choices = setNames(cats$id, cats$name)))
+        ),
+        textAreaInput("job_desc", "Description", rows = 1),
+        fluidRow(
+          column(2, numericInput("job_slots", "Slots", value = 1, min = 1, step = 1)),
+          column(3, numericInput("job_wage_override", "Override wage (blank uses category)", value = NA, min = 0, step = 0.5)),
+          column(2, numericInput("job_order", "Display order", value = 100, step = 1)),
+          column(2, checkboxInput("job_active", "Active", TRUE)),
+          column(3, br(),
           actionButton("save_job", "Save job", class = "btn-success")
-        ))
+          )
+        )
       ),
       h4("Current jobs"),
       DTOutput("jobs_table")
@@ -1058,15 +1186,8 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$create_round, {
-    db_exec("
-      INSERT INTO weekly_rounds(label, section, start_date, end_date, assignment_mode, wage_rule, tickets_per_student,
-                                allow_multiple_jobs_per_round, unfilled_slot_behavior)
-      VALUES(?,?,?,?,?,?,?,?,?);
-    ", list(input$round_label, input$round_section, as.character(input$round_start), as.character(input$round_end),
-            input$round_mode, get_setting("wage_clearing_rule", "highest_accepted_bid"),
-            num0(get_setting("tickets_per_round", 10)), int0(get_setting("allow_multiple_jobs_per_round", 0)),
-            get_setting("unfilled_slot_behavior", "leave_empty")))
-    showNotification("Round created.", type = "message")
+    rid <- upsert_weekly_round(input$round_week, input$round_section, input$round_mode)
+    showNotification(sprintf("Saved weekly mode for %s.", db_query("SELECT label FROM weekly_rounds WHERE id=?", list(rid))$label[1]), type = "message")
     touch()
   })
 
@@ -1469,7 +1590,12 @@ server <- function(input, output, session) {
         fluidRow(
           column(4, textInput("set_token_name", "Token name", value = s$token_name)),
           column(4, textInput("set_thresholds", "Participation thresholds", value = s$participation_thresholds)),
-          column(4, selectInput("set_assignment_mode", "Default assignment mode", c("random", "wage_bidding", "application_bidding"), selected = s$assignment_mode))
+          column(4, selectInput("set_assignment_mode", "Default weekly assignment mode", c("random", "wage_bidding", "application_bidding"), selected = s$assignment_mode))
+        ),
+        fluidRow(
+          column(4, selectInput("set_round_window", "Bid window preset", c("Thu-Sun", "Fri-Mon"), selected = s$round_window_preset %||% "Thu-Sun")),
+          column(4, selectInput("set_round_open_day", "Open day", names(weekday_offsets), selected = s$round_open_weekday %||% "Thursday")),
+          column(4, selectInput("set_round_close_day", "Lock after", names(weekday_offsets), selected = s$round_close_weekday %||% "Sunday"))
         ),
         fluidRow(
           column(3, numericInput("set_half", "Half-wage multiplier", value = num0(s$half_wage_multiplier), min = 0, max = 1, step = 0.05)),
@@ -1518,6 +1644,9 @@ server <- function(input, output, session) {
       token_name = input$set_token_name,
       participation_thresholds = input$set_thresholds,
       assignment_mode = input$set_assignment_mode,
+      round_window_preset = input$set_round_window,
+      round_open_weekday = input$set_round_open_day,
+      round_close_weekday = input$set_round_close_day,
       half_wage_multiplier = input$set_half,
       tickets_per_round = input$set_tickets,
       allow_multiple_jobs_per_round = int0(input$set_multi),
@@ -1542,6 +1671,16 @@ server <- function(input, output, session) {
     wages <- live_wage_settings()
     ev <- input$set_live_event %||% names(wages)[1]
     updateNumericInput(session, "set_live_wage", value = num0(wages[[ev]]))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$set_round_window, {
+    if (identical(input$set_round_window, "Fri-Mon")) {
+      updateSelectInput(session, "set_round_open_day", selected = "Friday")
+      updateSelectInput(session, "set_round_close_day", selected = "Monday")
+    } else {
+      updateSelectInput(session, "set_round_open_day", selected = "Thursday")
+      updateSelectInput(session, "set_round_close_day", selected = "Sunday")
+    }
   }, ignoreInit = TRUE)
 
   observeEvent(input$save_live_wage, {
@@ -1633,6 +1772,11 @@ server <- function(input, output, session) {
   })
   observeEvent(input$submit_wage_bid, {
     req(student_user(), input$stu_wage_round, input$stu_wage_cat)
+    if (!round_is_open(input$stu_wage_round)) {
+      showNotification("This bidding round is locked.", type = "warning")
+      touch()
+      return()
+    }
     db_exec("
       INSERT INTO wage_bids(round_id, category_id, user_id, min_wage) VALUES(?,?,?,?)
       ON CONFLICT(round_id,category_id,user_id) DO UPDATE SET min_wage=excluded.min_wage, submitted_at=CURRENT_TIMESTAMP;
@@ -1652,8 +1796,8 @@ server <- function(input, output, session) {
   })
 
   output$student_bids_ui <- renderUI({
-    has_wage <- length(round_choices_for_mode("wage_bidding")) > 0
-    has_app <- length(round_choices_for_mode("application_bidding")) > 0
+    has_wage <- length(round_choices_for_mode("wage_bidding", open_only = TRUE)) > 0
+    has_app <- length(round_choices_for_mode("application_bidding", open_only = TRUE)) > 0
     if (!has_wage && !has_app) {
       return(p(class = "helptext", "No bidding rounds are open. For random-assignment rounds, you do not need to submit bids."))
     }
@@ -1666,7 +1810,7 @@ server <- function(input, output, session) {
 
   output$student_app_ui <- renderUI({
     refresh_key()
-    app_rounds <- round_choices_for_mode("application_bidding")
+    app_rounds <- round_choices_for_mode("application_bidding", open_only = TRUE)
     if (!length(app_rounds)) return(NULL)
     cats <- db_query("SELECT * FROM job_categories WHERE COALESCE(active,1)=1 ORDER BY display_order, name;")
     tagList(
@@ -1684,6 +1828,11 @@ server <- function(input, output, session) {
   })
   observeEvent(input$submit_app_bid, {
     req(student_user(), input$stu_app_round, input$stu_app_cat)
+    if (!round_is_open(input$stu_app_round)) {
+      showNotification("This bidding round is locked.", type = "warning")
+      touch()
+      return()
+    }
     uid <- student_user(); rid <- int0(input$stu_app_round)
     existing <- db_query("SELECT COALESCE(SUM(tickets),0) n FROM application_bids WHERE round_id=? AND user_id=? AND category_id<>?;",
                          list(rid, uid, int0(input$stu_app_cat)))$n[1]
