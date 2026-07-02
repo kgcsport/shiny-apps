@@ -540,20 +540,45 @@ clear_wage_market <- function(round_id, rule = "highest_accepted_bid", override_
 
 assignment_from_wage_preview <- function(round_id, preview) {
   jobs <- expanded_slots(jobs_for_round(round_id))
+  if (!all(c("category_id", "accepted", "user_id", "display_name", "clearing_wage") %in% names(preview))) {
+    preview <- data.frame(
+      category_id = integer(),
+      accepted = logical(),
+      user_id = character(),
+      display_name = character(),
+      clearing_wage = numeric(),
+      stringsAsFactors = FALSE
+    )
+  }
+  r <- db_query("SELECT * FROM weekly_rounds WHERE id=?", list(round_id))
+  sec <- if (nrow(r)) r$section[1] else sections()[1]
+  allow_multi <- if (nrow(r)) int0(r$allow_multiple_jobs_per_round[1]) == 1L else FALSE
+  unfilled <- if (nrow(r)) r$unfilled_slot_behavior[1] else "leave_empty"
+  students <- roster(sec)
   assigned <- list()
   used <- character(0)
   for (i in seq_len(nrow(jobs))) {
     pool <- preview[preview$category_id == jobs$category_id[i] & preview$accepted, , drop = FALSE]
-    pool <- pool[!(pool$user_id %in% used), , drop = FALSE]
-    if (!nrow(pool)) next
-    pick <- pool[1, ]
+    if (!allow_multi) pool <- pool[!(pool$user_id %in% used), , drop = FALSE]
+    if (!nrow(pool) && unfilled == "random_fill") {
+      pool2 <- students
+      if (!allow_multi) pool2 <- pool2[!(pool2$user_id %in% used), , drop = FALSE]
+      if (!nrow(pool2)) next
+      pick <- pool2[sample(seq_len(nrow(pool2)), 1), ]
+      wage <- num0(jobs$wage[i])
+    } else if (!nrow(pool)) {
+      next
+    } else {
+      pick <- pool[1, ]
+      wage <- num0(pick$clearing_wage)
+    }
     used <- c(used, pick$user_id)
     assigned[[length(assigned) + 1]] <- data.frame(
       round_id = round_id,
       job_post_id = jobs$id[i],
       user_id = pick$user_id,
       display_name = pick$display_name,
-      assigned_wage = num0(pick$clearing_wage),
+      assigned_wage = wage,
       wage_rule = get_setting("wage_clearing_rule", "highest_accepted_bid"),
       assignment_mode = "wage_bidding",
       stringsAsFactors = FALSE
@@ -613,6 +638,7 @@ application_assignments <- function(round_id) {
     } else {
       pick <- pool[sample(seq_len(nrow(pool)), 1, prob = num0(pool$tickets)), ]
       tickets <- pick$tickets[1]
+      bids <- bids[!(bids$user_id == pick$user_id & bids$category_id == jobs$category_id[i]), , drop = FALSE]
     }
     used <- c(used, pick$user_id)
     out[[length(out) + 1]] <- data.frame(
@@ -726,15 +752,49 @@ reweight_cost <- function(points) {
   if (nrow(hit)) hit$cost[1] else max(tbl$cost) + (num0(points) - max(tbl$points)) * 5
 }
 
-reweight_preview <- function(from, to, points) {
-  cats <- db_query("SELECT * FROM grade_categories ORDER BY name;")
+eligible_grade_categories <- function() {
+  cats <- db_query("
+    SELECT * FROM grade_categories
+    WHERE COALESCE(eligible,1)=1 AND lower(name) <> 'participation'
+    ORDER BY name;
+  ")
   if (!nrow(cats)) {
     names <- trimws(strsplit(get_setting("grade_reweight_categories", "Homework,Midterm,Final"), ",")[[1]])
-    cats <- data.frame(name = names, current_weight = rep(round(100 / length(names), 1), length(names)), eligible = 1)
+    names <- names[nzchar(names) & tolower(names) != "participation"]
+    if (!length(names)) names <- c("Homework", "Midterm", "Final")
+    cats <- data.frame(
+      name = names,
+      current_weight = rep(100 / length(names), length(names)),
+      eligible = 1,
+      stringsAsFactors = FALSE
+    )
   }
+  cats
+}
+
+validate_reweight <- function(from, to, points) {
+  points <- num0(points)
+  cats <- eligible_grade_categories()
+  if (!nzchar(from %||% "") || !nzchar(to %||% "")) return("Choose both categories.")
+  if (identical(from, to)) return("Choose two different categories.")
+  if (tolower(from) == "participation" || tolower(to) == "participation") return("Participation cannot be reweighted.")
+  if (!(from %in% cats$name) || !(to %in% cats$name)) return("Choose eligible non-participation categories.")
+  if (points <= 0) return("Percentage points must be positive.")
+  from_weight <- num0(cats$current_weight[cats$name == from][1])
+  if (from_weight - points < 0) return("That shift would make a category weight negative.")
+  TRUE
+}
+
+reweight_preview <- function(from, to, points) {
+  ok <- validate_reweight(from, to, points)
+  if (!isTRUE(ok)) stop(ok)
+  cats <- eligible_grade_categories()
+  old_sum <- sum(num0(cats$current_weight))
   cats$new_weight <- cats$current_weight
   cats$new_weight[cats$name == from] <- cats$new_weight[cats$name == from] - num0(points)
   cats$new_weight[cats$name == to] <- cats$new_weight[cats$name == to] + num0(points)
+  if (any(num0(cats$new_weight) < 0)) stop("That shift would make a category weight negative.")
+  if (abs(sum(num0(cats$new_weight)) - old_sum) > 1e-8) stop("Preview weights do not sum correctly.")
   list(cost = reweight_cost(points), weights = cats)
 }
 
@@ -1091,8 +1151,24 @@ server <- function(input, output, session) {
   })
 
   live_wages <- reactive({
-    tryCatch(jsonlite::fromJSON(get_setting("live_wages_json", "{}")), error = function(e) list(other = 1))
+    x <- tryCatch(jsonlite::fromJSON(get_setting("live_wages_json", "{}")), error = function(e) list(other = 1))
+    if (is.null(x[["voluntary contribution"]])) x[["voluntary contribution"]] <- x[["answer/comment"]] %||% 1
+    x
   })
+
+  log_live_participation <- function(user_id, event_type, credit = "full", note = "") {
+    stu <- db_query("SELECT * FROM students WHERE user_id=?", list(user_id))
+    if (!nrow(stu)) stop("Student not found.")
+    wage <- num0(live_wages()[[event_type]] %||% 1)
+    mult <- switch(credit, full = 1, half = num0(get_setting("half_wage_multiplier", 0.5)), none = 0, 1)
+    tokens <- wage * mult
+    lid <- if (tokens > 0) ledger_add(stu$user_id[1], stu$display_name[1], tokens, 1, "live_participation", NA, NA, event_type) else NA
+    db_exec("
+      INSERT INTO participation_events(event_date, event_type, user_id, display_name, wage, multiplier, tokens, ledger_id, note)
+      VALUES(?,?,?,?,?,?,?,?,?);
+    ", list(as.character(Sys.Date()), event_type, stu$user_id[1], stu$display_name[1], wage, mult, tokens, ifelse(is.na(lid), NA, lid), note))
+    tokens
+  }
 
   output$live_ui <- renderUI({
     ev <- names(live_wages())
@@ -1100,6 +1176,13 @@ server <- function(input, output, session) {
     tagList(
       div(class = "panel",
         selectInput("live_event", "Event type", choices = ev),
+        h4("Quick full-credit log"),
+        div(style = "display:flex; flex-wrap:wrap; gap:6px;",
+          lapply(seq_len(nrow(stu)), function(i) {
+            actionButton(paste0("live_quick_", i), stu$display_name[i])
+          })
+        ),
+        hr(),
         selectizeInput("live_student", "Student", choices = setNames(stu$user_id, paste(stu$display_name, stu$section))),
         radioButtons("live_credit", "Credit", c("Full" = "full", "Half" = "half", "No wage" = "none"), inline = TRUE),
         textInput("live_note", "Note", value = ""),
@@ -1111,17 +1194,22 @@ server <- function(input, output, session) {
 
   observeEvent(input$log_live, {
     req(input$live_event, input$live_student)
-    stu <- db_query("SELECT * FROM students WHERE user_id=?", list(input$live_student))
-    wage <- num0(live_wages()[[input$live_event]])
-    mult <- switch(input$live_credit, full = 1, half = num0(get_setting("half_wage_multiplier", 0.5)), none = 0, 1)
-    tokens <- wage * mult
-    lid <- if (tokens > 0) ledger_add(stu$user_id[1], stu$display_name[1], tokens, 1, "live_participation", NA, NA, input$live_event) else NA
-    db_exec("
-      INSERT INTO participation_events(event_date, event_type, user_id, display_name, wage, multiplier, tokens, ledger_id, note)
-      VALUES(?,?,?,?,?,?,?,?,?);
-    ", list(as.character(Sys.Date()), input$live_event, stu$user_id[1], stu$display_name[1], wage, mult, tokens, ifelse(is.na(lid), NA, lid), input$live_note))
+    tokens <- log_live_participation(input$live_student, input$live_event, input$live_credit, input$live_note)
     showNotification(sprintf("Logged %.1f tokens.", tokens), type = "message")
     touch()
+  })
+
+  observe({
+    refresh_key()
+    stu <- roster()
+    lapply(seq_len(nrow(stu)), function(i) {
+      observeEvent(input[[paste0("live_quick_", i)]], {
+        req(input$live_event)
+        tokens <- log_live_participation(stu$user_id[i], input$live_event, "full", "")
+        showNotification(sprintf("Logged %.1f tokens for %s.", tokens, stu$display_name[i]), type = "message")
+        touch()
+      }, ignoreInit = TRUE)
+    })
   })
 
   output$live_events_table <- renderDT({
@@ -1176,6 +1264,7 @@ server <- function(input, output, session) {
   })
 
   output$public_goods_ui <- renderUI({
+    if (int0(get_setting("public_good_enabled", 1)) != 1L) return(p("Public-good token spending is disabled."))
     tagList(
       div(class = "panel",
         h4("Create public good"),
@@ -1189,6 +1278,10 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$create_pg, {
+    if (int0(get_setting("public_good_enabled", 1)) != 1L) {
+      showNotification("Public-good token spending is disabled.", type = "warning")
+      return()
+    }
     req(nzchar(input$pg_name))
     db_exec("INSERT INTO public_goods(name, description, threshold, active) VALUES(?,?,?,1);",
             list(input$pg_name, input$pg_desc, num0(input$pg_threshold)))
@@ -1209,6 +1302,7 @@ server <- function(input, output, session) {
   })
 
   output$extensions_ui <- renderUI({
+    if (int0(get_setting("extension_good_enabled", 1)) != 1L) return(p("Problem set extensions are disabled."))
     tagList(
       div(class = "panel",
         h4("Problem set setup"),
@@ -1224,6 +1318,10 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$create_ps, {
+    if (int0(get_setting("extension_good_enabled", 1)) != 1L) {
+      showNotification("Problem set extensions are disabled.", type = "warning")
+      return()
+    }
     db_exec("INSERT INTO problem_sets(name, original_deadline, solutions_posted_at, active) VALUES(?,?,?,1);",
             list(input$ps_name, input$ps_deadline, input$ps_solutions))
     touch()
@@ -1241,6 +1339,7 @@ server <- function(input, output, session) {
   })
 
   output$reweight_admin_ui <- renderUI({
+    if (int0(get_setting("reweight_good_enabled", 1)) != 1L) return(p("Grade reweighting is disabled."))
     tagList(
       div(class = "panel",
         h4("Grade categories"),
@@ -1256,11 +1355,17 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$save_gc, {
+    if (int0(get_setting("reweight_good_enabled", 1)) != 1L) {
+      showNotification("Grade reweighting is disabled.", type = "warning")
+      return()
+    }
     req(nzchar(input$gc_name))
+    eligible <- int0(input$gc_eligible)
+    if (tolower(trimws(input$gc_name)) == "participation") eligible <- 0L
     db_exec("
       INSERT INTO grade_categories(name,current_weight,eligible) VALUES(?,?,?)
       ON CONFLICT(name) DO UPDATE SET current_weight=excluded.current_weight, eligible=excluded.eligible;
-    ", list(input$gc_name, num0(input$gc_weight), int0(input$gc_eligible)))
+    ", list(input$gc_name, num0(input$gc_weight), eligible))
     touch()
   })
   output$gc_table <- renderDT({ refresh_key(); datatable(db_query("SELECT * FROM grade_categories ORDER BY name;"), rownames = FALSE) })
@@ -1497,6 +1602,10 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$buy_extension, {
+    if (int0(get_setting("extension_good_enabled", 1)) != 1L) {
+      showNotification("Problem set extensions are disabled.", type = "warning")
+      return()
+    }
     req(student_user(), input$buy_ps, input$buy_hours)
     ps <- db_query("SELECT * FROM problem_sets WHERE id=?", list(int0(input$buy_ps)))
     ok <- can_buy_extension(ps, num0(input$buy_hours))
@@ -1512,6 +1621,10 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$make_contribution, {
+    if (int0(get_setting("public_good_enabled", 1)) != 1L) {
+      showNotification("Public-good token spending is disabled.", type = "warning")
+      return()
+    }
     req(student_user(), input$contrib_pg)
     lid <- tryCatch(spend_tokens(student_user(), num0(input$contrib_amount), "public_good_contribution", int0(input$contrib_pg), NA, "public good"), error = function(e) e)
     if (inherits(lid, "error")) { showNotification(lid$message, type = "error"); return() }
@@ -1522,6 +1635,7 @@ server <- function(input, output, session) {
   })
 
   output$student_public_ui <- renderUI({
+    if (int0(get_setting("public_good_enabled", 1)) != 1L) return(p("Public-good token spending is disabled."))
     refresh_key()
     pg <- db_query("
       SELECT pg.*, COALESCE(SUM(pgc.amount),0) AS contributed
@@ -1543,11 +1657,7 @@ server <- function(input, output, session) {
 
   output$student_reweight_ui <- renderUI({
     if (int0(get_setting("reweight_good_enabled", 1)) != 1L) return(p("Grade reweighting is disabled."))
-    cats <- db_query("SELECT * FROM grade_categories WHERE COALESCE(eligible,1)=1 ORDER BY name;")
-    if (!nrow(cats)) {
-      names <- trimws(strsplit(get_setting("grade_reweight_categories", "Homework,Midterm,Final"), ",")[[1]])
-      cats <- data.frame(name = names)
-    }
+    cats <- eligible_grade_categories()
     tagList(
       div(class = "panel",
         selectInput("rw_from", "Shift weight from", choices = cats$name),
@@ -1563,11 +1673,20 @@ server <- function(input, output, session) {
 
   rw_preview_state <- reactiveVal(NULL)
   observeEvent(input$preview_rw, {
+    if (int0(get_setting("reweight_good_enabled", 1)) != 1L) {
+      showNotification("Grade reweighting is disabled.", type = "warning")
+      return()
+    }
     if (identical(input$rw_from, input$rw_to)) {
       showNotification("Choose two different categories.", type = "warning")
       return()
     }
-    rw_preview_state(reweight_preview(input$rw_from, input$rw_to, num0(input$rw_points)))
+    x <- tryCatch(reweight_preview(input$rw_from, input$rw_to, num0(input$rw_points)), error = function(e) e)
+    if (inherits(x, "error")) {
+      showNotification(x$message, type = "error")
+      return()
+    }
+    rw_preview_state(x)
   })
   output$rw_preview_ui <- renderUI({
     x <- rw_preview_state()
@@ -1582,8 +1701,13 @@ server <- function(input, output, session) {
     x$weights
   }, striped = TRUE, hover = TRUE)
   observeEvent(input$submit_rw, {
-    x <- rw_preview_state()
-    if (is.null(x)) { showNotification("Preview first.", type = "warning"); return() }
+    if (int0(get_setting("reweight_good_enabled", 1)) != 1L) {
+      showNotification("Grade reweighting is disabled.", type = "warning")
+      return()
+    }
+    if (is.null(rw_preview_state())) { showNotification("Preview first.", type = "warning"); return() }
+    x <- tryCatch(reweight_preview(input$rw_from, input$rw_to, num0(input$rw_points)), error = function(e) e)
+    if (inherits(x, "error")) { showNotification(x$message, type = "error"); return() }
     lid <- tryCatch(spend_tokens(student_user(), x$cost, "grade_reweight", NA, NA, paste(input$rw_from, "to", input$rw_to)), error = function(e) e)
     if (inherits(lid, "error")) { showNotification(lid$message, type = "error"); return() }
     db_exec("
