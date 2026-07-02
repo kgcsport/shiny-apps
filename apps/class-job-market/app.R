@@ -74,6 +74,7 @@ setting_defaults <- list(
   public_good_multiplier = "1.5",
   public_good_manual_threshold = "",
   public_good_threshold_formula = "enrolled_students * 1.5",
+  public_good_question_cost_schedule = "12,20,30,45,70",
   reweight_cost_schedule = "1:2,2:5,3:9,4:14,5:20",
   grade_reweight_categories = "Homework,Midterm,Final",
   initial_category_wage = "3",
@@ -272,6 +273,17 @@ init_db <- function() {
       amount REAL,
       ledger_id INTEGER,
       contributed_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  ")
+
+  db_exec("
+    CREATE TABLE IF NOT EXISTS public_good_questions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      public_good_id INTEGER,
+      question_num INTEGER,
+      question_html TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(public_good_id, question_num)
     );
   ")
 
@@ -874,6 +886,98 @@ save_live_wage <- function(event_type, wage) {
   set_setting("live_wages_json", jsonlite::toJSON(x, auto_unbox = TRUE))
 }
 
+md_to_html <- function(md, qnum = NULL) {
+  html <- trimws(as.character(md %||% ""))
+  html <- gsub("\n\n+", "<br> ", html)
+  html <- gsub("\n", " ", html)
+  html <- gsub("\\*\\*(.+?)\\*\\*", "<b>\\1</b>", html)
+  html <- gsub("\\*([^*]+?)\\*", "<i>\\1</i>", html)
+  if (!is.null(qnum) && !is.na(qnum)) html <- paste0("<b>Q", qnum, ".</b> ", html)
+  html
+}
+
+parse_cost_schedule <- function(x) {
+  parts <- trimws(strsplit(as.character(x %||% ""), ",", fixed = TRUE)[[1]])
+  out <- suppressWarnings(as.numeric(parts))
+  out <- out[is.finite(out) & out > 0]
+  if (!length(out)) c(12, 20, 30, 45, 70) else out
+}
+
+question_cost_for_index <- function(idx) {
+  sched <- parse_cost_schedule(get_setting("public_good_question_cost_schedule", "12,20,30,45,70"))
+  idx <- max(1L, int0(idx))
+  if (idx <= length(sched)) sched[idx] else tail(sched, 1)
+}
+
+public_good_total <- function(pg_id) {
+  num0(db_query(
+    "SELECT COALESCE(SUM(amount),0) total FROM public_good_contributions WHERE public_good_id=?;",
+    list(pg_id)
+  )$total[1])
+}
+
+public_good_questions <- function(pg_id) {
+  db_query(
+    "SELECT question_num, question_html FROM public_good_questions WHERE public_good_id=? ORDER BY question_num;",
+    list(pg_id)
+  )
+}
+
+public_good_unlock_state <- function(pg_id) {
+  total <- public_good_total(pg_id)
+  qs <- public_good_questions(pg_id)
+  unlocked <- 0L
+  remaining <- total
+  if (nrow(qs)) {
+    for (i in seq_len(nrow(qs))) {
+      cost <- question_cost_for_index(i)
+      if (remaining >= cost) {
+        unlocked <- unlocked + 1L
+        remaining <- remaining - cost
+      } else {
+        break
+      }
+    }
+  }
+  next_cost <- if (unlocked < nrow(qs)) question_cost_for_index(unlocked + 1L) else NA_real_
+  list(total = total, unlocked = unlocked, carry = remaining, next_cost = next_cost, n_questions = nrow(qs))
+}
+
+normalize_yaml_questions <- function(path) {
+  if (!requireNamespace("yaml", quietly = TRUE)) stop("Install the R package 'yaml' to upload YAML question banks.")
+  raw <- yaml::read_yaml(path)
+  qs <- raw$questions %||% raw
+  if (!is.list(qs) || !length(qs)) stop("YAML must contain a list of questions or a top-level 'questions:' list.")
+  out <- list()
+  for (i in seq_along(qs)) {
+    item <- qs[[i]]
+    if (is.character(item)) {
+      html <- md_to_html(item, i)
+    } else if (is.list(item)) {
+      q <- item$question_html %||% item$html %||% item$question_md %||% item$question %||% item$text
+      if (is.null(q) || !nzchar(as.character(q))) next
+      if (!is.null(item$question_html) || !is.null(item$html)) html <- as.character(q) else html <- md_to_html(q, i)
+    } else {
+      next
+    }
+    out[[length(out) + 1]] <- data.frame(question_num = length(out) + 1L, question_html = html, stringsAsFactors = FALSE)
+  }
+  if (!length(out)) stop("No valid questions found in YAML.")
+  dplyr::bind_rows(out)
+}
+
+import_public_good_questions <- function(pg_id, path) {
+  qs <- normalize_yaml_questions(path)
+  db_exec("DELETE FROM public_good_questions WHERE public_good_id=?;", list(pg_id))
+  for (i in seq_len(nrow(qs))) {
+    db_exec(
+      "INSERT INTO public_good_questions(public_good_id, question_num, question_html) VALUES(?,?,?);",
+      list(pg_id, qs$question_num[i], qs$question_html[i])
+    )
+  }
+  nrow(qs)
+}
+
 reweight_cost <- function(points) {
   sched <- strsplit(get_setting("reweight_cost_schedule", "1:2,2:5,3:9"), ",")[[1]]
   tbl <- data.frame(points = numeric(), cost = numeric())
@@ -1105,6 +1209,7 @@ server <- function(input, output, session) {
           tags$li("Post or edit job categories and job posts for that week."),
           tags$li("Use Assignment runner for random rounds, or Bid assignment for wage/application rounds."),
           tags$li("Use Job completion and Live tracker to award earning transactions."),
+          tags$li("For public-good question reveal, create a public-good fund, upload a YAML question bank, and let contributions unlock questions in order."),
           tags$li("Students spend only from spendable balance; spending never reduces lifetime earned tokens.")
         )
       ),
@@ -1471,14 +1576,25 @@ server <- function(input, output, session) {
 
   output$public_goods_ui <- renderUI({
     if (int0(get_setting("public_good_enabled", 1)) != 1L) return(p("Public-good token spending is disabled."))
+    funds <- db_query("SELECT id, name FROM public_goods ORDER BY id DESC;")
     tagList(
-      p(class = "helptext", "Create public-good funds and track class progress. Leave the fund-specific threshold at 0 to use the Settings formula."),
+      p(class = "helptext", "Create public-good funds and attach YAML question banks. Contributions unlock question 1, then question 2, and so on using the increasing cost schedule in Settings."),
       div(class = "panel",
         h4("Create public good"),
         textInput("pg_name", "Name", value = "Exam-style reveal fund"),
         textAreaInput("pg_desc", "Description", rows = 2),
         numericInput("pg_threshold", "Fund-specific threshold (0 uses formula)", value = 0, min = 0, step = 1),
         actionButton("create_pg", "Create", class = "btn-primary")
+      ),
+      div(class = "panel",
+        h4("Question reveal bank"),
+        p(class = "helptext", "YAML can be a top-level list or contain questions:. Each item can be plain text or use question_md, question_html, question, or text."),
+        fluidRow(
+          column(4, selectInput("pg_question_fund", "Fund", choices = setNames(funds$id, funds$name))),
+          column(5, fileInput("pg_questions_yaml", "Questions YAML", accept = c(".yml", ".yaml"))),
+          column(3, br(), actionButton("upload_pg_questions", "Upload questions", class = "btn-primary"))
+        ),
+        tableOutput("pg_questions_table")
       ),
       DTOutput("pg_table")
     )
@@ -1505,8 +1621,37 @@ server <- function(input, output, session) {
       ORDER BY pg.id DESC;
     ")
     if (nrow(pg)) pg$threshold_current <- vapply(pg$id, public_good_threshold, numeric(1))
+    if (nrow(pg)) {
+      unlocks <- lapply(pg$id, public_good_unlock_state)
+      pg$questions_unlocked <- vapply(unlocks, `[[`, integer(1), "unlocked")
+      pg$questions_available <- vapply(unlocks, `[[`, integer(1), "n_questions")
+      pg$cost_to_next_question <- vapply(unlocks, function(x) ifelse(is.na(x$next_cost), NA_real_, x$next_cost), numeric(1))
+    }
     datatable(pg, rownames = FALSE)
   })
+
+  observeEvent(input$upload_pg_questions, {
+    req(input$pg_question_fund, input$pg_questions_yaml)
+    out <- tryCatch(
+      import_public_good_questions(int0(input$pg_question_fund), input$pg_questions_yaml$datapath),
+      error = function(e) e
+    )
+    if (inherits(out, "error")) {
+      showNotification(out$message, type = "error")
+      return()
+    }
+    showNotification(sprintf("Uploaded %d question(s).", out), type = "message")
+    touch()
+  })
+
+  output$pg_questions_table <- renderTable({
+    req(input$pg_question_fund)
+    qs <- public_good_questions(int0(input$pg_question_fund))
+    if (!nrow(qs)) return(data.frame(Note = "No questions uploaded for this fund."))
+    qs$question_html <- vapply(qs$question_html, function(x) gsub("<[^>]+>", "", x), character(1))
+    names(qs) <- c("#", "Question")
+    qs
+  }, striped = TRUE, hover = TRUE)
 
   output$extensions_ui <- renderUI({
     if (int0(get_setting("extension_good_enabled", 1)) != 1L) return(p("Problem set extensions are disabled."))
@@ -1634,7 +1779,8 @@ server <- function(input, output, session) {
         h4("Public goods and reweighting"),
         fluidRow(
           column(6, textInput("set_pg_formula", "Public-good threshold formula", value = s$public_good_threshold_formula %||% "enrolled_students * 1.5")),
-          column(4, textInput("set_rw_schedule", "Reweight cost schedule", value = s$reweight_cost_schedule))
+          column(3, textInput("set_pg_question_schedule", "Question unlock costs", value = s$public_good_question_cost_schedule %||% "12,20,30,45,70")),
+          column(3, textInput("set_rw_schedule", "Reweight cost schedule", value = s$reweight_cost_schedule))
         ),
         textInput("set_rw_categories", "Eligible reweight category names", value = s$grade_reweight_categories),
         actionButton("save_settings", "Save settings", class = "btn-primary")
@@ -1662,6 +1808,7 @@ server <- function(input, output, session) {
       extension_max_hours = input$set_ext_max,
       extension_allow_after_solutions = int0(input$set_after_solutions),
       public_good_threshold_formula = input$set_pg_formula,
+      public_good_question_cost_schedule = input$set_pg_question_schedule,
       reweight_cost_schedule = input$set_rw_schedule,
       grade_reweight_categories = input$set_rw_categories
     )
@@ -2006,11 +2153,27 @@ server <- function(input, output, session) {
       p(class = "helptext", "Track class fund progress toward each public-good threshold."),
       lapply(seq_len(nrow(pg)), function(i) {
       th <- public_good_threshold(pg$id[i])
+      unlock <- public_good_unlock_state(pg$id[i])
+      qs <- public_good_questions(pg$id[i])
+      shown <- if (unlock$unlocked > 0 && nrow(qs)) qs[seq_len(min(unlock$unlocked, nrow(qs))), , drop = FALSE] else qs[0, ]
       div(class = "panel",
         strong(pg$name[i]),
         p(pg$description[i] %||% ""),
         tags$progress(value = min(pg$contributed[i], th), max = th),
-        p(sprintf("%.1f / %.1f tokens", pg$contributed[i], th))
+        p(sprintf("Fund progress: %.1f / %.1f tokens", pg$contributed[i], th)),
+        if (unlock$n_questions > 0) tagList(
+          p(sprintf("Questions revealed: %d / %d", unlock$unlocked, unlock$n_questions)),
+          if (!is.na(unlock$next_cost)) p(class = "muted", sprintf("Cost to reveal next question: %.1f tokens; current carryover toward next: %.1f.", unlock$next_cost, unlock$carry)),
+          if (nrow(shown)) tagList(
+            h5("Revealed questions"),
+            lapply(seq_len(nrow(shown)), function(j) {
+              div(class = "panel",
+                strong(sprintf("Question %d", shown$question_num[j])),
+                HTML(shown$question_html[j])
+              )
+            })
+          ) else p(class = "muted", "No questions revealed yet.")
+        ) else p(class = "muted", "No question bank uploaded for this fund yet.")
       )
     }))
   })
