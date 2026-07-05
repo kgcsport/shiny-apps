@@ -9,6 +9,10 @@ library(shiny); library(DT); library(bcrypt); library(dplyr); library(tidyr)
 library(tibble); library(forcats); library(DBI); library(RSQLite); library(ggplot2)
 library(scales); library(googledrive); library(promises); library(future)
 
+shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
+if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+source(shared_sqlite)
+
 future::plan(future::sequential)  # backup_async() is fire-and-forget; no workers needed
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
@@ -34,9 +38,7 @@ conn    <- NULL
 
 get_con <- function() {
   if (is.null(conn) || !DBI::dbIsValid(conn)) {
-    conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
-    DBI::dbExecute(conn, "PRAGMA journal_mode = WAL;")
-    DBI::dbExecute(conn, "PRAGMA busy_timeout = 5000;")
+    conn <<- connect_sqlite(DB_PATH)
   }
   conn
 }
@@ -550,9 +552,11 @@ server <- function(input, output, session) {
     rv$authed <- FALSE; rv$user_id <- NULL; rv$name <- NULL; rv$is_admin <- FALSE
   })
 
+  # Best-effort async backup on session end; price submissions stay DB-only.
   session$onSessionEnded(function() backup_async())
 
   # ── Reactive data ────────────────────────────────────────────────────────────
+  # Poll every 8000ms: current wave changes only when the instructor advances it.
   current_wave <- reactivePoll(8000, session,
     checkFunc = function() db_query("SELECT updated_at FROM app_state WHERE id=1;")$updated_at[1],
     valueFunc = get_wave
@@ -568,6 +572,7 @@ server <- function(input, output, session) {
     get_user_prices(rv$user_id)
   })
 
+  # Poll every 8000ms: aggregate class price table does not need sub-second updates.
   all_prices_poll <- reactivePoll(8000, session,
     checkFunc = function() {
       db_query("SELECT MAX(recorded_at) ts FROM price_records;")$ts[1] %||% ""

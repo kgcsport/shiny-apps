@@ -40,5 +40,33 @@ Everything else is **optional**, for legacy/extra functionality only:
 | `DB_PATH_OVERRIDE` | coordination-games | Override the shared DB path |
 | `SHINY_PASSWORD` | bonus-entry, class-job-picker, club-insurance-game | Shared admin password for those apps |
 
+## Tuning worker/session settings
+
+Shiny Server reads worker/session settings at container startup. Change these
+in `.env` or `docker-compose.yml`, then restart with
+`docker-compose up -d --build`.
+
+- `SHINY_SIMPLE_SCHEDULER` controls sessions per R worker before starting a
+  new worker.
+- `SHINY_APP_IDLE_TIMEOUT` controls how long an app process stays alive after
+  its last session exits.
+- `SHINY_APP_SESSION_TIMEOUT` disconnects inactive browser sessions. Set it
+  to blank or `0` to omit the setting.
+
+Commented presets live in `docker-compose.yml`:
+
+| Profile | Scheduler | Idle timeout | Session timeout |
+|---|---:|---:|---:|
+| low memory | 40 | 60 | 600 |
+| balanced | 30 | 60 | 900 |
+| responsiveness | 15 | 30 | 1200 |
+
+## Diagnostics
+
+Run `scripts/diagnose.sh` from the repo root on the Docker host. It prints
+`docker stats --no-stream`, appdata disk use, recent Shiny logs, and SQLite
+file sizes. Override paths with `APPDATA=/path/to/appdata` or
+`SHINY_LOG_DIR=/path/to/logs` if needed.
+
 See `MULTI_TENANT_TODO.md` for the (not yet started) plan to let other
 professors run their own classes on one shared deployment.

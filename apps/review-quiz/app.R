@@ -7,6 +7,10 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 
 library(shiny); library(DBI); library(RSQLite); library(bcrypt); library(dplyr); library(ggplot2); library(DT)
 
+shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
+if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+source(shared_sqlite)
+
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 logf   <- function(...) cat(format(Sys.time()), "-", paste(...), "\n", file = stderr())
 
@@ -113,9 +117,7 @@ DB_PATH <- file.path(app_data_dir(), "finalqdata.sqlite")
 conn    <- NULL
 get_con <- function() {
   if (is.null(conn) || !DBI::dbIsValid(conn)) {
-    conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
-    DBI::dbExecute(conn, "PRAGMA journal_mode = WAL;")
-    DBI::dbExecute(conn, "PRAGMA busy_timeout = 5000;")
+    conn <<- connect_sqlite(DB_PATH)
   }
   conn
 }
@@ -342,11 +344,13 @@ server <- function(input, output, session) {
   })
 
   # ── Reactive polls ───────────────────────────────────────────────────────────
+  # Poll every 2000ms: quiz state changes when instructor reveals/advances.
   state_r <- reactivePoll(2000, session,
     checkFunc  = function() db_query("SELECT updated_at FROM quiz_state WHERE id=1;")$updated_at[1],
     valueFunc  = get_state
   )
 
+  # Poll every 2000ms: student responses during live review.
   responses_r <- reactivePoll(2000, session,
     checkFunc  = function() db_query("SELECT COUNT(*) n FROM quiz_responses;")$n[1],
     valueFunc  = function() db_query("
@@ -354,11 +358,13 @@ server <- function(input, output, session) {
       FROM quiz_responses qr JOIN users u ON qr.user_id = u.user_id;")
   )
 
+  # Poll every 5000ms: question bank changes only on admin upload/edit.
   questions_r <- reactivePoll(5000, session,
     checkFunc = function() db_query("SELECT COUNT(*) n FROM quiz_questions;")$n[1],
     valueFunc = load_questions
   )
 
+  # Poll every 5000ms: pending student question submissions for admin review.
   submissions_r <- reactivePoll(5000, session,
     checkFunc = function()
       db_query("SELECT COUNT(*) n FROM quiz_submissions WHERE status='pending';")$n[1],
@@ -959,7 +965,7 @@ server <- function(input, output, session) {
       error = function(e) NULL
     )
     req(!is.null(questions))
-    con <- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
+    con <- connect_sqlite(DB_PATH)
     on.exit(DBI::dbDisconnect(con))
     DBI::dbExecute(con, "DELETE FROM quiz_questions;")
     DBI::dbAppendTable(con, "quiz_questions", questions)

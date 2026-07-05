@@ -8,6 +8,10 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 library(shiny); library(googlesheets4); library(dplyr); library(tidyr); library(tibble)
 library(jsonlite); library(DBI); library(RSQLite); library(bcrypt)
 
+shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
+if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+source(shared_sqlite)
+
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 
 # ----------------------------
@@ -24,9 +28,7 @@ JOB_DB_PATH <- local({
 job_conn <- NULL
 get_job_con <- function() {
   if (is.null(job_conn) || !DBI::dbIsValid(job_conn)) {
-    job_conn <<- DBI::dbConnect(RSQLite::SQLite(), JOB_DB_PATH)
-    DBI::dbExecute(job_conn, "PRAGMA journal_mode = WAL;")
-    DBI::dbExecute(job_conn, "PRAGMA busy_timeout = 5000;")
+    job_conn <<- connect_sqlite(JOB_DB_PATH)
   }
   job_conn
 }

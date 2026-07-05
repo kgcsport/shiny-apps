@@ -11,17 +11,12 @@ server {
 
     # Max sessions per R worker before Shiny Server starts another worker.
     # Higher values reduce memory; lower values improve responsiveness.
-    simple_scheduler 30;
+    simple_scheduler ${SHINY_SIMPLE_SCHEDULER};
 
     # Seconds an idle app process remains alive after its last session exits.
     # Longer values avoid cold starts; shorter values free memory sooner.
-    app_idle_timeout 60;
+    app_idle_timeout ${SHINY_APP_IDLE_TIMEOUT};
 
-    # Seconds before an inactive browser session is disconnected.
-    app_session_timeout 900;
+${APP_SESSION_TIMEOUT_LINE}
   }
 }
-
-
-
-

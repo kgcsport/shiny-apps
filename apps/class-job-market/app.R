@@ -9,6 +9,10 @@ library(DT)
 library(dplyr)
 library(jsonlite)
 
+shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
+if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+source(shared_sqlite)
+
 HAS_BCRYPT <- requireNamespace("bcrypt", quietly = TRUE)
 bcrypt_check <- function(password, hash) {
   if (!isTRUE(HAS_BCRYPT)) return(FALSE)
@@ -38,9 +42,7 @@ conn <- NULL
 get_con <- function() {
   if (is.null(conn) || !DBI::dbIsValid(conn)) {
     dir.create(dirname(DB_PATH), recursive = TRUE, showWarnings = FALSE)
-    conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
-    DBI::dbExecute(conn, "PRAGMA journal_mode = WAL;")
-    DBI::dbExecute(conn, "PRAGMA busy_timeout = 5000;")
+    conn <<- connect_sqlite(DB_PATH)
   }
   conn
 }

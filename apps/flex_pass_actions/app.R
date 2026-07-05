@@ -24,6 +24,10 @@ library(shiny); library(DT); library(bcrypt); library(dplyr); library(tibble)
 library(readr); library(DBI); library(RSQLite); library(stringr)
 library(googlesheets4); library(googledrive); library(future); library(promises); library(digest)
 
+shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
+if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+source(shared_sqlite)
+
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 
 logf <- function(...) {
@@ -365,7 +369,7 @@ backup_db_to_drive <- function() {
   )
 
   # checkpoint WAL
-  con <- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
+  con <- connect_sqlite(DB_PATH)
   on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
   try(DBI::dbExecute(con, "PRAGMA wal_checkpoint(FULL);"), silent = TRUE)
 
@@ -502,9 +506,7 @@ logf("GOOGLE_SERVICE_ACCOUNT_JSON nchar:", nchar(Sys.getenv("GOOGLE_SERVICE_ACCO
 conn <- NULL
 get_con <- function() {
   if (is.null(conn) || !DBI::dbIsValid(conn)) {
-    conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
-    DBI::dbExecute(conn, "PRAGMA journal_mode = WAL;")
-    DBI::dbExecute(conn, "PRAGMA busy_timeout = 5000;")
+    conn <<- connect_sqlite(DB_PATH)
   }
   conn
 }
@@ -1480,7 +1482,7 @@ server <- function(input, output, session) {
   is_admin <- reactive(rv$is_admin)
   is_demo  <- reactive(isTRUE(rv$user == "demo"))
 
-  # Live polling via game_state.updated_at
+  # Poll every 3500ms: live game state/settings via game_state.updated_at.
   game_poll <- reactivePoll(
     3500, session,
     checkFunc = function() db_query("SELECT updated_at FROM game_state WHERE id=1;")$updated_at[1] %||% as.character(Sys.time()),
@@ -1530,7 +1532,7 @@ server <- function(input, output, session) {
     showNotification("Password updated.", type="message")
   })
 
-  # Daily backup: check hourly, fire if 24h elapsed
+  # Poll every 3600000ms: daily backup timer checks hourly, then fires after 24h.
   .last_daily_backup <- reactiveVal(Sys.time())
   daily_tick <- reactiveTimer(3600000)  # 1 hour
   observeEvent(daily_tick(), {
@@ -2955,7 +2957,7 @@ server <- function(input, output, session) {
   })
 
   session$onSessionEnded(function() {
-    # Synchronous backup on session end if DB changed
+    # Best-effort synchronous backup on session end only; submit actions stay DB-only.
     if (db_changed_since_last_backup()) {
       logf("session ended: backing up to Drive...")
       tryCatch(backup_db_to_drive(), error = function(e) {

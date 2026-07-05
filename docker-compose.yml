@@ -14,6 +14,23 @@ services:
       # in this directory:
       # - ./google_application_credentials.json:/run/secrets/gcp.json:ro
       - ./appdata:/srv/shiny-server/appdata
-      - ./shiny-server.conf:/etc/shiny-server/shiny-server.conf:ro
       - ./shiny-logs:/var/log/shiny-server
     env_file: .env
+    environment:
+      # Worker/session tuning presets. Pick one profile by setting these three
+      # variables in .env or uncommenting one block below, then restart.
+      #
+      # Low memory:
+      # SHINY_SIMPLE_SCHEDULER: "40"
+      # SHINY_APP_IDLE_TIMEOUT: "60"
+      # SHINY_APP_SESSION_TIMEOUT: "600"
+      #
+      # Balanced:
+      SHINY_SIMPLE_SCHEDULER: ${SHINY_SIMPLE_SCHEDULER:-30}
+      SHINY_APP_IDLE_TIMEOUT: ${SHINY_APP_IDLE_TIMEOUT:-60}
+      SHINY_APP_SESSION_TIMEOUT: ${SHINY_APP_SESSION_TIMEOUT:-900}
+      #
+      # Responsiveness:
+      # SHINY_SIMPLE_SCHEDULER: "15"
+      # SHINY_APP_IDLE_TIMEOUT: "30"
+      # SHINY_APP_SESSION_TIMEOUT: "1200"

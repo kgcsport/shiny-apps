@@ -38,6 +38,10 @@ library(shiny); library(DT); library(bcrypt); library(dplyr); library(tibble)
 library(DBI); library(RSQLite); library(stringr); library(ggplot2); library(tidyr)
 library(googledrive); library(googlesheets4); library(digest)
 
+shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
+if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+source(shared_sqlite)
+
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 
 logf <- function(...) {
@@ -71,9 +75,7 @@ logf("DB_PATH:", DB_PATH)
 conn <- NULL
 get_con <- function() {
   if (is.null(conn) || !DBI::dbIsValid(conn)) {
-    conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
-    DBI::dbExecute(conn, "PRAGMA journal_mode = WAL;")
-    DBI::dbExecute(conn, "PRAGMA busy_timeout = 5000;")
+    conn <<- connect_sqlite(DB_PATH)
   }
   conn
 }
@@ -332,7 +334,7 @@ backup_db_to_drive <- function() {
     stop("drive_get(folder) failed: ", conditionMessage(e))
   })
 
-  con <- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
+  con <- connect_sqlite(DB_PATH)
   on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
   try(DBI::dbExecute(con, "PRAGMA wal_checkpoint(FULL);"), silent = TRUE)
 
@@ -645,14 +647,14 @@ server <- function(input, output, session) {
   })
   is_admin <- reactive(rv$is_admin)
 
-  # Poll shared state via olig_settings.updated_at
+  # Poll every 1200ms: shared state via olig_settings.updated_at for in-class games.
   olig_poll <- reactivePoll(
     1200, session,
     checkFunc = function() get_olig()$updated_at[1] %||% as.character(Sys.time()),
     valueFunc  = function() get_olig()
   )
 
-  # Poll submissions -- filtered to the current section
+  # Poll every 1200ms: submissions filtered to the current section.
   subs_poll <- reactivePoll(
     1200, session,
     checkFunc = function() {
@@ -1270,6 +1272,7 @@ server <- function(input, output, session) {
   })
 
   session$onSessionEnded(function() {
+    # Best-effort synchronous backup on session end only; game submissions stay DB-only.
     if (db_changed_since_last_backup()) {
       logf("session ended: backing up to Drive...")
       tryCatch(backup_db_to_drive(),

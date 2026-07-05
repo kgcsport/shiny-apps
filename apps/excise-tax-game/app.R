@@ -20,6 +20,10 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 
 library(shiny); library(DBI); library(RSQLite); library(jsonlite); library(digest)
 
+shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
+if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+source(shared_sqlite)
+
 `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 && !all(is.na(a))) a else b
 
 logf <- function(...) {
@@ -44,9 +48,7 @@ logf("DB path:", DB_PATH)
 conn <- NULL
 get_con <- function() {
   if (is.null(conn) || !DBI::dbIsValid(conn)) {
-    conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
-    DBI::dbExecute(conn, "PRAGMA journal_mode = WAL;")
-    DBI::dbExecute(conn, "PRAGMA busy_timeout = 5000;")
+    conn <<- connect_sqlite(DB_PATH)
   }
   conn
 }
@@ -321,6 +323,7 @@ server <- function(input, output, session) {
     view          = "landing"
   )
 
+  # Poll every 2500ms: lightweight room/game UI refresh.
   ticker     <- reactiveTimer(2500)
   setup_open <- reactiveVal(FALSE)
 

@@ -11,6 +11,10 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 library(shiny); library(DT); library(dplyr); library(DBI); library(RSQLite)
 library(googledrive); library(bcrypt); library(digest)
 
+shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
+if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+source(shared_sqlite)
+
 # ---- Debug/Crash visibility ----
 options(shiny.error = function() traceback(2))
 options(warn = 1)
@@ -149,9 +153,8 @@ backup_db_to_drive <- function() {
   })
 
   # checkpoint WAL before snapshot
-  con <- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
+  con <- connect_sqlite(DB_PATH)
   on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
-  try(DBI::dbExecute(con, "PRAGMA busy_timeout = 5000;"), silent = TRUE)
   try(DBI::dbExecute(con, "PRAGMA wal_checkpoint(FULL);"), silent = TRUE)
 
   zipfile <- zip_db_files(DB_PATH)
@@ -238,7 +241,7 @@ SHARED_DB_PATH <- local({
 })
 
 read_shared_users <- function() {
-  con <- DBI::dbConnect(RSQLite::SQLite(), SHARED_DB_PATH)
+  con <- connect_sqlite(SHARED_DB_PATH)
   on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
 
   cols <- DBI::dbGetQuery(con, "PRAGMA table_info(users);")
@@ -268,11 +271,7 @@ read_shared_users <- function() {
 conn <- NULL
 get_con <- function() {
   if (is.null(conn) || !DBI::dbIsValid(conn)) {
-    conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
-    # Make SQLite more tolerant of brief concurrent access (e.g., DT + admin button)
-    DBI::dbExecute(conn, "PRAGMA journal_mode = WAL;")
-    DBI::dbExecute(conn, "PRAGMA busy_timeout = 5000;")
-    DBI::dbExecute(conn, "PRAGMA foreign_keys = ON;")
+    conn <<- connect_sqlite(DB_PATH)
   }
   conn
 }
@@ -438,6 +437,8 @@ record_accept <- function(user_id, display_name) {
 }
 
 # ---- Backup debounce (SYNC, optional) ----
+# Drive sync is best-effort and debounced. Keep student actions DB-first; the
+# backup runs after the local action is recorded and may be skipped by min_gap.
 .last_hash <- NULL
 .last_backup_at <- as.POSIXct(0, tz = "UTC")
 
@@ -618,15 +619,16 @@ server <- function(input, output, session) {
     } else base
   })
 
-  # Live ticking (NO tick backups)
-  auto <- reactiveTimer(500)
+  # Poll every 1000ms: live auction tick loop; no backups run from this timer.
+  auto <- reactiveTimer(1000)
   observe({
     auto()
     tryCatch(advance_tick_if_needed(), error = function(e) logf("Tick loop error:", conditionMessage(e)))
   })
 
+  # Poll every 1000ms: live auction state for classroom display.
   auction_live_poll <- reactivePoll(
-    250, session,
+    1000, session,
     checkFunc = function() {
       st <- db_query("SELECT current_price, units_remaining, running FROM auction_state WHERE id=1;")
       paste0(st$current_price[1], "|", st$units_remaining[1], "|", st$running[1])
@@ -661,7 +663,8 @@ server <- function(input, output, session) {
     req(authed())
     res <- tryCatch(record_accept(user_id(), user_nm()), error = function(e) list(ok=FALSE, msg=conditionMessage(e)))
     accept_msg(if (isTRUE(res$ok)) paste0("OK: ", res$msg) else paste0("NO: ", res$msg))
-    backup_if_changed("accept backup")
+    # Student hot path: debounce Drive backup more aggressively than admin actions.
+    backup_if_changed("accept backup", min_gap_seconds = 60)
   })
   output$accept_msg <- renderText(accept_msg())
 

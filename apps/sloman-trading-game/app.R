@@ -70,6 +70,7 @@ TIMER_JS <- "
 (function () {
   var _h = null, _s = 0;
   Shiny.addCustomMessageHandler('timerStart', function (s) {
+    // Poll every 1000ms: browser-only countdown display, not a DB read.
     _s = parseInt(s); clearInterval(_h); tick(); _h = setInterval(tick, 1000);
   });
   Shiny.addCustomMessageHandler('timerStop',  function () { clearInterval(_h); });

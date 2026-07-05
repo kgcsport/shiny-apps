@@ -1,5 +1,9 @@
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 
+shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
+if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+source(shared_sqlite)
+
 logf <- function(...) cat(format(Sys.time()), "-", paste(..., collapse=" "), "\n", file=stderr())
 
 get_credentials <- function() {
@@ -58,7 +62,7 @@ DB_PATH  <- file.path(DATA_DIR, "appdata.sqlite")
 
 get_con <- function() {
   if (is.null(conn) || !DBI::dbIsValid(conn)) {
-    conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
+    conn <<- connect_sqlite(DB_PATH)
   }
   conn
 }
@@ -327,6 +331,7 @@ backup_db_async <- function(label = "async backup") {
 
 cached_poll <- function(interval_ms, session, check_sql, value_sql, default_df) {
   cache <- shiny::reactiveVal(default_df)
+  # Poll interval is supplied by the caller in milliseconds; used for cached DB reads.
   shiny::reactivePoll(
     interval_ms, session,
     checkFunc = function() {

@@ -4,6 +4,10 @@ library(DBI)
 library(RSQLite)
 library(bcrypt)
 
+shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
+if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+source(shared_sqlite)
+
 `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 && !is.na(a[1])) a else b
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -13,9 +17,7 @@ DB_PATH <- file.path(CONNECT_CONTENT_DIR, "data", "finalqdata.sqlite")
 conn <- NULL
 get_con <- function() {
   if (is.null(conn) || !DBI::dbIsValid(conn)) {
-    conn <<- DBI::dbConnect(RSQLite::SQLite(), DB_PATH)
-    DBI::dbExecute(conn, "PRAGMA journal_mode = WAL;")
-    DBI::dbExecute(conn, "PRAGMA busy_timeout = 5000;")
+    conn <<- connect_sqlite(DB_PATH)
   }
   conn
 }
@@ -353,7 +355,7 @@ server <- function(input, output, session) {
   coalesce_str <- function(a, b) if (!is.na(a) && nzchar(a %||% "")) a else b
 
   # ── Polls ─────────────────────────────────────────────────────────────────────
-  # 1 — arcade_state: which game the admin activated
+  # Poll every 3000ms: arcade_state controls which game the admin activated.
   arcade_poll <- reactivePoll(3000, session,
     checkFunc = function()
       db_query("SELECT updated_at FROM arcade_state WHERE id=1;")$updated_at[1] %||% "",
@@ -361,7 +363,7 @@ server <- function(input, output, session) {
       db_query("SELECT * FROM arcade_state WHERE id=1;")
   )
 
-  # 2 — olig state: round status, current game (Bonus Pot / PD / Price War)
+  # Poll every 3000ms: olig state covers round status and current game.
   olig_poll <- reactivePoll(3000, session,
     checkFunc = function()
       db_query("SELECT updated_at FROM olig_settings WHERE id=1;")$updated_at[1] %||% "",
@@ -381,7 +383,7 @@ server <- function(input, output, session) {
     }
   )
 
-  # 3 — wallet + pledge state
+  # Poll every 6000ms: wallet + pledge state can lag slightly to reduce DB reads.
   wallet_poll <- reactivePoll(6000, session,
     checkFunc = function() {
       if (is.null(rv$user_id)) return("")
