@@ -9,11 +9,27 @@ library(DT)
 library(dplyr)
 library(jsonlite)
 
-shared_sqlite <- Filter(file.exists, c(
+this_file <- ""
+for (i in rev(seq_len(sys.nframe()))) {
+  candidate_file <- tryCatch(sys.frame(i)$ofile, error = function(e) NULL)
+  if (!is.null(candidate_file) && nzchar(candidate_file)) {
+    this_file <- normalizePath(candidate_file, winslash = "/", mustWork = TRUE)
+    break
+  }
+}
+this_dir <- if (nzchar(this_file)) dirname(this_file) else getwd()
+shared_sqlite_candidates <- c(
+  file.path(this_dir, "..", "_shared", "sqlite.R"),
   file.path("apps", "_shared", "sqlite.R"),
   file.path("_shared", "sqlite.R"),
-  file.path("..", "_shared", "sqlite.R")
-))[[1]]
+  file.path("..", "_shared", "sqlite.R"),
+  file.path("/srv/shiny-server", "_shared", "sqlite.R")
+)
+shared_sqlite <- Filter(file.exists, shared_sqlite_candidates)
+if (!length(shared_sqlite)) {
+  stop("Cannot find shared SQLite helper from ", getwd(), ". Tried: ", paste(shared_sqlite_candidates, collapse = ", "))
+}
+shared_sqlite <- shared_sqlite[[1]]
 source(shared_sqlite)
 
 HAS_BCRYPT <- requireNamespace("bcrypt", quietly = TRUE)
