@@ -99,10 +99,7 @@ setting_defaults <- list(
   extension_hour_increment = "24",
   extension_max_hours = "48",
   extension_allow_after_solutions = "0",
-  public_good_multiplier = "1.5",
-  public_good_manual_threshold = "",
-  public_good_threshold_formula = "enrolled_students * 1.5",
-  public_good_question_cost_schedule = "12,20,30,45,70",
+  public_good_question_cost_schedule = "11 + 2 * question^2",
   reweight_cost_schedule = "1:2,2:5,3:9,4:14,5:20",
   grade_reweight_categories = "Homework,Midterm,Final",
   initial_category_wage = "3",
@@ -874,18 +871,9 @@ can_buy_extension <- function(ps, hours) {
 }
 
 public_good_threshold <- function(pg_id) {
-  pg <- db_query("SELECT * FROM public_goods WHERE id=?", list(pg_id))
-  if (!nrow(pg)) return(0)
-  if (!is.na(num0(pg$threshold[1])) && num0(pg$threshold[1]) > 0) return(num0(pg$threshold[1]))
-  enrolled <- db_query("SELECT COUNT(*) n FROM students WHERE COALESCE(active,1)=1;")$n[1]
-  multiplier <- num0(get_setting("public_good_multiplier", 1.5))
-  formula <- get_setting("public_good_threshold_formula", "enrolled_students * 1.5")
-  val <- tryCatch(
-    eval(parse(text = formula), envir = list(enrolled_students = enrolled, multiplier = multiplier, n = enrolled)),
-    error = function(e) NA_real_
-  )
-  val <- num0(val)
-  if (val > 0) val else enrolled * multiplier
+  qs <- public_good_questions(pg_id)
+  if (!nrow(qs)) return(question_cost_for_index(1L))
+  sum(vapply(seq_len(nrow(qs)), question_cost_for_index, numeric(1)))
 }
 
 parse_named_numbers <- function(txt) {
@@ -928,13 +916,20 @@ parse_cost_schedule <- function(x) {
   parts <- trimws(strsplit(as.character(x %||% ""), ",", fixed = TRUE)[[1]])
   out <- suppressWarnings(as.numeric(parts))
   out <- out[is.finite(out) & out > 0]
-  if (!length(out)) c(12, 20, 30, 45, 70) else out
+  if (!length(out)) numeric(0) else out
 }
 
 question_cost_for_index <- function(idx) {
-  sched <- parse_cost_schedule(get_setting("public_good_question_cost_schedule", "12,20,30,45,70"))
   idx <- max(1L, int0(idx))
-  if (idx <= length(sched)) sched[idx] else tail(sched, 1)
+  rule <- trimws(get_setting("public_good_question_cost_schedule", "11 + 2 * question^2"))
+  sched <- parse_cost_schedule(rule)
+  if (length(sched)) return(if (idx <= length(sched)) sched[idx] else tail(sched, 1))
+  val <- tryCatch(
+    eval(parse(text = rule), envir = list(question = idx, q = idx, index = idx, n = idx)),
+    error = function(e) NA_real_
+  )
+  val <- num0(val)
+  if (val > 0) val else 11 + 2 * idx^2
 }
 
 public_good_total <- function(pg_id) {
@@ -1323,15 +1318,9 @@ server <- function(input, output, session) {
         tabPanel("Presentation", uiOutput("presentation_ui")),
         tabPanel("Impersonate", uiOutput("impersonate_ui")),
         tabPanel("Instructions", uiOutput("instructions_ui")),
-        tabPanel("Job setup", uiOutput("job_setup_ui")),
-        tabPanel("Assignment runner", uiOutput("runner_ui")),
-        tabPanel("Bid assignment", uiOutput("bid_admin_ui")),
+        tabPanel("Assignments", uiOutput("assignment_eval_ui")),
         tabPanel("Live tracker", uiOutput("live_ui")),
-        tabPanel("Job completion", uiOutput("completion_ui")),
         tabPanel("Token ledger", uiOutput("ledger_ui")),
-        tabPanel("Public goods", uiOutput("public_goods_ui")),
-        tabPanel("Extensions", uiOutput("extensions_ui")),
-        tabPanel("Grade reweighting", uiOutput("reweight_admin_ui")),
         tabPanel("Settings", uiOutput("settings_ui")),
         tabPanel("CSV exports", uiOutput("exports_ui"))
       )
@@ -1395,7 +1384,7 @@ server <- function(input, output, session) {
             tags$progress(value = pg$contributed[i], max = max_val),
             fluidRow(
               column(3, div(class = "metric", "Contributed", div(class = "value", round(pg$contributed[i], 1)))),
-              column(3, div(class = "metric", "Fund threshold", div(class = "value", round(pg$threshold[i], 1)))),
+              column(3, div(class = "metric", "Unlock goal", div(class = "value", round(pg$threshold[i], 1)))),
               column(3, div(class = "metric", "Questions revealed", div(class = "value", paste0(pg$questions_unlocked[i], "/", pg$questions_available[i])))),
               column(3, div(class = "metric", "Next question", div(class = "value", ifelse(is.na(pg$next_question_cost[i]), "done", round(pg$next_question_cost[i], 1)))))
             )
@@ -1445,9 +1434,9 @@ server <- function(input, output, session) {
           tags$li("In Job setup, choose the week and set its assignment mode: random, wage bidding, or application bidding."),
           tags$li("For bidding rounds, students submit bids only while the configured bid window is open. After the close day, the round locks."),
           tags$li("Post or edit job categories and job posts for that week."),
-          tags$li("Use Assignment runner for random rounds, or Bid assignment for wage/application rounds."),
+          tags$li("Use Assignments to run whichever assignment method is active for the selected round, then evaluate completed jobs on the same page."),
           tags$li("Use Job completion and Live tracker to award earning transactions."),
-          tags$li("For public-good question reveal, create a public-good fund, upload a YAML question bank, and let contributions unlock questions in order."),
+          tags$li("For public-good question reveal, create a public-good fund, upload a YAML question bank, and let contributions unlock questions in order using the question-index cost rule."),
           tags$li("Students spend only from spendable balance; spending never reduces lifetime earned tokens.")
         )
       ),
@@ -1572,6 +1561,106 @@ server <- function(input, output, session) {
       LEFT JOIN job_categories jc ON jc.id=jp.category_id
       ORDER BY wr.id DESC, jp.display_order, jp.id;
     "), rownames = FALSE, options = list(pageLength = 20))
+  })
+
+  output$assignment_eval_ui <- renderUI({
+    rounds <- round_choices()
+    if (!length(rounds)) return(p("No rounds exist yet. Go to Settings > Job setup to create the weekly mode and jobs."))
+    rid <- int0(input$assign_eval_round %||% rounds[[1]])
+    r <- db_query("SELECT * FROM weekly_rounds WHERE id=?", list(rid))
+    mode <- if (nrow(r)) r$assignment_mode[1] else "random"
+    tagList(
+      p(class = "helptext", "Select a round. This page shows only the assignment workflow for that round's mode, then the job evaluation controls."),
+      div(class = "panel",
+        fluidRow(
+          column(6, selectInput("assign_eval_round", "Round", choices = rounds, selected = rid)),
+          column(3, div(class = "metric", "Mode", div(class = "value", mode))),
+          column(3, div(class = "metric", "Status", div(class = "value", if (nrow(r)) r$status[1] else "")))
+        )
+      ),
+      div(class = "panel",
+        h4("Assign jobs"),
+        if (identical(mode, "wage_bidding")) {
+          tagList(
+            p(class = "helptext", "Wage bidding is active for this round. Preview the market clearing and commit only after reviewing it."),
+            fluidRow(
+              column(4, selectInput("assign_wage_rule", "Rule", c("pay_as_bid", "highest_accepted_bid", "lowest_rejected_bid", "median_bid", "instructor_override"), selected = get_setting("wage_clearing_rule", "highest_accepted_bid"))),
+              column(3, numericInput("assign_wage_override", "Instructor override wage", value = num0(get_setting("initial_category_wage", 3)), min = 0, step = 0.5)),
+              column(5, br(), actionButton("assign_preview_wage", "Preview wage clearing", class = "btn-primary"), actionButton("assign_commit_wage", "Commit assignments", class = "btn-success"))
+            ),
+            DTOutput("assign_wage_preview_table")
+          )
+        } else if (identical(mode, "application_bidding")) {
+          tagList(
+            p(class = "helptext", "Application bidding is active for this round. Preview the weighted random ticket assignment and commit only after reviewing it."),
+            actionButton("assign_preview_app", "Preview ticket assignment", class = "btn-primary"),
+            actionButton("assign_commit_app", "Commit assignments", class = "btn-success"),
+            DTOutput("assign_app_preview_table")
+          )
+        } else {
+          tagList(
+            p(class = "helptext", "Random assignment is active for this round. Bids are ignored."),
+            actionButton("assign_preview_random", "Preview random assignment", class = "btn-primary"),
+            actionButton("assign_commit_random", "Commit assignments", class = "btn-success"),
+            DTOutput("assign_random_preview_table")
+          )
+        }
+      ),
+      div(class = "panel",
+        h4("Committed assignments"),
+        DTOutput("assign_eval_assignments_table")
+      ),
+      div(class = "panel",
+        h4("Evaluate jobs"),
+        uiOutput("completion_ui")
+      )
+    )
+  })
+
+  observeEvent(input$assign_preview_random, {
+    req(input$assign_eval_round)
+    preview_assignments(random_assignments(active_round_id(input$assign_eval_round)))
+  })
+  observeEvent(input$assign_commit_random, {
+    df <- preview_assignments()
+    if (!nrow(df)) { showNotification("No random assignment preview.", type = "warning"); return() }
+    n <- commit_assignments(df)
+    preview_assignments(data.frame())
+    showNotification(sprintf("Committed %d assignments.", n), type = "message")
+    touch()
+  })
+  observeEvent(input$assign_preview_wage, {
+    req(input$assign_eval_round)
+    set_setting("wage_clearing_rule", input$assign_wage_rule)
+    wage_preview(clear_wage_market(active_round_id(input$assign_eval_round), input$assign_wage_rule, input$assign_wage_override))
+  })
+  observeEvent(input$assign_commit_wage, {
+    req(input$assign_eval_round)
+    df <- assignment_from_wage_preview(active_round_id(input$assign_eval_round), wage_preview())
+    if (!nrow(df)) { showNotification("No accepted wage bids to commit.", type = "warning"); return() }
+    commit_assignments(df)
+    wage_preview(data.frame())
+    showNotification("Wage-bid assignments committed.", type = "message")
+    touch()
+  })
+  observeEvent(input$assign_preview_app, {
+    req(input$assign_eval_round)
+    preview_assignments(application_assignments(active_round_id(input$assign_eval_round)))
+  })
+  observeEvent(input$assign_commit_app, {
+    df <- preview_assignments()
+    if (!nrow(df)) { showNotification("No ticket assignment preview.", type = "warning"); return() }
+    commit_assignments(df)
+    preview_assignments(data.frame())
+    showNotification("Ticket assignments committed.", type = "message")
+    touch()
+  })
+  output$assign_random_preview_table <- renderDT({ datatable(preview_assignments(), rownames = FALSE, options = list(pageLength = 20)) })
+  output$assign_app_preview_table <- renderDT({ datatable(preview_assignments(), rownames = FALSE, options = list(pageLength = 20)) })
+  output$assign_wage_preview_table <- renderDT({ datatable(wage_preview(), rownames = FALSE, options = list(pageLength = 30)) })
+  output$assign_eval_assignments_table <- renderDT({
+    refresh_key()
+    datatable(assignments_df(input$assign_eval_round), rownames = FALSE, options = list(pageLength = 25))
   })
 
   output$runner_ui <- renderUI({
@@ -1758,7 +1847,7 @@ server <- function(input, output, session) {
 
   output$completion_ui <- renderUI({
     refresh_key()
-    rows <- assignments_df()
+    rows <- assignments_df(input$assign_eval_round %||% NULL)
     rows <- rows[is.na(rows$awarded_ledger_id) | rows$status != "closed", , drop = FALSE]
     if (!nrow(rows)) return(p("No open assignments."))
     tagList(
@@ -1779,7 +1868,7 @@ server <- function(input, output, session) {
 
   observe({
     refresh_key()
-    rows <- assignments_df()
+    rows <- assignments_df(input$assign_eval_round %||% NULL)
     rows <- rows[is.na(rows$awarded_ledger_id) | rows$status != "closed", , drop = FALSE]
     lapply(rows$id, function(id) {
       observeEvent(input[[paste0("complete_", id)]], {
@@ -1816,12 +1905,11 @@ server <- function(input, output, session) {
     if (int0(get_setting("public_good_enabled", 1)) != 1L) return(p("Public-good token spending is disabled."))
     funds <- db_query("SELECT id, name FROM public_goods ORDER BY id DESC;")
     tagList(
-      p(class = "helptext", "Create public-good funds and attach YAML question banks. Contributions unlock question 1, then question 2, and so on using the increasing cost schedule in Settings."),
+      p(class = "helptext", "Create public-good funds and attach YAML question banks. Contributions unlock question 1, then question 2, and so on using the question-index cost rule in Settings."),
       div(class = "panel",
         h4("Create public good"),
         textInput("pg_name", "Name", value = "Exam-style reveal fund"),
         textAreaInput("pg_desc", "Description", rows = 2),
-        numericInput("pg_threshold", "Fund-specific threshold (0 uses formula)", value = 0, min = 0, step = 1),
         actionButton("create_pg", "Create", class = "btn-primary")
       ),
       div(class = "panel",
@@ -1844,8 +1932,8 @@ server <- function(input, output, session) {
       return()
     }
     req(nzchar(input$pg_name))
-    db_exec("INSERT INTO public_goods(name, description, threshold, active) VALUES(?,?,?,1);",
-            list(input$pg_name, input$pg_desc, num0(input$pg_threshold)))
+    db_exec("INSERT INTO public_goods(name, description, threshold, active) VALUES(?,?,0,1);",
+            list(input$pg_name, input$pg_desc))
     touch()
   })
 
@@ -1858,7 +1946,7 @@ server <- function(input, output, session) {
       GROUP BY pg.id
       ORDER BY pg.id DESC;
     ")
-    if (nrow(pg)) pg$threshold_current <- vapply(pg$id, public_good_threshold, numeric(1))
+    if (nrow(pg)) pg$unlock_goal <- vapply(pg$id, public_good_threshold, numeric(1))
     if (nrow(pg)) {
       unlocks <- lapply(pg$id, public_good_unlock_state)
       pg$questions_unlocked <- vapply(unlocks, `[[`, integer(1), "unlocked")
@@ -1967,7 +2055,30 @@ server <- function(input, output, session) {
     refresh_key()
     s <- settings_list()
     wages <- live_wage_settings()
+    panel <- input$settings_panel %||% "general"
+    picker <- div(class = "panel",
+      selectInput("settings_panel", "Configure", choices = c(
+        "General settings" = "general",
+        "Job setup" = "job_setup",
+        "Extensions" = "extensions",
+        "Public goods" = "public_goods",
+        "Grade reweighting" = "grade_reweighting"
+      ), selected = panel)
+    )
+    if (!identical(panel, "general")) {
+      return(tagList(
+        picker,
+        switch(panel,
+          job_setup = uiOutput("job_setup_ui"),
+          extensions = uiOutput("extensions_ui"),
+          public_goods = uiOutput("public_goods_ui"),
+          grade_reweighting = uiOutput("reweight_admin_ui"),
+          div(class = "panel", "Choose a settings panel.")
+        )
+      ))
+    }
     tagList(
+      picker,
       div(class = "panel",
         p(class = "helptext", "Adjust the defaults that drive rounds, awards, and token spending. Use the small editors below instead of raw configuration text."),
         fluidRow(
@@ -2016,9 +2127,8 @@ server <- function(input, output, session) {
         hr(),
         h4("Public goods and reweighting"),
         fluidRow(
-          column(6, textInput("set_pg_formula", "Public-good threshold formula", value = s$public_good_threshold_formula %||% "enrolled_students * 1.5")),
-          column(3, textInput("set_pg_question_schedule", "Question unlock costs", value = s$public_good_question_cost_schedule %||% "12,20,30,45,70")),
-          column(3, textInput("set_rw_schedule", "Reweight cost schedule", value = s$reweight_cost_schedule))
+          column(6, textInput("set_pg_question_schedule", "Next-question unlock cost rule", value = s$public_good_question_cost_schedule %||% "11 + 2 * question^2")),
+          column(6, textInput("set_rw_schedule", "Reweight cost schedule", value = s$reweight_cost_schedule))
         ),
         textInput("set_rw_categories", "Eligible reweight category names", value = s$grade_reweight_categories),
         actionButton("save_settings", "Save settings", class = "btn-primary")
@@ -2045,7 +2155,6 @@ server <- function(input, output, session) {
       extension_hour_increment = input$set_ext_increment,
       extension_max_hours = input$set_ext_max,
       extension_allow_after_solutions = int0(input$set_after_solutions),
-      public_good_threshold_formula = input$set_pg_formula,
       public_good_question_cost_schedule = input$set_pg_question_schedule,
       reweight_cost_schedule = input$set_rw_schedule,
       grade_reweight_categories = input$set_rw_categories
@@ -2388,7 +2497,7 @@ server <- function(input, output, session) {
     ")
     if (!nrow(pg)) return(p("No public goods are active."))
     tagList(
-      p(class = "helptext", "Track class fund progress toward each public-good threshold."),
+      p(class = "helptext", "Track class contributions and revealed questions for each public-good fund."),
       lapply(seq_len(nrow(pg)), function(i) {
       th <- public_good_threshold(pg$id[i])
       unlock <- public_good_unlock_state(pg$id[i])
@@ -2398,7 +2507,7 @@ server <- function(input, output, session) {
         strong(pg$name[i]),
         p(pg$description[i] %||% ""),
         tags$progress(value = min(pg$contributed[i], th), max = th),
-        p(sprintf("Fund progress: %.1f / %.1f tokens", pg$contributed[i], th)),
+        p(sprintf("Question-reveal progress: %.1f / %.1f tokens", pg$contributed[i], th)),
         if (unlock$n_questions > 0) tagList(
           p(sprintf("Questions revealed: %d / %d", unlock$unlocked, unlock$n_questions)),
           if (!is.na(unlock$next_cost)) p(class = "muted", sprintf("Cost to reveal next question: %.1f tokens; current carryover toward next: %.1f.", unlock$next_cost, unlock$carry)),
