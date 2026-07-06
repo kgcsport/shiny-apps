@@ -52,6 +52,13 @@ int0 <- function(x) {
   ifelse(is.na(x), 0L, x)
 }
 
+logf <- function(...) {
+  cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "-",
+      paste(vapply(list(...), as.character, character(1)), collapse = " "),
+      "\n", file = stderr())
+  flush(stderr())
+}
+
 DB_PATH <- local({
   root <- appdata_root(file.path(dirname(normalizePath(getwd())), "flex_pass_actions"))
   file.path(root, "data", "finalqdata.sqlite")
@@ -1154,7 +1161,7 @@ login_ui <- fluidPage(
   tags$head(tags$style(HTML(CSS))),
   titlePanel("Class Job Market"),
   wellPanel(
-    textInput("login_user", "Username (students only; leave blank for instructor password)"),
+    textInput("login_user", "Username"),
     passwordInput("login_pw", "Password"),
     actionButton("login_btn", "Sign in", class = "btn-primary")
   )
@@ -1169,7 +1176,7 @@ app_ui <- fluidPage(
 
 server <- function(input, output, session) {
   SHINY_PASSWORD <- Sys.getenv("SHINY_PASSWORD", "")
-  authed_admin <- reactiveVal(!nzchar(SHINY_PASSWORD))
+  authed_admin <- reactiveVal(FALSE)
   student_user <- reactiveVal(NULL)
   impersonated_user <- reactiveVal(NULL)
   preview_assignments <- reactiveVal(data.frame())
@@ -1206,23 +1213,45 @@ server <- function(input, output, session) {
     uname <- trimws(input$login_user %||% "")
     pw <- input$login_pw %||% ""
     if (!nzchar(uname)) {
-      if (!nzchar(SHINY_PASSWORD) || identical(pw, SHINY_PASSWORD)) {
+      if (nzchar(SHINY_PASSWORD) && identical(pw, SHINY_PASSWORD)) {
         authed_admin(TRUE)
+        student_user(NULL)
       } else {
-        showNotification("Incorrect password.", type = "error")
+        showNotification("Enter your username and password.", type = "error")
       }
       return()
     }
-    row <- tryCatch(db_query("SELECT user_id, display_name, pw_hash, COALESCE(is_admin,0) is_admin, COALESCE(active,1) active FROM users WHERE user_id=?", list(uname)), error = function(e) data.frame())
+    row <- tryCatch(
+      db_query("SELECT user_id, display_name, pw_hash, COALESCE(is_admin,0) is_admin, COALESCE(active,1) active FROM users WHERE user_id=?", list(uname)),
+      error = function(e) {
+        logf("LOGIN FAIL: users query failed for", uname, ":", conditionMessage(e))
+        data.frame(.query_error = conditionMessage(e))
+      }
+    )
+    if (".query_error" %in% names(row)) {
+      showNotification("Login database is not ready. Check the app log.", type = "error")
+      return()
+    }
     if (!nrow(row)) {
+      logf("LOGIN FAIL: username not found:", uname)
       showNotification("Username not found.", type = "error")
     } else if (int0(row$active[1]) == 0) {
+      logf("LOGIN FAIL: account archived:", uname)
       showNotification("This account is archived.", type = "error")
     } else if (!nzchar(row$pw_hash[1] %||% "")) {
+      logf("LOGIN FAIL: pw_hash missing for:", uname)
       showNotification("No password is set for this account.", type = "error")
     } else if (bcrypt_check(pw, row$pw_hash[1])) {
-      if (int0(row$is_admin[1]) == 1L) authed_admin(TRUE) else student_user(row$user_id[1])
+      if (int0(row$is_admin[1]) == 1L) {
+        authed_admin(TRUE)
+        student_user(NULL)
+      } else {
+        authed_admin(FALSE)
+        student_user(row$user_id[1])
+      }
+      logf("LOGIN OK:", uname, "| admin=", int0(row$is_admin[1]) == 1L)
     } else {
+      logf("LOGIN FAIL: bcrypt mismatch for:", uname)
       showNotification("Incorrect password.", type = "error")
     }
   })
@@ -1261,7 +1290,7 @@ server <- function(input, output, session) {
   observeEvent(input$logout, {
     impersonated_user(NULL)
     student_user(NULL)
-    authed_admin(!nzchar(SHINY_PASSWORD))
+    authed_admin(FALSE)
   })
 
   observeEvent(input$stop_impersonation, {

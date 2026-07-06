@@ -33,6 +33,13 @@ source(shared_sqlite)
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 
+logf <- function(...) {
+  cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "-",
+      paste(vapply(list(...), as.character, character(1)), collapse = " "),
+      "\n", file = stderr())
+  flush(stderr())
+}
+
 # ----------------------------
 # SQLite CONNECTION (shared with flex_pass_actions)
 # ----------------------------
@@ -647,11 +654,11 @@ ui <- fluidPage(
 login_ui <- fluidPage(
   titlePanel("Class Jobs Console"),
   wellPanel(
-    textInput("login_user", "Username (students only — leave blank for admin)"),
+    textInput("login_user", "Username"),
     passwordInput("login_pw", "Password"),
     actionButton("login_btn", "Sign in", class = "btn-primary"),
     tags$small(style = "color:#666;",
-      "Students: enter your username and password. Instructors: leave username blank.")
+      "Use your shared class login. Instructors must use an admin account.")
   )
 )
 
@@ -874,7 +881,7 @@ app_ui <- tagList(
 server <- function(input, output, session) {
 
   # --- Auth state ---
-  authed           <- reactiveVal(!nzchar(SHINY_PASSWORD))  # TRUE = admin
+  authed           <- reactiveVal(FALSE)  # TRUE = admin
   student_user     <- reactiveVal(NULL)   # display_name of logged-in student
   impersonate_user <- reactiveVal(NULL)   # display_name admin is previewing
 
@@ -898,38 +905,51 @@ server <- function(input, output, session) {
     pw    <- input$login_pw %||% ""
 
     if (!nzchar(uname)) {
-      # Admin path: single shared password
+      # Optional emergency admin path: single shared password if explicitly set.
       if (nzchar(SHINY_PASSWORD) && identical(pw, SHINY_PASSWORD)) {
         authed(TRUE)
-      } else if (!nzchar(SHINY_PASSWORD)) {
-        authed(TRUE)
       } else {
-        showNotification("Incorrect password.", type = "error")
+        showNotification("Enter your username and password.", type = "error")
       }
     } else {
       # DB path: check pw_hash in users table (works for both students and admins)
       row <- tryCatch(
         jdb_query(
-          "SELECT display_name, pw_hash, COALESCE(is_admin,0) AS is_admin, active FROM users WHERE user_id=?",
+          "SELECT user_id, display_name, pw_hash, COALESCE(is_admin,0) AS is_admin, COALESCE(active,1) AS active FROM users WHERE user_id=?",
           list(uname)
         ),
-        error = function(e) data.frame()
+        error = function(e) {
+          logf("LOGIN FAIL: users query failed for", uname, ":", conditionMessage(e))
+          data.frame(.query_error = conditionMessage(e))
+        }
       )
-      if (nrow(row) == 0) {
+      if (".query_error" %in% names(row)) {
+        showNotification("Login database is not ready. Check the app log.", type = "error")
+      } else if (nrow(row) == 0) {
+        logf("LOGIN FAIL: username not found:", uname)
         showNotification("Username not found.", type = "error")
       } else if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
+        logf("LOGIN FAIL: account archived:", uname)
         showNotification("This account has been archived. Contact your instructor.", type = "error")
       } else {
         ph <- row$pw_hash[1] %||% ""
         if (!nzchar(ph)) {
+          logf("LOGIN FAIL: pw_hash missing for:", uname)
           showNotification("No password set for this account. Contact your instructor.", type = "error")
-        } else if (bcrypt::checkpw(pw, ph)) {
+        } else if (isTRUE(tryCatch(bcrypt::checkpw(pw, ph), error = function(e) {
+          logf("LOGIN FAIL: bcrypt error for", uname, ":", conditionMessage(e))
+          FALSE
+        }))) {
           if (as.integer(row$is_admin[1]) == 1L) {
             authed(TRUE)   # admin via DB → full app
+            student_user(NULL)
           } else {
+            authed(FALSE)
             student_user(row$display_name[1])
           }
+          logf("LOGIN OK:", uname, "| admin=", as.integer(row$is_admin[1]) == 1L)
         } else {
+          logf("LOGIN FAIL: bcrypt mismatch for:", uname)
           showNotification("Incorrect password.", type = "error")
         }
       }
