@@ -38,8 +38,11 @@ library(shiny); library(DT); library(bcrypt); library(dplyr); library(tibble)
 library(DBI); library(RSQLite); library(stringr); library(ggplot2); library(tidyr)
 library(googledrive); library(googlesheets4); library(digest)
 
-shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
-if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+shared_sqlite <- Filter(file.exists, c(
+  file.path("apps", "_shared", "sqlite.R"),
+  file.path("_shared", "sqlite.R"),
+  file.path("..", "_shared", "sqlite.R")
+))[[1]]
 source(shared_sqlite)
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b

@@ -8,8 +8,11 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 library(shiny); library(googlesheets4); library(dplyr); library(tidyr); library(tibble)
 library(jsonlite); library(DBI); library(RSQLite); library(bcrypt)
 
-shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
-if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+shared_sqlite <- Filter(file.exists, c(
+  file.path("apps", "_shared", "sqlite.R"),
+  file.path("_shared", "sqlite.R"),
+  file.path("..", "_shared", "sqlite.R")
+))[[1]]
 source(shared_sqlite)
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b

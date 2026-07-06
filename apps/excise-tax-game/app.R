@@ -20,8 +20,11 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 
 library(shiny); library(DBI); library(RSQLite); library(jsonlite); library(digest)
 
-shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
-if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+shared_sqlite <- Filter(file.exists, c(
+  file.path("apps", "_shared", "sqlite.R"),
+  file.path("_shared", "sqlite.R"),
+  file.path("..", "_shared", "sqlite.R")
+))[[1]]
 source(shared_sqlite)
 
 `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 && !all(is.na(a))) a else b

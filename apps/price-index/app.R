@@ -9,8 +9,11 @@ library(shiny); library(DT); library(bcrypt); library(dplyr); library(tidyr)
 library(tibble); library(forcats); library(DBI); library(RSQLite); library(ggplot2)
 library(scales); library(googledrive); library(promises); library(future)
 
-shared_sqlite <- file.path("apps", "_shared", "sqlite.R")
-if (!file.exists(shared_sqlite)) shared_sqlite <- file.path("..", "_shared", "sqlite.R")
+shared_sqlite <- Filter(file.exists, c(
+  file.path("apps", "_shared", "sqlite.R"),
+  file.path("_shared", "sqlite.R"),
+  file.path("..", "_shared", "sqlite.R")
+))[[1]]
 source(shared_sqlite)
 
 future::plan(future::sequential)  # backup_async() is fire-and-forget; no workers needed
