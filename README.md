@@ -52,16 +52,17 @@ at startup so deployments with read-only `/etc` still work.
   new worker.
 - `SHINY_APP_IDLE_TIMEOUT` controls how long an app process stays alive after
   its last session exits.
-- `SHINY_APP_SESSION_TIMEOUT` disconnects inactive browser sessions. Set it
-  to blank or `0` to omit the setting.
+- `SHINY_APP_SESSION_TIMEOUT` is accepted for compatibility, but this Shiny
+  Server build rejects `app_session_timeout`; the entrypoint omits the
+  directive and writes a comment instead.
 
 Commented presets live in `docker-compose.yml`:
 
 | Profile | Scheduler | Idle timeout | Session timeout |
 |---|---:|---:|---:|
-| low memory | 40 | 60 | 600 |
-| balanced | 30 | 60 | 900 |
-| responsiveness | 15 | 30 | 1200 |
+| low memory | 40 | 60 | omitted |
+| balanced | 30 | 60 | omitted |
+| responsiveness | 15 | 30 | omitted |
 
 ## Diagnostics
 

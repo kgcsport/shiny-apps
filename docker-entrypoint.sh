@@ -3,10 +3,10 @@ set -eu
 
 if [ -z "${SHINY_SIMPLE_SCHEDULER+x}" ]; then SHINY_SIMPLE_SCHEDULER=30; fi
 if [ -z "${SHINY_APP_IDLE_TIMEOUT+x}" ]; then SHINY_APP_IDLE_TIMEOUT=60; fi
-if [ -z "${SHINY_APP_SESSION_TIMEOUT+x}" ]; then SHINY_APP_SESSION_TIMEOUT=900; fi
+if [ -z "${SHINY_APP_SESSION_TIMEOUT+x}" ]; then SHINY_APP_SESSION_TIMEOUT=0; fi
 
 if [ -n "${SHINY_APP_SESSION_TIMEOUT}" ] && [ "${SHINY_APP_SESSION_TIMEOUT}" != "0" ]; then
-  APP_SESSION_TIMEOUT_LINE="$(printf '    # Seconds before an inactive browser session is disconnected.\n    app_session_timeout %s;' "${SHINY_APP_SESSION_TIMEOUT}")"
+  APP_SESSION_TIMEOUT_LINE="$(printf '    # SHINY_APP_SESSION_TIMEOUT=%s requested, but Shiny Server v1.5.x does not support app_session_timeout; omitted.' "${SHINY_APP_SESSION_TIMEOUT}")"
 else
   APP_SESSION_TIMEOUT_LINE="    # app_session_timeout omitted because SHINY_APP_SESSION_TIMEOUT is blank or 0."
 fi
