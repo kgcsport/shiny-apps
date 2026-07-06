@@ -37,7 +37,7 @@ source(shared_sqlite)
 # SQLite CONNECTION (shared with flex_pass_actions)
 # ----------------------------
 JOB_DB_PATH <- local({
-  root <- Sys.getenv("CONNECT_CONTENT_DIR", unset = {
+  root <- appdata_root({
     # local dev: walk up to sibling app directory
     file.path(dirname(normalizePath(getwd())), "flex_pass_actions")
   })

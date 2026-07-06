@@ -53,7 +53,7 @@ int0 <- function(x) {
 }
 
 DB_PATH <- local({
-  root <- Sys.getenv("CONNECT_CONTENT_DIR", unset = file.path(dirname(normalizePath(getwd())), "flex_pass_actions"))
+  root <- appdata_root(file.path(dirname(normalizePath(getwd())), "flex_pass_actions"))
   file.path(root, "data", "finalqdata.sqlite")
 })
 

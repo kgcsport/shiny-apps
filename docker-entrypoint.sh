@@ -14,6 +14,9 @@ fi
 export SHINY_SIMPLE_SCHEDULER SHINY_APP_IDLE_TIMEOUT APP_SESSION_TIMEOUT_LINE
 RENDERED_CONF="${SHINY_SERVER_CONF:-/tmp/shiny-server.conf}"
 
+mkdir -p /srv/shiny-server/appdata/data /var/log/shiny-server
+chown -R shiny:shiny /srv/shiny-server/appdata /var/log/shiny-server 2>/dev/null || true
+
 awk '
 {
   gsub(/\$\{SHINY_SIMPLE_SCHEDULER\}/, ENVIRON["SHINY_SIMPLE_SCHEDULER"]);

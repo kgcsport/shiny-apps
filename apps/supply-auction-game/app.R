@@ -62,7 +62,7 @@ app_data_dir <- local({
   dir <- NULL
   function() {
     if (!is.null(dir)) return(dir)
-    root <- Sys.getenv("CONNECT_CONTENT_DIR", unset = getwd())
+    root <- appdata_root(getwd())
     d <- file.path(root, "data")
     if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
     tf <- file.path(d, ".writetest"); on.exit(unlink(tf, force = TRUE), add = TRUE)
@@ -252,7 +252,7 @@ restore_db_from_drive <- function(filename = latest_zip_name()) {
 # Doing the same here removes the hard Google Drive dependency for login
 # and the staleness lag of waiting on the next snapshot.
 SHARED_DB_PATH <- local({
-  root <- Sys.getenv("CONNECT_CONTENT_DIR", unset = {
+  root <- appdata_root({
     # local dev: walk up to sibling app directory
     file.path(dirname(normalizePath(getwd())), "flex_pass_actions")
   })

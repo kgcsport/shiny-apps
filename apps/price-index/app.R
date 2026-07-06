@@ -42,7 +42,7 @@ app_data_dir <- local({
   dir <- NULL
   function() {
     if (!is.null(dir)) return(dir)
-    root <- Sys.getenv("CONNECT_CONTENT_DIR", unset = getwd())
+    root <- appdata_root(getwd())
     d <- file.path(root, "data")
     if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
     if (!dir.exists(d)) stop("Data directory not writable: ", d)

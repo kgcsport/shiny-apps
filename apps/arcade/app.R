@@ -30,7 +30,7 @@ source(shared_sqlite)
 `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 && !is.na(a[1])) a else b
 
 # ── Database ──────────────────────────────────────────────────────────────────
-CONNECT_CONTENT_DIR <- Sys.getenv("CONNECT_CONTENT_DIR", getwd())
+CONNECT_CONTENT_DIR <- appdata_root(getwd())
 DB_PATH <- file.path(CONNECT_CONTENT_DIR, "data", "finalqdata.sqlite")
 
 conn <- NULL
