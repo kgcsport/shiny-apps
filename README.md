@@ -45,6 +45,8 @@ Everything else is **optional**, for legacy/extra functionality only:
 Shiny Server reads worker/session settings at container startup. Change these
 in `.env` or `docker-compose.yml`, then restart with
 `docker-compose up -d --build`.
+The container renders `shiny-server.conf.template` to `/tmp/shiny-server.conf`
+at startup so deployments with read-only `/etc` still work.
 
 - `SHINY_SIMPLE_SCHEDULER` controls sessions per R worker before starting a
   new worker.

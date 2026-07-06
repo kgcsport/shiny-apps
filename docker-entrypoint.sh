@@ -12,6 +12,7 @@ else
 fi
 
 export SHINY_SIMPLE_SCHEDULER SHINY_APP_IDLE_TIMEOUT APP_SESSION_TIMEOUT_LINE
+RENDERED_CONF="${SHINY_SERVER_CONF:-/tmp/shiny-server.conf}"
 
 awk '
 {
@@ -20,10 +21,10 @@ awk '
   gsub(/\$\{APP_SESSION_TIMEOUT_LINE\}/, ENVIRON["APP_SESSION_TIMEOUT_LINE"]);
   print;
 }
-' /etc/shiny-server/shiny-server.conf.template > /etc/shiny-server/shiny-server.conf
+' /etc/shiny-server/shiny-server.conf.template > "${RENDERED_CONF}"
 
 if [ "$#" -gt 0 ] && [ "$1" != "/usr/bin/shiny-server" ] && [ "$1" != "shiny-server" ]; then
   exec "$@"
 fi
 
-exec /usr/bin/shiny-server
+exec /usr/bin/shiny-server "${RENDERED_CONF}"
