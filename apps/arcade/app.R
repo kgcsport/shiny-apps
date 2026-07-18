@@ -66,6 +66,44 @@ db_exec("
 if (!db_query("SELECT COUNT(*) n FROM arcade_state WHERE id=1;")$n[1])
   db_exec("INSERT INTO arcade_state(id, active_game) VALUES(1, NULL);")
 
+db_exec("
+  CREATE TABLE IF NOT EXISTS arcade_sessions (
+    token      TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+")
+# Clean up expired tokens on startup
+db_exec("DELETE FROM arcade_sessions WHERE expires_at < CURRENT_TIMESTAMP;")
+
+SESSION_DAYS <- 14L   # how long a cookie login lasts
+
+make_token <- function() {
+  paste(sample(c(letters, LETTERS, 0:9), 48L, replace = TRUE), collapse = "")
+}
+store_token <- function(token, user_id) {
+  db_exec(
+    "INSERT INTO arcade_sessions(token, user_id, expires_at)
+     VALUES(?, ?, datetime('now', ?));",
+    list(token, user_id, paste0("+", SESSION_DAYS, " days"))
+  )
+}
+delete_token <- function(token) {
+  if (nzchar(token %||% ""))
+    db_exec("DELETE FROM arcade_sessions WHERE token=?;", list(token))
+}
+lookup_token <- function(token) {
+  if (!nzchar(token %||% "")) return(data.frame())
+  db_query(
+    "SELECT u.user_id, u.display_name, u.is_admin, u.section, u.active
+     FROM arcade_sessions s
+     JOIN users u ON u.user_id = s.user_id
+     WHERE s.token = ? AND s.expires_at > CURRENT_TIMESTAMP;",
+    list(token)
+  )
+}
+
 # Defensive: other apps own the users table, but make sure 'active' exists
 # regardless of which app starts first against a fresh DB.
 try(db_exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1;"), silent = TRUE)
@@ -271,10 +309,34 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
 "
 
 # ── UI ────────────────────────────────────────────────────────────────────────
+COOKIE_JS <- HTML("
+(function() {
+  function getCookie(name) {
+    var m = document.cookie.match('(?:^|; )' + name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '=([^;]*)');
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+  // Send stored token to Shiny once the session is ready
+  $(document).on('shiny:sessioninitialized', function() {
+    Shiny.setInputValue('auth_cookie', getCookie('arcade_token'), {priority: 'event'});
+  });
+  // Set or clear the cookie on server instruction
+  Shiny.addCustomMessageHandler('set_arcade_cookie', function(msg) {
+    if (msg.token) {
+      document.cookie = 'arcade_token=' + encodeURIComponent(msg.token) +
+        '; expires=' + new Date(msg.expires).toUTCString() +
+        '; path=/; SameSite=Lax';
+    } else {
+      document.cookie = 'arcade_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; SameSite=Lax';
+    }
+  });
+})();
+")
+
 ui <- fluidPage(
   tags$head(
     tags$title("CORE Arcade"),
-    tags$style(HTML(ARCADE_CSS))
+    tags$style(HTML(ARCADE_CSS)),
+    tags$script(COOKIE_JS)
   ),
   uiOutput("root_ui")
 )
@@ -287,7 +349,8 @@ server <- function(input, output, session) {
     user_id  = NULL,
     name     = NULL,
     section  = NULL,
-    is_admin = FALSE
+    is_admin = FALSE,
+    token    = NULL   # current browser token (for logout cleanup)
   )
 
   # ── Root UI ──────────────────────────────────────────────────────────────────
@@ -343,7 +406,42 @@ server <- function(input, output, session) {
     )
   })
 
-  # ── Auth ─────────────────────────────────────────────────────────────────────
+  # ── Auth helpers ──────────────────────────────────────────────────────────────
+  do_login <- function(row) {
+    rv$authed   <- TRUE
+    rv$user_id  <- row$user_id[1]
+    rv$name     <- coalesce_str(row$display_name[1], row$user_id[1])
+    rv$section  <- row$section[1] %||% ""
+    rv$is_admin <- isTRUE(as.integer(row$is_admin[1]) == 1L)
+  }
+
+  issue_cookie <- function(user_id) {
+    tok <- make_token()
+    store_token(tok, user_id)
+    rv$token <- tok
+    expires  <- format(Sys.time() + SESSION_DAYS * 86400, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+    session$sendCustomMessage("set_arcade_cookie", list(token = tok, expires = expires))
+  }
+
+  clear_cookie <- function() {
+    delete_token(rv$token %||% "")
+    rv$token <- NULL
+    session$sendCustomMessage("set_arcade_cookie", list(token = ""))
+  }
+
+  # ── Auto-login from cookie ────────────────────────────────────────────────────
+  observeEvent(input$auth_cookie, {
+    if (rv$authed) return()               # already logged in this session
+    tok <- input$auth_cookie %||% ""
+    if (!nzchar(tok)) return()
+    row <- lookup_token(tok)
+    if (!nrow(row)) return()              # token expired or not found
+    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) return()
+    rv$token <- tok                       # remember so logout can delete it
+    do_login(row)
+  }, ignoreInit = FALSE)
+
+  # ── Manual login ─────────────────────────────────────────────────────────────
   observeEvent(input$login_btn, {
     u <- trimws(input$login_user %||% "")
     p <- input$login_pw %||% ""
@@ -357,16 +455,16 @@ server <- function(input, output, session) {
       showNotification("Incorrect username or password.", type = "error"); return()
     }
     if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
-      showNotification("This account has been archived. Contact your instructor.", type = "error"); return()
+      showNotification("This account has been archived. Contact your instructor.", type = "error")
+      return()
     }
-    rv$authed   <- TRUE
-    rv$user_id  <- row$user_id[1]
-    rv$name     <- coalesce_str(row$display_name[1], row$user_id[1])
-    rv$section  <- row$section[1] %||% ""
-    rv$is_admin <- isTRUE(as.integer(row$is_admin[1]) == 1L)
+    do_login(row)
+    issue_cookie(row$user_id[1])
   })
 
+  # ── Logout ────────────────────────────────────────────────────────────────────
   observeEvent(input$logout_btn, {
+    clear_cookie()
     rv$authed <- FALSE; rv$user_id <- NULL; rv$name <- NULL
     rv$section <- NULL; rv$is_admin <- FALSE
   })
