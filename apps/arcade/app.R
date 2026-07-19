@@ -345,12 +345,14 @@ ui <- fluidPage(
 server <- function(input, output, session) {
 
   rv <- reactiveValues(
-    authed   = FALSE,
-    user_id  = NULL,
-    name     = NULL,
-    section  = NULL,
-    is_admin = FALSE,
-    token    = NULL   # current browser token (for logout cleanup)
+    authed         = FALSE,
+    user_id        = NULL,
+    name           = NULL,
+    section        = NULL,
+    is_admin       = FALSE,
+    token          = NULL,   # current browser token (for logout cleanup)
+    bp_contrib_val = NULL,   # preserve bp_contrib across olig_poll re-renders
+    pd_choice_val  = NULL    # preserve pd_choice across olig_poll re-renders
   )
 
   # ── Root UI ──────────────────────────────────────────────────────────────────
@@ -529,6 +531,12 @@ server <- function(input, output, session) {
     as.numeric(sum(wp$ledger$amount, na.rm = TRUE))
   })
 
+  # Preserve typed input values across poll-triggered renderUI re-renders.
+  # Without these, numericInput/radioButtons reset to their 'value' attr every
+  # time olig_poll fires (e.g. admin opens/closes a round mid-student entry).
+  observe({ if (!is.null(input$bp_contrib)) rv$bp_contrib_val <- input$bp_contrib })
+  observe({ if (!is.null(input$pd_choice))  rv$pd_choice_val  <- input$pd_choice  })
+
   # ── Play tab — three sections ─────────────────────────────────────────────────
   output$play_tab <- renderUI({
     req(rv$authed)
@@ -652,8 +660,8 @@ server <- function(input, output, session) {
           fluidRow(
             column(5,
               numericInput("bp_contrib", "Your contribution (FP):",
-                           value = prev_contrib, min = 0,
-                           max   = max(0, max_c), step = 0.5)),
+                           value = isolate(rv$bp_contrib_val) %||% prev_contrib,
+                           min = 0, max = max(0, max_c), step = 0.5)),
             column(4, tags$br(), tags$br(),
                    actionButton("bp_submit", "Submit", class = "btn btn-primary"))
           ),
@@ -742,7 +750,12 @@ server <- function(input, output, session) {
               "Choose to cooperate or defect. Both cooperating pays more overall — but defecting pays more for you individually."),
           radioButtons("pd_choice", "Your choice:",
                        choices  = c(d_lbl, c_lbl),
-                       selected = if (nzchar(prev)) prev else character(0),
+                       selected = {
+                         sv <- isolate(rv$pd_choice_val)
+                         if (!is.null(sv) && nzchar(sv)) sv
+                         else if (nzchar(prev)) prev
+                         else character(0)
+                       },
                        inline   = TRUE),
           actionButton("pd_submit", "Submit", class = "btn btn-primary"),
           tags$p(style = "color:#888;font-size:.82em; margin-top:.5rem;",
@@ -832,7 +845,7 @@ server <- function(input, output, session) {
                 fluidRow(
                   column(6,
                     numericInput("pledge_amt", "Amount (FP):",
-                                 value = step,
+                                 value = isolate(input$pledge_amt) %||% step,
                                  min   = step,
                                  max   = max(step, floor(bal * 2) / 2),
                                  step  = step)),
@@ -1003,10 +1016,11 @@ server <- function(input, output, session) {
 
   output$admin_content <- renderUI({
     req(rv$is_admin)
-    as     <- arcade_poll()
-    active <- as$active_game[1] %||% ""
-    op     <- olig_poll()
-    s      <- op$settings
+    # Isolate polls so the selectInput and buttons don't reset every time the
+    # admin opens/closes a round or the arcade_state timestamp changes.
+    # updateSelectInput (below) keeps admin_game_sel in sync reactively.
+    active <- isolate(arcade_poll())$active_game[1] %||% ""
+    s      <- isolate(olig_poll())$settings
 
     make_group <- function(type_id, heading) {
       gs <- Filter(function(g) g$type == type_id, GAMES)
@@ -1038,17 +1052,10 @@ server <- function(input, output, session) {
         column(7,
           wellPanel(
             tags$h6(style = "font-weight:700;color:#951829;", "Coordination Game Controls"),
-            if (!nrow(s)) {
-              tags$p(style = "color:#999;", "Run coordination-games once to initialize settings.")
-            } else {
+            # Live status in its own output so it updates without re-rendering buttons
+            uiOutput("olig_status_display"),
+            if (nrow(s)) {
               tagList(
-                tags$p(
-                  tags$strong("Game: "), toupper(s$current_game[1] %||% "—"), "  ",
-                  tags$strong("Round: "), s$current_round[1], "  ",
-                  tags$strong("Status: "),
-                  span(style = if (s$round_status[1] == "open") "color:#1a6e3c;" else "color:#b00020;",
-                       toupper(s$round_status[1]))
-                ),
                 fluidRow(
                   column(4, actionButton("adm_open",   "Open",   class = "btn btn-success btn-sm btn-block")),
                   column(4, actionButton("adm_close",  "Close",  class = "btn btn-warning btn-sm btn-block")),
@@ -1065,6 +1072,31 @@ server <- function(input, output, session) {
       div(class = "sec-label", "Student Wallet Balances"),
       uiOutput("admin_balances")
     )
+  })
+
+  # Olig status updates reactively (on every olig_poll change) without
+  # touching the surrounding admin_content form fields.
+  output$olig_status_display <- renderUI({
+    req(rv$is_admin)
+    s <- olig_poll()$settings
+    if (!nrow(s))
+      return(tags$p(style = "color:#999;margin-bottom:.5rem;",
+                    "Run coordination-games once to initialize settings."))
+    tags$p(style = "margin-bottom:.5rem;",
+      tags$strong("Game: "), toupper(s$current_game[1] %||% "—"), "   ",
+      tags$strong("Round: "), s$current_round[1], "   ",
+      tags$strong("Status: "),
+      span(style = if (s$round_status[1] == "open") "color:#1a6e3c;font-weight:600;"
+                   else "color:#b00020;font-weight:600;",
+           toupper(s$round_status[1]))
+    )
+  })
+
+  # Keep admin_game_sel in sync with DB without re-rendering the whole form
+  observe({
+    req(rv$is_admin)
+    active <- arcade_poll()$active_game[1] %||% ""
+    updateSelectInput(session, "admin_game_sel", selected = active)
   })
 
   output$admin_balances <- renderUI({
@@ -1099,13 +1131,14 @@ server <- function(input, output, session) {
 
   observeEvent(input$set_active_btn, {
     req(rv$is_admin)
-    g   <- input$admin_game_sel
-    val <- if (is.null(g) || !nzchar(g %||% "")) "NULL" else paste0("'", g, "'")
-    db_exec(paste0(
-      "UPDATE arcade_state SET active_game = ", val,
-      ", updated_at = CURRENT_TIMESTAMP WHERE id = 1;"))
-    lbl <- if (val == "NULL") "cleared" else g
-    showNotification(paste("Active game:", lbl), type = "message")
+    g <- input$admin_game_sel %||% ""
+    if (nzchar(g)) {
+      db_exec("UPDATE arcade_state SET active_game=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+              list(g))
+    } else {
+      db_exec("UPDATE arcade_state SET active_game=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    }
+    showNotification(paste("Active game:", if (nzchar(g)) g else "cleared"), type = "message")
   })
 
   observeEvent(input$adm_open, {
