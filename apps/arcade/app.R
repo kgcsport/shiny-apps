@@ -74,41 +74,41 @@ db_exec("
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 ")
-# Clean up expired tokens on startup
 db_exec("DELETE FROM arcade_sessions WHERE expires_at < CURRENT_TIMESTAMP;")
 
-SESSION_DAYS <- 14L   # how long a cookie login lasts
+db_exec("
+  CREATE TABLE IF NOT EXISTS arcade_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+  );
+")
+db_exec("INSERT OR IGNORE INTO arcade_config(key,value) VALUES('app_name','Classroom Economy');")
 
-make_token <- function() {
-  paste(sample(c(letters, LETTERS, 0:9), 48L, replace = TRUE), collapse = "")
-}
-store_token <- function(token, user_id) {
-  db_exec(
-    "INSERT INTO arcade_sessions(token, user_id, expires_at)
-     VALUES(?, ?, datetime('now', ?));",
-    list(token, user_id, paste0("+", SESSION_DAYS, " days"))
-  )
-}
-delete_token <- function(token) {
-  if (nzchar(token %||% ""))
-    db_exec("DELETE FROM arcade_sessions WHERE token=?;", list(token))
-}
-lookup_token <- function(token) {
-  if (!nzchar(token %||% "")) return(data.frame())
-  db_query(
-    "SELECT u.user_id, u.display_name, u.is_admin, u.section, u.active
-     FROM arcade_sessions s
-     JOIN users u ON u.user_id = s.user_id
-     WHERE s.token = ? AND s.expires_at > CURRENT_TIMESTAMP;",
-    list(token)
-  )
+# Ensure these columns exist on the users table (other apps own it, but we add ours)
+try(db_exec("ALTER TABLE users ADD COLUMN active  INTEGER DEFAULT 1;"), silent = TRUE)
+try(db_exec("ALTER TABLE users ADD COLUMN is_demo INTEGER DEFAULT 0;"), silent = TRUE)
+
+# Demo account
+DEMO_HASH <- bcrypt::hashpw("freetour")
+db_exec(
+  "INSERT OR IGNORE INTO users(user_id, display_name, pw_hash, is_admin, section, active, is_demo)
+   VALUES(?,?,?,0,'Demo',1,1);",
+  list("demo", "Demo User", DEMO_HASH))
+
+# Seed fake data for demo account (only if ledger is empty)
+if (!db_query("SELECT COUNT(*) n FROM ledger WHERE user_id='demo';")$n[1]) {
+  for (row in list(
+    list("demo",  5.0, "Class Job",  "Record Keeper — Wk 1", "2024-09-05 10:00:00"),
+    list("demo",  3.5, "Bonus Pot",  "Round 1 payout",        "2024-09-12 10:00:00"),
+    list("demo", -1.0, "Pledge",     "Exam 1 question pledge", "2024-09-15 10:00:00"),
+    list("demo",  4.0, "PD payout",  "Prisoner's Dilemma R1", "2024-09-19 10:00:00"),
+    list("demo",  1.0, "Class Job",  "Analyst — Wk 2",        "2024-09-26 10:00:00")
+  )) {
+    db_exec("INSERT INTO ledger(user_id,amount,purpose,meta,created_at) VALUES(?,?,?,?,?);", row)
+  }
 }
 
-# Defensive: other apps own the users table, but make sure 'active' exists
-# regardless of which app starts first against a fresh DB.
-try(db_exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1;"), silent = TRUE)
-
-# Ensure olig tables exist so the arcade works even before coordination-games runs
+# Ensure olig tables exist
 db_exec("
   CREATE TABLE IF NOT EXISTS olig_settings (
     id INTEGER PRIMARY KEY,
@@ -150,15 +150,46 @@ db_exec("CREATE TABLE IF NOT EXISTS pledges (
   PRIMARY KEY (user_id, exam_id, round)
 );")
 
+SESSION_DAYS <- 14L
+
+make_token <- function() {
+  paste(sample(c(letters, LETTERS, 0:9), 48L, replace = TRUE), collapse = "")
+}
+store_token <- function(token, user_id) {
+  db_exec(
+    "INSERT INTO arcade_sessions(token, user_id, expires_at)
+     VALUES(?, ?, datetime('now', ?));",
+    list(token, user_id, paste0("+", SESSION_DAYS, " days"))
+  )
+}
+delete_token <- function(token) {
+  if (nzchar(token %||% ""))
+    db_exec("DELETE FROM arcade_sessions WHERE token=?;", list(token))
+}
+lookup_token <- function(token) {
+  if (!nzchar(token %||% "")) return(data.frame())
+  db_query(
+    "SELECT u.user_id, u.display_name, u.is_admin, u.section, u.active,
+            COALESCE(u.is_demo,0) AS is_demo
+     FROM arcade_sessions s
+     JOIN users u ON u.user_id = s.user_id
+     WHERE s.token = ? AND s.expires_at > CURRENT_TIMESTAMP;",
+    list(token)
+  )
+}
+
+get_config <- function(key, default = NULL) {
+  r <- db_query("SELECT value FROM arcade_config WHERE key=?;", list(key))
+  if (!nrow(r) || is.na(r$value[1])) return(default)
+  r$value[1]
+}
+APP_NAME <- get_config("app_name", "Classroom Economy")
+
 # ── Game catalog ──────────────────────────────────────────────────────────────
-# type:
-#   "session"  — live during class only; stays visible but inactive otherwise
-#   "semester" — persistent all-semester tool
-#   "either"   — can be activated for a session slot OR used between classes
-# embedded = TRUE  → arcade renders game UI inline when active
-# embedded = FALSE → arcade shows a Launch card linking to the standalone app
+# type "either"  — live session slot OR elective use between classes
+# type "session" — live during class only
+# Semester tools (price-index, flex-pass-app) have moved to the TOOLS list.
 GAMES <- list(
-  # ── Either/or: session slot OR semester use ──────────────────────────────
   list(id = "bonus_pot",        type = "either",
        label = "Bonus Pot",     embedded = TRUE,
        desc = "Contribute flex passes to a shared pot. The group earns back more when participation is high — but individual incentives push the other way."),
@@ -174,14 +205,6 @@ GAMES <- list(
   list(id = "review-quiz",      type = "either",
        label = "Review Quiz",   embedded = FALSE, url = "/review-quiz/",
        desc = "Answer quiz questions and see the live class histogram. Used periodically through the semester."),
-  # ── Semester-long: persistent all-semester ───────────────────────────────
-  list(id = "price-index",      type = "semester",
-       label = "Price Index",   embedded = FALSE, url = "/price-index/",
-       desc = "Build a basket of goods and track prices across waves to measure your personal inflation rate."),
-  list(id = "flex-pass-app",    type = "semester",
-       label = "Flex Pass Accounting", embedded = FALSE, url = "/flex_pass_actions/",
-       desc = "See the full exam-question unlock panel, purchase exam points, and view your complete ledger history."),
-  # ── Session-only: live in class, no lasting footprint ────────────────────
   list(id = "excise-tax-game",  type = "session",
        label = "Excise Tax Market", embedded = FALSE, url = "/excise-tax-game/",
        desc = "Trade in a call market before and after an excise tax. See where the burden lands."),
@@ -198,11 +221,31 @@ GAMES <- list(
 
 game_info <- function(id) Find(function(g) g$id == id, GAMES)
 
+# ── Tools catalog ─────────────────────────────────────────────────────────────
+# Always-available simulations and semester-long graded tools.
+TOOLS <- list(
+  list(id = "indiff-to-demand",  label = "Indifference to Demand",  url = "/indiff-to-demand/",
+       desc = "Trace how budget constraints and indifference curves generate a demand curve. Adjust prices and income interactively.",
+       graded = FALSE),
+  list(id = "theory-of-firm",    label = "Theory of the Firm",      url = "/theory-of-firm/",
+       desc = "Explore cost curves, profit maximization, and shutdown decisions for a price-taking firm.",
+       graded = FALSE),
+  list(id = "tax-incidence",     label = "Tax Incidence",           url = "/tax-incidence/",
+       desc = "See how the burden of an excise tax divides between buyers and sellers depending on supply and demand elasticity.",
+       graded = FALSE),
+  list(id = "price-index",       label = "Price Index",             url = "/price-index/",
+       desc = "Build a basket of goods and track prices across waves to measure your personal inflation rate.",
+       graded = FALSE),
+  list(id = "flex-pass-app",     label = "Flex Pass Accounting",    url = "/flex_pass_actions/",
+       desc = "See the full exam-question unlock panel, purchase exam points, and view your complete ledger history.",
+       graded = TRUE)
+)
+
 # ── CSS ───────────────────────────────────────────────────────────────────────
 ARCADE_CSS <- "
 body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; margin: 0; }
 
-/* Header */
+/* ── Header ─────────────────────────────────────────────────────────────── */
 .arc-header {
   background: #951829; color: #fff;
   padding: .7rem 1.5rem;
@@ -218,75 +261,17 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
                padding: .25rem .6rem; border-radius: 6px; cursor: pointer; }
 .arc-signout:hover { background: rgba(255,255,255,.28); }
 
-/* Page body */
-.arc-body { max-width: 860px; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+/* ── Page body ──────────────────────────────────────────────────────────── */
+.arc-body { max-width: 900px; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
 
-/* Nav tabs */
+/* ── Nav tabs ───────────────────────────────────────────────────────────── */
 .nav-tabs { border-bottom: 2px solid #e0e0e0; margin-bottom: 1.25rem; }
 .nav-tabs .nav-link        { color: #555; border: none; padding: .55rem .9rem; }
 .nav-tabs .nav-link.active { color: #951829; border-bottom: 2px solid #951829;
                               font-weight: 600; margin-bottom: -2px; }
 .nav-tabs .nav-link:hover  { color: #951829; }
 
-/* Active game slot */
-.slot-card {
-  background: #fff; border-radius: 12px; padding: 1.4rem 1.5rem;
-  box-shadow: 0 2px 8px rgba(0,0,0,.07); margin-bottom: 1.4rem;
-}
-.slot-header { font-size: .72rem; font-weight: 700; color: #951829;
-               text-transform: uppercase; letter-spacing: .1em; margin-bottom: .8rem; }
-.no-game { color: #aaa; text-align: center; padding: 1.75rem 0; font-style: italic; }
-
-/* Launch card (linked games in slot) */
-.launch-card { border: 2px solid #951829; border-radius: 10px;
-               padding: 1.25rem 1.5rem; display: flex; align-items: center; gap: 1.25rem; }
-.launch-info  { flex: 1; }
-.launch-title { font-size: 1.2rem; font-weight: 700; margin-bottom: .35rem; }
-.launch-desc  { color: #555; font-size: .9rem; }
-.btn-launch   { background: #951829; color: #fff; padding: .55rem 1.3rem;
-                border: none; border-radius: 8px; font-size: .95rem; font-weight: 600;
-                text-decoration: none; white-space: nowrap; }
-.btn-launch:hover { background: #7a1320; color: #fff; text-decoration: none; }
-
-/* Game cards — shared base */
-.game-card { background: #fff; border-radius: 10px; padding: .9rem 1.1rem;
-             border: 1px solid #e8e8e8; margin-bottom: .5rem;
-             display: flex; align-items: center; gap: .9rem; }
-.game-card-text  { flex: 1; }
-.game-card-label { font-weight: 600; font-size: .98rem; }
-.game-card-desc  { color: #666; font-size: .83rem; margin-top: .15rem; }
-.badge-live { background: #951829; color: #fff; font-size: .7rem;
-              padding: .15rem .45rem; border-radius: 999px; vertical-align: middle; margin-left: .4rem; }
-.arcade-only { color: #bbb; font-size: .8rem; white-space: nowrap; }
-
-/* Session-only cards — faded when inactive */
-.game-card-session        { opacity: .55; }
-.game-card-session.is-live { opacity: 1; }
-
-/* Semester panel grid */
-.semester-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-                 gap: .65rem; margin-bottom: .5rem; }
-.semester-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px;
-                 padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .35rem; }
-.semester-card-label { font-weight: 600; font-size: .95rem; }
-.semester-card-desc  { color: #666; font-size: .82rem; flex: 1; }
-.semester-card-foot  { display: flex; align-items: center; justify-content: flex-end;
-                       margin-top: .4rem; gap: .5rem; }
-
-/* Wallet */
-.bal-big   { font-size: 2.4rem; font-weight: 700; color: #951829; line-height: 1.1; }
-.bal-label { color: #888; font-size: .8rem; margin-bottom: .1rem; }
-.pending-pledge { background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px;
-                  padding: .5rem .85rem; font-size: .85rem; color: #795548;
-                  margin-top: .5rem; }
-.cr { color: #1a6e3c; }
-.dr { color: #b00020; }
-
-/* Profile */
-.profile-panel { background:#fff; border-radius:10px; padding:1.25rem;
-                 border:1px solid #e8e8e8; height:100%; }
-
-/* Section labels */
+/* ── Section labels ─────────────────────────────────────────────────────── */
 .sec-label {
   font-size: .72rem; font-weight: 700; color: #951829;
   text-transform: uppercase; letter-spacing: .08em;
@@ -294,18 +279,152 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
   margin: 1.1rem 0 .7rem;
 }
 
-/* Login */
-.login-page { max-width: 400px; margin: 5rem auto; padding: 0 1rem; }
+/* ── Demo banner ────────────────────────────────────────────────────────── */
+.demo-banner {
+  background: #fff3cd; border: 1px solid #ffc107;
+  border-radius: 0; padding: .45rem 1.5rem;
+  font-size: .83rem; color: #856404;
+}
+
+/* ── Login page ─────────────────────────────────────────────────────────── */
+.login-page { max-width: 420px; margin: 4rem auto; padding: 0 1rem; }
 .login-card { background: #fff; border-radius: 12px; padding: 2rem 2.25rem;
               box-shadow: 0 3px 14px rgba(0,0,0,.1); }
 .login-logo { font-size: 1.6rem; font-weight: 700; color: #951829;
-              margin-bottom: 1.5rem; text-align: center; }
-.login-note { font-size: .82rem; color: #999; text-align: center; margin-top: .75rem; }
+              margin-bottom: .35rem; text-align: center; }
+.login-tagline { font-size: .83rem; color: #888; text-align: center;
+                 margin-bottom: 1.25rem; }
 .btn-block  { width: 100%; }
-.login-howto { margin-top: 1.25rem; font-size: .85rem; color: #666; }
-.login-howto summary { cursor: pointer; font-weight: 600; color: #951829; text-align: center; }
-.login-howto ul { margin: .6rem 0 0; padding-left: 1.1rem; }
-.login-howto li { margin-bottom: .35rem; }
+.btn-demo   { width: 100%; background: transparent; border: 1.5px dashed #ccc;
+              color: #666; font-size: .88rem; padding: .45rem; border-radius: 6px;
+              cursor: pointer; margin-top: .5rem; }
+.btn-demo:hover { border-color: #951829; color: #951829; }
+.preview-grid { display: grid; grid-template-columns: 1fr 1fr;
+                gap: .5rem; margin: 1rem 0 .75rem; }
+.preview-card { background: #f8f8f8; border: 1px solid #e8e8e8; border-radius: 6px;
+                padding: .55rem .65rem; }
+.preview-card-icon  { font-size: 1.1rem; }
+.preview-card-label { font-weight: 600; font-size: .85rem; }
+.preview-card-desc  { color: #888; font-size: .74rem; }
+.login-howto { margin-top: 1rem; }
+.login-howto summary { cursor: pointer; font-weight: 600; color: #951829;
+                       font-size: .85rem; text-align: center; }
+.login-howto ul { margin: .5rem 0 0; padding-left: 1.1rem; font-size: .84rem; color: #555; }
+.login-howto li { margin-bottom: .3rem; }
+
+/* ── How-to callout (per-tab) ───────────────────────────────────────────── */
+.tab-howto { background: #f0f4ff; border: 1px solid #c7d7f8; border-radius: 7px;
+             padding: .55rem .9rem; margin-bottom: .9rem; font-size: .83rem; color: #3a4e7c; }
+
+/* ── Active game slot ───────────────────────────────────────────────────── */
+.slot-card {
+  background: #fff; border-radius: 12px; padding: 1.2rem 1.4rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,.07); margin-bottom: 1.1rem;
+  border-left: 4px solid #951829;
+}
+.slot-header { font-size: .72rem; font-weight: 700; color: #951829;
+               text-transform: uppercase; letter-spacing: .1em; margin-bottom: .7rem; }
+.no-game { color: #aaa; text-align: center; padding: 1.5rem 0; font-style: italic; }
+
+/* ── Launch card ────────────────────────────────────────────────────────── */
+.launch-card { border: 2px solid #951829; border-radius: 10px;
+               padding: 1.1rem 1.3rem; display: flex; align-items: center; gap: 1.25rem; }
+.launch-info  { flex: 1; }
+.launch-title { font-size: 1.15rem; font-weight: 700; margin-bottom: .3rem; }
+.launch-desc  { color: #555; font-size: .88rem; }
+.btn-launch   { background: #951829; color: #fff; padding: .5rem 1.2rem;
+                border: none; border-radius: 8px; font-size: .93rem; font-weight: 600;
+                text-decoration: none; white-space: nowrap; }
+.btn-launch:hover { background: #7a1320; color: #fff; text-decoration: none; }
+
+/* ── Badge / pill ───────────────────────────────────────────────────────── */
+.badge-live { background: #951829; color: #fff; font-size: .7rem;
+              padding: .15rem .45rem; border-radius: 999px;
+              vertical-align: middle; margin-left: .4rem; }
+.badge-mode { background: #e8f0fe; color: #1a56db; font-size: .72rem;
+              padding: .15rem .45rem; border-radius: 4px; font-weight: 600; }
+.badge-type { background: #f0f0f0; color: #666; font-size: .7rem;
+              padding: .12rem .38rem; border-radius: 3px; }
+.badge-graded { background: #fff3cd; color: #856404; font-size: .7rem;
+                padding: .12rem .38rem; border-radius: 3px; }
+
+/* ── Today tab ──────────────────────────────────────────────────────────── */
+.today-card { background: #fff; border-radius: 10px; border: 1px solid #e8e8e8;
+              padding: .9rem 1.1rem; margin-bottom: .65rem; }
+.today-active-slot { background: #fff8f8; border: 1px solid #f0c0c8; border-radius: 10px;
+                     padding: .9rem 1.1rem; margin-bottom: .8rem; }
+.job-tile { border-left: 3px solid #951829; padding: .4rem .75rem;
+            background: #fff8f8; border-radius: 0 6px 6px 0; }
+.job-tile-name { font-weight: 700; font-size: 1rem; }
+.job-tile-meta { color: #888; font-size: .83rem; margin-top: .1rem; }
+.wage-tbl { width: 100%; border-collapse: collapse; }
+.wage-tbl td { padding: .22rem 0; font-size: .88rem; border-bottom: 1px solid #f4f4f4; }
+.wage-tbl td:last-child { text-align: right; font-weight: 600;
+                           font-family: ui-monospace, monospace; color: #1a6e3c; }
+.wage-tbl tr:last-child td { border-bottom: none; }
+.pool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: .5rem; }
+.pool-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 7px;
+             padding: .5rem .65rem; font-size: .82rem; }
+.pool-card-name { font-weight: 600; margin-bottom: .12rem; }
+.pool-card-fill { font-size: .74rem; color: #888; }
+.pool-card-full { border-color: #1a6e3c; background: #f0fdf4; }
+.pool-card-full .pool-card-fill { color: #1a6e3c; }
+
+/* ── Games catalog ──────────────────────────────────────────────────────── */
+.game-list-item { background: #fff; border: 1px solid #e8e8e8; border-radius: 8px;
+                  padding: .7rem .9rem; margin-bottom: .4rem; }
+.game-list-item.is-expanded { border-color: #951829; }
+.game-list-header { display: flex; align-items: center; gap: .6rem; cursor: pointer; }
+.game-list-label { font-weight: 600; flex: 1; }
+.game-list-detail { margin-top: .65rem; padding-top: .65rem;
+                    border-top: 1px solid #f0f0f0; font-size: .88rem; color: #555; }
+.game-list-actions { display: flex; gap: .5rem; margin-top: .6rem; flex-wrap: wrap; }
+
+/* ── Tools tab ──────────────────────────────────────────────────────────── */
+.tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+              gap: .65rem; margin-bottom: 1rem; }
+.tool-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px;
+             padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .3rem; }
+.tool-card-label { font-weight: 600; font-size: .95rem; }
+.tool-card-desc  { color: #666; font-size: .82rem; flex: 1; }
+.tool-card-foot  { display: flex; align-items: center; justify-content: space-between;
+                   margin-top: .5rem; }
+
+/* ── Account tab (merged Wallet + Profile) ──────────────────────────────── */
+.bal-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: .65rem;
+             margin-bottom: 1.25rem; }
+@media (max-width: 480px) { .bal-tiles { grid-template-columns: 1fr 1fr; } }
+.bal-tile { background: #fff; border-radius: 10px; border: 1px solid #e8e8e8;
+            padding: .85rem 1rem; text-align: center; }
+.bal-tile-label { font-size: .72rem; color: #888; margin-bottom: .25rem; }
+.bal-tile-val   { font-size: 1.8rem; font-weight: 700; line-height: 1.05; }
+.bal-tile-sub   { font-size: .68rem; color: #aaa; margin-top: .15rem; }
+.bal-tile-fp    .bal-tile-val { color: #951829; }
+.bal-tile-toke  .bal-tile-val { color: #1a56db; }
+.bal-tile-toke2 .bal-tile-val { color: #555; }
+.bal-big   { font-size: 2.2rem; font-weight: 700; color: #951829; line-height: 1.1; }
+.bal-label { color: #888; font-size: .8rem; margin-bottom: .1rem; }
+.pending-pledge { background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px;
+                  padding: .5rem .85rem; font-size: .85rem; color: #795548;
+                  margin-top: .5rem; }
+.cr { color: #1a6e3c; }
+.dr { color: #b00020; }
+.profile-panel { background: #fff; border-radius: 10px; padding: 1.1rem;
+                 border: 1px solid #e8e8e8; height: 100%; }
+
+/* ── Job Market tab ─────────────────────────────────────────────────────── */
+.jm-card { background: #fff; border-radius: 10px; border: 1px solid #e8e8e8;
+           padding: 1rem 1.1rem; margin-bottom: .8rem; }
+.jm-assignment { border-left: 3px solid #951829; background: #fff8f8;
+                 border-radius: 0 8px 8px 0; padding: .6rem .9rem; }
+.jm-bid-row { display: flex; align-items: center; gap: .7rem;
+              padding: .4rem 0; border-bottom: 1px solid #f4f4f4; }
+.jm-bid-row:last-child { border-bottom: none; }
+.jm-bid-label { flex: 1; font-size: .9rem; }
+.jm-bid-input { width: 100px; flex-shrink: 0; }
+.jm-history { font-size: .84rem; color: #555; }
+
+/* ── Admin ──────────────────────────────────────────────────────────────── */
 "
 
 # ── UI ────────────────────────────────────────────────────────────────────────
@@ -315,11 +434,9 @@ COOKIE_JS <- HTML("
     var m = document.cookie.match('(?:^|; )' + name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '=([^;]*)');
     return m ? decodeURIComponent(m[1]) : '';
   }
-  // Send stored token to Shiny once the session is ready
   $(document).on('shiny:sessioninitialized', function() {
     Shiny.setInputValue('auth_cookie', getCookie('arcade_token'), {priority: 'event'});
   });
-  // Set or clear the cookie on server instruction
   Shiny.addCustomMessageHandler('set_arcade_cookie', function(msg) {
     if (msg.token) {
       document.cookie = 'arcade_token=' + encodeURIComponent(msg.token) +
@@ -334,7 +451,7 @@ COOKIE_JS <- HTML("
 
 ui <- fluidPage(
   tags$head(
-    tags$title("CORE Arcade"),
+    tags$title(APP_NAME),
     tags$style(HTML(ARCADE_CSS)),
     tags$script(COOKIE_JS)
   ),
@@ -350,48 +467,80 @@ server <- function(input, output, session) {
     name           = NULL,
     section        = NULL,
     is_admin       = FALSE,
-    token          = NULL,   # current browser token (for logout cleanup)
-    bp_contrib_val = NULL,   # preserve bp_contrib across olig_poll re-renders
-    pd_choice_val  = NULL    # preserve pd_choice across olig_poll re-renders
+    is_demo        = FALSE,
+    token          = NULL,
+    game_detail_id = NULL,    # which game card is expanded in the catalog
+    bp_contrib_val = NULL,    # preserve across olig_poll re-renders
+    pd_choice_val  = NULL
   )
 
   # ── Root UI ──────────────────────────────────────────────────────────────────
   output$root_ui <- renderUI({
     if (!rv$authed) {
+      # ── Login page ──
       div(class = "login-page",
         div(class = "login-card",
-          div(class = "login-logo", "🎮 CORE Arcade"),
-          if (!is.null(input$login_err) && nzchar(input$login_err %||% ""))
-            div(class = "alert alert-danger", input$login_err),
+          div(class = "login-logo", paste0("\U0001f393 ", APP_NAME)),
+          div(class = "login-tagline", "Log in with credentials from your instructor."),
           textInput("login_user", NULL, placeholder = "Username"),
           passwordInput("login_pw", NULL, placeholder = "Password"),
-          actionButton("login_btn", "Sign in", class = "btn btn-primary btn-block"),
-          tags$p(class = "login-note", "Use the credentials from your instructor."),
+          actionButton("login_btn", "Sign In →", class = "btn btn-primary btn-block"),
+          tags$button(
+            type = "button", class = "btn-demo",
+            onclick = "Shiny.setInputValue('demo_btn', +new Date(), {priority:'event'});",
+            "\U0001f50d Explore without an account — Demo Mode"
+          ),
+          tags$hr(style = "margin: .9rem 0 .5rem;"),
+          tags$p(style = "font-size:.75rem;color:#aaa;text-align:center;margin-bottom:.4rem;",
+                 "What's here"),
+          div(class = "preview-grid",
+            div(class = "preview-card",
+              div(class = "preview-card-icon", "\U0001f4cb"),
+              div(class = "preview-card-label", "Today"),
+              div(class = "preview-card-desc", "Jobs, wages & active game")),
+            div(class = "preview-card",
+              div(class = "preview-card-icon", "\U0001f3ea"),
+              div(class = "preview-card-label", "Job Market"),
+              div(class = "preview-card-desc", "Bid for or apply to jobs")),
+            div(class = "preview-card",
+              div(class = "preview-card-icon", "\U0001f3ae"),
+              div(class = "preview-card-label", "Games"),
+              div(class = "preview-card-desc", "Live & elective games")),
+            div(class = "preview-card",
+              div(class = "preview-card-icon", "\U0001f52c"),
+              div(class = "preview-card-label", "Tools"),
+              div(class = "preview-card-desc", "Economics simulations"))
+          ),
           tags$details(class = "login-howto",
-            tags$summary("How CORE Arcade works"),
+            tags$summary("How to get started"),
             tags$ul(
-              tags$li(tags$strong("Play"), " — shows whatever game your instructor has activated for the current class, plus semester-long resources that are always open."),
-              tags$li(tags$strong("Wallet"), " — your flex pass balance, any pending pledges, and your full transaction history."),
-              tags$li(tags$strong("Profile"), " — set your display name and see your class job history."),
-              tags$li(tags$strong("Games"), " — every app in one catalog, with a description of how each one works.")
+              tags$li(tags$strong("Sign in"), " using the username and password your instructor gave you."),
+              tags$li(tags$strong("Today"), " shows your current job assignment, prevailing wages, and any active class game."),
+              tags$li(tags$strong("Job Market"), " is where you submit wage bids or ticket allocations each round."),
+              tags$li(tags$strong("Games"), " shows the active game and the full catalog — play electively any time."),
+              tags$li(tags$strong("Account"), " tracks your Flex Pass balance, Participation Tokens, and transaction history.")
             )
           )
         )
       )
     } else {
+      # ── Authenticated app ──
       tagList(
-        # Header bar
         div(class = "arc-header",
-          div(class = "arc-title", "🎮 CORE Arcade"),
+          div(class = "arc-title", paste0("\U0001f393 ", APP_NAME)),
           uiOutput("header_widgets", inline = TRUE),
           actionButton("logout_btn", "Sign out", class = "arc-signout")
         ),
+        if (rv$is_demo)
+          div(class = "demo-banner",
+              "\U0001f50d Demo mode — you're exploring with a fake account. Nothing you do here is saved."),
         div(class = "arc-body",
-          tabsetPanel(id = "arc_tabs", type = "tabs",
-            tabPanel("Play",    br(), uiOutput("play_tab")),
-            tabPanel("Wallet",  br(), uiOutput("wallet_tab")),
-            tabPanel("Profile", br(), uiOutput("profile_tab")),
-            tabPanel("Games",   br(), uiOutput("games_tab")),
+          tabsetPanel(id = "arc_tabs", type = "tabs", selected = "Today",
+            tabPanel("Today",      br(), uiOutput("today_tab")),
+            tabPanel("Job Market", br(), uiOutput("job_market_tab")),
+            tabPanel("Games",      br(), uiOutput("games_tab")),
+            tabPanel("Tools",      br(), uiOutput("tools_tab")),
+            tabPanel("Account",    br(), uiOutput("account_tab")),
             uiOutput("admin_tab_panel")
           )
         )
@@ -409,12 +558,15 @@ server <- function(input, output, session) {
   })
 
   # ── Auth helpers ──────────────────────────────────────────────────────────────
+  coalesce_str <- function(a, b) if (!is.na(a %||% NA) && nzchar(a %||% "")) a else b
+
   do_login <- function(row) {
     rv$authed   <- TRUE
     rv$user_id  <- row$user_id[1]
-    rv$name     <- coalesce_str(row$display_name[1], row$user_id[1])
+    rv$name     <- coalesce_str(row$display_name[1] %||% "", row$user_id[1])
     rv$section  <- row$section[1] %||% ""
-    rv$is_admin <- isTRUE(as.integer(row$is_admin[1]) == 1L)
+    rv$is_admin <- isTRUE(as.integer(row$is_admin[1] %||% 0L) == 1L)
+    rv$is_demo  <- isTRUE(as.integer(row$is_demo[1]  %||% 0L) == 1L)
   }
 
   issue_cookie <- function(user_id) {
@@ -431,19 +583,19 @@ server <- function(input, output, session) {
     session$sendCustomMessage("set_arcade_cookie", list(token = ""))
   }
 
-  # ── Auto-login from cookie ────────────────────────────────────────────────────
+  # ── Cookie auto-login ─────────────────────────────────────────────────────────
   observeEvent(input$auth_cookie, {
-    if (rv$authed) return()               # already logged in this session
+    if (rv$authed) return()
     tok <- input$auth_cookie %||% ""
     if (!nzchar(tok)) return()
     row <- lookup_token(tok)
-    if (!nrow(row)) return()              # token expired or not found
+    if (!nrow(row)) return()
     if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) return()
-    rv$token <- tok                       # remember so logout can delete it
+    rv$token <- tok
     do_login(row)
   }, ignoreInit = FALSE)
 
-  # ── Manual login ─────────────────────────────────────────────────────────────
+  # ── Manual login ──────────────────────────────────────────────────────────────
   observeEvent(input$login_btn, {
     u <- trimws(input$login_user %||% "")
     p <- input$login_pw %||% ""
@@ -451,7 +603,8 @@ server <- function(input, output, session) {
       showNotification("Enter username and password.", type = "error"); return()
     }
     row <- db_query(
-      "SELECT user_id, display_name, pw_hash, is_admin, section, active
+      "SELECT user_id, display_name, pw_hash, is_admin, section, active,
+              COALESCE(is_demo,0) AS is_demo
        FROM users WHERE LOWER(user_id) = LOWER(?);", list(u))
     if (!nrow(row) || !bcrypt::checkpw(p, row$pw_hash[1])) {
       showNotification("Incorrect username or password.", type = "error"); return()
@@ -461,20 +614,32 @@ server <- function(input, output, session) {
       return()
     }
     do_login(row)
-    issue_cookie(row$user_id[1])
+    if (!isTRUE(as.integer(row$is_demo[1] %||% 0L) == 1L))
+      issue_cookie(row$user_id[1])
+  })
+
+  # ── Demo auto-login ───────────────────────────────────────────────────────────
+  observeEvent(input$demo_btn, {
+    row <- db_query(
+      "SELECT user_id, display_name, is_admin, section, active,
+              COALESCE(is_demo,0) AS is_demo
+       FROM users WHERE user_id = 'demo';")
+    if (!nrow(row)) {
+      showNotification("Demo account not available.", type = "error"); return()
+    }
+    do_login(row)
+    # No cookie for demo — ephemeral session only
   })
 
   # ── Logout ────────────────────────────────────────────────────────────────────
   observeEvent(input$logout_btn, {
     clear_cookie()
-    rv$authed <- FALSE; rv$user_id <- NULL; rv$name <- NULL
-    rv$section <- NULL; rv$is_admin <- FALSE
+    rv$authed  <- FALSE; rv$user_id  <- NULL; rv$name    <- NULL
+    rv$section <- NULL;  rv$is_admin <- FALSE; rv$is_demo <- FALSE
+    rv$game_detail_id <- NULL
   })
 
-  coalesce_str <- function(a, b) if (!is.na(a) && nzchar(a %||% "")) a else b
-
   # ── Polls ─────────────────────────────────────────────────────────────────────
-  # Poll every 3000ms: arcade_state controls which game the admin activated.
   arcade_poll <- reactivePoll(3000, session,
     checkFunc = function()
       db_query("SELECT updated_at FROM arcade_state WHERE id=1;")$updated_at[1] %||% "",
@@ -482,7 +647,6 @@ server <- function(input, output, session) {
       db_query("SELECT * FROM arcade_state WHERE id=1;")
   )
 
-  # Poll every 3000ms: olig state covers round status and current game.
   olig_poll <- reactivePoll(3000, session,
     checkFunc = function()
       db_query("SELECT updated_at FROM olig_settings WHERE id=1;")$updated_at[1] %||% "",
@@ -493,8 +657,8 @@ server <- function(input, output, session) {
           db_query(
             "SELECT s.*, p.payout
              FROM olig_submissions s
-             LEFT JOIN olig_payouts p ON p.round = s.round AND p.user_id = s.user_id
-             WHERE s.user_id = ?
+             LEFT JOIN olig_payouts p ON p.round=s.round AND p.user_id=s.user_id
+             WHERE s.user_id=?
              ORDER BY s.round DESC LIMIT 1;",
             list(rv$user_id))
           else data.frame()
@@ -502,26 +666,116 @@ server <- function(input, output, session) {
     }
   )
 
-  # Poll every 6000ms: wallet + pledge state can lag slightly to reduce DB reads.
   wallet_poll <- reactivePoll(6000, session,
     checkFunc = function() {
       if (is.null(rv$user_id)) return("")
-      db_query("SELECT MAX(created_at) ts FROM ledger WHERE user_id=?;",
-               list(rv$user_id))$ts[1] %||% ""
+      r1 <- db_query("SELECT MAX(created_at) ts FROM ledger WHERE user_id=?;",
+                     list(rv$user_id))$ts[1] %||% ""
+      r2 <- tryCatch(
+        db_query("SELECT MAX(created_at) ts FROM token_ledger WHERE user_id=?;",
+                 list(rv$user_id))$ts[1] %||% "",
+        error = function(e) "")
+      paste(r1, r2)
     },
     valueFunc = function() {
-      if (is.null(rv$user_id)) return(list(ledger = data.frame(), gs = data.frame()))
-      list(
-        ledger = db_query(
-          "SELECT amount, purpose, meta, created_at FROM ledger
-           WHERE user_id = ? ORDER BY created_at DESC LIMIT 30;",
-          list(rv$user_id)),
-        gs = db_query("SELECT gs.*, es.round_open, es.round AS ex_round
-                        FROM game_state gs
-                        LEFT JOIN exam_state es ON es.exam_id = gs.active_exam
-                        WHERE gs.id = 1;"),
-        step = db_query("SELECT pledge_step FROM settings WHERE id=1;")$pledge_step[1] %||% 0.5
-      )
+      if (is.null(rv$user_id)) return(list(
+        ledger = data.frame(), gs = data.frame(), step = 0.5,
+        tokens_earned = 0, tokens_on_hand = 0))
+      ledger <- db_query(
+        "SELECT amount, purpose, meta, created_at FROM ledger
+         WHERE user_id=? ORDER BY created_at DESC LIMIT 30;",
+        list(rv$user_id))
+      gs <- db_query(
+        "SELECT gs.*, es.round_open, es.round AS ex_round
+         FROM game_state gs
+         LEFT JOIN exam_state es ON es.exam_id=gs.active_exam
+         WHERE gs.id=1;")
+      step <- db_query("SELECT pledge_step FROM settings WHERE id=1;")$pledge_step[1] %||% 0.5
+      tokens_earned <- tryCatch(
+        as.numeric(db_query(
+          "SELECT COALESCE(SUM(amount),0) t FROM token_ledger
+           WHERE user_id=? AND earning=1 AND amount>0;",
+          list(rv$user_id))$t[1] %||% 0),
+        error = function(e) 0)
+      tokens_on_hand <- tryCatch(
+        as.numeric(db_query(
+          "SELECT COALESCE(SUM(amount),0) t FROM token_ledger WHERE user_id=?;",
+          list(rv$user_id))$t[1] %||% 0),
+        error = function(e) 0)
+      list(ledger = ledger, gs = gs, step = step,
+           tokens_earned = tokens_earned, tokens_on_hand = tokens_on_hand)
+    }
+  )
+
+  # Poll for job market data (Today + Job Market tabs)
+  jobs_poll <- reactivePoll(8000, session,
+    checkFunc = function() {
+      uid <- rv$user_id
+      if (is.null(uid)) return("")
+      r1 <- tryCatch(
+        db_query("SELECT MAX(updated_at) ts FROM weekly_rounds;")$ts[1] %||% "",
+        error = function(e) "")
+      r2 <- tryCatch(
+        db_query("SELECT MAX(created_at) ts FROM job_assignments;")$ts[1] %||% "",
+        error = function(e) "")
+      paste(uid, r1, r2, sep = "|")
+    },
+    valueFunc = function() {
+      uid <- rv$user_id
+      empty <- list(round = data.frame(), my_assign = data.frame(),
+                    categories = data.frame(), posts = data.frame(),
+                    my_wage_bids = data.frame(), my_app_bids = data.frame())
+      if (is.null(uid)) return(empty)
+
+      round <- tryCatch(
+        db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+        error = function(e) data.frame())
+
+      if (!nrow(round)) return(empty)
+      rid <- round$id[1]
+
+      my_assign <- tryCatch(db_query(
+        "SELECT jp.job_name, ja.assigned_wage, wr.label AS round_label
+         FROM job_assignments ja
+         JOIN job_posts jp ON jp.id=ja.job_post_id
+         JOIN weekly_rounds wr ON wr.id=ja.round_id
+         WHERE ja.user_id=? AND ja.round_id=?
+         ORDER BY ja.created_at DESC LIMIT 1;",
+        list(uid, rid)), error = function(e) data.frame())
+
+      categories <- tryCatch(db_query(
+        "SELECT DISTINCT jc.id, jc.name, jc.default_wage, jc.description
+         FROM job_categories jc
+         JOIN job_posts jp ON jp.category_id=jc.id
+         WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+         ORDER BY jc.display_order, jc.name;",
+        list(rid)), error = function(e) data.frame())
+
+      posts <- tryCatch(db_query(
+        "SELECT jp.id, jp.job_name, jp.slots,
+                COALESCE(jp.wage_override, jc.default_wage) AS wage,
+                jc.name AS category_name,
+                COALESCE(fill.n, 0) AS filled
+         FROM job_posts jp
+         LEFT JOIN job_categories jc ON jc.id=jp.category_id
+         LEFT JOIN (
+           SELECT job_post_id, COUNT(*) n FROM job_assignments
+           WHERE status='assigned' GROUP BY job_post_id
+         ) fill ON fill.job_post_id=jp.id
+         WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+         ORDER BY jp.display_order, jp.job_name;",
+        list(rid)), error = function(e) data.frame())
+
+      my_wage_bids <- tryCatch(db_query(
+        "SELECT category_id, min_wage FROM wage_bids WHERE user_id=? AND round_id=?;",
+        list(uid, rid)), error = function(e) data.frame())
+
+      my_app_bids <- tryCatch(db_query(
+        "SELECT category_id, tickets FROM application_bids WHERE user_id=? AND round_id=?;",
+        list(uid, rid)), error = function(e) data.frame())
+
+      list(round = round, my_assign = my_assign, categories = categories,
+           posts = posts, my_wage_bids = my_wage_bids, my_app_bids = my_app_bids)
     }
   )
 
@@ -531,70 +785,444 @@ server <- function(input, output, session) {
     as.numeric(sum(wp$ledger$amount, na.rm = TRUE))
   })
 
-  # Preserve typed input values across poll-triggered renderUI re-renders.
-  # Without these, numericInput/radioButtons reset to their 'value' attr every
-  # time olig_poll fires (e.g. admin opens/closes a round mid-student entry).
+  # Preserve typed input values across poll-triggered re-renders.
   observe({ if (!is.null(input$bp_contrib)) rv$bp_contrib_val <- input$bp_contrib })
   observe({ if (!is.null(input$pd_choice))  rv$pd_choice_val  <- input$pd_choice  })
 
-  # ── Play tab — three sections ─────────────────────────────────────────────────
-  output$play_tab <- renderUI({
+  # ── Today tab ─────────────────────────────────────────────────────────────────
+  output$today_tab <- renderUI({
     req(rv$authed)
-    active     <- arcade_poll()$active_game[1] %||% ""
-    has_active <- nzchar(active)
-
-    semester_games <- Filter(function(g) g$type %in% c("semester", "either"), GAMES)
-    session_games  <- Filter(function(g) g$type == "session",  GAMES)
+    active <- arcade_poll()$active_game[1] %||% ""
+    jp     <- jobs_poll()
 
     tagList(
-      # ── Active slot (only shown when something is running) ──
-      if (has_active)
-        div(class = "slot-card",
-          div(class = "slot-header", "▶ Active Now"),
-          uiOutput("active_slot_inner")
-        ),
-
-      # ── Semester / either-or resources ──
-      div(class = "sec-label", "Semester Resources"),
-      div(class = "semester-grid",
-        lapply(semester_games, function(g) {
-          is_live <- identical(g$id, active)
-          div(class = "semester-card",
-            div(class = "semester-card-label", g$label,
-                if (is_live) span(class = "badge-live", "LIVE")),
-            div(class = "semester-card-desc", g$desc),
-            div(class = "semester-card-foot",
-              if (is_live && g$embedded)
-                span(style = "color:#951829;font-size:.82rem;", "↑ Active above")
-              else if (g$embedded)
-                span(style = "color:#bbb;font-size:.82rem;", "Instructor-activated")
-              else
-                tags$a(href = g$url, target = "_blank",
-                       class = "btn btn-sm btn-outline-secondary", "Open →")
-            )
-          )
-        })
+      # Brief context
+      div(class = "tab-howto",
+        "Your daily snapshot: active class game, your job assignment, prevailing wages, and job pool fill rates."
       ),
 
-      # ── Session-only games ──
-      div(class = "sec-label", "Session Games"),
-      tags$p(style = "color:#888;font-size:.85rem;margin-top:-.4rem;margin-bottom:.6rem;",
-             "Played live during class. Inactive until your instructor starts one."),
-      tagList(lapply(session_games, function(g) {
-        is_live <- identical(g$id, active)
-        div(class = paste("game-card game-card-session", if (is_live) "is-live"),
-          div(class = "game-card-text",
-            div(class = "game-card-label", g$label,
+      # Active game (conditional)
+      if (nzchar(active)) {
+        ginfo <- game_info(active)
+        div(class = "today-active-slot",
+          div(class = "slot-header",
+              "▶ Active Game",
+              span(class = "badge-live", "LIVE")),
+          div(style = "font-weight:700;font-size:1rem;margin-bottom:.2rem;",
+              if (!is.null(ginfo)) ginfo$label else active),
+          div(style = "color:#888;font-size:.84rem;", "A game is running now."),
+          div(style = "margin-top:.65rem;",
+            actionButton("go_to_games", "Go to Games tab →",
+                         class = "btn btn-sm btn-primary"))
+        )
+      },
+
+      # My Job Today
+      div(class = "sec-label", "My Job Today"),
+      if (nrow(jp$my_assign)) {
+        r <- jp$my_assign[1, ]
+        div(class = "job-tile",
+          div(class = "job-tile-name",
+              "\U0001f4cb ", r$job_name %||% "—"),
+          div(class = "job-tile-meta",
+              r$round_label %||% "Current round",
+              if (!is.na(r$assigned_wage %||% NA))
+                paste0("  ·  Wage: ", sprintf("%.1f FP", as.numeric(r$assigned_wage)))
+              else "")
+        )
+      } else {
+        div(style = "color:#999;font-size:.9rem;padding:.4rem 0;",
+            "No assignment yet this round. Visit ", tags$strong("Job Market"), " to submit your bids.")
+      },
+
+      # Prevailing Wages
+      div(class = "sec-label", "Prevailing Wages"),
+      if (nrow(jp$posts)) {
+        div(class = "today-card",
+          tags$table(class = "wage-tbl",
+            tags$tbody(lapply(seq_len(nrow(jp$posts)), function(i) {
+              r <- jp$posts[i, ]
+              tags$tr(
+                tags$td(r$job_name %||% r$category_name %||% ""),
+                tags$td(if (!is.na(r$wage %||% NA))
+                          sprintf("%.1f FP", as.numeric(r$wage))
+                        else "—")
+              )
+            }))
+          )
+        )
+      } else {
+        div(style = "color:#999;font-size:.9rem;", "No jobs configured for the current round.")
+      },
+
+      # Job Pools
+      div(class = "sec-label", "Job Pools"),
+      if (nrow(jp$posts)) {
+        div(class = "pool-grid",
+          lapply(seq_len(nrow(jp$posts)), function(i) {
+            r    <- jp$posts[i, ]
+            fill <- as.integer(r$filled %||% 0)
+            slots <- as.integer(r$slots %||% 0)
+            full <- fill >= slots && slots > 0
+            div(class = paste("pool-card", if (full) "pool-card-full"),
+              div(class = "pool-card-name", r$job_name %||% r$category_name %||% ""),
+              div(class = "pool-card-fill",
+                  if (slots > 0) sprintf("%d / %d filled%s", fill, slots, if (full) " ✓" else "")
+                  else if (fill > 0) sprintf("%d assigned", fill)
+                  else "No slots set")
+            )
+          })
+        )
+      } else {
+        div(style = "color:#999;font-size:.9rem;", "Pool data will appear here once jobs are configured.")
+      },
+
+      # Placeholder for future daily plan markdown
+      div(style = "margin-top:1.5rem;"),
+      tags$details(style = "font-size:.83rem;color:#888;",
+        tags$summary(style = "cursor:pointer;color:#951829;font-weight:600;",
+                     "How to use this site"),
+        tags$ul(style = "margin:.5rem 0 0;padding-left:1.1rem;",
+          tags$li(tags$strong("Job Market"), " — submit wage bids or ticket allocations before the round closes."),
+          tags$li(tags$strong("Games"), " — your instructor activates a game for class; you can also play electively."),
+          tags$li(tags$strong("Account"), " — track your Flex Pass balance, tokens, pledges, and history.")
+        )
+      )
+    )
+  })
+
+  # Navigate to Games tab from Today
+  observeEvent(input$go_to_games, {
+    updateTabsetPanel(session, "arc_tabs", selected = "Games")
+  })
+
+  # ── Job Market tab ────────────────────────────────────────────────────────────
+  output$job_market_tab <- renderUI({
+    req(rv$authed)
+    jp <- jobs_poll()
+
+    tagList(
+      div(class = "tab-howto",
+        "Submit bids for your class job each round. The mode (random / wage bid / ticket allocation) is set by your instructor."
+      ),
+
+      # Round info pill
+      if (nrow(jp$round)) {
+        r    <- jp$round[1, ]
+        mode <- r$assignment_mode %||% "random"
+        div(style = "display:flex;gap:.4rem;align-items:center;margin-bottom:.8rem;flex-wrap:wrap;",
+          span(class = "badge-mode",
+               switch(mode,
+                 random             = "Mode: random assignment",
+                 wage_bidding       = "Mode: wage bidding",
+                 application_bidding = "Mode: ticket allocation",
+                 paste("Mode:", mode))),
+          if (nzchar(r$label %||% ""))
+            span(style = "font-size:.83rem;color:#888;", r$label),
+          if (nzchar(r$bid_close_date %||% ""))
+            span(style = "font-size:.83rem;color:#888;",
+                 paste0("Closes: ", r$bid_close_date))
+        )
+      },
+
+      # Current assignment
+      div(class = "sec-label", "Your Assignment This Round"),
+      if (nrow(jp$my_assign)) {
+        r <- jp$my_assign[1, ]
+        div(class = "jm-assignment",
+          div(style = "font-weight:700;font-size:1rem;",
+              "\U0001f4cb ", r$job_name %||% ""),
+          div(style = "color:#888;font-size:.83rem;margin-top:.15rem;",
+              if (!is.na(r$assigned_wage %||% NA))
+                paste0("Wage: ", sprintf("%.1f FP", as.numeric(r$assigned_wage)))
+              else "Wage pending")
+        )
+      } else {
+        div(style = "color:#999;font-size:.9rem;", "No assignment for this round yet.")
+      },
+
+      # Bid form
+      div(class = "sec-label", "Submit Bids"),
+      uiOutput("jm_bid_form"),
+
+      # History
+      div(class = "sec-label", "Recent History"),
+      uiOutput("jm_history"),
+
+      # Link to full app
+      div(style = "margin-top:1.2rem;font-size:.83rem;color:#888;",
+        "For detailed results and instructor setup, open the ",
+        tags$a(href = "/class-job-market/", target = "_blank", "Class Job Market app"), "."
+      )
+    )
+  })
+
+  output$jm_bid_form <- renderUI({
+    req(rv$authed)
+    jp   <- jobs_poll()
+    if (!nrow(jp$round)) return(div(style = "color:#999;", "No active round configured."))
+
+    r    <- jp$round[1, ]
+    mode <- r$assignment_mode %||% "random"
+    cats <- jp$categories
+
+    # Determine bid window
+    today   <- Sys.Date()
+    open_d  <- tryCatch(as.Date(r$bid_open_date %||% NA),  error = function(e) as.Date(NA))
+    close_d <- tryCatch(as.Date(r$bid_close_date %||% NA), error = function(e) as.Date(NA))
+    window_open   <- !is.na(open_d) && !is.na(close_d) && today >= open_d && today <= close_d
+    window_future <- !is.na(open_d) && today < open_d
+    window_past   <- !is.na(close_d) && today > close_d
+
+    if (mode == "random") {
+      return(div(class = "jm-card",
+        tags$p(style = "color:#555;margin:0;",
+               "Assignments this round are random — no bids required. Your job will be announced after the round closes.")))
+    }
+
+    if (window_future) {
+      return(div(class = "alert alert-info",
+                 paste0("Bidding opens on ", format(open_d, "%B %d"), ".")))
+    }
+    if (window_past) {
+      return(div(class = "alert alert-secondary",
+                 paste0("Bidding closed on ", format(close_d, "%B %d"), ". See your assignment above.")))
+    }
+    if (!window_open && (!is.na(open_d) || !is.na(close_d))) {
+      return(div(class = "alert alert-secondary", "Bidding is not open right now."))
+    }
+    if (!nrow(cats)) {
+      return(div(style = "color:#999;", "No job categories available for this round."))
+    }
+
+    if (mode == "wage_bidding") {
+      tagList(
+        tags$p(style = "color:#555;font-size:.88rem;",
+               "Enter the minimum wage you'd accept for each job category.",
+               "The instructor takes the cheapest bids and reveals the result in class."),
+        div(class = "jm-card",
+          lapply(seq_len(nrow(cats)), function(i) {
+            cat <- cats[i, ]
+            prev_bid <- if (nrow(jp$my_wage_bids)) {
+              m <- jp$my_wage_bids[jp$my_wage_bids$category_id == cat$id, , drop = FALSE]
+              if (nrow(m)) as.numeric(m$min_wage[1]) else as.numeric(cat$default_wage %||% 0)
+            } else as.numeric(cat$default_wage %||% 0)
+            div(class = "jm-bid-row",
+              div(class = "jm-bid-label",
+                  cat$name,
+                  if (nzchar(cat$description %||% ""))
+                    tags$small(style = "color:#aaa;display:block;", cat$description)),
+              div(class = "jm-bid-input",
+                  numericInput(paste0("wb_", cat$id), NULL,
+                               value = prev_bid, min = 0, step = 0.5))
+            )
+          }),
+          div(style = "margin-top:.65rem;",
+            actionButton("submit_wage_bids", "Save wage bids",
+                         class = "btn btn-primary"))
+        )
+      )
+
+    } else if (mode == "application_bidding") {
+      tickets_total <- as.integer(r$tickets_per_student %||% 10)
+      tagList(
+        tags$p(style = "color:#555;font-size:.88rem;",
+               sprintf("Allocate up to %d participation tickets across job categories.", tickets_total),
+               "More tickets in a category = higher odds of being assigned there."),
+        div(class = "jm-card",
+          lapply(seq_len(nrow(cats)), function(i) {
+            cat <- cats[i, ]
+            prev_tickets <- if (nrow(jp$my_app_bids)) {
+              m <- jp$my_app_bids[jp$my_app_bids$category_id == cat$id, , drop = FALSE]
+              if (nrow(m)) as.integer(m$tickets[1]) else 0L
+            } else 0L
+            div(class = "jm-bid-row",
+              div(class = "jm-bid-label", cat$name,
+                  if (nzchar(cat$description %||% ""))
+                    tags$small(style = "color:#aaa;display:block;", cat$description)),
+              div(class = "jm-bid-input",
+                  numericInput(paste0("at_", cat$id), NULL,
+                               value = prev_tickets, min = 0, max = tickets_total, step = 1))
+            )
+          }),
+          div(style = "margin-top:.65rem;",
+            actionButton("submit_app_bids", "Save ticket allocation",
+                         class = "btn btn-primary"))
+        )
+      )
+    } else {
+      div(style = "color:#999;", paste("Unsupported mode:", mode))
+    }
+  })
+
+  output$jm_history <- renderUI({
+    req(rv$authed)
+    rows <- tryCatch(db_query(
+      "SELECT wr.label AS round_label, jp.job_name, ja.assigned_wage,
+              ja.created_at
+       FROM job_assignments ja
+       JOIN job_posts jp ON jp.id=ja.job_post_id
+       JOIN weekly_rounds wr ON wr.id=ja.round_id
+       WHERE ja.user_id=?
+       ORDER BY ja.created_at DESC LIMIT 6;",
+      list(rv$user_id)), error = function(e) data.frame())
+    if (!nrow(rows))
+      return(div(style = "color:#999;font-size:.88rem;", "No assignment history yet."))
+    tags$table(class = "table table-sm",
+      tags$thead(tags$tr(
+        tags$th("Round"), tags$th("Job"), tags$th(style = "text-align:right;", "Wage")
+      )),
+      tags$tbody(lapply(seq_len(nrow(rows)), function(i) {
+        r <- rows[i, ]
+        tags$tr(
+          tags$td(r$round_label %||% ""),
+          tags$td(r$job_name %||% ""),
+          tags$td(style = "text-align:right;",
+                  if (!is.na(r$assigned_wage %||% NA))
+                    sprintf("%.1f FP", as.numeric(r$assigned_wage))
+                  else "—")
+        )
+      }))
+    )
+  })
+
+  # Wage bid submit
+  observeEvent(input$submit_wage_bids, {
+    req(rv$authed, rv$user_id)
+    if (rv$is_demo) {
+      showNotification("Demo mode — bids are not saved.", type = "warning"); return()
+    }
+    jp   <- isolate(jobs_poll())
+    cats <- jp$categories
+    if (!nrow(jp$round) || !nrow(cats)) {
+      showNotification("No active round.", type = "error"); return()
+    }
+    rid  <- jp$round$id[1]
+    saved <- 0L
+    for (i in seq_len(nrow(cats))) {
+      cat_id <- cats$id[i]
+      val    <- input[[paste0("wb_", cat_id)]]
+      if (!is.null(val) && !is.na(val) && as.numeric(val) >= 0) {
+        db_exec(
+          "INSERT INTO wage_bids(round_id, category_id, user_id, min_wage)
+           VALUES(?,?,?,?)
+           ON CONFLICT(round_id, category_id, user_id)
+           DO UPDATE SET min_wage=excluded.min_wage, submitted_at=CURRENT_TIMESTAMP;",
+          list(rid, cat_id, rv$user_id, as.numeric(val)))
+        saved <- saved + 1L
+      }
+    }
+    showNotification(sprintf("Saved %d wage bid%s.", saved, if (saved == 1) "" else "s"),
+                     type = "message")
+  })
+
+  # Application ticket submit
+  observeEvent(input$submit_app_bids, {
+    req(rv$authed, rv$user_id)
+    if (rv$is_demo) {
+      showNotification("Demo mode — bids are not saved.", type = "warning"); return()
+    }
+    jp   <- isolate(jobs_poll())
+    cats <- jp$categories
+    if (!nrow(jp$round) || !nrow(cats)) {
+      showNotification("No active round.", type = "error"); return()
+    }
+    rid            <- jp$round$id[1]
+    tickets_budget <- as.integer(jp$round$tickets_per_student[1] %||% 10L)
+    total_alloc    <- 0L
+    vals           <- list()
+    for (i in seq_len(nrow(cats))) {
+      cat_id <- cats$id[i]
+      val    <- as.integer(input[[paste0("at_", cat_id)]] %||% 0L)
+      if (is.na(val) || val < 0) val <- 0L
+      vals[[as.character(cat_id)]] <- val
+      total_alloc <- total_alloc + val
+    }
+    if (total_alloc > tickets_budget) {
+      showNotification(
+        sprintf("Total tickets (%d) exceeds your budget (%d).", total_alloc, tickets_budget),
+        type = "error"); return()
+    }
+    for (cat_id_str in names(vals)) {
+      cat_id <- as.integer(cat_id_str)
+      db_exec(
+        "INSERT INTO application_bids(round_id, category_id, user_id, tickets)
+         VALUES(?,?,?,?)
+         ON CONFLICT(round_id, category_id, user_id)
+         DO UPDATE SET tickets=excluded.tickets, submitted_at=CURRENT_TIMESTAMP;",
+        list(rid, cat_id, rv$user_id, vals[[cat_id_str]]))
+    }
+    showNotification(
+      sprintf("Saved ticket allocation (%d / %d used).", total_alloc, tickets_budget),
+      type = "message")
+  })
+
+  # ── Games tab ─────────────────────────────────────────────────────────────────
+  # Set up game detail toggle observers at server start (inputs may not exist yet;
+  # observeEvent with ignoreNULL=TRUE handles that safely).
+  lapply(GAMES, function(g) {
+    observeEvent(input[[paste0("gd_", g$id)]], {
+      rv$game_detail_id <- if (identical(rv$game_detail_id, g$id)) NULL else g$id
+    }, ignoreNULL = TRUE)
+  })
+
+  output$games_tab <- renderUI({
+    req(rv$authed)
+    active <- arcade_poll()$active_game[1] %||% ""
+
+    tagList(
+      div(class = "tab-howto",
+          "Your instructor activates a game for class; you can also play any game electively. Click a game row to read how it works."
+      ),
+
+      # Active slot
+      if (nzchar(active)) {
+        div(class = "slot-card",
+          div(class = "slot-header", "▶ Active Now", span(class = "badge-live", "LIVE")),
+          uiOutput("active_slot_inner")
+        )
+      } else {
+        div(class = "slot-card",
+          div(class = "slot-header", "▶ Active Game Slot"),
+          div(class = "no-game", "No game is active right now.")
+        )
+      },
+
+      # Full catalog
+      div(class = "sec-label", "All Games"),
+      tagList(lapply(GAMES, function(g) {
+        is_live     <- identical(g$id, active)
+        is_expanded <- identical(rv$game_detail_id, g$id)
+        type_label  <- switch(g$type,
+          either  = "Either/or",
+          session = "Session only",
+          g$type)
+
+        div(class = paste("game-list-item", if (is_expanded) "is-expanded"),
+          div(class = "game-list-header",
+            div(class = "game-list-label", g$label,
                 if (is_live) span(class = "badge-live", "LIVE")),
-            div(class = "game-card-desc", g$desc)
+            span(class = "badge-type", type_label),
+            actionButton(paste0("gd_", g$id),
+                         if (is_expanded) "▴" else "▾",
+                         class = "btn btn-sm btn-outline-secondary",
+                         style = "padding:.1rem .45rem;font-size:.8rem;")
           ),
-          if (is_live)
-            tags$a(href = g$url, target = "_blank",
-                   class = "btn btn-sm btn-primary", "Launch →")
-          else
-            tags$a(href = g$url, target = "_blank",
-                   class = "btn btn-sm btn-outline-secondary",
-                   style = "opacity:.6;", "Preview →")
+          if (is_expanded) {
+            div(class = "game-list-detail",
+              tags$p(g$desc),
+              div(class = "game-list-actions",
+                if (is_live && g$embedded)
+                  tags$em(style = "color:#951829;", "↑ Embedded in the active slot above")
+                else if (!g$embedded)
+                  tags$a(href = g$url, target = "_blank",
+                         class = "btn btn-sm btn-primary", "Open game →")
+                else if (!is_live)
+                  tags$em(style = "color:#aaa;",
+                          "Available when instructor activates it")
+              )
+            )
+          }
         )
       }))
     )
@@ -655,8 +1283,7 @@ server <- function(input, output, session) {
       if (status == "open") {
         tagList(
           tags$p(style = "color:#555;font-size:.9em;",
-            "Decide how many flex passes to contribute.",
-            "If the group contributes generously, everyone earns back more than they put in — but individual incentives cut the other way."),
+            "Decide how many flex passes to contribute. If the group contributes generously, everyone earns back more — but individual incentives cut the other way."),
           fluidRow(
             column(5,
               numericInput("bp_contrib", "Your contribution (FP):",
@@ -677,7 +1304,7 @@ server <- function(input, output, session) {
         div(class = "alert alert-success",
           tags$strong("Round revealed! "),
           if (!is.na(payout)) sprintf("Your payout: %.1f FP.", as.numeric(payout))
-          else "Check your Wallet for the credit.")
+          else "Check your Account tab for the credit.")
       } else {
         div(class = "no-game", "Round not open yet.")
       }
@@ -686,6 +1313,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$bp_submit, {
     req(rv$authed, rv$user_id)
+    if (rv$is_demo) {
+      showNotification("Demo mode — submission not saved.", type = "warning"); return()
+    }
     op  <- isolate(olig_poll())
     s   <- op$settings
     if (!nrow(s) || s$round_status[1] != "open") {
@@ -707,10 +1337,9 @@ server <- function(input, output, session) {
       "INSERT INTO olig_submissions(round, user_id, section, choice, contribute)
        VALUES(?,?,?,?,?)
        ON CONFLICT(round, user_id) DO UPDATE
-         SET contribute = excluded.contribute, section = excluded.section;",
-      list(as.integer(s$current_round[1]), rv$user_id, rv$section %||% "",
-           "contribute", contrib))
-    db_exec("UPDATE olig_settings SET updated_at = CURRENT_TIMESTAMP WHERE id=1;")
+         SET contribute=excluded.contribute, section=excluded.section;",
+      list(as.integer(s$current_round[1]), rv$user_id, rv$section %||% "", "contribute", contrib))
+    db_exec("UPDATE olig_settings SET updated_at=CURRENT_TIMESTAMP WHERE id=1;")
     showNotification(sprintf("Submitted %.1f FP contribution.", contrib), type = "message")
   })
 
@@ -721,14 +1350,14 @@ server <- function(input, output, session) {
     s      <- op$settings
     if (!nrow(s)) return(div(class = "no-game", "Game not configured."))
 
-    active    <- isolate(arcade_poll())$active_game[1] %||% ""
-    is_pw     <- identical(active, "price_war")
-    status    <- s$round_status[1] %||% "pending"
-    round     <- as.integer(s$current_round[1] %||% 1L)
-    scale     <- as.numeric(s$pd_scale[1] %||% 0.1)
-    pts       <- as.numeric(s$pd_payoff_points[1] %||% 10)
-    sub       <- op$my_sub
-    prev      <- if (nrow(sub) && as.integer(sub$round[1]) == round)
+    active <- isolate(arcade_poll())$active_game[1] %||% ""
+    is_pw  <- identical(active, "price_war")
+    status <- s$round_status[1] %||% "pending"
+    round  <- as.integer(s$current_round[1] %||% 1L)
+    scale  <- as.numeric(s$pd_scale[1] %||% 0.1)
+    pts    <- as.numeric(s$pd_payoff_points[1] %||% 10)
+    sub    <- op$my_sub
+    prev   <- if (nrow(sub) && as.integer(sub$round[1]) == round)
       as.character(sub$choice[1] %||% "") else ""
 
     c_lbl <- if (is_pw) "Low Price (compete)" else "Defect"
@@ -756,9 +1385,9 @@ server <- function(input, output, session) {
                          else if (nzchar(prev)) prev
                          else character(0)
                        },
-                       inline   = TRUE),
+                       inline = TRUE),
           actionButton("pd_submit", "Submit", class = "btn btn-primary"),
-          tags$p(style = "color:#888;font-size:.82em; margin-top:.5rem;",
+          tags$p(style = "color:#888;font-size:.82em;margin-top:.5rem;",
                  sprintf("Payoffs scale: %.1f × %.1f pts = %.1f FP per unit.", pts, scale, pts * scale))
         )
       } else if (status == "revealed") {
@@ -767,7 +1396,7 @@ server <- function(input, output, session) {
         div(class = "alert alert-success",
           tags$strong("Round revealed! "),
           if (!is.na(payout)) sprintf("Your payout: %.1f FP.", as.numeric(payout))
-          else "Check your Wallet for the credit.")
+          else "Check your Account tab for the credit.")
       } else {
         div(class = "alert alert-warning", "Round closed. Results coming soon.")
       }
@@ -776,6 +1405,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$pd_submit, {
     req(rv$authed, rv$user_id)
+    if (rv$is_demo) {
+      showNotification("Demo mode — submission not saved.", type = "warning"); return()
+    }
     op <- isolate(olig_poll())
     s  <- op$settings
     if (!nrow(s) || s$round_status[1] != "open") {
@@ -789,21 +1421,64 @@ server <- function(input, output, session) {
       "INSERT INTO olig_submissions(round, user_id, section, choice)
        VALUES(?,?,?,?)
        ON CONFLICT(round, user_id) DO UPDATE
-         SET choice = excluded.choice, section = excluded.section;",
+         SET choice=excluded.choice, section=excluded.section;",
       list(as.integer(s$current_round[1]), rv$user_id, rv$section %||% "", ch))
-    db_exec("UPDATE olig_settings SET updated_at = CURRENT_TIMESTAMP WHERE id=1;")
+    db_exec("UPDATE olig_settings SET updated_at=CURRENT_TIMESTAMP WHERE id=1;")
     showNotification("Choice submitted.", type = "message")
   })
 
-  # ── Wallet tab ────────────────────────────────────────────────────────────────
-  output$wallet_tab <- renderUI({
+  # ── Tools tab ─────────────────────────────────────────────────────────────────
+  output$tools_tab <- renderUI({
+    req(rv$authed)
+
+    # Split into simulations vs graded semester tools
+    sims   <- Filter(function(t) !isTRUE(t$graded), TOOLS)
+    graded <- Filter(function(t) isTRUE(t$graded),  TOOLS)
+
+    tagList(
+      div(class = "tab-howto",
+          "Always available — explore these to review and apply concepts from class. None require an active session."
+      ),
+      div(class = "sec-label", "Simulations"),
+      div(class = "tools-grid",
+        lapply(sims, function(t) {
+          div(class = "tool-card",
+            div(class = "tool-card-label", t$label),
+            div(class = "tool-card-desc",  t$desc),
+            div(class = "tool-card-foot",
+              tags$a(href = t$url, target = "_blank",
+                     class = "btn btn-sm btn-outline-secondary", "Open →"))
+          )
+        })
+      ),
+      if (length(graded)) {
+        tagList(
+          div(class = "sec-label", "Semester Tools"),
+          div(class = "tools-grid",
+            lapply(graded, function(t) {
+              div(class = "tool-card",
+                div(class = "tool-card-label", t$label,
+                    span(class = "badge-graded", style = "margin-left:.4rem;", "Graded")),
+                div(class = "tool-card-desc",  t$desc),
+                div(class = "tool-card-foot",
+                  tags$a(href = t$url, target = "_blank",
+                         class = "btn btn-sm btn-primary", "Open →"))
+              )
+            })
+          )
+        )
+      }
+    )
+  })
+
+  # ── Account tab (merged Wallet + Profile) ─────────────────────────────────────
+  output$account_tab <- renderUI({
     req(rv$authed)
     wp  <- wallet_poll()
     bal <- wallet_bal()
     gs  <- wp$gs
     step <- as.numeric(wp$step %||% 0.5)
 
-    # Pending pledge for the current exam round
     pending_pledge <- if (nrow(gs)) {
       pid <- db_query(
         "SELECT pledge FROM pledges WHERE user_id=? AND exam_id=? AND round=?;",
@@ -812,23 +1487,49 @@ server <- function(input, output, session) {
              as.integer(gs$ex_round[1] %||% 1L)))$pledge[1]
       as.numeric(pid %||% 0)
     } else 0
-
     round_open <- nrow(gs) && isTRUE(as.integer(gs$round_open[1]) == 1L)
 
+    # Job history: try new table first, fall back to job_log
+    new_jobs <- tryCatch(db_query(
+      "SELECT jp.job_name AS job, ja.created_at AS logged_date, ja.assigned_wage AS wage
+       FROM job_assignments ja
+       JOIN job_posts jp ON jp.id=ja.job_post_id
+       WHERE ja.user_id=?
+       ORDER BY ja.created_at DESC LIMIT 8;",
+      list(rv$user_id)), error = function(e) data.frame())
+    old_jobs <- if (!nrow(new_jobs))
+      db_query("SELECT job, logged_date FROM job_log WHERE display_name=?
+                ORDER BY created_at DESC LIMIT 5;", list(rv$name))
+    else data.frame()
+    job_rows <- if (nrow(new_jobs)) new_jobs else old_jobs
+
     tagList(
-      fluidRow(
-        column(4,
-          wellPanel(
-            div(class = "bal-label", "Flex Pass Balance"),
-            div(class = "bal-big",   sprintf("%.1f", bal)),
-            tags$small(style = "color:#888;", "FP  (confirmed)"),
-            if (pending_pledge > 0)
-              div(class = "pending-pledge",
-                  icon("clock-o"),
-                  sprintf(" %.1f FP pledged — pending round close", pending_pledge))
-          )
+      div(class = "tab-howto",
+          "Your financial and identity summary. Flex Passes are used for games and pledges; Participation Tokens track engagement and determine grade thresholds."
+      ),
+
+      # Three balance tiles
+      div(class = "bal-tiles",
+        div(class = "bal-tile bal-tile-fp",
+          div(class = "bal-tile-label", "Flex Passes"),
+          div(class = "bal-tile-val",   sprintf("%.1f", bal)),
+          div(class = "bal-tile-sub",   "on hand")
         ),
-        column(8,
+        div(class = "bal-tile bal-tile-toke",
+          div(class = "bal-tile-label", "Tokens Earned"),
+          div(class = "bal-tile-val",   as.integer(wp$tokens_earned %||% 0)),
+          div(class = "bal-tile-sub",   "gross · all time")
+        ),
+        div(class = "bal-tile bal-tile-toke2",
+          div(class = "bal-tile-label", "Tokens On Hand"),
+          div(class = "bal-tile-val",   as.integer(wp$tokens_on_hand %||% 0)),
+          div(class = "bal-tile-sub",   "after spending")
+        )
+      ),
+
+      fluidRow(
+        # ── Left column: FP pledge + ledger ──
+        column(6,
           wellPanel(
             tags$strong("Flex Pass Pledge"),
             if (!round_open) {
@@ -837,54 +1538,91 @@ server <- function(input, output, session) {
                      else "Pledging is not open right now.")
             } else {
               tagList(
+                if (pending_pledge > 0)
+                  div(class = "pending-pledge",
+                      sprintf("You have a pending pledge of %.1f FP this round.", pending_pledge)),
                 tags$p(style = "color:#555;font-size:.88em;",
-                  "Pledge flex passes toward unlocking the next exam question.",
-                  if (pending_pledge > 0)
-                    sprintf(" You've already pledged %.1f FP this round.", pending_pledge)
-                ),
+                  "Pledge flex passes toward unlocking the next exam question."),
                 fluidRow(
-                  column(6,
+                  column(7,
                     numericInput("pledge_amt", "Amount (FP):",
                                  value = isolate(input$pledge_amt) %||% step,
-                                 min   = step,
-                                 max   = max(step, floor(bal * 2) / 2),
-                                 step  = step)),
-                  column(6, tags$br(), tags$br(),
+                                 min = step, max = max(step, floor(bal * 2) / 2), step = step)),
+                  column(5, tags$br(), tags$br(),
                          actionButton("pledge_btn", "Pledge", class = "btn btn-primary"))
                 )
               )
             }
+          ),
+          div(class = "sec-label", "FP Transaction History"),
+          if (nrow(wp$ledger)) {
+            tags$table(class = "table table-sm",
+              tags$thead(tags$tr(
+                tags$th("Date"), tags$th("Purpose"),
+                tags$th(style = "text-align:right;", "Amount")
+              )),
+              tags$tbody(lapply(seq_len(nrow(wp$ledger)), function(i) {
+                r   <- wp$ledger[i, ]
+                cls <- if (r$amount >= 0) "cr" else "dr"
+                tags$tr(class = cls,
+                  tags$td(format(as.POSIXct(r$created_at), "%b %d")),
+                  tags$td(paste0(r$purpose %||% "",
+                                 if (nzchar(r$meta %||% ""))
+                                   paste0(" — ", r$meta) else "")),
+                  tags$td(style = "text-align:right;font-weight:600;",
+                          sprintf("%+.1f", r$amount))
+                )
+              }))
+            )
+          } else {
+            div(style = "color:#999;font-size:.9rem;", "No transactions yet.")
+          }
+        ),
+
+        # ── Right column: profile + job history ──
+        column(6,
+          div(class = "profile-panel",
+            tags$h6(style = "color:#951829;font-weight:700;", "Display Name"),
+            textInput("profile_name", NULL, value = rv$name, width = "100%"),
+            actionButton("save_name_btn", "Save", class = "btn btn-primary"),
+            tags$p(style = "color:#888;font-size:.82em;margin-top:.5rem;",
+                   "The name your instructor and classmates see."),
+            tags$hr(style = "margin:.75rem 0;"),
+            tags$p(tags$strong("Username: "), rv$user_id),
+            if (nzchar(rv$section %||% ""))
+              tags$p(tags$strong("Section: "), rv$section),
+            tags$hr(style = "margin:.75rem 0;"),
+            tags$h6(style = "color:#951829;font-weight:700;", "Job History"),
+            if (nrow(job_rows)) {
+              tags$table(class = "table table-sm",
+                tags$tbody(lapply(seq_len(nrow(job_rows)), function(i) {
+                  r <- job_rows[i, ]
+                  tags$tr(
+                    tags$td(r$job %||% ""),
+                    tags$td(style = "color:#888;font-size:.83em;",
+                            as.character(r$logged_date %||% "")),
+                    if (!is.null(r$wage) && !is.na(r$wage %||% NA))
+                      tags$td(style = "text-align:right;color:#1a6e3c;font-size:.85em;",
+                              sprintf("%.1f FP", as.numeric(r$wage)))
+                    else
+                      tags$td("")
+                  )
+                }))
+              )
+            } else {
+              tags$p(style = "color:#999;font-size:.9em;", "No job history yet.")
+            }
           )
         )
-      ),
-
-      div(class = "sec-label", "Transaction History"),
-      if (nrow(wp$ledger)) {
-        tags$table(class = "table table-sm",
-          tags$thead(tags$tr(
-            tags$th("Date"), tags$th("Purpose"), tags$th("Note"),
-            tags$th(style = "text-align:right;", "Amount")
-          )),
-          tags$tbody(lapply(seq_len(nrow(wp$ledger)), function(i) {
-            r   <- wp$ledger[i, ]
-            cls <- if (r$amount >= 0) "cr" else "dr"
-            tags$tr(class = cls,
-              tags$td(format(as.POSIXct(r$created_at), "%b %d %H:%M")),
-              tags$td(r$purpose %||% ""),
-              tags$td(style = "color:#888;font-size:.83em;", r$meta %||% ""),
-              tags$td(style = "text-align:right;font-weight:600;",
-                      sprintf("%+.1f", r$amount))
-            )
-          }))
-        )
-      } else {
-        div(style = "color:#999;", "No transactions yet.")
-      }
+      )
     )
   })
 
   observeEvent(input$pledge_btn, {
     req(rv$authed, rv$user_id)
+    if (rv$is_demo) {
+      showNotification("Demo mode — pledge not saved.", type = "warning"); return()
+    }
     wp  <- isolate(wallet_poll())
     gs  <- wp$gs
     if (!nrow(gs) || !isTRUE(as.integer(gs$round_open[1]) == 1L)) {
@@ -900,115 +1638,30 @@ server <- function(input, output, session) {
     }
     exam_id <- gs$active_exam[1] %||% "exam1"
     round   <- as.integer(gs$ex_round[1] %||% 1L)
-    # Upsert pledge (replaces existing; ledger debit happens in flex_pass_actions on close)
     db_exec(
       "INSERT INTO pledges(user_id, exam_id, round, pledge)
        VALUES(?,?,?,?)
        ON CONFLICT(user_id, exam_id, round) DO UPDATE
-         SET pledge = excluded.pledge, submitted_at = CURRENT_TIMESTAMP;",
+         SET pledge=excluded.pledge, submitted_at=CURRENT_TIMESTAMP;",
       list(rv$user_id, exam_id, round, amt))
     showNotification(sprintf("Pledge of %.1f FP submitted.", amt), type = "message")
   })
 
-  # ── Profile tab ───────────────────────────────────────────────────────────────
-  output$profile_tab <- renderUI({
-    req(rv$authed)
-    # Most-recent job entries for this student (matched by display_name)
-    job_rows <- db_query(
-      "SELECT job, logged_date FROM job_log WHERE display_name = ?
-       ORDER BY created_at DESC LIMIT 5;",
-      list(rv$name))
-
-    tagList(
-      fluidRow(
-        column(6,
-          div(class = "profile-panel",
-            tags$h6(style = "color:#951829;font-weight:700;", "Display Name"),
-            textInput("profile_name", NULL, value = rv$name, width = "100%"),
-            actionButton("save_name_btn", "Save", class = "btn btn-primary"),
-            tags$p(style = "color:#888;font-size:.82em;margin-top:.5rem;margin-bottom:0;",
-                   "This is the name your instructor and classmates see.")
-          )
-        ),
-        column(6,
-          div(class = "profile-panel",
-            tags$h6(style = "color:#951829;font-weight:700;", "Account Info"),
-            tags$p(tags$strong("Username: "), rv$user_id),
-            if (nzchar(rv$section %||% ""))
-              tags$p(tags$strong("Section: "), rv$section),
-            if (nrow(job_rows)) {
-              tagList(
-                tags$hr(style = "margin:.5rem 0;"),
-                tags$p(tags$strong("Class Job History:")),
-                tags$ul(style = "padding-left:1.1rem;margin-bottom:0;",
-                  lapply(seq_len(nrow(job_rows)), function(i)
-                    tags$li(job_rows$job[i],
-                            tags$small(style = "color:#999;",
-                                       paste0(" — ", job_rows$logged_date[i])))
-                  )
-                )
-              )
-            } else {
-              tags$p(style = "color:#999;font-size:.9em;", "No job assignments yet.")
-            }
-          )
-        )
-      )
-    )
-  })
-
   observeEvent(input$save_name_btn, {
     req(rv$authed, rv$user_id)
+    if (rv$is_demo) {
+      showNotification("Demo mode — name not saved.", type = "warning"); return()
+    }
     nm <- trimws(input$profile_name %||% "")
     if (!nzchar(nm)) {
       showNotification("Name cannot be blank.", type = "error"); return()
     }
-    db_exec("UPDATE users SET display_name = ? WHERE user_id = ?;",
-            list(nm, rv$user_id))
+    db_exec("UPDATE users SET display_name=? WHERE user_id=?;", list(nm, rv$user_id))
     rv$name <- nm
     showNotification("Display name updated.", type = "message")
   })
 
-  # ── Games tab ──────────────────────────────────────────────────────────────────
-  output$games_tab <- renderUI({
-    req(rv$authed)
-
-    game_section <- function(type_id, heading, note) {
-      games <- Filter(function(g) g$type == type_id, GAMES)
-      tagList(
-        div(class = "sec-label", heading),
-        tags$p(style = "color:#888;font-size:.85rem;margin-top:-.4rem;margin-bottom:.6rem;", note),
-        tagList(lapply(games, function(g) {
-          wellPanel(style = "padding:.8rem 1rem;",
-            fluidRow(
-              column(9,
-                tags$strong(g$label),
-                tags$p(style = "color:#555;font-size:.87em;margin-bottom:0;", g$desc)
-              ),
-              column(3, style = "text-align:right;padding-top:.3rem;",
-                if (!g$embedded)
-                  tags$a(href = g$url, target = "_blank",
-                         class = "btn btn-sm btn-outline-secondary", "Open →")
-                else
-                  span(style = "color:#951829;font-size:.82rem;", "Plays in arcade")
-              )
-            )
-          )
-        }))
-      )
-    }
-
-    tagList(
-      game_section("either",   "Either / Or",
-        "Can be activated for a live session or left open for use between classes."),
-      game_section("semester", "Semester-Long",
-        "Persistent tools available throughout the semester."),
-      game_section("session",  "Session Only",
-        "Played live during class. No lasting footprint — just the experience.")
-    )
-  })
-
-  # ── Admin tab ──────────────────────────────────────────────────────────────────
+  # ── Admin tab ─────────────────────────────────────────────────────────────────
   output$admin_tab_panel <- renderUI({
     if (!rv$is_admin) return(NULL)
     tabPanel("Admin", br(), uiOutput("admin_content"))
@@ -1016,9 +1669,6 @@ server <- function(input, output, session) {
 
   output$admin_content <- renderUI({
     req(rv$is_admin)
-    # Isolate polls so the selectInput and buttons don't reset every time the
-    # admin opens/closes a round or the arcade_state timestamp changes.
-    # updateSelectInput (below) keeps admin_game_sel in sync reactively.
     active <- isolate(arcade_poll())$active_game[1] %||% ""
     s      <- isolate(olig_poll())$settings
 
@@ -1030,14 +1680,12 @@ server <- function(input, output, session) {
     }
     all_game_choices <- c(
       list("(none)" = ""),
-      make_group("either",   "either/or"),
-      make_group("semester", "semester"),
-      make_group("session",  "session")
+      make_group("either",  "either/or"),
+      make_group("session", "session")
     )
 
     tagList(
       fluidRow(
-        # Active game selector
         column(5,
           wellPanel(
             tags$h6(style = "font-weight:700;color:#951829;", "Active Game Slot"),
@@ -1045,14 +1693,12 @@ server <- function(input, output, session) {
                         choices = all_game_choices, selected = active, width = "100%"),
             actionButton("set_active_btn", "Set active game", class = "btn btn-warning"),
             tags$p(style = "font-size:.82em;color:#888;margin-top:.5rem;margin-bottom:0;",
-                   "Students see this immediately on their Play tab.")
+                   "Students see this immediately on their Games tab.")
           )
         ),
-        # Coordination game quick controls
         column(7,
           wellPanel(
             tags$h6(style = "font-weight:700;color:#951829;", "Coordination Game Controls"),
-            # Live status in its own output so it updates without re-rendering buttons
             uiOutput("olig_status_display"),
             if (nrow(s)) {
               tagList(
@@ -1062,20 +1708,20 @@ server <- function(input, output, session) {
                   column(4, actionButton("adm_reveal", "Reveal", class = "btn btn-danger  btn-sm btn-block"))
                 ),
                 tags$p(style = "font-size:.8em;color:#999;margin-top:.5rem;margin-bottom:0;",
-                       "For full setup (multiplier, section, payouts) use the Coordination Games app.")
+                       "For full setup use the Coordination Games app.")
               )
             }
           )
         )
       ),
-
+      div(style = "font-size:.82em;color:#888;margin-bottom:.75rem;",
+          "Job Market admin is in the ",
+          tags$a(href = "/class-job-market/", target = "_blank", "Class Job Market app"), "."),
       div(class = "sec-label", "Student Wallet Balances"),
       uiOutput("admin_balances")
     )
   })
 
-  # Olig status updates reactively (on every olig_poll change) without
-  # touching the surrounding admin_content form fields.
   output$olig_status_display <- renderUI({
     req(rv$is_admin)
     s <- olig_poll()$settings
@@ -1083,8 +1729,8 @@ server <- function(input, output, session) {
       return(tags$p(style = "color:#999;margin-bottom:.5rem;",
                     "Run coordination-games once to initialize settings."))
     tags$p(style = "margin-bottom:.5rem;",
-      tags$strong("Game: "), toupper(s$current_game[1] %||% "—"), "   ",
-      tags$strong("Round: "), s$current_round[1], "   ",
+      tags$strong("Game: "), toupper(s$current_game[1] %||% "—"), "   ",
+      tags$strong("Round: "), s$current_round[1], "   ",
       tags$strong("Status: "),
       span(style = if (s$round_status[1] == "open") "color:#1a6e3c;font-weight:600;"
                    else "color:#b00020;font-weight:600;",
@@ -1092,7 +1738,6 @@ server <- function(input, output, session) {
     )
   })
 
-  # Keep admin_game_sel in sync with DB without re-rendering the whole form
   observe({
     req(rv$is_admin)
     active <- arcade_poll()$active_game[1] %||% ""
@@ -1105,9 +1750,10 @@ server <- function(input, output, session) {
       SELECT u.display_name, u.user_id, u.section,
              COALESCE(SUM(l.amount), 0) balance
       FROM users u
-      LEFT JOIN ledger l ON l.user_id = u.user_id
-      WHERE (u.is_admin IS NULL OR u.is_admin = 0)
-        AND COALESCE(u.active,1) = 1
+      LEFT JOIN ledger l ON l.user_id=u.user_id
+      WHERE (u.is_admin IS NULL OR u.is_admin=0)
+        AND COALESCE(u.active,1)=1
+        AND COALESCE(u.is_demo,0)=0
       GROUP BY u.user_id
       ORDER BY u.section, u.display_name;")
     if (!nrow(rows)) return(div(style = "color:#999;", "No students found."))
@@ -1122,8 +1768,7 @@ server <- function(input, output, session) {
           tags$td(r$display_name %||% r$user_id),
           tags$td(style = "color:#888;font-size:.85em;", r$user_id),
           tags$td(r$section %||% ""),
-          tags$td(style = "text-align:right;font-weight:600;",
-                  sprintf("%.1f", r$balance))
+          tags$td(style = "text-align:right;font-weight:600;", sprintf("%.1f", r$balance))
         )
       }))
     )
@@ -1149,12 +1794,14 @@ server <- function(input, output, session) {
   observeEvent(input$adm_close, {
     req(rv$is_admin)
     db_exec("UPDATE olig_settings SET round_status='closed', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-    showNotification("Round closed. Run payouts in the Coordination Games app.", type = "warning", duration = 6)
+    showNotification("Round closed. Run payouts in the Coordination Games app.",
+                     type = "warning", duration = 6)
   })
   observeEvent(input$adm_reveal, {
     req(rv$is_admin)
     db_exec("UPDATE olig_settings SET round_status='revealed', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-    showNotification("Status set to revealed. Run payouts in the Coordination Games app first.", type = "warning", duration = 6)
+    showNotification("Status set to revealed. Run payouts in the Coordination Games app first.",
+                     type = "warning", duration = 6)
   })
 
 }
