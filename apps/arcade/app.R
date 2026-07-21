@@ -3,6 +3,7 @@ library(shiny)
 library(DBI)
 library(RSQLite)
 library(bcrypt)
+library(jsonlite)
 
 this_file <- ""
 for (i in rev(seq_len(sys.nframe()))) {
@@ -95,16 +96,84 @@ db_exec(
    VALUES(?,?,?,0,'Demo',1,1);",
   list("demo", "Demo User", DEMO_HASH))
 
-# Seed fake data for demo account (only if ledger is empty)
-if (!db_query("SELECT COUNT(*) n FROM ledger WHERE user_id='demo';")$n[1]) {
+# Spending infrastructure (shared with class-job-market)
+db_exec("CREATE TABLE IF NOT EXISTS problem_sets(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  original_deadline TEXT,
+  solutions_posted_at TEXT,
+  active INTEGER DEFAULT 1
+);")
+db_exec("CREATE TABLE IF NOT EXISTS extension_purchases(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  problem_set_id INTEGER,
+  user_id TEXT,
+  hours REAL,
+  cost REAL,
+  ledger_id INTEGER,
+  purchased_at TEXT DEFAULT CURRENT_TIMESTAMP
+);")
+db_exec("CREATE TABLE IF NOT EXISTS grade_reweight_requests(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT,
+  from_category TEXT,
+  to_category TEXT,
+  points INTEGER,
+  cost REAL,
+  ledger_id INTEGER,
+  status TEXT DEFAULT 'pending',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);")
+db_exec("CREATE TABLE IF NOT EXISTS public_goods(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  description TEXT,
+  threshold REAL DEFAULT 0,
+  active INTEGER DEFAULT 1
+);")
+db_exec("CREATE TABLE IF NOT EXISTS public_good_contributions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  public_good_id INTEGER,
+  user_id TEXT,
+  amount REAL,
+  ledger_id INTEGER,
+  contributed_at TEXT DEFAULT CURRENT_TIMESTAMP
+);")
+db_exec("CREATE TABLE IF NOT EXISTS labor_settings(
+  key TEXT PRIMARY KEY,
+  value TEXT
+);")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('extension_prices_json','{\"24\":3,\"48\":5}');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('reweight_cost_schedule','1:2,2:5,3:9,4:14,5:20');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('grade_reweight_categories','Homework,Midterm,Final');")
+
+# token_ledger table
+db_exec("CREATE TABLE IF NOT EXISTS token_ledger(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  display_name TEXT,
+  source_type TEXT,
+  source_id INTEGER,
+  amount REAL NOT NULL,
+  earning INTEGER DEFAULT 1,
+  note TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);")
+
+# Seed fake data for demo account (only if token_ledger is empty for demo)
+if (!db_query("SELECT COUNT(*) n FROM token_ledger WHERE user_id='demo';")$n[1]) {
   for (row in list(
-    list("demo",  5.0, "Class Job",  "Record Keeper — Wk 1", "2024-09-05 10:00:00"),
-    list("demo",  3.5, "Bonus Pot",  "Round 1 payout",        "2024-09-12 10:00:00"),
-    list("demo", -1.0, "Pledge",     "Exam 1 question pledge", "2024-09-15 10:00:00"),
-    list("demo",  4.0, "PD payout",  "Prisoner's Dilemma R1", "2024-09-19 10:00:00"),
-    list("demo",  1.0, "Class Job",  "Analyst — Wk 2",        "2024-09-26 10:00:00")
+    list("demo","Demo User", 8L, 1L,"job",        NA_integer_,"Record Keeper — Wk 1","2024-09-05 10:00:00"),
+    list("demo","Demo User", 5L, 1L,"bonus_pot",  NA_integer_,"Round 1 payout",       "2024-09-12 10:00:00"),
+    list("demo","Demo User", 6L, 1L,"pd_payout",  NA_integer_,"Prisoner's Dilemma R1","2024-09-19 10:00:00"),
+    list("demo","Demo User",12L, 1L,"job",        NA_integer_,"Analyst — Wk 2",       "2024-09-26 10:00:00"),
+    list("demo","Demo User", 7L, 1L,"job",        NA_integer_,"Analyst — Wk 3",       "2024-10-03 10:00:00"),
+    list("demo","Demo User",-3L, 0L,"extension",  NA_integer_,"48h extension",         "2024-10-04 09:00:00"),
+    list("demo","Demo User",-2L, 0L,"public_good",NA_integer_,"Public good #1",        "2024-10-10 09:00:00"),
+    list("demo","Demo User", 9L, 1L,"bonus_pot",  NA_integer_,"Round 2 payout",       "2024-10-17 10:00:00")
   )) {
-    db_exec("INSERT INTO ledger(user_id,amount,purpose,meta,created_at) VALUES(?,?,?,?,?);", row)
+    db_exec("INSERT INTO token_ledger(user_id,display_name,amount,earning,source_type,source_id,note,created_at)
+             VALUES(?,?,?,?,?,?,?,?);", row)
   }
 }
 
@@ -183,6 +252,34 @@ get_config <- function(key, default = NULL) {
   if (!nrow(r) || is.na(r$value[1])) return(default)
   r$value[1]
 }
+get_setting <- function(key, default = NULL) {
+  r <- db_query("SELECT value FROM labor_settings WHERE key=?;", list(key))
+  if (!nrow(r) || is.na(r$value[1])) return(default)
+  r$value[1]
+}
+parse_ext_prices <- function() {
+  raw <- tryCatch(get_setting("extension_prices_json", '{"24":3,"48":5}'), error = function(e) '{"24":3,"48":5}')
+  tryCatch({
+    lst <- jsonlite::fromJSON(raw)
+    v <- as.numeric(unlist(lst))
+    names(v) <- names(lst)
+    v
+  }, error = function(e) c("24" = 3, "48" = 5))
+}
+parse_rw_costs <- function() {
+  raw <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
+                  error = function(e) "1:2,2:5,3:9,4:14,5:20")
+  pairs <- strsplit(trimws(raw), ",")[[1]]
+  v <- numeric(0)
+  for (p in pairs) {
+    parts <- strsplit(trimws(p), ":")[[1]]
+    if (length(parts) == 2) {
+      k <- trimws(parts[1]); val <- as.numeric(trimws(parts[2]))
+      if (!is.na(val)) v[k] <- val
+    }
+  }
+  v
+}
 APP_NAME <- get_config("app_name", "Classroom Economy")
 
 # ── Game catalog ──────────────────────────────────────────────────────────────
@@ -192,7 +289,7 @@ APP_NAME <- get_config("app_name", "Classroom Economy")
 GAMES <- list(
   list(id = "bonus_pot",        type = "either",
        label = "Bonus Pot",     embedded = TRUE,
-       desc = "Contribute flex passes to a shared pot. The group earns back more when participation is high — but individual incentives push the other way."),
+       desc = "Contribute tokens to a shared pot. The group earns back more when participation is high — but individual incentives push the other way."),
   list(id = "prisoners_dilemma", type = "either",
        label = "Prisoner's Dilemma", embedded = TRUE,
        desc = "Cooperate or defect? See how individual incentives produce outcomes that are collectively worse."),
@@ -221,24 +318,16 @@ GAMES <- list(
 
 game_info <- function(id) Find(function(g) g$id == id, GAMES)
 
-# ── Tools catalog ─────────────────────────────────────────────────────────────
-# Always-available simulations and semester-long graded tools.
-TOOLS <- list(
+# ── Demos catalog ─────────────────────────────────────────────────────────────
+DEMOS <- list(
   list(id = "indiff-to-demand",  label = "Indifference to Demand",  url = "/indiff-to-demand/",
-       desc = "Trace how budget constraints and indifference curves generate a demand curve. Adjust prices and income interactively.",
-       graded = FALSE),
+       desc = "Trace how budget constraints and indifference curves generate a demand curve. Adjust prices and income interactively."),
   list(id = "theory-of-firm",    label = "Theory of the Firm",      url = "/theory-of-firm/",
-       desc = "Explore cost curves, profit maximization, and shutdown decisions for a price-taking firm.",
-       graded = FALSE),
+       desc = "Explore cost curves, profit maximization, and shutdown decisions for a price-taking firm."),
   list(id = "tax-incidence",     label = "Tax Incidence",           url = "/tax-incidence/",
-       desc = "See how the burden of an excise tax divides between buyers and sellers depending on supply and demand elasticity.",
-       graded = FALSE),
+       desc = "See how the burden of an excise tax divides between buyers and sellers depending on supply and demand elasticity."),
   list(id = "price-index",       label = "Price Index",             url = "/price-index/",
-       desc = "Build a basket of goods and track prices across waves to measure your personal inflation rate.",
-       graded = FALSE),
-  list(id = "flex-pass-app",     label = "Flex Pass Accounting",    url = "/flex_pass_actions/",
-       desc = "See the full exam-question unlock panel, purchase exam points, and view your complete ledger history.",
-       graded = TRUE)
+       desc = "Build a basket of goods and track prices across waves to measure your personal inflation rate.")
 )
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -380,17 +469,37 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
                     border-top: 1px solid #f0f0f0; font-size: .88rem; color: #555; }
 .game-list-actions { display: flex; gap: .5rem; margin-top: .6rem; flex-wrap: wrap; }
 
-/* ── Tools tab ──────────────────────────────────────────────────────────── */
-.tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+/* ── Demos tab ──────────────────────────────────────────────────────────── */
+.demos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
               gap: .65rem; margin-bottom: 1rem; }
-.tool-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px;
+.demo-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px;
              padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .3rem; }
-.tool-card-label { font-weight: 600; font-size: .95rem; }
-.tool-card-desc  { color: #666; font-size: .82rem; flex: 1; }
-.tool-card-foot  { display: flex; align-items: center; justify-content: space-between;
+.demo-card-label { font-weight: 600; font-size: .95rem; }
+.demo-card-desc  { color: #666; font-size: .82rem; flex: 1; }
+.demo-card-foot  { display: flex; align-items: center; justify-content: space-between;
                    margin-top: .5rem; }
 
-/* ── Account tab (merged Wallet + Profile) ──────────────────────────────── */
+/* ── Spend tab ──────────────────────────────────────────────────────────── */
+.spend-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+               gap: .65rem; margin-bottom: 1rem; }
+.spend-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px;
+              padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .3rem;
+              cursor: default; }
+.spend-card-icon  { font-size: 1.5rem; margin-bottom: .2rem; }
+.spend-card-label { font-weight: 700; font-size: .95rem; }
+.spend-card-desc  { color: #666; font-size: .82rem; flex: 1; }
+.spend-card-meta  { color: #888; font-size: .78rem; }
+.spend-card-foot  { margin-top: .5rem; }
+.spend-form-box { background: #fff; border: 1px solid #e0e0e0; border-radius: 10px;
+                  padding: 1.1rem 1.2rem; margin-bottom: .5rem; }
+.pg-bar-wrap { background: #f0f0f0; border-radius: 999px; height: 8px;
+               margin: .35rem 0 .55rem; overflow: hidden; }
+.pg-bar-fill { background: #1a6e3c; height: 100%; border-radius: 999px; }
+
+/* ── Live Tracker ───────────────────────────────────────────────────────── */
+.tracker-wrap { overflow-x: auto; }
+
+/* ── Account tab ────────────────────────────────────────────────────────── */
 .bal-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: .65rem;
              margin-bottom: 1.25rem; }
 @media (max-width: 480px) { .bal-tiles { grid-template-columns: 1fr 1fr; } }
@@ -469,9 +578,10 @@ server <- function(input, output, session) {
     is_admin       = FALSE,
     is_demo        = FALSE,
     token          = NULL,
-    game_detail_id = NULL,    # which game card is expanded in the catalog
-    bp_contrib_val = NULL,    # preserve across olig_poll re-renders
-    pd_choice_val  = NULL
+    game_detail_id = NULL,
+    bp_contrib_val = NULL,
+    pd_choice_val  = NULL,
+    spend_mode     = NULL    # NULL | "extension" | "reweight" | "pubgood"
   )
 
   # ── Root UI ──────────────────────────────────────────────────────────────────
@@ -539,9 +649,11 @@ server <- function(input, output, session) {
             tabPanel("Today",      br(), uiOutput("today_tab")),
             tabPanel("Job Market", br(), uiOutput("job_market_tab")),
             tabPanel("Games",      br(), uiOutput("games_tab")),
-            tabPanel("Tools",      br(), uiOutput("tools_tab")),
+            tabPanel("Demos",      br(), uiOutput("demos_tab")),
+            tabPanel("Spend",      br(), uiOutput("spend_tab")),
             tabPanel("Account",    br(), uiOutput("account_tab")),
-            uiOutput("admin_tab_panel")
+            uiOutput("tracker_tab_panel"),
+            uiOutput("settings_tab_panel")
           )
         )
       )
@@ -550,10 +662,10 @@ server <- function(input, output, session) {
 
   output$header_widgets <- renderUI({
     req(rv$authed)
-    bal <- wallet_bal()
+    bal <- token_bal()
     tagList(
       span(class = "arc-name", rv$name),
-      span(class = "arc-bal",  sprintf("%.1f FP", bal))
+      span(class = "arc-bal",  sprintf("%d tokens", as.integer(bal)))
     )
   })
 
@@ -666,44 +778,79 @@ server <- function(input, output, session) {
     }
   )
 
-  wallet_poll <- reactivePoll(6000, session,
+  token_poll <- reactivePoll(6000, session,
     checkFunc = function() {
       if (is.null(rv$user_id)) return("")
-      r1 <- db_query("SELECT MAX(created_at) ts FROM ledger WHERE user_id=?;",
-                     list(rv$user_id))$ts[1] %||% ""
-      r2 <- tryCatch(
+      tryCatch(
         db_query("SELECT MAX(created_at) ts FROM token_ledger WHERE user_id=?;",
                  list(rv$user_id))$ts[1] %||% "",
         error = function(e) "")
-      paste(r1, r2)
     },
     valueFunc = function() {
       if (is.null(rv$user_id)) return(list(
-        ledger = data.frame(), gs = data.frame(), step = 0.5,
-        tokens_earned = 0, tokens_on_hand = 0))
-      ledger <- db_query(
-        "SELECT amount, purpose, meta, created_at FROM ledger
-         WHERE user_id=? ORDER BY created_at DESC LIMIT 30;",
-        list(rv$user_id))
-      gs <- db_query(
-        "SELECT gs.*, es.round_open, es.round AS ex_round
-         FROM game_state gs
-         LEFT JOIN exam_state es ON es.exam_id=gs.active_exam
-         WHERE gs.id=1;")
-      step <- db_query("SELECT pledge_step FROM settings WHERE id=1;")$pledge_step[1] %||% 0.5
-      tokens_earned <- tryCatch(
-        as.numeric(db_query(
-          "SELECT COALESCE(SUM(amount),0) t FROM token_ledger
-           WHERE user_id=? AND earning=1 AND amount>0;",
-          list(rv$user_id))$t[1] %||% 0),
-        error = function(e) 0)
-      tokens_on_hand <- tryCatch(
-        as.numeric(db_query(
-          "SELECT COALESCE(SUM(amount),0) t FROM token_ledger WHERE user_id=?;",
-          list(rv$user_id))$t[1] %||% 0),
-        error = function(e) 0)
-      list(ledger = ledger, gs = gs, step = step,
-           tokens_earned = tokens_earned, tokens_on_hand = tokens_on_hand)
+        ledger = data.frame(), tokens_earned = 0, tokens_on_hand = 0))
+      ledger <- tryCatch(db_query(
+        "SELECT amount, source_type, note, created_at, earning
+         FROM token_ledger WHERE user_id=? ORDER BY created_at DESC LIMIT 60;",
+        list(rv$user_id)), error = function(e) data.frame())
+      earned  <- tryCatch(as.numeric(db_query(
+        "SELECT COALESCE(SUM(amount),0) t FROM token_ledger
+         WHERE user_id=? AND earning=1 AND amount>0;",
+        list(rv$user_id))$t[1] %||% 0), error = function(e) 0)
+      on_hand <- tryCatch(as.numeric(db_query(
+        "SELECT COALESCE(SUM(amount),0) t FROM token_ledger WHERE user_id=?;",
+        list(rv$user_id))$t[1] %||% 0), error = function(e) 0)
+      list(ledger = ledger, tokens_earned = earned, tokens_on_hand = on_hand)
+    }
+  )
+
+  pubgood_poll <- reactivePoll(10000, session,
+    checkFunc = function() {
+      tryCatch(
+        db_query("SELECT MAX(contributed_at) ts FROM public_good_contributions;")$ts[1] %||% "",
+        error = function(e) "")
+    },
+    valueFunc = function() {
+      goods  <- tryCatch(db_query(
+        "SELECT * FROM public_goods WHERE COALESCE(active,1)=1 ORDER BY id;"),
+        error = function(e) data.frame())
+      totals <- tryCatch(db_query(
+        "SELECT public_good_id, SUM(amount) AS total
+         FROM public_good_contributions GROUP BY public_good_id;"),
+        error = function(e) data.frame())
+      list(goods = goods, totals = totals)
+    }
+  )
+
+  tracker_poll <- reactivePoll(5000, session,
+    checkFunc = function() {
+      if (!isTRUE(rv$is_admin)) return("")
+      tryCatch(
+        db_query("SELECT MAX(created_at) ts FROM token_ledger;")$ts[1] %||% "",
+        error = function(e) "")
+    },
+    valueFunc = function() {
+      if (!isTRUE(rv$is_admin)) return(list(students = data.frame(), subs = data.frame()))
+      students <- tryCatch(db_query(
+        "SELECT u.user_id, u.display_name, u.section,
+                COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned,
+                COALESCE(SUM(tl.amount),0) AS tokens_on_hand
+         FROM users u
+         LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
+         WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
+         GROUP BY u.user_id
+         ORDER BY u.section, u.display_name;"),
+        error = function(e) data.frame())
+      active <- tryCatch(
+        db_query("SELECT active_game FROM arcade_state WHERE id=1;")$active_game[1] %||% "",
+        error = function(e) "")
+      subs <- if (nzchar(active %||% "")) {
+        tryCatch(db_query(
+          "SELECT DISTINCT user_id FROM olig_submissions WHERE round=(
+             SELECT current_round FROM olig_settings WHERE id=1);"),
+          error = function(e) data.frame())
+      } else data.frame()
+      list(students = students, subs = subs)
     }
   )
 
@@ -779,11 +926,28 @@ server <- function(input, output, session) {
     }
   )
 
-  wallet_bal <- reactive({
-    wp <- wallet_poll()
-    if (!length(wp$ledger) || !nrow(wp$ledger)) return(0)
-    as.numeric(sum(wp$ledger$amount, na.rm = TRUE))
+  token_bal <- reactive({ as.numeric(token_poll()$tokens_on_hand %||% 0) })
+
+  my_pub_contrib_data <- reactive({
+    req(rv$user_id)
+    tryCatch(db_query(
+      "SELECT public_good_id, SUM(amount) AS my_total
+       FROM public_good_contributions WHERE user_id=? GROUP BY public_good_id;",
+      list(rv$user_id)), error = function(e) data.frame())
   })
+
+  token_credit <- function(uid, dname, amount, earning, source_type, source_id = NA, note = "") {
+    db_exec(
+      "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
+       VALUES(?,?,?,?,?,?,?);",
+      list(uid, dname, source_type,
+           if (is.na(source_id)) NA_integer_ else as.integer(source_id),
+           amount, as.integer(earning), note))
+    tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1], error = function(e) NA_integer_)
+  }
+  token_debit <- function(uid, dname, amount, source_type, source_id = NA, note = "") {
+    token_credit(uid, dname, -abs(amount), 0L, source_type, source_id, note)
+  }
 
   # Preserve typed input values across poll-triggered re-renders.
   observe({ if (!is.null(input$bp_contrib)) rv$bp_contrib_val <- input$bp_contrib })
@@ -817,6 +981,33 @@ server <- function(input, output, session) {
         )
       },
 
+      # Public Good status
+      {
+        pg <- pubgood_poll()
+        if (nrow(pg$goods)) {
+          tagList(
+            div(class = "sec-label", "Public Good"),
+            lapply(seq_len(nrow(pg$goods)), function(i) {
+              good    <- pg$goods[i, ]
+              t_row   <- if (nrow(pg$totals)) pg$totals[pg$totals$public_good_id == good$id, , drop = FALSE] else data.frame()
+              contrib <- if (nrow(t_row)) as.numeric(t_row$total[1] %||% 0) else 0
+              thresh  <- as.numeric(good$threshold %||% 0)
+              pct     <- if (thresh > 0) min(100, round(contrib / thresh * 100)) else 0
+              div(class = "today-card",
+                tags$strong(good$name),
+                if (nzchar(good$description %||% ""))
+                  tags$p(style = "color:#555;font-size:.86rem;margin:.2rem 0 .4rem;", good$description),
+                div(style = "font-size:.82rem;color:#888;margin-bottom:.3rem;",
+                    sprintf("Class total: %d / %d tokens (%d%%)",
+                            as.integer(contrib), as.integer(thresh), pct)),
+                div(class = "pg-bar-wrap",
+                    div(class = "pg-bar-fill", style = sprintf("width:%d%%;", pct)))
+              )
+            })
+          )
+        }
+      },
+
       # My Job Today
       div(class = "sec-label", "My Job Today"),
       if (nrow(jp$my_assign)) {
@@ -827,7 +1018,7 @@ server <- function(input, output, session) {
           div(class = "job-tile-meta",
               r$round_label %||% "Current round",
               if (!is.na(r$assigned_wage %||% NA))
-                paste0("  ·  Wage: ", sprintf("%.1f FP", as.numeric(r$assigned_wage)))
+                paste0("  ·  Wage: ", sprintf("%d tokens", as.integer(r$assigned_wage)))
               else "")
         )
       } else {
@@ -845,7 +1036,7 @@ server <- function(input, output, session) {
               tags$tr(
                 tags$td(r$job_name %||% r$category_name %||% ""),
                 tags$td(if (!is.na(r$wage %||% NA))
-                          sprintf("%.1f FP", as.numeric(r$wage))
+                          sprintf("%d tokens", as.integer(r$wage))
                         else "—")
               )
             }))
@@ -934,7 +1125,7 @@ server <- function(input, output, session) {
               "\U0001f4cb ", r$job_name %||% ""),
           div(style = "color:#888;font-size:.83rem;margin-top:.15rem;",
               if (!is.na(r$assigned_wage %||% NA))
-                paste0("Wage: ", sprintf("%.1f FP", as.numeric(r$assigned_wage)))
+                paste0("Wage: ", sprintf("%d tokens", as.integer(r$assigned_wage)))
               else "Wage pending")
         )
       } else {
@@ -1079,7 +1270,7 @@ server <- function(input, output, session) {
           tags$td(r$job_name %||% ""),
           tags$td(style = "text-align:right;",
                   if (!is.na(r$assigned_wage %||% NA))
-                    sprintf("%.1f FP", as.numeric(r$assigned_wage))
+                    sprintf("%d tokens", as.integer(r$assigned_wage))
                   else "—")
         )
       }))
@@ -1265,12 +1456,12 @@ server <- function(input, output, session) {
     round  <- as.integer(s$current_round[1] %||% 1L)
     mult   <- as.numeric(s$bonus_multiplier[1] %||% 1.5)
     cap    <- as.numeric(s$contrib_cap[1] %||% 0)
-    bal    <- wallet_bal()
+    bal    <- token_bal()
     sub    <- op$my_sub
 
     prev_contrib <- if (nrow(sub) && as.integer(sub$round[1]) == round)
       as.numeric(sub$contribute[1] %||% 0) else 0
-    max_c <- if (cap > 0) min(cap, floor(bal * 2) / 2) else floor(bal * 2) / 2
+    max_c <- if (cap > 0) min(cap, floor(bal)) else floor(bal)
 
     tagList(
       tags$p(
@@ -1283,18 +1474,18 @@ server <- function(input, output, session) {
       if (status == "open") {
         tagList(
           tags$p(style = "color:#555;font-size:.9em;",
-            "Decide how many flex passes to contribute. If the group contributes generously, everyone earns back more — but individual incentives cut the other way."),
+            "Decide how many tokens to contribute. If the group contributes generously, everyone earns back more — but individual incentives cut the other way."),
           fluidRow(
             column(5,
-              numericInput("bp_contrib", "Your contribution (FP):",
+              numericInput("bp_contrib", "Your contribution (tokens):",
                            value = isolate(rv$bp_contrib_val) %||% prev_contrib,
-                           min = 0, max = max(0, max_c), step = 0.5)),
+                           min = 0, max = max(0, max_c), step = 1)),
             column(4, tags$br(), tags$br(),
                    actionButton("bp_submit", "Submit", class = "btn btn-primary"))
           ),
           tags$p(style = "color:#888;font-size:.82em;",
-            sprintf("Balance: %.1f FP%s",
-                    bal, if (cap > 0) sprintf("  ·  Cap: %.1f FP/round", cap) else ""))
+            sprintf("Balance: %d tokens%s",
+                    as.integer(bal), if (cap > 0) sprintf("  ·  Cap: %d tokens/round", as.integer(cap)) else ""))
         )
       } else if (status == "closed") {
         div(class = "alert alert-warning", "Round is closed. Results coming soon.")
@@ -1303,7 +1494,7 @@ server <- function(input, output, session) {
           sub$payout[1] else NA
         div(class = "alert alert-success",
           tags$strong("Round revealed! "),
-          if (!is.na(payout)) sprintf("Your payout: %.1f FP.", as.numeric(payout))
+          if (!is.na(payout)) sprintf("Your payout: %d tokens.", as.integer(payout))
           else "Check your Account tab for the credit.")
       } else {
         div(class = "no-game", "Round not open yet.")
@@ -1325,13 +1516,13 @@ server <- function(input, output, session) {
     if (is.na(contrib) || contrib < 0) {
       showNotification("Enter a valid contribution.", type = "error"); return()
     }
-    bal <- isolate(wallet_bal())
+    bal <- isolate(token_bal())
     if (contrib > bal) {
-      showNotification(sprintf("Not enough FP (balance: %.1f).", bal), type = "error"); return()
+      showNotification(sprintf("Not enough tokens (balance: %d).", as.integer(bal)), type = "error"); return()
     }
     cap <- as.numeric(s$contrib_cap[1] %||% 0)
     if (cap > 0 && contrib > cap) {
-      showNotification(sprintf("Exceeds round cap of %.1f FP.", cap), type = "error"); return()
+      showNotification(sprintf("Exceeds round cap of %d tokens.", as.integer(cap)), type = "error"); return()
     }
     db_exec(
       "INSERT INTO olig_submissions(round, user_id, section, choice, contribute)
@@ -1388,14 +1579,14 @@ server <- function(input, output, session) {
                        inline = TRUE),
           actionButton("pd_submit", "Submit", class = "btn btn-primary"),
           tags$p(style = "color:#888;font-size:.82em;margin-top:.5rem;",
-                 sprintf("Payoffs scale: %.1f × %.1f pts = %.1f FP per unit.", pts, scale, pts * scale))
+                 sprintf("Payoffs scale: %.1f × %.1f pts = %.1f tokens per unit.", pts, scale, pts * scale))
         )
       } else if (status == "revealed") {
         payout <- if (nrow(sub) && as.integer(sub$round[1]) == round)
           sub$payout[1] else NA
         div(class = "alert alert-success",
           tags$strong("Round revealed! "),
-          if (!is.na(payout)) sprintf("Your payout: %.1f FP.", as.numeric(payout))
+          if (!is.na(payout)) sprintf("Your payout: %d tokens.", as.integer(payout))
           else "Check your Account tab for the credit.")
       } else {
         div(class = "alert alert-warning", "Round closed. Results coming soon.")
@@ -1427,150 +1618,339 @@ server <- function(input, output, session) {
     showNotification("Choice submitted.", type = "message")
   })
 
-  # ── Tools tab ─────────────────────────────────────────────────────────────────
-  output$tools_tab <- renderUI({
+  # ── Demos tab ─────────────────────────────────────────────────────────────────
+  output$demos_tab <- renderUI({
     req(rv$authed)
-
-    # Split into simulations vs graded semester tools
-    sims   <- Filter(function(t) !isTRUE(t$graded), TOOLS)
-    graded <- Filter(function(t) isTRUE(t$graded),  TOOLS)
-
     tagList(
       div(class = "tab-howto",
-          "Always available — explore these to review and apply concepts from class. None require an active session."
+          "Interactive demonstrations — explore these to review and apply concepts from class. Always available; none require an active session."
       ),
-      div(class = "sec-label", "Simulations"),
-      div(class = "tools-grid",
-        lapply(sims, function(t) {
-          div(class = "tool-card",
-            div(class = "tool-card-label", t$label),
-            div(class = "tool-card-desc",  t$desc),
-            div(class = "tool-card-foot",
-              tags$a(href = t$url, target = "_blank",
+      div(class = "demos-grid",
+        lapply(DEMOS, function(d) {
+          div(class = "demo-card",
+            div(class = "demo-card-label", d$label),
+            div(class = "demo-card-desc",  d$desc),
+            div(class = "demo-card-foot",
+              tags$a(href = d$url, target = "_blank",
                      class = "btn btn-sm btn-outline-secondary", "Open →"))
           )
         })
-      ),
-      if (length(graded)) {
-        tagList(
-          div(class = "sec-label", "Semester Tools"),
-          div(class = "tools-grid",
-            lapply(graded, function(t) {
-              div(class = "tool-card",
-                div(class = "tool-card-label", t$label,
-                    span(class = "badge-graded", style = "margin-left:.4rem;", "Graded")),
-                div(class = "tool-card-desc",  t$desc),
-                div(class = "tool-card-foot",
-                  tags$a(href = t$url, target = "_blank",
-                         class = "btn btn-sm btn-primary", "Open →"))
-              )
-            })
-          )
-        )
-      }
+      )
     )
   })
 
-  # ── Account tab (merged Wallet + Profile) ─────────────────────────────────────
+  # ── Spend tab ─────────────────────────────────────────────────────────────────
+  output$spend_tab <- renderUI({
+    req(rv$authed)
+    bal <- token_bal()
+
+    if (is.null(rv$spend_mode)) {
+      # Card picker view
+      pg <- pubgood_poll()
+      pg_active <- nrow(pg$goods) > 0
+      pg_status <- if (pg_active) {
+        good   <- pg$goods[1, ]
+        t_row  <- if (nrow(pg$totals)) pg$totals[pg$totals$public_good_id == good$id, , drop = FALSE] else data.frame()
+        contrib <- if (nrow(t_row)) as.numeric(t_row$total[1] %||% 0) else 0
+        thresh  <- as.numeric(good$threshold %||% 0)
+        if (thresh > 0) sprintf("Active: %d / %d tokens", as.integer(contrib), as.integer(thresh))
+        else "Active goal"
+      } else "No active goal"
+
+      tagList(
+        div(class = "tab-howto",
+            sprintf("Spend your tokens on academic benefits. Spendable balance: %d tokens.", as.integer(bal))),
+        div(class = "spend-cards",
+          div(class = "spend-card",
+            div(class = "spend-card-icon", "\U0001f4c5"),
+            div(class = "spend-card-label", "Problem Set Extension"),
+            div(class = "spend-card-desc", "Purchase extra time on a problem set before the deadline."),
+            div(class = "spend-card-meta", "Cost varies by length"),
+            div(class = "spend-card-foot",
+                actionButton("open_extension", "Select →", class = "btn btn-sm btn-outline-primary"))
+          ),
+          div(class = "spend-card",
+            div(class = "spend-card-icon", "⚖️"),
+            div(class = "spend-card-label", "Grade Reweight"),
+            div(class = "spend-card-desc", "Shift grade weight from one category to another."),
+            div(class = "spend-card-meta", "Instructor reviews all requests"),
+            div(class = "spend-card-foot",
+                actionButton("open_reweight", "Select →", class = "btn btn-sm btn-outline-primary"))
+          ),
+          div(class = "spend-card",
+            div(class = "spend-card-icon", "\U0001f91d"),
+            div(class = "spend-card-label", "Public Good"),
+            div(class = "spend-card-desc", "Contribute toward a class-wide public goal."),
+            div(class = "spend-card-meta", pg_status),
+            div(class = "spend-card-foot",
+                actionButton("open_pubgood", "Select →", class = "btn btn-sm btn-outline-primary"))
+          )
+        ),
+        div(class = "sec-label", "Spending History"),
+        uiOutput("spend_history")
+      )
+    } else {
+      tagList(
+        actionButton("spend_back", "← Back to options",
+                     class = "btn btn-sm btn-link",
+                     style = "padding:0;margin-bottom:.75rem;"),
+        uiOutput("spend_form"),
+        div(class = "sec-label", "Spending History"),
+        uiOutput("spend_history")
+      )
+    }
+  })
+
+  observeEvent(input$open_extension, { rv$spend_mode <- "extension" })
+  observeEvent(input$open_reweight,  { rv$spend_mode <- "reweight"  })
+  observeEvent(input$open_pubgood,   { rv$spend_mode <- "pubgood"   })
+  observeEvent(input$spend_back,     { rv$spend_mode <- NULL        })
+
+  output$spend_form <- renderUI({
+    req(rv$authed)
+    bal <- token_bal()
+    mode <- rv$spend_mode %||% ""
+
+    if (mode == "extension") {
+      ps_rows <- tryCatch(db_query(
+        "SELECT * FROM problem_sets WHERE COALESCE(active,1)=1 ORDER BY original_deadline DESC LIMIT 20;"),
+        error = function(e) data.frame())
+      prices <- parse_ext_prices()
+      if (!nrow(ps_rows) || !length(prices))
+        return(div(class = "spend-form-box",
+                   "No problem sets are configured yet. Ask your instructor to set them up."))
+      tagList(
+        div(class = "spend-form-box",
+          tags$h6(style = "color:#951829;font-weight:700;", "\U0001f4c5 Problem Set Extension"),
+          selectInput("ext_ps", "Problem set:",
+                      setNames(ps_rows$id, ps_rows$name)),
+          selectInput("ext_hours", "Extension length:",
+                      setNames(names(prices),
+                               paste0(names(prices), " hours — ", as.integer(prices), " tokens"))),
+          uiOutput("ext_cost_preview"),
+          actionButton("submit_extension", "Purchase extension", class = "btn btn-warning")
+        )
+      )
+
+    } else if (mode == "reweight") {
+      cats_str <- tryCatch(get_setting("grade_reweight_categories", "Homework,Midterm,Final"),
+                           error = function(e) "Homework,Midterm,Final")
+      cats  <- trimws(strsplit(cats_str, ",")[[1]])
+      costs <- parse_rw_costs()
+      max_pts <- if (length(costs)) as.integer(max(as.integer(names(costs)), na.rm = TRUE)) else 5L
+      div(class = "spend-form-box",
+        tags$h6(style = "color:#951829;font-weight:700;", "⚖️ Grade Reweight"),
+        fluidRow(
+          column(5, selectInput("rw_from", "Move weight from:", choices = cats)),
+          column(5, selectInput("rw_to",   "Move weight to:",   choices = cats))
+        ),
+        sliderInput("rw_points", "Percentage points to move:",
+                    min = 1, max = max_pts, value = 1, step = 1),
+        uiOutput("rw_cost_preview"),
+        actionButton("submit_reweight", "Submit request", class = "btn btn-warning"),
+        tags$p(style = "font-size:.8rem;color:#888;margin-top:.4rem;",
+               "Your instructor will review and apply approved requests.")
+      )
+
+    } else if (mode == "pubgood") {
+      pg <- pubgood_poll()
+      if (!nrow(pg$goods))
+        return(div(class = "spend-form-box",
+                   "No active public good has been configured. Check back when your instructor announces one."))
+      mc <- my_pub_contrib_data()
+      lapply(seq_len(nrow(pg$goods)), function(i) {
+        good    <- pg$goods[i, ]
+        t_row   <- if (nrow(pg$totals)) pg$totals[pg$totals$public_good_id == good$id, , drop = FALSE] else data.frame()
+        my_row  <- if (nrow(mc)) mc[mc$public_good_id == good$id, , drop = FALSE] else data.frame()
+        contrib <- if (nrow(t_row)) as.numeric(t_row$total[1] %||% 0) else 0
+        my_tot  <- if (nrow(my_row)) as.numeric(my_row$my_total[1] %||% 0) else 0
+        thresh  <- as.numeric(good$threshold %||% 0)
+        pct     <- if (thresh > 0) min(100, round(contrib / thresh * 100)) else 0
+        div(class = "spend-form-box", style = if (i > 1) "margin-top:.6rem;" else "",
+          tags$h6(style = "color:#951829;font-weight:700;", good$name),
+          if (nzchar(good$description %||% ""))
+            tags$p(style = "color:#555;font-size:.88rem;", good$description),
+          div(style = "font-size:.82rem;color:#888;margin-bottom:.2rem;",
+              sprintf("Class total: %d / %d tokens (%d%%)",
+                      as.integer(contrib), as.integer(thresh), pct)),
+          div(class = "pg-bar-wrap",
+              div(class = "pg-bar-fill", style = sprintf("width:%d%%;", pct))),
+          if (my_tot > 0)
+            tags$p(style = "font-size:.82rem;color:#666;margin-bottom:.4rem;",
+                   sprintf("Your contributions: %d tokens", as.integer(my_tot)))
+        )
+      })
+    }
+  })
+
+  output$ext_cost_preview <- renderUI({
+    req(rv$authed)
+    prices <- parse_ext_prices()
+    hrs    <- as.character(input$ext_hours %||% names(prices)[1])
+    cost   <- as.numeric(prices[hrs] %||% 0)
+    bal    <- token_bal()
+    div(style = "font-size:.86rem;color:#555;margin:.4rem 0 .6rem;",
+        sprintf("Cost: %d tokens  ·  Balance: %d  ·  After: %d",
+                as.integer(cost), as.integer(bal), as.integer(bal - cost)))
+  })
+
+  output$rw_cost_preview <- renderUI({
+    req(rv$authed)
+    costs <- parse_rw_costs()
+    pts   <- as.integer(input$rw_points %||% 1)
+    cost  <- as.numeric(costs[as.character(pts)] %||% 0)
+    bal   <- token_bal()
+    div(style = "font-size:.86rem;color:#555;margin:.4rem 0 .6rem;",
+        sprintf("Cost: %d tokens  ·  Balance: %d  ·  After: %d",
+                as.integer(cost), as.integer(bal), as.integer(bal - cost)))
+  })
+
+  output$spend_history <- renderUI({
+    req(rv$authed)
+    rows <- tryCatch(db_query(
+      "SELECT amount, source_type, note, created_at FROM token_ledger
+       WHERE user_id=? AND earning=0 ORDER BY created_at DESC LIMIT 20;",
+      list(rv$user_id)), error = function(e) data.frame())
+    if (!nrow(rows))
+      return(div(style = "color:#999;font-size:.88rem;", "No spending history yet."))
+    tags$table(class = "table table-sm",
+      tags$thead(tags$tr(
+        tags$th("Date"), tags$th("Type"), tags$th("Note"),
+        tags$th(style = "text-align:right;", "Tokens")
+      )),
+      tags$tbody(lapply(seq_len(nrow(rows)), function(i) {
+        r <- rows[i, ]
+        tags$tr(
+          tags$td(tryCatch(format(as.POSIXct(r$created_at), "%b %d"), error = function(e) "")),
+          tags$td(r$source_type %||% ""),
+          tags$td(r$note %||% ""),
+          tags$td(style = "text-align:right;font-weight:600;color:#b00020;",
+                  as.integer(r$amount))
+        )
+      }))
+    )
+  })
+
+  observeEvent(input$submit_extension, {
+    req(rv$authed, rv$user_id)
+    if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
+    prices <- parse_ext_prices()
+    hrs    <- as.character(input$ext_hours %||% names(prices)[1])
+    cost   <- as.numeric(prices[hrs] %||% 0)
+    bal    <- isolate(token_bal())
+    if (cost <= 0) { showNotification("Invalid extension option.", type = "error"); return() }
+    if (bal < cost) {
+      showNotification(sprintf("Not enough tokens (need %d, have %d).", as.integer(cost), as.integer(bal)),
+                       type = "error"); return()
+    }
+    ps_id <- as.integer(input$ext_ps %||% 0)
+    if (ps_id <= 0) { showNotification("Select a problem set.", type = "error"); return() }
+    lid <- token_debit(rv$user_id, rv$name, cost, "extension", ps_id,
+                       note = sprintf("%sh extension", hrs))
+    db_exec(
+      "INSERT INTO extension_purchases(problem_set_id,user_id,hours,cost,ledger_id) VALUES(?,?,?,?,?);",
+      list(ps_id, rv$user_id, as.numeric(hrs), cost, as.integer(lid %||% NA_integer_)))
+    showNotification(sprintf("Extension purchased: %s hours for %d tokens.", hrs, as.integer(cost)),
+                     type = "message")
+    rv$spend_mode <- NULL
+  })
+
+  observeEvent(input$submit_reweight, {
+    req(rv$authed, rv$user_id)
+    if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
+    if (identical(input$rw_from, input$rw_to)) {
+      showNotification("From and to categories must differ.", type = "error"); return()
+    }
+    pts  <- as.integer(input$rw_points %||% 1)
+    costs <- parse_rw_costs()
+    cost <- as.numeric(costs[as.character(pts)] %||% 0)
+    bal  <- isolate(token_bal())
+    if (cost <= 0) { showNotification("Cost not configured for that point value.", type = "error"); return() }
+    if (bal < cost) {
+      showNotification(sprintf("Not enough tokens (need %d, have %d).", as.integer(cost), as.integer(bal)),
+                       type = "error"); return()
+    }
+    lid <- token_debit(rv$user_id, rv$name, cost, "grade_reweight", NA,
+                       note = sprintf("%s → %s, %d pt", input$rw_from, input$rw_to, pts))
+    db_exec(
+      "INSERT INTO grade_reweight_requests(user_id,from_category,to_category,points,cost,ledger_id)
+       VALUES(?,?,?,?,?,?);",
+      list(rv$user_id, input$rw_from, input$rw_to, pts, cost, as.integer(lid %||% NA_integer_)))
+    showNotification(
+      sprintf("Request submitted (%d tokens spent). Your instructor will review it.", as.integer(cost)),
+      type = "message")
+    rv$spend_mode <- NULL
+  })
+
+  observeEvent(input$submit_pubgood, {
+    req(rv$authed, rv$user_id)
+    if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
+    pg <- isolate(pubgood_poll())
+    if (!nrow(pg$goods)) { showNotification("No active public good.", type = "error"); return() }
+    good_id <- if (!is.null(input$pg_good_sel)) as.integer(input$pg_good_sel) else pg$goods$id[1]
+    amt <- as.integer(input$pg_contrib %||% 0)
+    if (is.na(amt) || amt <= 0) { showNotification("Enter a positive amount.", type = "error"); return() }
+    bal <- isolate(token_bal())
+    if (bal < amt) {
+      showNotification(sprintf("Not enough tokens (have %d).", as.integer(bal)), type = "error"); return()
+    }
+    lid <- token_debit(rv$user_id, rv$name, amt, "public_good", good_id,
+                       note = sprintf("Public good #%d", good_id))
+    db_exec(
+      "INSERT INTO public_good_contributions(public_good_id,user_id,amount,ledger_id) VALUES(?,?,?,?);",
+      list(good_id, rv$user_id, amt, as.integer(lid %||% NA_integer_)))
+    showNotification(sprintf("Contributed %d tokens to public good.", amt), type = "message")
+    rv$spend_mode <- NULL
+  })
+
+  # ── Account tab ───────────────────────────────────────────────────────────────
   output$account_tab <- renderUI({
     req(rv$authed)
-    wp  <- wallet_poll()
-    bal <- wallet_bal()
-    gs  <- wp$gs
-    step <- as.numeric(wp$step %||% 0.5)
+    tp  <- token_poll()
+    bal <- token_bal()
 
-    pending_pledge <- if (nrow(gs)) {
-      pid <- db_query(
-        "SELECT pledge FROM pledges WHERE user_id=? AND exam_id=? AND round=?;",
-        list(rv$user_id,
-             gs$active_exam[1] %||% "exam1",
-             as.integer(gs$ex_round[1] %||% 1L)))$pledge[1]
-      as.numeric(pid %||% 0)
-    } else 0
-    round_open <- nrow(gs) && isTRUE(as.integer(gs$round_open[1]) == 1L)
-
-    # Job history: try new table first, fall back to job_log
-    new_jobs <- tryCatch(db_query(
+    job_rows <- tryCatch(db_query(
       "SELECT jp.job_name AS job, ja.created_at AS logged_date, ja.assigned_wage AS wage
        FROM job_assignments ja
        JOIN job_posts jp ON jp.id=ja.job_post_id
        WHERE ja.user_id=?
        ORDER BY ja.created_at DESC LIMIT 8;",
       list(rv$user_id)), error = function(e) data.frame())
-    old_jobs <- if (!nrow(new_jobs))
-      db_query("SELECT job, logged_date FROM job_log WHERE display_name=?
-                ORDER BY created_at DESC LIMIT 5;", list(rv$name))
-    else data.frame()
-    job_rows <- if (nrow(new_jobs)) new_jobs else old_jobs
 
     tagList(
-      div(class = "tab-howto",
-          "Your financial and identity summary. Flex Passes are used for games and pledges; Participation Tokens track engagement and determine grade thresholds."
-      ),
+      div(class = "tab-howto", "Your token summary, transaction history, and profile."),
 
-      # Three balance tiles
       div(class = "bal-tiles",
-        div(class = "bal-tile bal-tile-fp",
-          div(class = "bal-tile-label", "Flex Passes"),
-          div(class = "bal-tile-val",   sprintf("%.1f", bal)),
-          div(class = "bal-tile-sub",   "on hand")
-        ),
         div(class = "bal-tile bal-tile-toke",
           div(class = "bal-tile-label", "Tokens Earned"),
-          div(class = "bal-tile-val",   as.integer(wp$tokens_earned %||% 0)),
+          div(class = "bal-tile-val",   as.integer(tp$tokens_earned %||% 0)),
           div(class = "bal-tile-sub",   "gross · all time")
         ),
         div(class = "bal-tile bal-tile-toke2",
           div(class = "bal-tile-label", "Tokens On Hand"),
-          div(class = "bal-tile-val",   as.integer(wp$tokens_on_hand %||% 0)),
+          div(class = "bal-tile-val",   as.integer(bal)),
           div(class = "bal-tile-sub",   "after spending")
         )
       ),
 
       fluidRow(
-        # ── Left column: FP pledge + ledger ──
         column(6,
-          wellPanel(
-            tags$strong("Flex Pass Pledge"),
-            if (!round_open) {
-              tags$p(style = "color:#888;margin-bottom:0;",
-                     if (!nrow(gs)) "Pledging not set up yet."
-                     else "Pledging is not open right now.")
-            } else {
-              tagList(
-                if (pending_pledge > 0)
-                  div(class = "pending-pledge",
-                      sprintf("You have a pending pledge of %.1f FP this round.", pending_pledge)),
-                tags$p(style = "color:#555;font-size:.88em;",
-                  "Pledge flex passes toward unlocking the next exam question."),
-                fluidRow(
-                  column(7,
-                    numericInput("pledge_amt", "Amount (FP):",
-                                 value = isolate(input$pledge_amt) %||% step,
-                                 min = step, max = max(step, floor(bal * 2) / 2), step = step)),
-                  column(5, tags$br(), tags$br(),
-                         actionButton("pledge_btn", "Pledge", class = "btn btn-primary"))
-                )
-              )
-            }
-          ),
-          div(class = "sec-label", "FP Transaction History"),
-          if (nrow(wp$ledger)) {
+          div(class = "sec-label", "Token History"),
+          if (nrow(tp$ledger)) {
             tags$table(class = "table table-sm",
               tags$thead(tags$tr(
-                tags$th("Date"), tags$th("Purpose"),
-                tags$th(style = "text-align:right;", "Amount")
+                tags$th("Date"), tags$th("Type"), tags$th("Note"),
+                tags$th(style = "text-align:right;", "Tokens")
               )),
-              tags$tbody(lapply(seq_len(nrow(wp$ledger)), function(i) {
-                r   <- wp$ledger[i, ]
-                cls <- if (r$amount >= 0) "cr" else "dr"
+              tags$tbody(lapply(seq_len(nrow(tp$ledger)), function(i) {
+                r   <- tp$ledger[i, ]
+                cls <- if (as.numeric(r$amount) >= 0) "cr" else "dr"
                 tags$tr(class = cls,
-                  tags$td(format(as.POSIXct(r$created_at), "%b %d")),
-                  tags$td(paste0(r$purpose %||% "",
-                                 if (nzchar(r$meta %||% ""))
-                                   paste0(" — ", r$meta) else "")),
+                  tags$td(tryCatch(format(as.POSIXct(r$created_at), "%b %d"), error = function(e) "")),
+                  tags$td(r$source_type %||% ""),
+                  tags$td(r$note %||% ""),
                   tags$td(style = "text-align:right;font-weight:600;",
-                          sprintf("%+.1f", r$amount))
+                          sprintf("%+d", as.integer(r$amount)))
                 )
               }))
             )
@@ -1603,7 +1983,7 @@ server <- function(input, output, session) {
                             as.character(r$logged_date %||% "")),
                     if (!is.null(r$wage) && !is.na(r$wage %||% NA))
                       tags$td(style = "text-align:right;color:#1a6e3c;font-size:.85em;",
-                              sprintf("%.1f FP", as.numeric(r$wage)))
+                              sprintf("%d tokens", as.integer(r$wage)))
                     else
                       tags$td("")
                   )
@@ -1616,35 +1996,6 @@ server <- function(input, output, session) {
         )
       )
     )
-  })
-
-  observeEvent(input$pledge_btn, {
-    req(rv$authed, rv$user_id)
-    if (rv$is_demo) {
-      showNotification("Demo mode — pledge not saved.", type = "warning"); return()
-    }
-    wp  <- isolate(wallet_poll())
-    gs  <- wp$gs
-    if (!nrow(gs) || !isTRUE(as.integer(gs$round_open[1]) == 1L)) {
-      showNotification("Pledging is not open.", type = "error"); return()
-    }
-    amt <- as.numeric(input$pledge_amt %||% 0)
-    if (is.na(amt) || amt <= 0) {
-      showNotification("Enter a pledge amount.", type = "error"); return()
-    }
-    bal <- isolate(wallet_bal())
-    if (amt > bal) {
-      showNotification(sprintf("Insufficient balance (%.1f FP).", bal), type = "error"); return()
-    }
-    exam_id <- gs$active_exam[1] %||% "exam1"
-    round   <- as.integer(gs$ex_round[1] %||% 1L)
-    db_exec(
-      "INSERT INTO pledges(user_id, exam_id, round, pledge)
-       VALUES(?,?,?,?)
-       ON CONFLICT(user_id, exam_id, round) DO UPDATE
-         SET pledge=excluded.pledge, submitted_at=CURRENT_TIMESTAMP;",
-      list(rv$user_id, exam_id, round, amt))
-    showNotification(sprintf("Pledge of %.1f FP submitted.", amt), type = "message")
   })
 
   observeEvent(input$save_name_btn, {
@@ -1661,13 +2012,81 @@ server <- function(input, output, session) {
     showNotification("Display name updated.", type = "message")
   })
 
-  # ── Admin tab ─────────────────────────────────────────────────────────────────
-  output$admin_tab_panel <- renderUI({
+  # ── Live Tracker tab (admin) ──────────────────────────────────────────────────
+  output$tracker_tab_panel <- renderUI({
     if (!rv$is_admin) return(NULL)
-    tabPanel("Admin", br(), uiOutput("admin_content"))
+    tabPanel("Live Tracker", br(), uiOutput("live_tracker_tab"))
   })
 
-  output$admin_content <- renderUI({
+  output$live_tracker_tab <- renderUI({
+    req(rv$authed, rv$is_admin)
+    td     <- tracker_poll()
+    active <- tryCatch(arcade_poll()$active_game[1] %||% "", error = function(e) "")
+    s      <- tryCatch(olig_poll()$settings, error = function(e) data.frame())
+    olig_str <- if (nrow(s))
+      sprintf("%s · R%d · %s",
+              toupper(s$current_game[1] %||% "—"),
+              as.integer(s$current_round[1]),
+              toupper(s$round_status[1] %||% "—"))
+    else "—"
+
+    tagList(
+      div(class = "tab-howto", "Real-time student participation overview. Updates every 5 seconds."),
+      fluidRow(
+        column(4, wellPanel(style = "padding:.6rem 1rem;",
+          tags$small(class = "text-muted", "Active game"),
+          tags$p(style = "margin:0;font-weight:700;",
+                 if (nzchar(active)) { gi <- game_info(active); if (!is.null(gi)) gi$label else active } else "None")
+        )),
+        column(4, wellPanel(style = "padding:.6rem 1rem;",
+          tags$small(class = "text-muted", "Coord. game"),
+          tags$p(style = "margin:0;font-weight:700;", olig_str)
+        )),
+        column(4, wellPanel(style = "padding:.6rem 1rem;",
+          tags$small(class = "text-muted", "Students"),
+          tags$p(style = "margin:0;font-weight:700;", nrow(td$students))
+        ))
+      ),
+      div(class = "sec-label", "Student Token Summary"),
+      div(class = "tracker-wrap",
+        if (!nrow(td$students)) {
+          div(style = "color:#999;", "No students found.")
+        } else {
+          has_subs <- nzchar(active) && nrow(td$subs) > 0
+          tags$table(class = "table table-sm table-hover",
+            tags$thead(tags$tr(
+              tags$th("Student"), tags$th("Section"),
+              tags$th(style = "text-align:right;", "Earned"),
+              tags$th(style = "text-align:right;", "On Hand"),
+              if (has_subs) tags$th(style = "text-align:center;", "Submitted?")
+            )),
+            tags$tbody(lapply(seq_len(nrow(td$students)), function(i) {
+              r  <- td$students[i, ]
+              submitted <- has_subs && (r$user_id %in% td$subs$user_id)
+              tags$tr(
+                tags$td(r$display_name %||% r$user_id),
+                tags$td(style = "color:#888;", r$section %||% ""),
+                tags$td(style = "text-align:right;", as.integer(r$tokens_earned %||% 0)),
+                tags$td(style = "text-align:right;font-weight:600;", as.integer(r$tokens_on_hand %||% 0)),
+                if (has_subs)
+                  tags$td(style = "text-align:center;",
+                          if (submitted) span(style = "color:#1a6e3c;font-weight:700;", "✓")
+                          else span(style = "color:#ccc;", "—"))
+              )
+            }))
+          )
+        }
+      )
+    )
+  })
+
+  # ── Settings tab (admin) ──────────────────────────────────────────────────────
+  output$settings_tab_panel <- renderUI({
+    if (!rv$is_admin) return(NULL)
+    tabPanel("Settings", br(), uiOutput("settings_tab"))
+  })
+
+  output$settings_tab <- renderUI({
     req(rv$is_admin)
     active <- isolate(arcade_poll())$active_game[1] %||% ""
     s      <- isolate(olig_poll())$settings
@@ -1686,39 +2105,45 @@ server <- function(input, output, session) {
 
     tagList(
       fluidRow(
-        column(5,
-          wellPanel(
-            tags$h6(style = "font-weight:700;color:#951829;", "Active Game Slot"),
-            selectInput("admin_game_sel", "Which game is active now?",
-                        choices = all_game_choices, selected = active, width = "100%"),
-            actionButton("set_active_btn", "Set active game", class = "btn btn-warning"),
-            tags$p(style = "font-size:.82em;color:#888;margin-top:.5rem;margin-bottom:0;",
-                   "Students see this immediately on their Games tab.")
-          )
-        ),
-        column(7,
-          wellPanel(
-            tags$h6(style = "font-weight:700;color:#951829;", "Coordination Game Controls"),
-            uiOutput("olig_status_display"),
-            if (nrow(s)) {
-              tagList(
-                fluidRow(
-                  column(4, actionButton("adm_open",   "Open",   class = "btn btn-success btn-sm btn-block")),
-                  column(4, actionButton("adm_close",  "Close",  class = "btn btn-warning btn-sm btn-block")),
-                  column(4, actionButton("adm_reveal", "Reveal", class = "btn btn-danger  btn-sm btn-block"))
-                ),
-                tags$p(style = "font-size:.8em;color:#999;margin-top:.5rem;margin-bottom:0;",
-                       "For full setup use the Coordination Games app.")
-              )
-            }
-          )
-        )
+        column(5, wellPanel(
+          tags$h6(style = "font-weight:700;color:#951829;", "Active Game Slot"),
+          selectInput("admin_game_sel", "Which game is active now?",
+                      choices = all_game_choices, selected = active, width = "100%"),
+          actionButton("set_active_btn", "Set active game", class = "btn btn-warning"),
+          tags$p(style = "font-size:.82em;color:#888;margin-top:.5rem;margin-bottom:0;",
+                 "Students see this immediately on their Games tab.")
+        )),
+        column(7, wellPanel(
+          tags$h6(style = "font-weight:700;color:#951829;", "Coordination Game Controls"),
+          uiOutput("olig_status_display"),
+          if (nrow(s)) {
+            tagList(
+              fluidRow(
+                column(4, actionButton("adm_open",   "Open",   class = "btn btn-success btn-sm btn-block")),
+                column(4, actionButton("adm_close",  "Close",  class = "btn btn-warning btn-sm btn-block")),
+                column(4, actionButton("adm_reveal", "Reveal", class = "btn btn-danger  btn-sm btn-block"))
+              ),
+              tags$p(style = "font-size:.8em;color:#999;margin-top:.5rem;margin-bottom:0;",
+                     "For full payout setup use the Coordination Games app.")
+            )
+          }
+        ))
       ),
-      div(style = "font-size:.82em;color:#888;margin-bottom:.75rem;",
-          "Job Market admin is in the ",
-          tags$a(href = "/class-job-market/", target = "_blank", "Class Job Market app"), "."),
-      div(class = "sec-label", "Student Wallet Balances"),
-      uiOutput("admin_balances")
+      wellPanel(
+        tags$h6(style = "font-weight:700;color:#951829;", "Configure"),
+        selectInput("config_action", NULL, width = "100%", choices = c(
+          "— select an action —"        = "",
+          "Export Assignments (CSV)"    = "export_assignments",
+          "Export Wage Bids (CSV)"      = "export_wage_bids",
+          "Export Token Ledger (CSV)"   = "export_tokens",
+          "View Token Ledger"           = "view_tokens",
+          "View Student Balances"       = "view_balances",
+          "Extension Setup"             = "setup_extensions",
+          "Public Good Setup"           = "setup_pubgoods",
+          "App Settings"                = "app_settings"
+        )),
+        uiOutput("config_panel")
+      )
     )
   })
 
@@ -1744,48 +2169,157 @@ server <- function(input, output, session) {
     updateSelectInput(session, "admin_game_sel", selected = active)
   })
 
-  output$admin_balances <- renderUI({
+  output$config_panel <- renderUI({
     req(rv$is_admin)
-    rows <- db_query("
-      SELECT u.display_name, u.user_id, u.section,
-             COALESCE(SUM(l.amount), 0) balance
-      FROM users u
-      LEFT JOIN ledger l ON l.user_id=u.user_id
-      WHERE (u.is_admin IS NULL OR u.is_admin=0)
-        AND COALESCE(u.active,1)=1
-        AND COALESCE(u.is_demo,0)=0
-      GROUP BY u.user_id
-      ORDER BY u.section, u.display_name;")
-    if (!nrow(rows)) return(div(style = "color:#999;", "No students found."))
-    tags$table(class = "table table-sm table-hover",
-      tags$thead(tags$tr(
-        tags$th("Name"), tags$th("Username"), tags$th("Section"),
-        tags$th(style = "text-align:right;", "Balance (FP)")
-      )),
-      tags$tbody(lapply(seq_len(nrow(rows)), function(i) {
-        r <- rows[i, ]
-        tags$tr(
-          tags$td(r$display_name %||% r$user_id),
-          tags$td(style = "color:#888;font-size:.85em;", r$user_id),
-          tags$td(r$section %||% ""),
-          tags$td(style = "text-align:right;font-weight:600;", sprintf("%.1f", r$balance))
+    act <- input$config_action %||% ""
+    if (!nzchar(act)) return(NULL)
+
+    if (act == "export_assignments")
+      return(downloadButton("dl_assignments", "Download Assignments CSV", class = "btn btn-sm btn-outline-secondary"))
+    if (act == "export_wage_bids")
+      return(downloadButton("dl_wage_bids", "Download Wage Bids CSV", class = "btn btn-sm btn-outline-secondary"))
+    if (act == "export_tokens")
+      return(downloadButton("dl_tokens", "Download Token Ledger CSV", class = "btn btn-sm btn-outline-secondary"))
+
+    if (act == "view_tokens") {
+      rows <- tryCatch(db_query(
+        "SELECT tl.user_id, u.display_name, tl.amount, tl.earning, tl.source_type, tl.note, tl.created_at
+         FROM token_ledger tl LEFT JOIN users u ON u.user_id=tl.user_id
+         ORDER BY tl.created_at DESC LIMIT 100;"), error = function(e) data.frame())
+      if (!nrow(rows)) return(div(style = "color:#999;margin-top:.5rem;", "No entries yet."))
+      div(style = "overflow-x:auto;margin-top:.5rem;",
+        tags$table(class = "table table-sm table-hover",
+          tags$thead(tags$tr(lapply(names(rows), tags$th))),
+          tags$tbody(lapply(seq_len(nrow(rows)), function(i) {
+            r <- rows[i, ]; tags$tr(lapply(r, function(v) tags$td(as.character(v %||% ""))))
+          }))
         )
-      }))
-    )
+      )
+    } else if (act == "view_balances") {
+      rows <- tryCatch(db_query(
+        "SELECT u.user_id, u.display_name, u.section,
+                COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned,
+                COALESCE(SUM(tl.amount),0) AS tokens_on_hand
+         FROM users u LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
+         WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
+         GROUP BY u.user_id ORDER BY u.section, u.display_name;"),
+        error = function(e) data.frame())
+      if (!nrow(rows)) return(div(style = "color:#999;margin-top:.5rem;", "No students found."))
+      div(style = "overflow-x:auto;margin-top:.5rem;",
+        tags$table(class = "table table-sm table-hover",
+          tags$thead(tags$tr(tags$th("User"), tags$th("Name"), tags$th("Section"),
+                             tags$th(style="text-align:right;","Earned"),
+                             tags$th(style="text-align:right;","On Hand"))),
+          tags$tbody(lapply(seq_len(nrow(rows)), function(i) {
+            r <- rows[i, ]
+            tags$tr(
+              tags$td(r$user_id), tags$td(r$display_name %||% ""), tags$td(r$section %||% ""),
+              tags$td(style="text-align:right;", as.integer(r$tokens_earned %||% 0)),
+              tags$td(style="text-align:right;font-weight:600;", as.integer(r$tokens_on_hand %||% 0))
+            )
+          }))
+        )
+      )
+    } else if (act == "setup_extensions") {
+      ps <- tryCatch(db_query("SELECT * FROM problem_sets ORDER BY original_deadline DESC LIMIT 20;"),
+                     error = function(e) data.frame())
+      tagList(
+        div(style = "margin-top:.5rem;",
+          if (nrow(ps)) {
+            tags$table(class = "table table-sm",
+              tags$thead(tags$tr(tags$th("Name"), tags$th("Deadline"), tags$th("Active"))),
+              tags$tbody(lapply(seq_len(nrow(ps)), function(i) {
+                r <- ps[i, ]
+                tags$tr(tags$td(r$name), tags$td(r$original_deadline %||% ""),
+                        tags$td(if (isTRUE(as.integer(r$active %||% 1L)==1L)) "✓" else ""))
+              }))
+            )
+          } else div(style="color:#999;", "No problem sets yet.")
+        ),
+        tags$h6(style="margin-top:.75rem;", "Add Problem Set"),
+        fluidRow(
+          column(5, textInput("new_ps_name", "Name:")),
+          column(4, dateInput("new_ps_deadline", "Original deadline:")),
+          column(3, tags$br(), actionButton("add_ps_btn", "Add", class = "btn btn-sm btn-primary"))
+        )
+      )
+    } else if (act == "setup_pubgoods") {
+      pgs <- tryCatch(db_query("SELECT * FROM public_goods ORDER BY id DESC LIMIT 20;"),
+                      error = function(e) data.frame())
+      tagList(
+        div(style = "margin-top:.5rem;",
+          if (nrow(pgs)) {
+            tags$table(class = "table table-sm",
+              tags$thead(tags$tr(tags$th("Name"), tags$th("Threshold"), tags$th("Active"))),
+              tags$tbody(lapply(seq_len(nrow(pgs)), function(i) {
+                r <- pgs[i, ]
+                tags$tr(tags$td(r$name), tags$td(r$threshold %||% ""),
+                        tags$td(if (isTRUE(as.integer(r$active %||% 1L)==1L)) "✓" else ""))
+              }))
+            )
+          } else div(style="color:#999;", "No public goods yet.")
+        ),
+        tags$h6(style="margin-top:.75rem;", "Add Public Good"),
+        textInput("new_pg_name", "Name:"),
+        textAreaInput("new_pg_desc", "Description:", rows = 2),
+        numericInput("new_pg_threshold", "Token threshold:", value = 100, min = 1),
+        actionButton("add_pg_btn", "Add", class = "btn btn-sm btn-primary")
+      )
+    } else if (act == "app_settings") {
+      tagList(
+        div(style = "margin-top:.5rem;"),
+        textInput("new_app_name", "App name:", value = get_config("app_name", "Classroom Economy"),
+                  width = "100%"),
+        actionButton("save_app_name_btn", "Save", class = "btn btn-sm btn-primary")
+      )
+    }
   })
 
+  # Download handlers (must be in server, not renderUI)
+  output$dl_assignments <- downloadHandler(
+    filename = function() paste0("assignments_", Sys.Date(), ".csv"),
+    content  = function(file) write.csv(tryCatch(db_query(
+      "SELECT wr.label round, u.display_name student, jp.job_name job,
+              ja.assigned_wage wage, ja.assignment_mode, ja.created_at
+       FROM job_assignments ja
+       JOIN users u ON u.user_id=ja.user_id
+       JOIN job_posts jp ON jp.id=ja.job_post_id
+       JOIN weekly_rounds wr ON wr.id=ja.round_id
+       ORDER BY wr.id DESC, u.display_name;"), error = function(e) data.frame()),
+      file, row.names = FALSE)
+  )
+  output$dl_wage_bids <- downloadHandler(
+    filename = function() paste0("wage_bids_", Sys.Date(), ".csv"),
+    content  = function(file) write.csv(tryCatch(db_query(
+      "SELECT wr.label round, u.display_name student, jc.name category,
+              wb.min_wage, wb.submitted_at
+       FROM wage_bids wb
+       JOIN users u ON u.user_id=wb.user_id
+       JOIN job_categories jc ON jc.id=wb.category_id
+       JOIN weekly_rounds wr ON wr.id=wb.round_id
+       ORDER BY wr.id DESC, u.display_name;"), error = function(e) data.frame()),
+      file, row.names = FALSE)
+  )
+  output$dl_tokens <- downloadHandler(
+    filename = function() paste0("token_ledger_", Sys.Date(), ".csv"),
+    content  = function(file) write.csv(tryCatch(db_query(
+      "SELECT tl.user_id, u.display_name, tl.amount, tl.earning,
+              tl.source_type, tl.note, tl.created_at
+       FROM token_ledger tl LEFT JOIN users u ON u.user_id=tl.user_id
+       ORDER BY tl.created_at DESC;"), error = function(e) data.frame()),
+      file, row.names = FALSE)
+  )
+
+  # Admin action observers
   observeEvent(input$set_active_btn, {
     req(rv$is_admin)
     g <- input$admin_game_sel %||% ""
-    if (nzchar(g)) {
-      db_exec("UPDATE arcade_state SET active_game=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
-              list(g))
-    } else {
+    if (nzchar(g))
+      db_exec("UPDATE arcade_state SET active_game=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;", list(g))
+    else
       db_exec("UPDATE arcade_state SET active_game=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-    }
     showNotification(paste("Active game:", if (nzchar(g)) g else "cleared"), type = "message")
   })
-
   observeEvent(input$adm_open, {
     req(rv$is_admin)
     db_exec("UPDATE olig_settings SET round_status='open', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
@@ -1794,14 +2328,35 @@ server <- function(input, output, session) {
   observeEvent(input$adm_close, {
     req(rv$is_admin)
     db_exec("UPDATE olig_settings SET round_status='closed', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-    showNotification("Round closed. Run payouts in the Coordination Games app.",
-                     type = "warning", duration = 6)
+    showNotification("Round closed. Run payouts in the Coordination Games app.", type = "warning", duration = 6)
   })
   observeEvent(input$adm_reveal, {
     req(rv$is_admin)
     db_exec("UPDATE olig_settings SET round_status='revealed', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-    showNotification("Status set to revealed. Run payouts in the Coordination Games app first.",
-                     type = "warning", duration = 6)
+    showNotification("Status set to revealed.", type = "warning", duration = 6)
+  })
+  observeEvent(input$add_ps_btn, {
+    req(rv$is_admin)
+    nm <- trimws(input$new_ps_name %||% "")
+    if (!nzchar(nm)) { showNotification("Enter a name.", type = "error"); return() }
+    db_exec("INSERT INTO problem_sets(name, original_deadline) VALUES(?,?);",
+            list(nm, as.character(input$new_ps_deadline %||% "")))
+    showNotification("Problem set added.", type = "message")
+  })
+  observeEvent(input$add_pg_btn, {
+    req(rv$is_admin)
+    nm <- trimws(input$new_pg_name %||% "")
+    if (!nzchar(nm)) { showNotification("Enter a name.", type = "error"); return() }
+    db_exec("INSERT INTO public_goods(name, description, threshold) VALUES(?,?,?);",
+            list(nm, input$new_pg_desc %||% "", as.numeric(input$new_pg_threshold %||% 0)))
+    showNotification("Public good added.", type = "message")
+  })
+  observeEvent(input$save_app_name_btn, {
+    req(rv$is_admin)
+    nm <- trimws(input$new_app_name %||% "")
+    if (!nzchar(nm)) { showNotification("Name cannot be blank.", type = "error"); return() }
+    db_exec("UPDATE arcade_config SET value=? WHERE key='app_name';", list(nm))
+    showNotification("App name updated (takes effect on next restart).", type = "message")
   })
 
 }
