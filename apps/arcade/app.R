@@ -647,14 +647,14 @@ server <- function(input, output, session) {
               "\U0001f50d Demo mode — you're exploring with a fake account. Nothing you do here is saved."),
         div(class = "arc-body",
           tabsetPanel(id = "arc_tabs", type = "tabs", selected = "Today",
-            tabPanel("Today",      br(), uiOutput("today_tab")),
-            tabPanel("Job Market", br(), uiOutput("job_market_tab")),
-            tabPanel("Games",      br(), uiOutput("games_tab")),
-            tabPanel("Demos",      br(), uiOutput("demos_tab")),
-            tabPanel("Spend",      br(), uiOutput("spend_tab")),
-            tabPanel("Account",    br(), uiOutput("account_tab")),
-            uiOutput("tracker_tab_panel"),
-            uiOutput("settings_tab_panel")
+            tabPanel("Today",        br(), uiOutput("today_tab")),
+            tabPanel("Job Market",   br(), uiOutput("job_market_tab")),
+            tabPanel("Games",        br(), uiOutput("games_tab")),
+            tabPanel("Demos",        br(), uiOutput("demos_tab")),
+            tabPanel("Spend",        br(), uiOutput("spend_tab")),
+            tabPanel("Account",      br(), uiOutput("account_tab")),
+            tabPanel("Live Tracker", br(), uiOutput("live_tracker_tab")),
+            tabPanel("Settings",     br(), uiOutput("settings_tab"))
           )
         )
       )
@@ -2017,12 +2017,18 @@ server <- function(input, output, session) {
     showNotification("Display name updated.", type = "message")
   })
 
-  # ── Live Tracker tab (admin) ──────────────────────────────────────────────────
-  output$tracker_tab_panel <- renderUI({
-    if (!rv$is_admin) return(NULL)
-    tabPanel("Live Tracker", br(), uiOutput("live_tracker_tab"))
+  # ── Show/hide admin tabs based on is_admin ────────────────────────────────────
+  observe({
+    if (isTRUE(rv$is_admin)) {
+      showTab("arc_tabs", "Live Tracker")
+      showTab("arc_tabs", "Settings")
+    } else {
+      hideTab("arc_tabs", "Live Tracker")
+      hideTab("arc_tabs", "Settings")
+    }
   })
 
+  # ── Live Tracker tab (admin) ──────────────────────────────────────────────────
   output$live_tracker_tab <- renderUI({
     req(rv$authed, rv$is_admin)
     td       <- tracker_poll()
@@ -2164,11 +2170,6 @@ server <- function(input, output, session) {
   })
 
   # ── Settings tab (admin) ──────────────────────────────────────────────────────
-  output$settings_tab_panel <- renderUI({
-    if (!rv$is_admin) return(NULL)
-    tabPanel("Settings", br(), uiOutput("settings_tab"))
-  })
-
   output$settings_tab <- renderUI({
     req(rv$is_admin)
     active <- isolate(arcade_poll())$active_game[1] %||% ""
