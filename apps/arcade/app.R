@@ -140,6 +140,28 @@ db_exec("CREATE TABLE IF NOT EXISTS public_good_contributions(
   ledger_id INTEGER,
   contributed_at TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+db_exec("CREATE TABLE IF NOT EXISTS extension_options(
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  label  TEXT NOT NULL,
+  hours  REAL NOT NULL,
+  tokens REAL NOT NULL,
+  active INTEGER DEFAULT 1
+);")
+db_exec("CREATE TABLE IF NOT EXISTS flex_questions(
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  question_text TEXT NOT NULL,
+  order_index  INTEGER DEFAULT 0,
+  active       INTEGER DEFAULT 1,
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);")
+db_exec("CREATE TABLE IF NOT EXISTS flex_purchases(
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      TEXT NOT NULL,
+  question_id  INTEGER NOT NULL,
+  tokens_spent REAL DEFAULT 0,
+  purchased_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, question_id)
+);")
 db_exec("CREATE TABLE IF NOT EXISTS labor_settings(
   key TEXT PRIMARY KEY,
   value TEXT
@@ -156,6 +178,7 @@ db_exec(paste0("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('particip
   '{"id":"explain","label":"Explanation","tokens":2},',
   '{"id":"correct","label":"Correct Answer","tokens":1}]', "');"))
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('active_section','');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('flex_cost_schedule','2,4,6,8,10');")
 
 # token_ledger table
 db_exec("CREATE TABLE IF NOT EXISTS token_ledger(
@@ -276,6 +299,8 @@ db_exec("CREATE TABLE IF NOT EXISTS job_posts(
   created_at    TEXT DEFAULT CURRENT_TIMESTAMP
 );")
 try(db_exec("ALTER TABLE job_posts ADD COLUMN voluntary INTEGER DEFAULT 0;"), silent = TRUE)
+try(db_exec("ALTER TABLE job_posts ADD COLUMN in_draw INTEGER DEFAULT 1;"), silent = TRUE)
+try(db_exec("ALTER TABLE job_categories ADD COLUMN description TEXT;"), silent = TRUE)
 db_exec("CREATE TABLE IF NOT EXISTS job_assignments(
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id        INTEGER,
@@ -354,13 +379,30 @@ get_setting <- function(key, default = NULL) {
   r$value[1]
 }
 parse_ext_prices <- function() {
-  raw <- tryCatch(get_setting("extension_prices_json", '{"24":3,"48":5}'), error = function(e) '{"24":3,"48":5}')
+  rows <- tryCatch(
+    db_query("SELECT id, label, hours, tokens FROM extension_options WHERE COALESCE(active,1)=1 ORDER BY hours DESC;"),
+    error = function(e) data.frame())
+  if (!nrow(rows)) return(data.frame(id=integer(0), label=character(0), hours=numeric(0), tokens=numeric(0)))
+  rows
+}
+
+parse_flex_cost <- function(text = NULL) {
+  if (is.null(text)) text <- tryCatch(get_setting("flex_cost_schedule", "2,4,6,8,10"), error=function(e)"2,4,6,8,10")
+  text <- trimws(text %||% "")
+  if (!nzchar(text)) return(NULL)
   tryCatch({
-    lst <- jsonlite::fromJSON(raw)
-    v <- as.numeric(unlist(lst))
-    names(v) <- names(lst)
-    v
-  }, error = function(e) c("24" = 3, "48" = 5))
+    parts <- as.numeric(strsplit(text, ",")[[1]])
+    if (all(!is.na(parts))) return(parts)
+    NULL
+  }, error = function(e) NULL)
+}
+question_cost_for_n <- function(n, schedule_text = NULL) {
+  tbl <- parse_flex_cost(schedule_text)
+  if (is.null(tbl) || length(tbl) == 0) return(2 * n)
+  if (n <= length(tbl)) return(tbl[n])
+  last <- tbl[length(tbl)]
+  step <- if (length(tbl) >= 2) (tbl[length(tbl)] - tbl[length(tbl)-1]) else tbl[1]
+  last + step * (n - length(tbl))
 }
 parse_rw_costs <- function() {
   raw <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
@@ -733,7 +775,7 @@ server <- function(input, output, session) {
     game_detail_id = NULL,
     bp_contrib_val = NULL,
     pd_choice_val  = NULL,
-    spend_mode     = NULL,   # NULL | "extension" | "reweight" | "pubgood"
+    spend_mode     = NULL,   # NULL | "extension" | "reweight" | "flex_question"
     impersonating  = FALSE,
     orig_state     = NULL,
     draw_preview   = NULL,   # NULL | list of draw pairs for preview
@@ -1169,29 +1211,25 @@ server <- function(input, output, session) {
         )
       },
 
-      # Public Good status
+      # Flex Questions progress
       {
-        pg <- pubgood_poll()
-        if (nrow(pg$goods)) {
-          tagList(
-            div(class = "sec-label", "Public Good"),
-            lapply(seq_len(nrow(pg$goods)), function(i) {
-              good    <- pg$goods[i, ]
-              t_row   <- if (nrow(pg$totals)) pg$totals[pg$totals$public_good_id == good$id, , drop = FALSE] else data.frame()
-              contrib <- if (nrow(t_row)) as.numeric(t_row$total[1] %||% 0) else 0
-              thresh  <- as.numeric(good$threshold %||% 0)
-              pct     <- if (thresh > 0) min(100, round(contrib / thresh * 100)) else 0
-              div(class = "today-card",
-                tags$strong(good$name),
-                if (nzchar(good$description %||% ""))
-                  tags$p(style = "color:#555;font-size:.86rem;margin:.2rem 0 .4rem;", good$description),
-                div(style = "font-size:.82rem;color:#888;margin-bottom:.3rem;",
-                    sprintf("Class total: %d / %d tokens (%d%%)",
-                            as.integer(contrib), as.integer(thresh), pct)),
-                div(class = "pg-bar-wrap",
-                    div(class = "pg-bar-fill", style = sprintf("width:%d%%;", pct)))
-              )
-            })
+        total_q <- tryCatch(
+          db_query("SELECT COUNT(*) n FROM flex_questions WHERE COALESCE(active,1)=1;")$n[1],
+          error = function(e) 0L)
+        if (as.integer(total_q %||% 0L) > 0) {
+          owned_n <- tryCatch(
+            db_query("SELECT COUNT(*) n FROM flex_purchases WHERE user_id=?;", list(rv$user_id))$n[1],
+            error = function(e) 0L)
+          next_cost <- question_cost_for_n(as.integer(owned_n %||% 0L) + 1L)
+          div(class = "today-card",
+            tags$strong("\U0001f4da Questions"),
+            tags$p(style = "color:#555;font-size:.86rem;margin:.2rem 0 .3rem;",
+                   sprintf("You own %d of %d questions. Next costs %d tokens.",
+                           as.integer(owned_n %||% 0L), as.integer(total_q),
+                           as.integer(next_cost))),
+            actionButton("go_to_spend_fq", "Buy in Spend tab →",
+                         class = "btn btn-sm btn-outline-primary",
+                         style = "margin-top:.2rem;")
           )
         }
       },
@@ -1258,6 +1296,10 @@ server <- function(input, output, session) {
   # Navigate to Games tab from Today
   observeEvent(input$go_to_games, {
     updateTabsetPanel(session, "arc_tabs", selected = "Games")
+  })
+  observeEvent(input$go_to_spend_fq, {
+    rv$spend_mode <- "flex_question"
+    updateTabsetPanel(session, "arc_tabs", selected = "Spend")
   })
 
   # ── Job Market tab ────────────────────────────────────────────────────────────
@@ -1819,16 +1861,17 @@ server <- function(input, output, session) {
 
     if (is.null(rv$spend_mode)) {
       # Card picker view
-      pg <- pubgood_poll()
-      pg_active <- nrow(pg$goods) > 0
-      pg_status <- if (pg_active) {
-        good   <- pg$goods[1, ]
-        t_row  <- if (nrow(pg$totals)) pg$totals[pg$totals$public_good_id == good$id, , drop = FALSE] else data.frame()
-        contrib <- if (nrow(t_row)) as.numeric(t_row$total[1] %||% 0) else 0
-        thresh  <- as.numeric(good$threshold %||% 0)
-        if (thresh > 0) sprintf("Active: %d / %d tokens", as.integer(contrib), as.integer(thresh))
-        else "Active goal"
-      } else "No active goal"
+      owned_count <- tryCatch(
+        db_query("SELECT COUNT(*) n FROM flex_purchases WHERE user_id=?;", list(rv$user_id))$n[1],
+        error = function(e) 0L)
+      total_q <- tryCatch(
+        db_query("SELECT COUNT(*) n FROM flex_questions WHERE COALESCE(active,1)=1;")$n[1],
+        error = function(e) 0L)
+      next_cost <- question_cost_for_n(as.integer(owned_count %||% 0L) + 1L)
+      fq_status <- if (total_q == 0) "No questions loaded yet" else
+        sprintf("%d / %d purchased · next costs %d tokens",
+                as.integer(owned_count %||% 0L), as.integer(total_q),
+                as.integer(next_cost))
 
       tagList(
         div(class = "tab-howto",
@@ -1851,12 +1894,13 @@ server <- function(input, output, session) {
                 actionButton("open_reweight", "Select →", class = "btn btn-sm btn-outline-primary"))
           ),
           div(class = "spend-card",
-            div(class = "spend-card-icon", "\U0001f91d"),
-            div(class = "spend-card-label", "Public Good"),
-            div(class = "spend-card-desc", "Contribute toward a class-wide public goal."),
-            div(class = "spend-card-meta", pg_status),
+            div(class = "spend-card-icon", "\U0001f4da"),
+            div(class = "spend-card-label", "Buy a Question"),
+            div(class = "spend-card-desc",
+                "Unlock the next exam question. Questions are revealed in order."),
+            div(class = "spend-card-meta", fq_status),
             div(class = "spend-card-foot",
-                actionButton("open_pubgood", "Select →", class = "btn btn-sm btn-outline-primary"))
+                actionButton("open_flex_question", "Select →", class = "btn btn-sm btn-outline-primary"))
           )
         ),
         div(class = "sec-label", "Spending History"),
@@ -1874,10 +1918,10 @@ server <- function(input, output, session) {
     }
   })
 
-  observeEvent(input$open_extension, { rv$spend_mode <- "extension" })
-  observeEvent(input$open_reweight,  { rv$spend_mode <- "reweight"  })
-  observeEvent(input$open_pubgood,   { rv$spend_mode <- "pubgood"   })
-  observeEvent(input$spend_back,     { rv$spend_mode <- NULL        })
+  observeEvent(input$open_extension,     { rv$spend_mode <- "extension"     })
+  observeEvent(input$open_reweight,      { rv$spend_mode <- "reweight"      })
+  observeEvent(input$open_flex_question, { rv$spend_mode <- "flex_question" })
+  observeEvent(input$spend_back,         { rv$spend_mode <- NULL            })
 
   output$spend_form <- renderUI({
     req(rv$authed)
@@ -1888,18 +1932,18 @@ server <- function(input, output, session) {
       ps_rows <- tryCatch(db_query(
         "SELECT * FROM problem_sets WHERE COALESCE(active,1)=1 ORDER BY original_deadline DESC LIMIT 20;"),
         error = function(e) data.frame())
-      prices <- parse_ext_prices()
-      if (!nrow(ps_rows) || !length(prices))
+      opts <- parse_ext_prices()
+      if (!nrow(ps_rows) || !nrow(opts))
         return(div(class = "spend-form-box",
-                   "No problem sets are configured yet. Ask your instructor to set them up."))
+                   "No extension options are configured yet. Ask your instructor to set them up."))
+      opt_choices <- setNames(opts$id,
+                              paste0(opts$label, " (", as.integer(opts$tokens), " tokens)"))
       tagList(
         div(class = "spend-form-box",
           tags$h6(style = "color:#951829;font-weight:700;", "\U0001f4c5 Problem Set Extension"),
           selectInput("ext_ps", "Problem set:",
                       setNames(ps_rows$id, ps_rows$name)),
-          selectInput("ext_hours", "Extension length:",
-                      setNames(names(prices),
-                               paste0(names(prices), " hours — ", as.integer(prices), " tokens"))),
+          selectInput("ext_option", "Extension length:", choices = opt_choices),
           uiOutput("ext_cost_preview"),
           actionButton("submit_extension", "Purchase extension", class = "btn btn-warning")
         )
@@ -1927,43 +1971,59 @@ server <- function(input, output, session) {
                "Your instructor will review and apply approved requests.")
       )
 
-    } else if (mode == "pubgood") {
-      pg <- pubgood_poll()
-      if (!nrow(pg$goods))
-        return(div(class = "spend-form-box",
-                   "No active public good has been configured. Check back when your instructor announces one."))
-      mc <- my_pub_contrib_data()
-      lapply(seq_len(nrow(pg$goods)), function(i) {
-        good    <- pg$goods[i, ]
-        t_row   <- if (nrow(pg$totals)) pg$totals[pg$totals$public_good_id == good$id, , drop = FALSE] else data.frame()
-        my_row  <- if (nrow(mc)) mc[mc$public_good_id == good$id, , drop = FALSE] else data.frame()
-        contrib <- if (nrow(t_row)) as.numeric(t_row$total[1] %||% 0) else 0
-        my_tot  <- if (nrow(my_row)) as.numeric(my_row$my_total[1] %||% 0) else 0
-        thresh  <- as.numeric(good$threshold %||% 0)
-        pct     <- if (thresh > 0) min(100, round(contrib / thresh * 100)) else 0
-        div(class = "spend-form-box", style = if (i > 1) "margin-top:.6rem;" else "",
-          tags$h6(style = "color:#951829;font-weight:700;", good$name),
-          if (nzchar(good$description %||% ""))
-            tags$p(style = "color:#555;font-size:.88rem;", good$description),
-          div(style = "font-size:.82rem;color:#888;margin-bottom:.2rem;",
-              sprintf("Class total: %d / %d tokens (%d%%)",
-                      as.integer(contrib), as.integer(thresh), pct)),
-          div(class = "pg-bar-wrap",
-              div(class = "pg-bar-fill", style = sprintf("width:%d%%;", pct))),
-          if (my_tot > 0)
-            tags$p(style = "font-size:.82rem;color:#666;margin-bottom:.4rem;",
-                   sprintf("Your contributions: %d tokens", as.integer(my_tot)))
-        )
-      })
+    } else if (mode == "flex_question") {
+      owned <- tryCatch(db_query(
+        "SELECT fp.question_id, fq.question_text, fq.order_index
+         FROM flex_purchases fp
+         JOIN flex_questions fq ON fq.id=fp.question_id
+         WHERE fp.user_id=? ORDER BY fq.order_index ASC, fq.id ASC;",
+        list(rv$user_id)), error = function(e) data.frame())
+      total_q <- tryCatch(
+        db_query("SELECT COUNT(*) n FROM flex_questions WHERE COALESCE(active,1)=1;")$n[1],
+        error = function(e) 0L)
+      n_owned <- nrow(owned)
+      next_cost <- question_cost_for_n(n_owned + 1L)
+      all_done  <- n_owned >= as.integer(total_q %||% 0L)
+      div(class = "spend-form-box",
+        tags$h6(style = "color:#951829;font-weight:700;", "\U0001f4da Buy a Question"),
+        if (total_q == 0) {
+          tags$p(style = "color:#999;", "No questions have been loaded yet.")
+        } else if (all_done) {
+          tags$p(style = "color:#1a6e3c;font-weight:600;",
+                 sprintf("You have purchased all %d questions!", as.integer(total_q)))
+        } else {
+          tagList(
+            tags$p(style = "color:#555;font-size:.88rem;",
+                   sprintf("You own %d of %d questions. The next question costs %d tokens.",
+                           n_owned, as.integer(total_q), as.integer(next_cost))),
+            actionButton("submit_flex_question",
+                         sprintf("Buy question #%d (%d tokens)", n_owned + 1L, as.integer(next_cost)),
+                         class = "btn btn-warning")
+          )
+        },
+        if (n_owned > 0) {
+          tagList(
+            tags$hr(),
+            tags$strong("Your purchased questions:"),
+            lapply(seq_len(n_owned), function(i) {
+              div(style = "margin-top:.5rem;padding:.5rem .7rem;background:#f8f8f8;border-radius:4px;",
+                  tags$small(style = "color:#888;", sprintf("Question #%d", i)),
+                  tags$p(style = "margin:.2rem 0 0;", owned$question_text[i]))
+            })
+          )
+        }
+      )
     }
   })
 
   output$ext_cost_preview <- renderUI({
     req(rv$authed)
-    prices <- parse_ext_prices()
-    hrs    <- as.character(input$ext_hours %||% names(prices)[1])
-    cost   <- as.numeric(prices[hrs] %||% 0)
-    bal    <- token_bal()
+    opt_id <- suppressWarnings(as.integer(input$ext_option %||% 0))
+    if (is.na(opt_id) || opt_id <= 0) return(NULL)
+    opt  <- tryCatch(db_query("SELECT tokens FROM extension_options WHERE id=?;", list(opt_id)),
+                     error = function(e) data.frame())
+    cost <- if (nrow(opt)) as.numeric(opt$tokens[1]) else 0
+    bal  <- token_bal()
     div(style = "font-size:.86rem;color:#555;margin:.4rem 0 .6rem;",
         sprintf("Cost: %d tokens  ·  Balance: %d  ·  After: %d",
                 as.integer(cost), as.integer(bal), as.integer(bal - cost)))
@@ -2009,11 +2069,16 @@ server <- function(input, output, session) {
   observeEvent(input$submit_extension, {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
-    prices <- parse_ext_prices()
-    hrs    <- as.character(input$ext_hours %||% names(prices)[1])
-    cost   <- as.numeric(prices[hrs] %||% 0)
-    bal    <- isolate(token_bal())
-    if (cost <= 0) { showNotification("Invalid extension option.", type = "error"); return() }
+    opt_id <- suppressWarnings(as.integer(input$ext_option %||% 0))
+    if (is.na(opt_id) || opt_id <= 0) { showNotification("Select an extension option.", type = "error"); return() }
+    opt <- tryCatch(db_query("SELECT * FROM extension_options WHERE id=?;", list(opt_id)),
+                    error = function(e) data.frame())
+    if (!nrow(opt)) { showNotification("Invalid extension option.", type = "error"); return() }
+    cost <- as.numeric(opt$tokens[1])
+    hrs  <- as.numeric(opt$hours[1])
+    lbl  <- as.character(opt$label[1])
+    bal  <- isolate(token_bal())
+    if (cost <= 0) { showNotification("Cost not set for this option.", type = "error"); return() }
     if (bal < cost) {
       showNotification(sprintf("Not enough tokens (need %d, have %d).", as.integer(cost), as.integer(bal)),
                        type = "error"); return()
@@ -2021,11 +2086,11 @@ server <- function(input, output, session) {
     ps_id <- as.integer(input$ext_ps %||% 0)
     if (ps_id <= 0) { showNotification("Select a problem set.", type = "error"); return() }
     lid <- token_debit(rv$user_id, rv$name, cost, "extension", ps_id,
-                       note = sprintf("%sh extension", hrs))
+                       note = sprintf("%s extension", lbl))
     db_exec(
       "INSERT INTO extension_purchases(problem_set_id,user_id,hours,cost,ledger_id) VALUES(?,?,?,?,?);",
-      list(ps_id, rv$user_id, as.numeric(hrs), cost, as.integer(lid %||% NA_integer_)))
-    showNotification(sprintf("Extension purchased: %s hours for %d tokens.", hrs, as.integer(cost)),
+      list(ps_id, rv$user_id, hrs, cost, as.integer(lid %||% NA_integer_)))
+    showNotification(sprintf("Extension purchased: %s for %d tokens.", lbl, as.integer(cost)),
                      type = "message")
     rv$spend_mode <- NULL
   })
@@ -2057,25 +2122,45 @@ server <- function(input, output, session) {
     rv$spend_mode <- NULL
   })
 
-  observeEvent(input$submit_pubgood, {
+  observeEvent(input$submit_flex_question, {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
-    pg <- isolate(pubgood_poll())
-    if (!nrow(pg$goods)) { showNotification("No active public good.", type = "error"); return() }
-    good_id <- if (!is.null(input$pg_good_sel)) as.integer(input$pg_good_sel) else pg$goods$id[1]
-    amt <- as.integer(input$pg_contrib %||% 0)
-    if (is.na(amt) || amt <= 0) { showNotification("Enter a positive amount.", type = "error"); return() }
-    bal <- isolate(token_bal())
-    if (bal < amt) {
-      showNotification(sprintf("Not enough tokens (have %d).", as.integer(bal)), type = "error"); return()
+    owned <- tryCatch(db_query(
+      "SELECT question_id FROM flex_purchases WHERE user_id=?;", list(rv$user_id)),
+      error = function(e) data.frame())
+    owned_ids <- if (nrow(owned)) as.integer(owned$question_id) else integer(0)
+    nxt <- tryCatch({
+      if (length(owned_ids)) {
+        q <- sprintf(
+          "SELECT id, question_text, order_index FROM flex_questions
+           WHERE COALESCE(active,1)=1 AND id NOT IN (%s)
+           ORDER BY order_index ASC, id ASC LIMIT 1;",
+          paste(owned_ids, collapse=","))
+        db_query(q, list())
+      } else {
+        db_query(
+          "SELECT id, question_text, order_index FROM flex_questions
+           WHERE COALESCE(active,1)=1 ORDER BY order_index ASC, id ASC LIMIT 1;")
+      }
+    }, error = function(e) data.frame())
+    if (!nrow(nxt)) {
+      showNotification("You have purchased all available questions.", type = "message"); return()
     }
-    lid <- token_debit(rv$user_id, rv$name, amt, "public_good", good_id,
-                       note = sprintf("Public good #%d", good_id))
+    n_owned <- length(owned_ids) + 1L
+    cost <- question_cost_for_n(n_owned)
+    bal  <- isolate(token_bal())
+    if (bal < cost) {
+      showNotification(sprintf("Not enough tokens (need %d, have %d).", as.integer(cost), as.integer(bal)),
+                       type = "error"); return()
+    }
+    qid <- as.integer(nxt$id[1])
+    lid <- token_debit(rv$user_id, rv$name, cost, "flex_question", qid,
+                       note = sprintf("Question #%d", n_owned))
     db_exec(
-      "INSERT INTO public_good_contributions(public_good_id,user_id,amount,ledger_id) VALUES(?,?,?,?);",
-      list(good_id, rv$user_id, amt, as.integer(lid %||% NA_integer_)))
-    showNotification(sprintf("Contributed %d tokens to public good.", amt), type = "message")
-    rv$spend_mode <- NULL
+      "INSERT OR IGNORE INTO flex_purchases(user_id,question_id,tokens_spent) VALUES(?,?,?);",
+      list(rv$user_id, qid, cost))
+    showNotification(sprintf("Question purchased for %d tokens.", as.integer(cost)), type = "message")
+    rv$spend_mode <- "flex_question"
   })
 
   # ── Account tab ───────────────────────────────────────────────────────────────
@@ -2303,31 +2388,34 @@ server <- function(input, output, session) {
     nm   <- trimws(input$new_cat_name %||% "")
     wage <- as.numeric(input$new_cat_wage %||% 10)
     desc <- trimws(input$new_cat_desc %||% "")
-    vol  <- isTRUE(input$new_cat_voluntary)
     if (!nzchar(nm)) { showNotification("Category name required.", type = "error"); return() }
     db_exec(
-      "INSERT INTO job_categories(name, default_wage, description, voluntary) VALUES(?,?,?,?);",
-      list(nm, if (is.na(wage)) 10 else wage, desc, as.integer(vol)))
+      "INSERT INTO job_categories(name, default_wage, description) VALUES(?,?,?);",
+      list(nm, if (is.na(wage)) 10 else wage, desc))
     showNotification("Job category added.", type = "message")
   })
 
   observeEvent(input$add_job_post_btn, {
     req(rv$is_admin)
-    nm     <- trimws(input$new_post_name %||% "")
-    cat_id <- suppressWarnings(as.integer(input$new_post_cat %||% 0))
-    slots  <- max(1L, as.integer(input$new_post_slots %||% 1L))
-    wage   <- suppressWarnings(as.numeric(input$new_post_wage))
+    nm      <- trimws(input$new_post_name %||% "")
+    cat_id  <- suppressWarnings(as.integer(input$new_post_cat %||% 0))
+    slots   <- max(1L, as.integer(input$new_post_slots %||% 1L))
+    wage    <- suppressWarnings(as.numeric(input$new_post_wage))
+    in_draw <- as.integer(isTRUE(input$new_post_in_draw))
+    vol     <- as.integer(isTRUE(input$new_post_voluntary))
     rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
                         error = function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("Create a round first.", type = "error"); return() }
     if (!nzchar(nm)) { showNotification("Post name required.", type = "error"); return() }
     rid <- rid_row$id[1]
     db_exec(
-      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override) VALUES(?,?,?,?,?);",
+      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw, voluntary)
+       VALUES(?,?,?,?,?,?,?);",
       list(rid, nm,
            if (!is.na(cat_id) && cat_id > 0) cat_id else NA_integer_,
            slots,
-           if (!is.null(wage) && !is.na(wage) && wage > 0) wage else NA_real_))
+           if (!is.null(wage) && !is.na(wage) && wage > 0) wage else NA_real_,
+           in_draw, vol))
     showNotification("Job post added.", type = "message")
   })
 
@@ -2397,6 +2485,58 @@ server <- function(input, output, session) {
     db_exec("UPDATE job_posts SET active=? WHERE id=?;", list(new_a, pid))
   }, ignoreNULL = TRUE)
 
+  observeEvent(input$toggle_post_in_draw, {
+    req(rv$is_admin)
+    pid <- suppressWarnings(as.integer(input$toggle_post_in_draw %||% 0))
+    if (is.na(pid) || pid <= 0) return()
+    cur <- db_query("SELECT COALESCE(in_draw,1) v FROM job_posts WHERE id=?;", list(pid))
+    if (!nrow(cur)) return()
+    new_v <- if (isTRUE(as.integer(cur$v[1]) == 1L)) 0L else 1L
+    db_exec("UPDATE job_posts SET in_draw=? WHERE id=?;", list(new_v, pid))
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$toggle_post_voluntary, {
+    req(rv$is_admin)
+    pid <- suppressWarnings(as.integer(input$toggle_post_voluntary %||% 0))
+    if (is.na(pid) || pid <= 0) return()
+    cur <- db_query("SELECT COALESCE(voluntary,0) v FROM job_posts WHERE id=?;", list(pid))
+    if (!nrow(cur)) return()
+    new_v <- if (isTRUE(as.integer(cur$v[1]) == 1L)) 0L else 1L
+    db_exec("UPDATE job_posts SET voluntary=? WHERE id=?;", list(new_v, pid))
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$unassign_job_btn, {
+    req(rv$is_admin)
+    aid <- suppressWarnings(as.integer(input$unassign_job_btn %||% 0))
+    if (is.na(aid) || aid <= 0) return()
+    db_exec("DELETE FROM job_assignments WHERE id=?;", list(aid))
+    showNotification("Assignment removed.", type = "message")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$clear_assignments_btn, {
+    req(rv$is_admin)
+    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                        error = function(e) data.frame())
+    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(rid_row$id[1]))
+    showNotification("All assignments for this round cleared.", type = "message")
+  })
+
+  observeEvent(input$edit_cat_btn, {
+    req(rv$is_admin)
+    ev <- input$edit_cat_btn
+    if (is.null(ev) || is.null(ev$id)) return()
+    cid  <- suppressWarnings(as.integer(ev$id))
+    nm   <- trimws(ev$name %||% "")
+    wage <- suppressWarnings(as.numeric(ev$wage))
+    desc <- trimws(ev$desc %||% "")
+    if (!nzchar(nm)) { showNotification("Category name required.", type = "error"); return() }
+    if (is.na(cid) || cid <= 0) return()
+    db_exec("UPDATE job_categories SET name=?, default_wage=?, description=? WHERE id=?;",
+            list(nm, if (is.na(wage)) 0 else wage, desc, cid))
+    showNotification("Category updated.", type = "message")
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$create_round_btn, {
     req(rv$is_admin)
     lbl    <- trimws(input$new_round_label %||% "")
@@ -2462,17 +2602,13 @@ server <- function(input, output, session) {
     if (nrow(templates)) {
       for (i in seq_len(nrow(templates))) {
         t <- templates[i, ]
-        vol <- tryCatch(as.integer(db_query(
-          "SELECT COALESCE(voluntary,0) v FROM job_categories WHERE id=?;",
-          list(t$category_id))$v[1] %||% 0L), error = function(e) 0L)
         db_exec(
-          "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, voluntary)
-           VALUES(?,?,?,?,?,?);",
+          "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw, voluntary)
+           VALUES(?,?,?,?,?,1,0);",
           list(new_rid, t$name,
                if (!is.na(t$category_id %||% NA)) as.integer(t$category_id) else NA_integer_,
                as.integer(t$slots %||% 1L),
-               if (!is.na(t$suggested_wage %||% NA)) as.numeric(t$suggested_wage) else NA_real_,
-               vol))
+               if (!is.na(t$suggested_wage %||% NA)) as.numeric(t$suggested_wage) else NA_real_))
       }
       showNotification(
         sprintf("Created round '%s' with %d post%s from templates.",
@@ -2531,15 +2667,89 @@ server <- function(input, output, session) {
     showNotification(sprintf("Removed category '%s'.", nm), type = "message")
   }, ignoreNULL = TRUE)
 
-  observeEvent(input$save_ext_prices_btn, {
+  observeEvent(input$add_ext_option_btn, {
     req(rv$is_admin)
-    json_str <- trimws(input$ext_prices_json %||% "")
-    tryCatch({
-      jsonlite::fromJSON(json_str)
-      db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('extension_prices_json',?);",
-              list(json_str))
-      showNotification("Extension prices saved.", type = "message")
-    }, error = function(e) showNotification("Invalid JSON.", type = "error"))
+    lbl    <- trimws(input$new_ext_label %||% "")
+    hrs    <- suppressWarnings(as.numeric(input$new_ext_hours %||% 0))
+    tokens <- suppressWarnings(as.numeric(input$new_ext_tokens %||% 0))
+    if (!nzchar(lbl)) { showNotification("Label required.", type = "error"); return() }
+    if (is.na(hrs) || hrs <= 0) { showNotification("Hours must be positive.", type = "error"); return() }
+    if (is.na(tokens) || tokens <= 0) { showNotification("Token cost must be positive.", type = "error"); return() }
+    db_exec("INSERT INTO extension_options(label,hours,tokens) VALUES(?,?,?);",
+            list(lbl, hrs, tokens))
+    showNotification("Extension option added.", type = "message")
+  })
+
+  observeEvent(input$delete_ext_option_btn, {
+    req(rv$is_admin)
+    oid <- suppressWarnings(as.integer(input$delete_ext_option_btn %||% 0))
+    if (is.na(oid) || oid <= 0) return()
+    db_exec("UPDATE extension_options SET active=0 WHERE id=?;", list(oid))
+    showNotification("Extension option removed.", type = "message")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$save_flex_cost_btn, {
+    req(rv$is_admin)
+    sched <- trimws(input$flex_cost_input %||% "")
+    if (!nzchar(sched)) { showNotification("Enter a schedule.", type = "error"); return() }
+    parts <- tryCatch(as.numeric(strsplit(sched, ",")[[1]]), error=function(e) NA_real_)
+    if (any(is.na(parts))) { showNotification("Invalid schedule — use comma-separated numbers.", type = "error"); return() }
+    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('flex_cost_schedule',?);",
+            list(sched))
+    showNotification("Price schedule saved.", type = "message")
+  })
+
+  observeEvent(input$add_flex_question_btn, {
+    req(rv$is_admin)
+    txt <- trimws(input$new_fq_text %||% "")
+    if (!nzchar(txt)) { showNotification("Question text required.", type = "error"); return() }
+    max_idx <- tryCatch(
+      db_query("SELECT COALESCE(MAX(order_index),0) n FROM flex_questions;")$n[1],
+      error = function(e) 0L)
+    db_exec("INSERT INTO flex_questions(question_text,order_index) VALUES(?,?);",
+            list(txt, as.integer(max_idx %||% 0L) + 1L))
+    showNotification("Question added.", type = "message")
+  })
+
+  observeEvent(input$delete_flex_question_btn, {
+    req(rv$is_admin)
+    qid <- suppressWarnings(as.integer(input$delete_flex_question_btn %||% 0))
+    if (is.na(qid) || qid <= 0) return()
+    db_exec("UPDATE flex_questions SET active=0 WHERE id=?;", list(qid))
+    showNotification("Question removed.", type = "message")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$upload_flex_questions_btn, {
+    req(rv$is_admin)
+    f <- input$upload_flex_questions
+    if (is.null(f)) { showNotification("Choose a file first.", type = "error"); return() }
+    ext <- tolower(tools::file_ext(f$name))
+    lines <- tryCatch({
+      if (ext == "csv") {
+        df <- read.csv(f$datapath, stringsAsFactors = FALSE)
+        col <- intersect(c("question_text","question","text"), names(df))
+        if (!length(col)) stop("CSV must have a 'question_text' column.")
+        df[[col[1]]]
+      } else {
+        raw <- readLines(f$datapath, warn = FALSE)
+        trimws(raw[nzchar(trimws(raw))])
+      }
+    }, error = function(e) { showNotification(paste("Error:", e$message), type = "error"); NULL })
+    if (is.null(lines)) return()
+    lines <- lines[nzchar(trimws(lines))]
+    if (!length(lines)) { showNotification("No questions found in file.", type = "warning"); return() }
+    if (isTRUE(input$fq_replace_all)) {
+      db_exec("UPDATE flex_questions SET active=0;")
+    }
+    max_idx <- tryCatch(
+      db_query("SELECT COALESCE(MAX(order_index),0) n FROM flex_questions;")$n[1],
+      error = function(e) 0L)
+    base_idx <- as.integer(max_idx %||% 0L)
+    for (i in seq_along(lines)) {
+      db_exec("INSERT INTO flex_questions(question_text,order_index) VALUES(?,?);",
+              list(lines[i], base_idx + i))
+    }
+    showNotification(sprintf("Uploaded %d questions.", length(lines)), type = "message")
   })
 
   # quick_award_btn removed — use Settings → Token Admin for awards
@@ -2572,11 +2782,15 @@ server <- function(input, output, session) {
       td$students[td$students$section == cur_sec, , drop = FALSE]
     else td$students
 
-    # Voluntary categories for participation panel
-    vol_cats <- tryCatch(db_query(
-      "SELECT id, name, COALESCE(default_wage, 1) AS tokens
-       FROM job_categories WHERE COALESCE(voluntary, 0) = 1 ORDER BY name;"),
-      error = function(e) data.frame())
+    # Voluntary job posts for participation panel (Panel 2)
+    vol_cats <- if (!is.na(rid)) {
+      tryCatch(db_query(
+        "SELECT jp.id, jp.job_name AS name, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
+         FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
+         WHERE jp.round_id=? AND COALESCE(jp.voluntary,0)=1 AND COALESCE(jp.active,1)=1
+         ORDER BY jp.job_name;", list(rid)),
+        error = function(e) data.frame())
+    } else data.frame()
 
     # Build student choices: bidders for current round first
     rid <- if (nrow(round)) round$id[1] else NA_integer_
@@ -2623,21 +2837,26 @@ server <- function(input, output, session) {
                            mode_label,
                            if (nzchar(cur_sec)) paste0("  ·  Section: ", cur_sec) else "")),
             fluidRow(
-              column(4,
+              column(3,
                 actionButton("run_draw_btn", "\U0001f3b2 Draw Jobs",
                              class = "btn btn-primary btn-sm",
                              title = "Assign students in selected section to jobs")),
-              column(4,
+              column(3,
                 actionButton("preview_draw_btn", "\U0001f441 Preview Draw",
                              class = "btn btn-outline-secondary btn-sm")),
-              column(4,
+              column(3,
                 if (revealed)
                   actionButton("toggle_reveal_btn", "Hide from Students",
                                class = "btn btn-outline-secondary btn-sm")
                 else
                   actionButton("toggle_reveal_btn", "Reveal to Students",
                                class = "btn btn-success btn-sm")
-              )
+              ),
+              column(3,
+                if (n_show > 0)
+                  actionButton("clear_assignments_btn", "\U274c Clear All",
+                               class = "btn btn-outline-danger btn-sm",
+                               title = "Delete all assignments for current round"))
             ),
             if (n_show > 0)
               tags$p(style = "font-size:.8rem;color:#888;margin-top:.4rem;margin-bottom:0;",
@@ -2659,7 +2878,7 @@ server <- function(input, output, session) {
               tags$thead(tags$tr(
                 tags$th("Student"), tags$th("Section"), tags$th("Job"),
                 if (wage_mode) tags$th(style = "text-align:right;", "Wage"),
-                tags$th("Outcome")
+                tags$th("Outcome"), tags$th("")
               )),
               tags$tbody(lapply(seq_len(n_show), function(i) {
                 r  <- assignments_show[i, ]
@@ -2707,6 +2926,15 @@ server <- function(input, output, session) {
                             as.integer(r$id)), "✗")
                       )
                     }
+                  ),
+                  tags$td(
+                    tags$button(
+                      class = "btn btn-xs btn-outline-secondary",
+                      style = "padding:.1rem .3rem;font-size:.7rem;",
+                      title = "Unassign",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('unassign_job_btn',%d,{priority:'event'});",
+                        as.integer(r$id)), "\U2715")
                   )
                 )
               }))
@@ -2721,12 +2949,12 @@ server <- function(input, output, session) {
                 "\U0001f64b Voluntary Participation"),
         if (!nrow(vol_cats)) {
           tags$p(style = "color:#999;margin:0;",
-                 "No voluntary categories defined. Add them in Settings → Jobs.")
+                 "No voluntary job posts for this round. Toggle 'Voluntary' on a job post in Settings → Jobs.")
         } else if (!nrow(students_sec)) {
           tags$p(style = "color:#999;margin:0;", "No students in the selected section.")
         } else {
           et_choices <- setNames(vol_cats$id,
-                                 paste0(vol_cats$name, " (+", vol_cats$tokens, ")"))
+                                 paste0(vol_cats$name, " (+", as.integer(vol_cats$tokens), ")"))
           tagList(
             fluidRow(
               column(4,
@@ -2841,7 +3069,7 @@ server <- function(input, output, session) {
         "Exports"               = "exports",
         "Grade Reweighting"     = "grade_reweighting",
         "Extensions"            = "extensions",
-        "Public Goods"          = "pubgoods",
+        "Flex Questions"        = "flex_questions",
         "Game Controls"         = "game_controls",
         "App Settings"          = "app_settings"
       ), selected = "jobs"),
@@ -2890,22 +3118,15 @@ server <- function(input, output, session) {
         all_cats[as.integer(all_cats$voluntary %||% 0) != 1L, , drop = FALSE]
       else data.frame()
 
-      reg_posts <- if (!is.na(rid)) {
-        tryCatch(db_query(
-          "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
-                  COALESCE(jp.wage_override, jc.default_wage) AS eff_wage, jp.active
-           FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
-           WHERE jp.round_id=? AND COALESCE(jp.voluntary,0)=0
-           ORDER BY jp.display_order, jp.job_name;", list(rid)),
-          error = function(e) data.frame())
-      } else data.frame()
-
-      vol_posts <- if (!is.na(rid)) {
+      all_posts <- if (!is.na(rid)) {
         tryCatch(db_query(
           "SELECT jp.id, jp.job_name, jp.slots, jp.category_id, jc.name AS cat_name,
-                  COALESCE(jp.wage_override, jc.default_wage) AS eff_wage, jp.active
+                  COALESCE(jp.wage_override, jc.default_wage) AS eff_wage,
+                  COALESCE(jp.active,1) AS active,
+                  COALESCE(jp.in_draw,1) AS in_draw,
+                  COALESCE(jp.voluntary,0) AS voluntary
            FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
-           WHERE jp.round_id=? AND COALESCE(jp.voluntary,0)=1
+           WHERE jp.round_id=?
            ORDER BY jp.display_order, jp.job_name;", list(rid)),
           error = function(e) data.frame())
       } else data.frame()
@@ -2916,112 +3137,87 @@ server <- function(input, output, session) {
          WHERE COALESCE(jt.active,1)=1 ORDER BY jt.id;"),
         error = function(e) data.frame())
 
+      make_flag_btn <- function(label_on, label_off, input_name, pid, is_on, cls_on, cls_off) {
+        tags$button(
+          class = paste("btn btn-xs", if (is_on) cls_on else cls_off),
+          style = "padding:.1rem .3rem;font-size:.7rem;",
+          onclick = sprintf(
+            "Shiny.setInputValue('%s',%d,{priority:'event'});", input_name, as.integer(pid)),
+          if (is_on) label_on else label_off)
+      }
+
       tagList(
 
-        # ── Assigned Jobs ────────────────────────────────────────────────────────
+        # ── Job Posts ─────────────────────────────────────────────────────────────
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;",
-                "Assigned Jobs (Current Round)"),
+                "Job Posts (Current Round)"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+               "In Draw = eligible for random draw (Panel 1). Voluntary = appears in participation panel (Panel 2). A post can be both."),
         if (is.na(rid)) {
           div(style = "color:#999;font-size:.9em;", "Create a round first (Round Setup).")
-        } else if (nrow(reg_posts)) {
-          tags$table(class = "table table-sm",
-            tags$thead(tags$tr(
-              tags$th("Post"), tags$th("Slots"), tags$th("Wage"), tags$th("Active")
-            )),
-            tags$tbody(lapply(seq_len(nrow(reg_posts)), function(i) {
-              r  <- reg_posts[i, ]
-              is_active <- isTRUE(as.integer(r$active %||% 1L) == 1L)
-              clr_wage  <- compute_clearing_wage(r$category_id, rid,
-                                                 as.integer(r$slots %||% 1L))
-              tags$tr(
-                tags$td(r$job_name %||% ""),
-                tags$td(r$slots %||% 1),
-                tags$td(
-                  sprintf("%g", as.numeric(r$eff_wage %||% 0)),
-                  if (!is.na(clr_wage))
-                    tags$button(
-                      class = "btn btn-xs btn-outline-info",
-                      style = "padding:.1rem .35rem;font-size:.7rem;margin-left:.35rem;",
-                      onclick = sprintf(
-                        "Shiny.setInputValue('apply_clearing_wage_btn',{post_id:%d,wage:%g},{priority:'event'});",
-                        as.integer(r$id), clr_wage),
-                      sprintf("Clearing: %g", clr_wage))
-                ),
-                tags$td(
-                  tags$button(
-                    onclick = sprintf(
-                      "Shiny.setInputValue('toggle_post_active',%d,{priority:'event'});", r$id),
-                    class = if (is_active) "btn btn-xs btn-success" else "btn btn-xs btn-outline-secondary",
-                    style = "padding:.1rem .4rem;font-size:.75rem;",
-                    if (is_active) "Active" else "Inactive"))
-              )
-            }))
+        } else if (nrow(all_posts)) {
+          div(style = "overflow-x:auto;",
+            tags$table(class = "table table-sm",
+              tags$thead(tags$tr(
+                tags$th("Post"), tags$th("Cat"), tags$th("Slots"),
+                tags$th("Wage"), tags$th("Clearing Wage"),
+                tags$th("In Draw"), tags$th("Voluntary"), tags$th("Active")
+              )),
+              tags$tbody(lapply(seq_len(nrow(all_posts)), function(i) {
+                r        <- all_posts[i, ]
+                is_act   <- isTRUE(as.integer(r$active)   == 1L)
+                in_draw  <- isTRUE(as.integer(r$in_draw)  == 1L)
+                is_vol   <- isTRUE(as.integer(r$voluntary) == 1L)
+                clr_wage <- compute_clearing_wage(r$category_id, rid, as.integer(r$slots %||% 1L))
+                tags$tr(
+                  tags$td(r$job_name %||% ""),
+                  tags$td(style = "color:#888;font-size:.82em;", r$cat_name %||% "—"),
+                  tags$td(r$slots %||% 1),
+                  tags$td(sprintf("%g", as.numeric(r$eff_wage %||% 0))),
+                  tags$td(
+                    if (!is.na(clr_wage)) {
+                      tags$button(
+                        class = "btn btn-xs btn-outline-info",
+                        style = "padding:.1rem .35rem;font-size:.7rem;",
+                        onclick = sprintf(
+                          "Shiny.setInputValue('apply_clearing_wage_btn',{post_id:%d,wage:%g},{priority:'event'});",
+                          as.integer(r$id), clr_wage),
+                        sprintf("%g ✔", clr_wage))
+                    } else span(style = "color:#ccc;", "—")
+                  ),
+                  tags$td(make_flag_btn("In Draw", "No Draw", "toggle_post_in_draw",
+                                        r$id, in_draw, "btn-success", "btn-outline-secondary")),
+                  tags$td(make_flag_btn("Voluntary", "Not Vol.", "toggle_post_voluntary",
+                                        r$id, is_vol, "btn-info", "btn-outline-secondary")),
+                  tags$td(make_flag_btn("Active", "Inactive", "toggle_post_active",
+                                        r$id, is_act, "btn-success", "btn-outline-secondary"))
+                )
+              }))
+            )
           )
         } else {
           div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;",
-              "No assigned job posts for this round.")
+              "No job posts for this round.")
         },
 
         if (!is.na(rid)) {
-          reg_cat_choices <- if (nrow(reg_cats))
-            setNames(reg_cats$id, reg_cats$name)
-          else c("(add non-voluntary categories first)" = "")
+          all_cat_choices <- if (nrow(all_cats))
+            setNames(all_cats$id, all_cats$name)
+          else c("(add categories first)" = "")
           tags$details(
             tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
                          "Add job post"),
             div(style = "padding:.5rem 0;",
               fluidRow(
                 column(3, textInput("new_post_name", "Post name:")),
-                column(3, selectInput("new_post_cat", "Category:", choices = reg_cat_choices)),
-                column(2, numericInput("new_post_slots", "Slots:", value = 1L, min = 1L, step = 1L)),
-                column(2, numericInput("new_post_wage", "Wage override:", value = NA, min = 0, step = 1)),
+                column(2, selectInput("new_post_cat", "Category:", choices = all_cat_choices)),
+                column(1, numericInput("new_post_slots", "Slots:", value = 1L, min = 1L, step = 1L)),
+                column(2, numericInput("new_post_wage", "Wage:", value = NA, min = 0, step = 1)),
+                column(2, tags$br(),
+                       checkboxInput("new_post_in_draw", "In draw", value = TRUE),
+                       checkboxInput("new_post_voluntary", "Voluntary", value = FALSE)),
                 column(2, tags$br(),
                        actionButton("add_job_post_btn", "Add", class = "btn btn-sm btn-primary"))
-              )
-            )
-          )
-        },
-
-        # ── Participation Types ───────────────────────────────────────────────────
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Participation Types (Current Round)"),
-        tags$p(style = "color:#555;font-size:.85rem;",
-               "Voluntary events (Question, Explanation, etc.) for Panel 2 of the Live Tracker."),
-        if (nrow(vol_posts)) {
-          tags$table(class = "table table-sm",
-            tags$thead(tags$tr(
-              tags$th("Name"), tags$th("Category"), tags$th("Slots"), tags$th("Tokens")
-            )),
-            tags$tbody(lapply(seq_len(nrow(vol_posts)), function(i) {
-              r <- vol_posts[i, ]
-              tags$tr(
-                tags$td(r$job_name %||% ""),
-                tags$td(style = "color:#888;", r$cat_name %||% "—"),
-                tags$td(r$slots %||% 1),
-                tags$td(sprintf("%g", as.numeric(r$eff_wage %||% 0)))
-              )
-            }))
-          )
-        } else {
-          div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;",
-              "No participation types for this round.")
-        },
-
-        if (!is.na(rid)) {
-          vol_cat_choices <- if (nrow(vol_cats))
-            setNames(vol_cats$id, vol_cats$name)
-          else c("(add voluntary categories first)" = "")
-          tags$details(
-            tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
-                         "Add participation type"),
-            div(style = "padding:.5rem 0;",
-              fluidRow(
-                column(3, textInput("new_pt_name", "Name:")),
-                column(3, selectInput("new_pt_cat", "Voluntary category:", choices = vol_cat_choices)),
-                column(2, numericInput("new_pt_slots", "Slots:", value = 99L, min = 1L, step = 1L)),
-                column(2, numericInput("new_pt_tokens", "Tokens:", value = 1, min = 0, step = 0.5)),
-                column(2, tags$br(),
-                       actionButton("add_part_type_btn", "Add", class = "btn btn-sm btn-primary"))
               )
             )
           )
@@ -3031,21 +3227,46 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Job Categories"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "Check 'Voluntary' for participation-event categories (Question, Explanation, etc.)."),
+               "Categories set the default wage for posts. Edit name, wage, or description inline."),
         if (nrow(all_cats)) {
-          tags$table(class = "table table-sm",
-            tags$thead(tags$tr(
-              tags$th("Name"), tags$th("Default Wage"), tags$th("Voluntary")
-            )),
-            tags$tbody(lapply(seq_len(nrow(all_cats)), function(i) {
-              r <- all_cats[i, ]
-              tags$tr(
-                tags$td(r$name %||% ""),
-                tags$td(sprintf("%g tokens", as.numeric(r$default_wage %||% 0))),
-                tags$td(if (isTRUE(as.integer(r$voluntary %||% 0L) == 1L)) "Yes" else "")
+          tagList(lapply(seq_len(nrow(all_cats)), function(i) {
+            r <- all_cats[i, ]
+            cid_js <- as.integer(r$id)
+            div(style = paste0("border:1px solid #e8e8e8;border-radius:6px;padding:.4rem .7rem;",
+                               "margin-bottom:.35rem;background:#fafafa;"),
+              tags$details(
+                tags$summary(style = "cursor:pointer;",
+                  span(style = "font-weight:600;", r$name %||% ""),
+                  span(style = "color:#888;font-size:.82em;margin-left:.5rem;",
+                       sprintf("%g tokens default", as.numeric(r$default_wage %||% 0))),
+                  if (nzchar(r$description %||% ""))
+                    span(style = "color:#aaa;font-size:.8em;margin-left:.4rem;",
+                         r$description)
+                ),
+                div(style = "padding:.4rem 0;",
+                  fluidRow(
+                    column(3, textInput(paste0("edit_cat_name_",  cid_js), "Name:",
+                                        value = r$name %||% "")),
+                    column(2, numericInput(paste0("edit_cat_wage_",  cid_js), "Default wage:",
+                                           value = as.numeric(r$default_wage %||% 0),
+                                           min = 0, step = 1)),
+                    column(4, textInput(paste0("edit_cat_desc_",  cid_js), "Description:",
+                                        value = r$description %||% "")),
+                    column(3, tags$br(),
+                      tags$button(
+                        class = "btn btn-sm btn-primary",
+                        onclick = sprintf(paste0(
+                          "var n=document.getElementById('edit_cat_name_%d').value;",
+                          "var w=document.getElementById('edit_cat_wage_%d').value;",
+                          "var d=document.getElementById('edit_cat_desc_%d').value;",
+                          "Shiny.setInputValue('edit_cat_btn',{id:%d,name:n,wage:w,desc:d},{priority:'event'});"),
+                          cid_js, cid_js, cid_js, cid_js),
+                        "Save changes"))
+                  )
+                )
               )
-            }))
-          )
+            )
+          }))
         } else div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;", "No categories yet."),
 
         tags$details(
@@ -3055,9 +3276,8 @@ server <- function(input, output, session) {
             fluidRow(
               column(3, textInput("new_cat_name", "Name:")),
               column(2, numericInput("new_cat_wage", "Default wage:", value = 10, min = 0, step = 1)),
-              column(3, textInput("new_cat_desc", "Description (optional):")),
-              column(2, checkboxInput("new_cat_voluntary", "Voluntary (participation)", value = FALSE)),
-              column(2, tags$br(),
+              column(4, textInput("new_cat_desc", "Description (optional):")),
+              column(3, tags$br(),
                      actionButton("add_job_cat_btn", "Add", class = "btn btn-sm btn-primary"))
             )
           )
@@ -3273,6 +3493,7 @@ server <- function(input, output, session) {
           downloadButton("dl_extensions",           "Extension Purchases",  class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_reweight_requests",    "Reweight Requests",    class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_pubgood_contribs",     "Public Good Contribs", class = "btn btn-sm btn-outline-secondary"),
+          downloadButton("dl_flex_purchases",       "Flex Q Purchases",     class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_students",             "Students",             class = "btn btn-sm btn-outline-secondary")
         )
       )
@@ -3357,17 +3578,53 @@ server <- function(input, output, session) {
       )
 
     } else if (act == "extensions") {
-      ps <- tryCatch(db_query("SELECT * FROM problem_sets ORDER BY original_deadline DESC LIMIT 20;"),
-                     error = function(e) data.frame())
-      current_ext <- tryCatch(get_setting("extension_prices_json", '{"24":3,"48":5}'),
-                              error = function(e) '{"24":3,"48":5}')
+      ps   <- tryCatch(db_query("SELECT * FROM problem_sets ORDER BY original_deadline DESC LIMIT 20;"),
+                       error = function(e) data.frame())
+      opts <- tryCatch(db_query("SELECT * FROM extension_options ORDER BY hours DESC;"),
+                       error = function(e) data.frame())
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;",
-                "Extension Prices (JSON)"),
-        textAreaInput("ext_prices_json", NULL, value = current_ext, rows = 3, width = "100%"),
-        tags$p(style = "color:#888;font-size:.82em;",
-               'e.g. {"24":3,"48":5} means 24h costs 3 tokens, 48h costs 5 tokens'),
-        actionButton("save_ext_prices_btn", "Save prices", class = "btn btn-sm btn-primary"),
+                "Extension Options"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+               "Define the lengths students can purchase. Label is shown to students; Hours is recorded; Tokens is the cost."),
+        if (nrow(opts)) {
+          tags$table(class = "table table-sm",
+            tags$thead(tags$tr(
+              tags$th("Label"), tags$th("Hours"), tags$th("Tokens"), tags$th("Active"), tags$th("")
+            )),
+            tags$tbody(lapply(seq_len(nrow(opts)), function(i) {
+              r <- opts[i, ]
+              is_active <- isTRUE(as.integer(r$active %||% 1L) == 1L)
+              tags$tr(
+                tags$td(r$label %||% ""),
+                tags$td(sprintf("%g", as.numeric(r$hours))),
+                tags$td(sprintf("%g", as.numeric(r$tokens))),
+                tags$td(if (is_active) "✓" else ""),
+                tags$td(
+                  tags$button(
+                    class = "btn btn-xs btn-outline-danger",
+                    style = "padding:.1rem .35rem;font-size:.72rem;",
+                    onclick = sprintf(
+                      "Shiny.setInputValue('delete_ext_option_btn',%d,{priority:'event'});",
+                      as.integer(r$id)),
+                    "Remove"))
+              )
+            }))
+          )
+        } else div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;", "No extension options yet."),
+        tags$details(
+          tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
+                       "Add option"),
+          div(style = "padding:.5rem 0;",
+            fluidRow(
+              column(3, textInput("new_ext_label", "Label:", placeholder = "e.g. 24-hour")),
+              column(2, numericInput("new_ext_hours", "Hours:", value = 24, min = 0.5, step = 0.5)),
+              column(2, numericInput("new_ext_tokens", "Token cost:", value = 3, min = 1, step = 1)),
+              column(3, tags$br(),
+                     actionButton("add_ext_option_btn", "Add", class = "btn btn-sm btn-primary"))
+            )
+          )
+        ),
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Problem Sets"),
         div(style = "margin-top:.25rem;",
@@ -3391,28 +3648,75 @@ server <- function(input, output, session) {
         )
       )
 
-    } else if (act == "pubgoods") {
-      pgs <- tryCatch(db_query("SELECT * FROM public_goods ORDER BY id DESC LIMIT 20;"),
-                      error = function(e) data.frame())
+    } else if (act == "flex_questions") {
+      fqs <- tryCatch(db_query(
+        "SELECT id, question_text, order_index, active FROM flex_questions ORDER BY order_index ASC, id ASC;"),
+        error = function(e) data.frame())
+      cur_schedule <- tryCatch(get_setting("flex_cost_schedule", "2,4,6,8,10"),
+                               error = function(e) "2,4,6,8,10")
       tagList(
-        tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Public Goods"),
-        div(style = "margin-top:.25rem;",
-          if (nrow(pgs)) {
-            tags$table(class = "table table-sm",
-              tags$thead(tags$tr(tags$th("Name"), tags$th("Threshold"), tags$th("Active"))),
-              tags$tbody(lapply(seq_len(nrow(pgs)), function(i) {
-                r <- pgs[i, ]
-                tags$tr(tags$td(r$name), tags$td(r$threshold %||% ""),
-                        tags$td(if (isTRUE(as.integer(r$active %||% 1L) == 1L)) "✓" else ""))
-              }))
-            )
-          } else div(style = "color:#999;", "No public goods yet.")
+        tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Flex Questions"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+               "Students unlock questions in order by spending tokens. Questions are shown one at a time."),
+
+        # Price schedule
+        tags$h6(style = "font-weight:700;margin-top:.75rem;", "Price Schedule"),
+        textInput("flex_cost_input", NULL, value = cur_schedule, width = "100%",
+                  placeholder = "e.g. 2,4,6,8,10"),
+        tags$p(style = "color:#888;font-size:.82em;margin-top:-.4rem;",
+               "Comma-separated costs per question in order. Last value repeats for additional questions."),
+        actionButton("save_flex_cost_btn", "Save schedule", class = "btn btn-sm btn-primary"),
+        tags$hr(),
+
+        # Question table
+        tags$h6(style = "font-weight:700;", "Questions"),
+        if (nrow(fqs)) {
+          tags$table(class = "table table-sm",
+            tags$thead(tags$tr(
+              tags$th("#"), tags$th("Question"), tags$th("Active"), tags$th("")
+            )),
+            tags$tbody(lapply(seq_len(nrow(fqs)), function(i) {
+              r <- fqs[i, ]
+              is_active <- isTRUE(as.integer(r$active %||% 1L) == 1L)
+              tags$tr(
+                tags$td(style = "color:#888;width:2rem;", i),
+                tags$td(style = "font-size:.85rem;max-width:26rem;word-break:break-word;",
+                        r$question_text %||% ""),
+                tags$td(if (is_active) "✓" else ""),
+                tags$td(
+                  tags$button(
+                    class = "btn btn-xs btn-outline-danger",
+                    style = "padding:.1rem .35rem;font-size:.72rem;",
+                    onclick = sprintf(
+                      "Shiny.setInputValue('delete_flex_question_btn',%d,{priority:'event'});",
+                      as.integer(r$id)),
+                    "Remove"))
+              )
+            }))
+          )
+        } else div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;", "No questions yet."),
+
+        # Manual add
+        tags$details(
+          tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
+                       "Add question manually"),
+          div(style = "padding:.5rem 0;",
+            textAreaInput("new_fq_text", "Question text:", rows = 3, width = "100%"),
+            actionButton("add_flex_question_btn", "Add question",
+                         class = "btn btn-sm btn-primary")
+          )
         ),
-        tags$h6(style = "margin-top:.75rem;", "Add Public Good"),
-        textInput("new_pg_name", "Name:"),
-        textAreaInput("new_pg_desc", "Description:", rows = 2),
-        numericInput("new_pg_threshold", "Token threshold:", value = 100, min = 1),
-        actionButton("add_pg_btn", "Add", class = "btn btn-sm btn-primary")
+
+        # Upload
+        tags$hr(),
+        tags$h6(style = "font-weight:700;", "Upload Questions"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+               "Upload a plain-text file (one question per non-empty line) or a CSV with a 'question_text' column."),
+        fileInput("upload_flex_questions", NULL,
+                  accept = c(".txt", ".md", ".csv", ".yaml", ".yml"),
+                  buttonLabel = "Choose file", placeholder = "No file chosen"),
+        checkboxInput("fq_replace_all", "Replace all existing questions", value = FALSE),
+        actionButton("upload_flex_questions_btn", "Upload", class = "btn btn-sm btn-primary")
       )
 
     } else if (act == "game_controls") {
@@ -3639,6 +3943,17 @@ server <- function(input, output, session) {
        ORDER BY pgc.contributed_at DESC;"), error = function(e) data.frame()),
       file, row.names = FALSE)
   )
+  output$dl_flex_purchases <- downloadHandler(
+    filename = function() paste0("flex_purchases_", Sys.Date(), ".csv"),
+    content  = function(file) write.csv(tryCatch(db_query(
+      "SELECT fp.id, u.display_name AS student, fq.order_index AS question_num,
+              fq.question_text, fp.tokens_spent, fp.purchased_at
+       FROM flex_purchases fp
+       LEFT JOIN users u ON u.user_id=fp.user_id
+       LEFT JOIN flex_questions fq ON fq.id=fp.question_id
+       ORDER BY fp.purchased_at DESC;"), error = function(e) data.frame()),
+      file, row.names = FALSE)
+  )
   output$dl_app_bids <- downloadHandler(
     filename = function() paste0("application_bids_", Sys.Date(), ".csv"),
     content  = function(file) write.csv(tryCatch(db_query(
@@ -3750,9 +4065,9 @@ server <- function(input, output, session) {
   # ── Voluntary Participation logging ───────────────────────────────────────────
   .log_participation <- function(outcome_type) {
     req(rv$is_admin, !rv$impersonating)
-    uid    <- trimws(input$part_student_sel %||% "")
-    cat_id <- suppressWarnings(as.integer(input$part_event_type %||% 0))
-    if (!nzchar(uid) || is.na(cat_id) || cat_id <= 0) {
+    uid     <- trimws(input$part_student_sel %||% "")
+    post_id <- suppressWarnings(as.integer(input$part_event_type %||% 0))
+    if (!nzchar(uid) || is.na(post_id) || post_id <= 0) {
       showNotification("Select a student and event type.", type = "error"); return()
     }
     rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
@@ -3765,14 +4080,14 @@ server <- function(input, output, session) {
                       error = function(e) data.frame())
     dname <- if (nrow(u_row)) u_row$display_name[1] %||% uid else uid
     post_row <- tryCatch(db_query(
-      "SELECT jp.id, COALESCE(jp.wage_override, jc.default_wage) AS tokens
+      "SELECT jp.id, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
        FROM job_posts jp
        LEFT JOIN job_categories jc ON jc.id = jp.category_id
-       WHERE jp.round_id=? AND jp.category_id=? AND COALESCE(jp.voluntary,0)=1
-       LIMIT 1;", list(rid, cat_id)),
+       WHERE jp.id=? AND jp.round_id=? AND COALESCE(jp.voluntary,0)=1
+       LIMIT 1;", list(post_id, rid)),
       error = function(e) data.frame())
     if (!nrow(post_row)) {
-      showNotification("No voluntary post for that event type in this round.", type = "error")
+      showNotification("No voluntary post found.", type = "error")
       return()
     }
     post_id   <- as.integer(post_row$id[1])
@@ -3959,10 +4274,10 @@ server <- function(input, output, session) {
               COALESCE(jp.wage_override, jc.default_wage) AS wage
        FROM job_posts jp
        LEFT JOIN job_categories jc ON jc.id=jp.category_id
-       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.voluntary,0)=0;",
+       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1;",
       list(rid)),
       error = function(e) data.frame())
-    if (!nrow(posts)) { showNotification("No active job posts for this round.", type = "error"); return() }
+    if (!nrow(posts)) { showNotification("No active job posts marked 'In Draw' for this round.", type = "error"); return() }
 
     sec_filter <- rv$active_section %||% ""
     students <- tryCatch(
@@ -4010,11 +4325,11 @@ server <- function(input, output, session) {
               COALESCE(jp.wage_override, jc.default_wage) AS wage
        FROM job_posts jp
        LEFT JOIN job_categories jc ON jc.id=jp.category_id
-       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.voluntary,0)=0;",
+       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1;",
       list(rid)),
       error = function(e) data.frame())
     if (!nrow(posts)) {
-      showNotification("No active job posts for this round.", type = "error"); return()
+      showNotification("No active job posts marked 'In Draw' for this round.", type = "error"); return()
     }
     sec_filter2 <- rv$active_section %||% ""
     students <- tryCatch(
