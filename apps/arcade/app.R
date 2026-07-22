@@ -2129,13 +2129,20 @@ server <- function(input, output, session) {
       "SELECT question_id FROM flex_purchases WHERE user_id=?;", list(rv$user_id)),
       error = function(e) data.frame())
     owned_ids <- if (nrow(owned)) as.integer(owned$question_id) else integer(0)
-    nxt <- tryCatch(db_query(
-      "SELECT id, question_text, order_index FROM flex_questions
-       WHERE COALESCE(active,1)=1 AND id NOT IN (%s)
-       ORDER BY order_index ASC, id ASC LIMIT 1;" |>
-        (function(q) sprintf(q, if (length(owned_ids)) paste(owned_ids, collapse=",") else "NULL"))(),
-      list()),
-      error = function(e) data.frame())
+    nxt <- tryCatch({
+      if (length(owned_ids)) {
+        q <- sprintf(
+          "SELECT id, question_text, order_index FROM flex_questions
+           WHERE COALESCE(active,1)=1 AND id NOT IN (%s)
+           ORDER BY order_index ASC, id ASC LIMIT 1;",
+          paste(owned_ids, collapse=","))
+        db_query(q, list())
+      } else {
+        db_query(
+          "SELECT id, question_text, order_index FROM flex_questions
+           WHERE COALESCE(active,1)=1 ORDER BY order_index ASC, id ASC LIMIT 1;")
+      }
+    }, error = function(e) data.frame())
     if (!nrow(nxt)) {
       showNotification("You have purchased all available questions.", type = "message"); return()
     }
