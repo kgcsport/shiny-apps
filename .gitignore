@@ -58,7 +58,6 @@ google_application_credentials.json
 /secrets/
 .env
 *.dcf
-ideas
 /.quarto/
 **/*.quarto_ipynb
 brown-bag-research-infrastructure*
