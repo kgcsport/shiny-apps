@@ -147,6 +147,9 @@ db_exec("CREATE TABLE IF NOT EXISTS labor_settings(
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('extension_prices_json','{\"24\":3,\"48\":5}');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('reweight_cost_schedule','1:2,2:5,3:9,4:14,5:20');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('grade_reweight_categories','Homework,Midterm,Final');")
+db_exec(paste0("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('grade_categories_json','",
+  '[{"name":"Homework","weight":33},{"name":"Midterm","weight":33},{"name":"Final","weight":34}]',
+  "');"))
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('half_wage_multiplier','0.5');")
 db_exec(paste0("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('participation_event_types','",
   '[{"id":"question","label":"Useful Question","tokens":1},',
@@ -372,6 +375,18 @@ parse_event_types <- function() {
     data.frame(id=c("question","explain","correct"),
                label=c("Useful Question","Explanation","Correct Answer"),
                tokens=c(1,2,1), stringsAsFactors=FALSE))
+}
+
+parse_grade_categories <- function() {
+  default_json <- '[{"name":"Homework","weight":33},{"name":"Midterm","weight":33},{"name":"Final","weight":34}]'
+  raw <- tryCatch(get_setting("grade_categories_json", default_json), error = function(e) default_json)
+  tryCatch({
+    df <- jsonlite::fromJSON(raw)
+    if (is.data.frame(df) && all(c("name","weight") %in% names(df))) df
+    else jsonlite::fromJSON(default_json)
+  }, error = function(e)
+    data.frame(name=c("Homework","Midterm","Final"),
+               weight=c(33,33,34), stringsAsFactors=FALSE))
 }
 
 APP_NAME <- get_config("app_name", "Classroom Economy")
@@ -628,6 +643,23 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
 .jm-history { font-size: .84rem; color: #555; }
 
 /* ── Admin ──────────────────────────────────────────────────────────────── */
+
+/* ── Projector View ─────────────────────────────────────────────────────── */
+.proj-wrap   { background:#111; color:#f0f0f0; min-height:100vh;
+               padding:2rem 3rem; font-family:system-ui,-apple-system,sans-serif; }
+.proj-round  { font-size:2.5rem; font-weight:800; color:#f5c518;
+               margin-bottom:1.5rem; letter-spacing:.02em; }
+.proj-sec    { font-size:.9rem; font-weight:700; text-transform:uppercase;
+               letter-spacing:.12em; color:#888;
+               border-bottom:1px solid #333; padding-bottom:.35rem;
+               margin:1.4rem 0 .75rem; }
+.proj-tbl    { width:100%; border-collapse:collapse; font-size:1.2rem; }
+.proj-tbl th { font-size:.8rem; text-transform:uppercase; color:#666; font-weight:600;
+               padding:.35rem .6rem; border-bottom:1px solid #333; text-align:left; }
+.proj-tbl td { padding:.45rem .6rem; border-bottom:1px solid #1e1e1e; }
+.proj-tbl td.num { font-family:ui-monospace,monospace; color:#6fcf7d;
+                   font-weight:700; text-align:right; }
+.proj-none   { color:#555; font-style:italic; padding:.65rem 0; font-size:1.1rem; }
 "
 
 # ── UI ────────────────────────────────────────────────────────────────────────
@@ -677,7 +709,8 @@ server <- function(input, output, session) {
     pd_choice_val  = NULL,
     spend_mode     = NULL,   # NULL | "extension" | "reweight" | "pubgood"
     impersonating  = FALSE,
-    orig_state     = NULL
+    orig_state     = NULL,
+    draw_preview   = NULL    # NULL | list of draw pairs for preview
   )
 
   # ── Root UI ──────────────────────────────────────────────────────────────────
@@ -759,7 +792,8 @@ server <- function(input, output, session) {
             tabPanel("Spend",        br(), uiOutput("spend_tab")),
             tabPanel("Account",      br(), uiOutput("account_tab")),
             tabPanel("Live Tracker", br(), uiOutput("live_tracker_tab")),
-            tabPanel("Settings",     br(), uiOutput("settings_tab"))
+            tabPanel("Settings",     br(), uiOutput("settings_tab")),
+            tabPanel("Projector",    br(), uiOutput("projector_tab"))
           )
         )
       )
@@ -1847,9 +1881,11 @@ server <- function(input, output, session) {
       )
 
     } else if (mode == "reweight") {
-      cats_str <- tryCatch(get_setting("grade_reweight_categories", "Homework,Midterm,Final"),
-                           error = function(e) "Homework,Midterm,Final")
-      cats  <- trimws(strsplit(cats_str, ",")[[1]])
+      cats_df <- tryCatch(parse_grade_categories(),
+                          error = function(e)
+                            data.frame(name=c("Homework","Midterm","Final"),
+                                       weight=c(33,33,34), stringsAsFactors=FALSE))
+      cats  <- cats_df$name
       costs <- parse_rw_costs()
       max_pts <- if (length(costs)) as.integer(max(as.integer(names(costs)), na.rm = TRUE)) else 5L
       div(class = "spend-form-box",
@@ -2132,9 +2168,11 @@ server <- function(input, output, session) {
     if (show_admin) {
       showTab("arc_tabs", "Live Tracker")
       showTab("arc_tabs", "Settings")
+      showTab("arc_tabs", "Projector")
     } else {
       hideTab("arc_tabs", "Live Tracker")
       hideTab("arc_tabs", "Settings")
+      hideTab("arc_tabs", "Projector")
     }
   })
 
@@ -2312,16 +2350,49 @@ server <- function(input, output, session) {
 
   observeEvent(input$save_rw_setup_btn, {
     req(rv$is_admin)
-    cats_str  <- trimws(input$rw_cats_input %||% "")
     costs_str <- trimws(input$rw_costs_input %||% "")
-    if (!nzchar(cats_str)) { showNotification("Enter categories.", type = "error"); return() }
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('grade_reweight_categories',?);",
-            list(cats_str))
-    if (nzchar(costs_str))
-      db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('reweight_cost_schedule',?);",
-              list(costs_str))
-    showNotification("Grade reweighting setup saved.", type = "message")
+    if (!nzchar(costs_str)) {
+      showNotification("Enter a cost schedule.", type = "error"); return()
+    }
+    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('reweight_cost_schedule',?);",
+            list(costs_str))
+    showNotification("Cost schedule saved.", type = "message")
   })
+
+  observeEvent(input$add_grade_cat_btn, {
+    req(rv$is_admin)
+    nm     <- trimws(input$new_grade_cat_name %||% "")
+    weight <- suppressWarnings(as.numeric(input$new_grade_cat_weight %||% 0))
+    if (!nzchar(nm)) {
+      showNotification("Category name required.", type = "error"); return()
+    }
+    if (is.na(weight) || weight < 0 || weight > 100) {
+      showNotification("Weight must be between 0 and 100.", type = "error"); return()
+    }
+    cats_df <- tryCatch(parse_grade_categories(),
+                        error = function(e) data.frame(name=character(0), weight=numeric(0)))
+    if (nm %in% cats_df$name) {
+      showNotification(sprintf("Category '%s' already exists.", nm), type = "error"); return()
+    }
+    cats_df <- rbind(cats_df, data.frame(name=nm, weight=weight, stringsAsFactors=FALSE))
+    db_exec(
+      "INSERT OR REPLACE INTO labor_settings(key,value) VALUES('grade_categories_json',?);",
+      list(jsonlite::toJSON(cats_df, auto_unbox = FALSE)))
+    showNotification(sprintf("Added category '%s' (%.0f%%).", nm, weight), type = "message")
+  })
+
+  observeEvent(input$delete_grade_cat, {
+    req(rv$is_admin)
+    nm <- trimws(input$delete_grade_cat %||% "")
+    if (!nzchar(nm)) return()
+    cats_df <- tryCatch(parse_grade_categories(),
+                        error = function(e) data.frame(name=character(0), weight=numeric(0)))
+    cats_df <- cats_df[cats_df$name != nm, , drop = FALSE]
+    db_exec(
+      "INSERT OR REPLACE INTO labor_settings(key,value) VALUES('grade_categories_json',?);",
+      list(jsonlite::toJSON(cats_df, auto_unbox = FALSE)))
+    showNotification(sprintf("Removed category '%s'.", nm), type = "message")
+  }, ignoreNULL = TRUE)
 
   observeEvent(input$save_ext_prices_btn, {
     req(rv$is_admin)
@@ -2408,7 +2479,11 @@ server <- function(input, output, session) {
                 actionButton("run_draw_btn", "\U0001f3b2 Draw Jobs",
                              class = "btn btn-primary btn-sm",
                              title = "Assign students to jobs, replacing any existing assignments")),
-              column(5,
+              column(4,
+                actionButton("preview_draw_btn", "\U0001f441 Preview Draw",
+                             class = "btn btn-outline-secondary btn-sm",
+                             title = "See who would get which job without saving to the database")),
+              column(4,
                 if (revealed)
                   actionButton("toggle_reveal_btn", "Hide from Students",
                                class = "btn btn-outline-secondary btn-sm")
@@ -2421,7 +2496,8 @@ server <- function(input, output, session) {
               tags$p(style = "font-size:.8rem;color:#888;margin-top:.4rem;margin-bottom:0;",
                      sprintf("%d students assigned · %s",
                              n_assigned,
-                             if (revealed) "Visible to students" else "Hidden from students"))
+                             if (revealed) "Visible to students" else "Hidden from students")),
+            uiOutput("draw_preview_table")
           )
         }
       ),
@@ -2564,6 +2640,149 @@ server <- function(input, output, session) {
             }))
           )
         }
+      )
+    )
+  })
+
+  # ── Draw Preview table ────────────────────────────────────────────────────────
+  output$draw_preview_table <- renderUI({
+    req(rv$is_admin)
+    preview <- rv$draw_preview
+    if (is.null(preview) || !length(preview)) return(NULL)
+    round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                      error = function(e) data.frame())
+    wage_mode <- nrow(round) > 0 &&
+      identical(round$assignment_mode[1] %||% "random", "wage_bidding")
+    rows <- lapply(preview, function(p) {
+      u_row  <- tryCatch(db_query("SELECT display_name FROM users WHERE user_id=?;",
+                                  list(p$uid)), error=function(e) data.frame())
+      jp_row <- tryCatch(db_query("SELECT job_name FROM job_posts WHERE id=?;",
+                                  list(p$post_id)), error=function(e) data.frame())
+      list(
+        student = if (nrow(u_row)) u_row$display_name[1] %||% p$uid else p$uid,
+        job     = if (nrow(jp_row)) jp_row$job_name[1] %||% "" else "",
+        wage    = p$wage
+      )
+    })
+    div(style = "margin-top:.75rem;",
+      div(class = "sec-label",
+          sprintf("Draw Preview (%d assignments — not saved)", length(rows))),
+      div(style = paste0("padding:.35rem .7rem;border-radius:6px;background:#fff3cd;",
+                         "border:1px solid #ffc107;color:#856404;font-size:.85rem;",
+                         "margin-bottom:.5rem;"),
+          "Preview only — click \"\U0001f3b2 Draw Jobs\" to commit (random draws may differ)."),
+      div(class = "tracker-wrap",
+        tags$table(class = "table table-sm table-hover",
+          tags$thead(tags$tr(
+            tags$th("Student"), tags$th("Job"),
+            if (wage_mode) tags$th(style = "text-align:right;", "Wage")
+          )),
+          tags$tbody(lapply(rows, function(r) {
+            tags$tr(
+              tags$td(r$student),
+              tags$td(style = "font-weight:600;", r$job),
+              if (wage_mode)
+                tags$td(style = "text-align:right;",
+                        if (!is.na(r$wage %||% NA))
+                          sprintf("%d", as.integer(r$wage)) else "—")
+            )
+          }))
+        )
+      )
+    )
+  })
+
+  # ── Projector tab (admin) ─────────────────────────────────────────────────────
+  output$projector_tab <- renderUI({
+    req(rv$authed, rv$is_admin)
+    td  <- tracker_poll()
+    arc <- arcade_poll()
+    round <- td$round
+    active_game <- arc$active_game[1] %||% ""
+    round_label <- if (nrow(round))
+      round$label[1] %||% paste("Round", round$id[1])
+    else "(No round configured)"
+    mode      <- if (nrow(round)) round$assignment_mode[1] %||% "random" else "random"
+    wage_mode <- identical(mode, "wage_bidding")
+
+    part_events <- tryCatch(db_query(
+      "SELECT pe.event_type, pe.tokens, pe.note, u.display_name
+       FROM participation_events pe
+       LEFT JOIN users u ON u.user_id = pe.user_id
+       ORDER BY pe.created_at DESC LIMIT 20;"),
+      error = function(e) data.frame())
+
+    div(class = "proj-wrap",
+      div(class = "proj-round",
+          "\U0001f393 ", round_label,
+          if (nzchar(active_game))
+            span(style = "font-size:1.4rem;color:#f5a623;margin-left:1.2rem;",
+                 paste0("[", active_game, " ▶ LIVE]"))
+      ),
+
+      div(class = "proj-sec", "Job Assignments"),
+      if (!nrow(td$assignments)) {
+        div(class = "proj-none", "No assignments recorded yet.")
+      } else {
+        tags$table(class = "proj-tbl",
+          tags$thead(tags$tr(
+            tags$th("Student"), tags$th("Job"),
+            if (wage_mode) tags$th(style = "text-align:right;", "Wage")
+          )),
+          tags$tbody(lapply(seq_len(nrow(td$assignments)), function(i) {
+            r <- td$assignments[i, ]
+            tags$tr(
+              tags$td(r$display_name %||% r$user_id),
+              tags$td(style = "font-weight:700;", r$job_name %||% "—"),
+              if (wage_mode)
+                tags$td(class = "num",
+                        if (!is.na(r$assigned_wage %||% NA))
+                          sprintf("%d", as.integer(r$assigned_wage)) else "—")
+            )
+          }))
+        )
+      },
+
+      div(class = "proj-sec", "Token Leaderboard"),
+      if (!nrow(td$students)) {
+        div(class = "proj-none", "No student data.")
+      } else {
+        lb <- td$students[order(-td$students$tokens_on_hand), ]
+        tags$table(class = "proj-tbl",
+          tags$thead(tags$tr(
+            tags$th("Student"), tags$th("Section"),
+            tags$th(style = "text-align:right;", "Tokens on Hand")
+          )),
+          tags$tbody(lapply(seq_len(nrow(lb)), function(i) {
+            r <- lb[i, ]
+            tags$tr(
+              tags$td(r$display_name %||% r$user_id),
+              tags$td(style = "color:#777;font-size:.85em;", r$section %||% ""),
+              tags$td(class = "num", as.integer(r$tokens_on_hand %||% 0))
+            )
+          }))
+        )
+      },
+
+      if (nrow(part_events) > 0) tagList(
+        div(class = "proj-sec", "Recent Participation"),
+        tags$table(class = "proj-tbl",
+          tags$thead(tags$tr(
+            tags$th("Student"), tags$th("Event"), tags$th("Note"),
+            tags$th(style = "text-align:right;", "Tokens")
+          )),
+          tags$tbody(lapply(seq_len(nrow(part_events)), function(i) {
+            r <- part_events[i, ]
+            tags$tr(
+              tags$td(r$display_name %||% ""),
+              tags$td(style = "color:#777;font-size:.85em;", r$event_type %||% ""),
+              tags$td(style = "color:#777;font-size:.85em;", r$note %||% ""),
+              tags$td(class = "num",
+                      if (!is.na(r$tokens %||% NA))
+                        sprintf("+%d", as.integer(r$tokens)) else "—")
+            )
+          }))
+        )
       )
     )
   })
@@ -2866,22 +3085,79 @@ server <- function(input, output, session) {
       )
 
     } else if (act == "grade_reweighting") {
-      current_cats  <- tryCatch(get_setting("grade_reweight_categories", "Homework,Midterm,Final"),
-                                error = function(e) "Homework,Midterm,Final")
+      cats_df <- tryCatch(parse_grade_categories(),
+                          error = function(e)
+                            data.frame(name=character(0), weight=numeric(0)))
       current_costs <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
                                 error = function(e) "1:2,2:5,3:9,4:14,5:20")
+      weight_sum <- if (nrow(cats_df)) sum(as.numeric(cats_df$weight), na.rm = TRUE) else 0
+      sum_ok     <- abs(weight_sum - 100) < 0.5
+
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;",
-                "Grade Reweighting Setup"),
-        textInput("rw_cats_input", "Categories (comma-separated):",
-                  value = current_cats, width = "100%"),
-        tags$p(style = "color:#888;font-size:.82em;margin-top:-.3rem;",
-               "e.g. Homework,Midterm,Final"),
+                "Grade Categories"),
+        tags$p(style = "color:#555;font-size:.88rem;",
+               "Define the categories students can reweight. Weights should sum to 100."),
+
+        div(style = sprintf(
+          "padding:.35rem .7rem;border-radius:6px;font-size:.85rem;margin-bottom:.6rem;%s",
+          if (sum_ok)
+            "background:#d4edda;border:1px solid #c3e6cb;color:#155724;"
+          else
+            "background:#fff3cd;border:1px solid #ffc107;color:#856404;"),
+          sprintf("Weight total: %.0f%% %s", weight_sum,
+                  if (sum_ok) "✓ sums to 100" else "(should sum to 100)")),
+
+        if (nrow(cats_df)) {
+          tags$table(class = "table table-sm",
+            tags$thead(tags$tr(
+              tags$th("Category"), tags$th("Weight (%)"), tags$th("Remove")
+            )),
+            tags$tbody(lapply(seq_len(nrow(cats_df)), function(i) {
+              r <- cats_df[i, ]
+              tags$tr(
+                tags$td(r$name),
+                tags$td(sprintf("%.0f%%", as.numeric(r$weight %||% 0))),
+                tags$td(
+                  tags$button(
+                    onclick = sprintf(
+                      "Shiny.setInputValue('delete_grade_cat','%s',{priority:'event'});",
+                      gsub("'", "\\'", r$name, fixed = TRUE)),
+                    class = "btn btn-xs btn-outline-danger",
+                    style = "padding:.1rem .35rem;font-size:.72rem;",
+                    "Remove")
+                )
+              )
+            }))
+          )
+        } else {
+          div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;", "No categories defined yet.")
+        },
+
+        tags$details(
+          tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
+                       "Add category"),
+          div(style = "padding:.5rem 0;",
+            fluidRow(
+              column(5, textInput("new_grade_cat_name", "Category name:",
+                                  placeholder = "e.g. Quizzes")),
+              column(4, numericInput("new_grade_cat_weight", "Weight (%):",
+                                     value = 0, min = 0, max = 100, step = 1)),
+              column(3, tags$br(),
+                     actionButton("add_grade_cat_btn", "Add",
+                                  class = "btn btn-sm btn-primary"))
+            )
+          )
+        ),
+
+        tags$hr(),
+        tags$h6(style = "font-weight:700;color:#951829;", "Cost Schedule"),
         textInput("rw_costs_input", "Cost schedule (points:tokens, comma-separated):",
                   value = current_costs, width = "100%"),
         tags$p(style = "color:#888;font-size:.82em;margin-top:-.3rem;",
                "e.g. 1:2,2:5,3:9 means moving 1 pt costs 2 tokens, 2 pts costs 5, etc."),
-        actionButton("save_rw_setup_btn", "Save", class = "btn btn-sm btn-primary"),
+        actionButton("save_rw_setup_btn", "Save cost schedule",
+                     class = "btn btn-sm btn-primary"),
         tags$hr(),
         div(class = "sec-label", "Pending Requests"),
         uiOutput("rw_requests_panel")
@@ -3414,6 +3690,71 @@ server <- function(input, output, session) {
   })
 
   # ── Job draw ──────────────────────────────────────────────────────────────────
+  compute_draw_pairs <- function(rid, mode, posts, students) {
+    tryCatch({
+      if (mode == "wage_bidding") {
+        bids <- db_query(
+          "SELECT user_id, category_id, min_wage FROM wage_bids WHERE round_id=? ORDER BY min_wage ASC;",
+          list(rid))
+        assigned_ids <- character(0)
+        result <- list()
+        for (i in seq_len(nrow(posts))) {
+          p  <- posts[i, ]
+          n  <- max(1L, as.integer(p$slots %||% 1L))
+          cat_bids <- if (nrow(bids)) bids[bids$category_id == p$category_id & !bids$user_id %in% assigned_ids, ] else data.frame()
+          pool_ids <- if (nrow(cat_bids)) cat_bids$user_id else character(0)
+          other_ids <- setdiff(students$user_id, c(assigned_ids, pool_ids))
+          pool_ids  <- c(pool_ids, sample(other_ids))
+          drawn <- head(pool_ids, n)
+          wages <- if (nrow(cat_bids)) {
+            sapply(drawn, function(u) {
+              m <- cat_bids[cat_bids$user_id == u, , drop=FALSE]
+              if (nrow(m)) as.numeric(m$min_wage[1]) else as.numeric(p$wage %||% NA)
+            })
+          } else rep(as.numeric(p$wage %||% NA), length(drawn))
+          assigned_ids <- c(assigned_ids, drawn)
+          for (j in seq_along(drawn))
+            result[[length(result)+1]] <- list(uid=drawn[j], post_id=p$id, wage=wages[j])
+        }
+        result
+      } else if (mode == "application_bidding") {
+        bids <- tryCatch(db_query(
+          "SELECT user_id, category_id, tickets FROM application_bids WHERE round_id=? AND tickets>0;",
+          list(rid)), error=function(e) data.frame())
+        assigned_ids <- character(0)
+        result <- list()
+        for (i in seq_len(nrow(posts))) {
+          p  <- posts[i, ]
+          n  <- max(1L, as.integer(p$slots %||% 1L))
+          cat_bids <- if (nrow(bids))
+            bids[bids$category_id == p$category_id & !bids$user_id %in% assigned_ids, ]
+          else data.frame()
+          pool <- if (nrow(cat_bids)) rep(cat_bids$user_id, cat_bids$tickets) else character(0)
+          others <- setdiff(students$user_id, c(assigned_ids, if(nrow(cat_bids)) cat_bids$user_id else character(0)))
+          pool <- c(pool, others)
+          pool <- pool[!pool %in% assigned_ids]
+          drawn <- if (length(pool) > 0) {
+            k <- min(n, length(unique(pool)))
+            sample(unique(pool), k, prob=tabulate(match(pool, unique(pool))))
+          } else character(0)
+          assigned_ids <- c(assigned_ids, drawn)
+          for (uid in drawn)
+            result[[length(result)+1]] <- list(uid=uid, post_id=p$id, wage=as.numeric(p$wage %||% NA))
+        }
+        result
+      } else {
+        shuffled <- sample(students$user_id)
+        slots_list <- do.call(c, lapply(seq_len(nrow(posts)), function(i) {
+          p <- posts[i,]
+          rep(list(list(post_id=p$id, wage=as.numeric(p$wage %||% NA))),
+              max(1L, as.integer(p$slots %||% 1L)))
+        }))
+        lapply(seq_len(min(length(shuffled), length(slots_list))), function(i)
+          list(uid=shuffled[i], post_id=slots_list[[i]]$post_id, wage=slots_list[[i]]$wage))
+      }
+    }, error = function(e) { message("draw error: ", e$message); list() })
+  }
+
   observeEvent(input$run_draw_btn, {
     req(rv$is_admin)
     round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
@@ -3438,79 +3779,9 @@ server <- function(input, output, session) {
       error = function(e) data.frame())
     if (!nrow(students)) { showNotification("No eligible students found.", type = "error"); return() }
 
-    # Clear existing assignments for this round
     db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(rid))
 
-    # Build assignment pairs based on mode
-    pairs <- tryCatch({
-      if (mode == "wage_bidding") {
-        # For each category: sort bids ascending, assign cheapest bidders to slots
-        bids <- db_query(
-          "SELECT user_id, category_id, min_wage FROM wage_bids WHERE round_id=? ORDER BY min_wage ASC;",
-          list(rid))
-        assigned_ids <- character(0)
-        result <- list()
-        for (i in seq_len(nrow(posts))) {
-          p  <- posts[i, ]
-          n  <- max(1L, as.integer(p$slots %||% 1L))
-          cat_bids <- if (nrow(bids)) bids[bids$category_id == p$category_id & !bids$user_id %in% assigned_ids, ] else data.frame()
-          pool_ids <- if (nrow(cat_bids)) cat_bids$user_id else character(0)
-          # Fill remaining from unassigned students not already drawn
-          other_ids <- setdiff(students$user_id, c(assigned_ids, pool_ids))
-          pool_ids  <- c(pool_ids, sample(other_ids))
-          drawn <- head(pool_ids, n)
-          wages <- if (nrow(cat_bids)) {
-            sapply(drawn, function(u) {
-              m <- cat_bids[cat_bids$user_id == u, , drop=FALSE]
-              if (nrow(m)) as.numeric(m$min_wage[1]) else as.numeric(p$wage %||% NA)
-            })
-          } else rep(as.numeric(p$wage %||% NA), length(drawn))
-          assigned_ids <- c(assigned_ids, drawn)
-          for (j in seq_along(drawn))
-            result[[length(result)+1]] <- list(uid=drawn[j], post_id=p$id, wage=wages[j])
-        }
-        result
-      } else if (mode == "application_bidding") {
-        # Weighted lottery by ticket allocation per category
-        bids <- tryCatch(db_query(
-          "SELECT user_id, category_id, tickets FROM application_bids WHERE round_id=? AND tickets>0;",
-          list(rid)), error=function(e) data.frame())
-        assigned_ids <- character(0)
-        result <- list()
-        for (i in seq_len(nrow(posts))) {
-          p  <- posts[i, ]
-          n  <- max(1L, as.integer(p$slots %||% 1L))
-          cat_bids <- if (nrow(bids))
-            bids[bids$category_id == p$category_id & !bids$user_id %in% assigned_ids, ]
-          else data.frame()
-          # Expand by ticket count for weighted sampling
-          pool <- if (nrow(cat_bids)) rep(cat_bids$user_id, cat_bids$tickets) else character(0)
-          # All unassigned students eligible as fallback with weight 1
-          others <- setdiff(students$user_id, c(assigned_ids, if(nrow(cat_bids)) cat_bids$user_id else character(0)))
-          pool <- c(pool, others)
-          pool <- pool[!pool %in% assigned_ids]
-          drawn <- if (length(pool) > 0) {
-            k <- min(n, length(unique(pool)))
-            sample(unique(pool), k, prob=tabulate(match(pool, unique(pool))))
-          } else character(0)
-          assigned_ids <- c(assigned_ids, drawn)
-          for (uid in drawn)
-            result[[length(result)+1]] <- list(uid=uid, post_id=p$id, wage=as.numeric(p$wage %||% NA))
-        }
-        result
-      } else {
-        # Pure random: shuffle students, assign round-robin to slots
-        shuffled <- sample(students$user_id)
-        slots_list <- do.call(c, lapply(seq_len(nrow(posts)), function(i) {
-          p <- posts[i,]
-          rep(list(list(post_id=p$id, wage=as.numeric(p$wage %||% NA))),
-              max(1L, as.integer(p$slots %||% 1L)))
-        }))
-        lapply(seq_len(min(length(shuffled), length(slots_list))), function(i)
-          list(uid=shuffled[i], post_id=slots_list[[i]]$post_id, wage=slots_list[[i]]$wage))
-      }
-    }, error = function(e) { message("draw error: ", e$message); list() })
-
+    pairs <- compute_draw_pairs(rid, mode, posts, students)
     if (!length(pairs)) { showNotification("Draw produced no assignments.", type = "error"); return() }
 
     for (p in pairs) {
@@ -3522,7 +3793,45 @@ server <- function(input, output, session) {
              mode))
     }
     db_exec("UPDATE arcade_state SET assignments_revealed=0, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    rv$draw_preview <- NULL
     showNotification(sprintf("Drew %d assignments (hidden from students).", length(pairs)), type = "message")
+  })
+
+  observeEvent(input$preview_draw_btn, {
+    req(rv$is_admin)
+    round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                      error = function(e) data.frame())
+    if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
+    rid  <- round$id[1]
+    mode <- round$assignment_mode[1] %||% "random"
+    posts <- tryCatch(db_query(
+      "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
+              COALESCE(jp.wage_override, jc.default_wage) AS wage
+       FROM job_posts jp
+       LEFT JOIN job_categories jc ON jc.id=jp.category_id
+       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1;", list(rid)),
+      error = function(e) data.frame())
+    if (!nrow(posts)) {
+      showNotification("No active job posts for this round.", type = "error"); return()
+    }
+    students <- tryCatch(db_query(
+      "SELECT user_id, section FROM users
+       WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
+       ORDER BY RANDOM();"),
+      error = function(e) data.frame())
+    if (!nrow(students)) {
+      showNotification("No eligible students found.", type = "error"); return()
+    }
+    pairs <- compute_draw_pairs(rid, mode, posts, students)
+    if (!length(pairs)) {
+      showNotification("Preview produced no assignments.", type = "error")
+      rv$draw_preview <- NULL
+      return()
+    }
+    rv$draw_preview <- pairs
+    showNotification(
+      sprintf("Preview: %d assignments (not saved to database).", length(pairs)),
+      type = "message")
   })
 
   # ── Reveal toggle ─────────────────────────────────────────────────────────────
