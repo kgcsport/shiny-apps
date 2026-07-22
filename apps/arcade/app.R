@@ -2509,6 +2509,38 @@ server <- function(input, output, session) {
     rv$jobs_ver <- rv$jobs_ver + 1L
   }, ignoreNULL = TRUE)
 
+  observeEvent(input$delete_job_post_btn, {
+    req(rv$is_admin)
+    pid <- suppressWarnings(as.integer(input$delete_job_post_btn %||% 0))
+    if (is.na(pid) || pid <= 0) return()
+    db_exec("DELETE FROM job_assignments WHERE job_post_id=?;", list(pid))
+    db_exec("DELETE FROM job_posts WHERE id=?;", list(pid))
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification("Job post deleted.", type = "message")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$delete_job_cat_btn, {
+    req(rv$is_admin)
+    cid <- suppressWarnings(as.integer(input$delete_job_cat_btn %||% 0))
+    if (is.na(cid) || cid <= 0) return()
+    db_exec("UPDATE job_posts SET category_id=NULL WHERE category_id=?;", list(cid))
+    db_exec("DELETE FROM job_categories WHERE id=?;", list(cid))
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification("Category deleted.", type = "message")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$delete_round_btn, {
+    req(rv$is_admin)
+    rid <- suppressWarnings(as.integer(input$delete_round_btn %||% 0))
+    if (is.na(rid) || rid <= 0) return()
+    db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(rid))
+    tryCatch(db_exec("DELETE FROM wage_bids WHERE round_id=?;", list(rid)), error = function(e) NULL)
+    db_exec("DELETE FROM job_posts WHERE round_id=?;", list(rid))
+    db_exec("DELETE FROM weekly_rounds WHERE id=?;", list(rid))
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification("Round deleted.", type = "message")
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$unassign_job_btn, {
     req(rv$is_admin)
     aid <- suppressWarnings(as.integer(input$unassign_job_btn %||% 0))
@@ -3078,7 +3110,6 @@ server <- function(input, output, session) {
         "Round Setup"           = "round_setup",
         "Students"              = "students",
         "Token Admin"           = "token_admin",
-        "Participation Events"  = "participation_events",
         "Exports"               = "exports",
         "Grade Reweighting"     = "grade_reweighting",
         "Extensions"            = "extensions",
@@ -3180,7 +3211,7 @@ server <- function(input, output, session) {
               tags$thead(tags$tr(
                 tags$th("Post"), tags$th("Cat"), tags$th("Slots"),
                 tags$th("Wage"), tags$th("Clearing Wage"),
-                tags$th("In Draw"), tags$th("Voluntary"), tags$th("Active")
+                tags$th("In Draw"), tags$th("Voluntary"), tags$th("Active"), tags$th("")
               )),
               tags$tbody(lapply(seq_len(nrow(all_posts)), function(i) {
                 r        <- all_posts[i, ]
@@ -3209,7 +3240,15 @@ server <- function(input, output, session) {
                   tags$td(make_flag_btn("\U2713 Voluntary", "\U2715 Not Voluntary", "toggle_post_voluntary",
                                         r$id, is_vol, "btn-info", "btn-outline-secondary")),
                   tags$td(make_flag_btn("\U2713 Active", "\U2715 Inactive", "toggle_post_active",
-                                        r$id, is_act, "btn-success", "btn-outline-secondary"))
+                                        r$id, is_act, "btn-success", "btn-outline-secondary")),
+                  tags$td(
+                    tags$button(
+                      class = "btn btn-xs btn-outline-danger",
+                      style = "padding:.1rem .3rem;font-size:.7rem;",
+                      onclick = sprintf(
+                        "if(confirm('Delete this job post and its assignments?')){Shiny.setInputValue('delete_job_post_btn',%d,{priority:'event'})}",
+                        as.integer(r$id)),
+                      "\U274c"))
                 )
               }))
             )
@@ -3272,19 +3311,26 @@ server <- function(input, output, session) {
                     column(4, textInput(paste0("edit_cat_desc_",  cid_js), "Description:",
                                         value = r$description %||% "")),
                     column(3, tags$br(),
-                      tags$button(
-                        class = "btn btn-sm btn-primary",
-                        onclick = sprintf(paste0(
-                          "var n=document.getElementById('edit_cat_name_%d').value;",
-                          "var w=document.getElementById('edit_cat_wage_%d').value;",
-                          "var d=document.getElementById('edit_cat_desc_%d').value;",
-                          "Shiny.setInputValue('edit_cat_btn',{id:%d,name:n,wage:w,desc:d},{priority:'event'});",
-                          "this.closest('details').removeAttribute('open');",
-                          "this.textContent='Saved ✓';",
-                          "setTimeout(function(b){b.textContent='Save changes';}",
-                          ",1500,this);"),
-                          cid_js, cid_js, cid_js, cid_js),
-                        "Save changes"))
+                      div(style = "display:flex;gap:.4rem;flex-wrap:wrap;",
+                        tags$button(
+                          class = "btn btn-sm btn-primary",
+                          onclick = sprintf(paste0(
+                            "var n=document.getElementById('edit_cat_name_%d').value;",
+                            "var w=document.getElementById('edit_cat_wage_%d').value;",
+                            "var d=document.getElementById('edit_cat_desc_%d').value;",
+                            "Shiny.setInputValue('edit_cat_btn',{id:%d,name:n,wage:w,desc:d},{priority:'event'});",
+                            "this.closest('details').removeAttribute('open');",
+                            "this.textContent='Saved ✓';",
+                            "setTimeout(function(b){b.textContent='Save changes';}",
+                            ",1500,this);"),
+                            cid_js, cid_js, cid_js, cid_js),
+                          "Save changes"),
+                        tags$button(
+                          class = "btn btn-sm btn-outline-danger",
+                          onclick = sprintf(
+                            "if(confirm('Delete category \"%s\"? Posts in this category will have no category.')){Shiny.setInputValue('delete_job_cat_btn',%d,{priority:'event'})}",
+                            r$name %||% "", cid_js),
+                          "Delete")))
                   )
                 )
               )
@@ -3305,6 +3351,20 @@ server <- function(input, output, session) {
             )
           )
         ),
+
+        # ── Try-Outcome Wage Multiplier ───────────────────────────────────────────
+        tags$hr(),
+        tags$h6(style = "font-weight:700;color:#951829;", "Try-Outcome Wage Multiplier"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+               "When a student Tries (partial credit) on an assigned or voluntary job, they earn this fraction of the wage. Default 0.5 = 50%."),
+        {
+          current_hwm2 <- tryCatch(as.numeric(get_setting("half_wage_multiplier","0.5")), error=function(e) 0.5)
+          tagList(
+            numericInput("half_wage_input", "Multiplier (0–1):",
+                         value = current_hwm2, min = 0, max = 1, step = 0.05, width = "220px"),
+            actionButton("save_hwm_btn", "Save", class = "btn btn-sm btn-primary")
+          )
+        },
 
         # ── Templates ─────────────────────────────────────────────────────────────
         tags$hr(),
@@ -3401,7 +3461,15 @@ server <- function(input, output, session) {
                                          value = as.integer(r$tickets_per_student %||% 10L),
                                          min = 1, step = 1))
                 ),
-                actionButton("update_round_btn", "Update round", class = "btn btn-sm btn-primary")
+                div(style = "display:flex;gap:.5rem;margin-top:.3rem;",
+                  actionButton("update_round_btn", "Update round", class = "btn btn-sm btn-primary"),
+                  tags$button(
+                    class = "btn btn-sm btn-outline-danger",
+                    onclick = sprintf(
+                      "if(confirm('Delete round \"%s\"? This also removes all its job posts, assignments, and bids.')){Shiny.setInputValue('delete_round_btn',%d,{priority:'event'})}",
+                      r$label %||% paste("Round", r$id), as.integer(r$id)),
+                    "Delete round")
+                )
               )
             )
           )
@@ -3826,17 +3894,6 @@ server <- function(input, output, session) {
         )
       )
 
-    } else if (act == "participation_events") {
-      current_hwm <- tryCatch(as.numeric(get_setting("half_wage_multiplier","0.5")),
-                              error = function(e) 0.5)
-      tagList(
-        tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Job Wage Settings"),
-        numericInput("half_wage_input", "Half-wage multiplier (for Tried outcome):",
-                     value = current_hwm, min = 0, max = 1, step = 0.05, width = "280px"),
-        tags$p(style = "color:#888;font-size:.78rem;margin-top:-.3rem;",
-               "0.5 = 50% of assigned wage for Tried outcome. Must be 0–1."),
-        actionButton("save_hwm_btn", "Save multiplier", class = "btn btn-sm btn-primary")
-      )
 
     } else if (act == "app_settings") {
       tagList(
