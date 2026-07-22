@@ -779,7 +779,8 @@ server <- function(input, output, session) {
     impersonating  = FALSE,
     orig_state     = NULL,
     draw_preview   = NULL,   # NULL | list of draw pairs for preview
-    active_section = get_setting("active_section", "")
+    active_section = get_setting("active_section", ""),
+    jobs_ver       = 0L     # bumped after any job-post or category mutation
   )
 
   # ── Root UI ──────────────────────────────────────────────────────────────────
@@ -2483,6 +2484,7 @@ server <- function(input, output, session) {
     if (!nrow(cur)) return()
     new_a <- if (isTRUE(as.integer(cur$a[1]) == 1L)) 0L else 1L
     db_exec("UPDATE job_posts SET active=? WHERE id=?;", list(new_a, pid))
+    rv$jobs_ver <- rv$jobs_ver + 1L
   }, ignoreNULL = TRUE)
 
   observeEvent(input$toggle_post_in_draw, {
@@ -2493,6 +2495,7 @@ server <- function(input, output, session) {
     if (!nrow(cur)) return()
     new_v <- if (isTRUE(as.integer(cur$v[1]) == 1L)) 0L else 1L
     db_exec("UPDATE job_posts SET in_draw=? WHERE id=?;", list(new_v, pid))
+    rv$jobs_ver <- rv$jobs_ver + 1L
   }, ignoreNULL = TRUE)
 
   observeEvent(input$toggle_post_voluntary, {
@@ -2503,6 +2506,7 @@ server <- function(input, output, session) {
     if (!nrow(cur)) return()
     new_v <- if (isTRUE(as.integer(cur$v[1]) == 1L)) 0L else 1L
     db_exec("UPDATE job_posts SET voluntary=? WHERE id=?;", list(new_v, pid))
+    rv$jobs_ver <- rv$jobs_ver + 1L
   }, ignoreNULL = TRUE)
 
   observeEvent(input$unassign_job_btn, {
@@ -2534,6 +2538,7 @@ server <- function(input, output, session) {
     if (is.na(cid) || cid <= 0) return()
     db_exec("UPDATE job_categories SET name=?, default_wage=?, description=? WHERE id=?;",
             list(nm, if (is.na(wage)) 0 else wage, desc, cid))
+    rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Category updated.", type = "message")
   }, ignoreNULL = TRUE)
 
@@ -3112,6 +3117,7 @@ server <- function(input, output, session) {
     act <- input$config_action %||% "jobs"
 
     if (act == "jobs") {
+      rv$jobs_ver  # invalidate when any job-post/category mutation fires
       rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
                           error = function(e) data.frame())
       rid <- if (nrow(rid_row)) rid_row$id[1] else NA_integer_
