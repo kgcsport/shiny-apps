@@ -2782,6 +2782,9 @@ server <- function(input, output, session) {
       td$students[td$students$section == cur_sec, , drop = FALSE]
     else td$students
 
+    # Round ID
+    rid <- if (nrow(round)) round$id[1] else NA_integer_
+
     # Voluntary job posts for participation panel (Panel 2)
     vol_cats <- if (!is.na(rid)) {
       tryCatch(db_query(
@@ -2793,7 +2796,6 @@ server <- function(input, output, session) {
     } else data.frame()
 
     # Build student choices: bidders for current round first
-    rid <- if (nrow(round)) round$id[1] else NA_integer_
     bidder_ids <- if (!is.na(rid) && nrow(students_sec)) {
       tryCatch(db_query(
         "SELECT DISTINCT user_id FROM wage_bids WHERE round_id=?;",
@@ -2949,29 +2951,35 @@ server <- function(input, output, session) {
                 "\U0001f64b Voluntary Participation"),
         if (!nrow(vol_cats)) {
           tags$p(style = "color:#999;margin:0;",
-                 "No voluntary job posts for this round. Toggle 'Voluntary' on a job post in Settings → Jobs.")
+                 "No voluntary job posts yet. Go to Settings > Jobs, find a post, and click its 'Not Voluntary' button so it turns into '✓ Voluntary'.")
         } else if (!nrow(students_sec)) {
           tags$p(style = "color:#999;margin:0;", "No students in the selected section.")
         } else {
           et_choices <- setNames(vol_cats$id,
                                  paste0(vol_cats$name, " (+", as.integer(vol_cats$tokens), ")"))
           tagList(
+            tags$p(style = "color:#555;font-size:.85em;margin-bottom:.4rem;",
+              "Select an event type and student, then click an outcome button. ",
+              "Hover each button to see what it awards."),
             fluidRow(
               column(4,
                 selectInput("part_event_type", "Event type:", choices = et_choices)),
               column(5,
-                selectInput("part_student_sel", "Student (bidders first):",
+                selectInput("part_student_sel", "Student:",
                             choices = if (length(stu_choices)) stu_choices
                                       else c("(no students)" = ""))),
               column(3,
-                tags$label(" "),
+                tags$label("Outcome:"),
                 div(style = "display:flex;gap:.35rem;",
                   actionButton("log_succeed_btn", "Succeed",
-                               class = "btn btn-success btn-sm"),
+                               class = "btn btn-success btn-sm",
+                               title = "Full credit: student earns the posted token amount"),
                   actionButton("log_try_btn", "Try",
-                               class = "btn btn-warning btn-sm"),
+                               class = "btn btn-warning btn-sm",
+                               title = "Partial credit: half tokens awarded"),
                   actionButton("log_miss_btn", "Miss",
-                               class = "btn btn-danger btn-sm")
+                               class = "btn btn-danger btn-sm",
+                               title = "No credit: no tokens awarded")
                 )
               )
             )
@@ -3151,8 +3159,13 @@ server <- function(input, output, session) {
         # ── Job Posts ─────────────────────────────────────────────────────────────
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;",
                 "Job Posts (Current Round)"),
-        tags$p(style = "color:#555;font-size:.85rem;",
-               "In Draw = eligible for random draw (Panel 1). Voluntary = appears in participation panel (Panel 2). A post can be both."),
+        div(style = paste0("background:#f0f4ff;border-left:3px solid #4a6fa5;padding:.5rem .8rem;",
+                           "border-radius:0 4px 4px 0;margin-bottom:.6rem;font-size:.85rem;color:#333;"),
+          tags$strong("How flags work:"), " ",
+          tags$b("\U0001f3b2 In Draw"), " — included when you run the job draw (Panel 1 of Live Tracker). ",
+          tags$b("\U0001f64b Voluntary"), " — appears in the Voluntary Participation panel (Panel 2) for you to log attend/try/miss. ",
+          "A post can have both flags at once (e.g. a job that is also optionally attended)."
+        ),
         if (is.na(rid)) {
           div(style = "color:#999;font-size:.9em;", "Create a round first (Round Setup).")
         } else if (nrow(all_posts)) {
@@ -3185,11 +3198,11 @@ server <- function(input, output, session) {
                         sprintf("%g ✔", clr_wage))
                     } else span(style = "color:#ccc;", "—")
                   ),
-                  tags$td(make_flag_btn("In Draw", "No Draw", "toggle_post_in_draw",
+                  tags$td(make_flag_btn("\U2713 In Draw", "\U2715 Skip Draw", "toggle_post_in_draw",
                                         r$id, in_draw, "btn-success", "btn-outline-secondary")),
-                  tags$td(make_flag_btn("Voluntary", "Not Vol.", "toggle_post_voluntary",
+                  tags$td(make_flag_btn("\U2713 Voluntary", "\U2715 Not Voluntary", "toggle_post_voluntary",
                                         r$id, is_vol, "btn-info", "btn-outline-secondary")),
-                  tags$td(make_flag_btn("Active", "Inactive", "toggle_post_active",
+                  tags$td(make_flag_btn("\U2713 Active", "\U2715 Inactive", "toggle_post_active",
                                         r$id, is_act, "btn-success", "btn-outline-secondary"))
                 )
               }))
@@ -3227,7 +3240,7 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Job Categories"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "Categories set the default wage for posts. Edit name, wage, or description inline."),
+               "Categories set the default wage for all posts in that category. Click a category row to expand and edit it, then click Save changes (the form closes automatically)."),
         if (nrow(all_cats)) {
           tagList(lapply(seq_len(nrow(all_cats)), function(i) {
             r <- all_cats[i, ]
@@ -3259,7 +3272,11 @@ server <- function(input, output, session) {
                           "var n=document.getElementById('edit_cat_name_%d').value;",
                           "var w=document.getElementById('edit_cat_wage_%d').value;",
                           "var d=document.getElementById('edit_cat_desc_%d').value;",
-                          "Shiny.setInputValue('edit_cat_btn',{id:%d,name:n,wage:w,desc:d},{priority:'event'});"),
+                          "Shiny.setInputValue('edit_cat_btn',{id:%d,name:n,wage:w,desc:d},{priority:'event'});",
+                          "this.closest('details').removeAttribute('open');",
+                          "this.textContent='Saved ✓';",
+                          "setTimeout(function(b){b.textContent='Save changes';}",
+                          ",1500,this);"),
                           cid_js, cid_js, cid_js, cid_js),
                         "Save changes"))
                   )
