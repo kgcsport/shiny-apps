@@ -268,6 +268,19 @@ db_exec("CREATE TABLE IF NOT EXISTS participation_events(
 try(db_exec("ALTER TABLE job_assignments ADD COLUMN outcome TEXT;"), silent = TRUE)
 try(db_exec("ALTER TABLE job_assignments ADD COLUMN tokens_awarded INTEGER DEFAULT 0;"), silent = TRUE)
 try(db_exec("ALTER TABLE job_assignments ADD COLUMN updated_at TEXT;"), silent = TRUE)
+try(db_exec("ALTER TABLE job_assignments ADD COLUMN tokens_credited INTEGER DEFAULT 1;"), silent = TRUE)
+try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN tokens_revealed INTEGER DEFAULT 1;"), silent = TRUE)
+try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN tiebreak_method TEXT DEFAULT 'first_submitted';"), silent = TRUE)
+db_exec("CREATE TABLE IF NOT EXISTS student_grades(
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id         TEXT NOT NULL,
+  assignment_name TEXT NOT NULL,
+  score           REAL,
+  max_score       REAL,
+  grade_pct       REAL,
+  week_tag        TEXT,
+  uploaded_at     TEXT DEFAULT CURRENT_TIMESTAMP
+);")
 
 # Job market tables (shared with class-job-market; CREATE IF NOT EXISTS is safe)
 db_exec("CREATE TABLE IF NOT EXISTS job_categories(
@@ -2578,14 +2591,17 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     lbl    <- trimws(input$new_round_label %||% "")
     mode   <- input$new_round_mode %||% "random"
+    tbrk   <- input$new_round_tiebreak %||% "first_submitted"
+    tok_rv <- if (isTRUE(input$new_round_delayed_tokens)) 0L else 1L
     open_d <- as.character(input$new_round_open %||% "")
     cls_d  <- as.character(input$new_round_close %||% "")
     tix    <- max(1L, as.integer(input$new_round_tix %||% 10L))
     if (!nzchar(lbl)) { showNotification("Round label required.", type = "error"); return() }
     db_exec(
-      "INSERT INTO weekly_rounds(label, assignment_mode, bid_open_date, bid_close_date, tickets_per_student)
-       VALUES(?,?,?,?,?);",
-      list(lbl, mode,
+      "INSERT INTO weekly_rounds(label, assignment_mode, tiebreak_method, tokens_revealed,
+                                  bid_open_date, bid_close_date, tickets_per_student)
+       VALUES(?,?,?,?,?,?,?);",
+      list(lbl, mode, tbrk, tok_rv,
            if (nzchar(open_d)) open_d else NA_character_,
            if (nzchar(cls_d))  cls_d  else NA_character_,
            tix))
@@ -2600,14 +2616,16 @@ server <- function(input, output, session) {
     rid    <- round$id[1]
     lbl    <- trimws(input$edit_round_label %||% "")
     mode   <- input$edit_round_mode %||% "random"
+    tbrk   <- input$edit_round_tiebreak %||% "first_submitted"
+    tok_rv <- if (isTRUE(input$edit_round_delayed_tokens)) 0L else 1L
     open_d <- as.character(input$edit_round_open %||% "")
     cls_d  <- as.character(input$edit_round_close %||% "")
     tix    <- max(1L, as.integer(input$edit_round_tix %||% 10L))
     if (!nzchar(lbl)) { showNotification("Label required.", type = "error"); return() }
     db_exec(
-      "UPDATE weekly_rounds SET label=?, assignment_mode=?, bid_open_date=?, bid_close_date=?,
-       tickets_per_student=? WHERE id=?;",
-      list(lbl, mode,
+      "UPDATE weekly_rounds SET label=?, assignment_mode=?, tiebreak_method=?, tokens_revealed=?,
+       bid_open_date=?, bid_close_date=?, tickets_per_student=? WHERE id=?;",
+      list(lbl, mode, tbrk, tok_rv,
            if (nzchar(open_d)) open_d else NA_character_,
            if (nzchar(cls_d))  cls_d  else NA_character_,
            tix, rid))
@@ -2869,40 +2887,56 @@ server <- function(input, output, session) {
             application_bidding = "Weighted lottery (ticket bids)",
             wage_bidding        = "Lowest-bid draw",
             paste("Mode:", mode))
-          tagList(
+          {
+            tok_rev <- isTRUE(as.integer(round$tokens_revealed[1] %||% 1L) == 1L)
+            n_pending <- if (!tok_rev && n_show > 0) {
+              tryCatch(db_query(
+                "SELECT COUNT(*) n FROM job_assignments WHERE round_id=? AND COALESCE(tokens_credited,1)=0 AND tokens_awarded>0;",
+                list(round$id[1]))$n[1], error=function(e) 0L)
+            } else 0L
+            tagList(
             tags$p(style = "color:#555;font-size:.88rem;margin-bottom:.6rem;",
-                   sprintf("Round: %s  ·  %s%s",
+                   sprintf("Round: %s  ·  %s%s  ·  Tokens: %s",
                            round$label[1] %||% paste("Round", round$id[1]),
                            mode_label,
-                           if (nzchar(cur_sec)) paste0("  ·  Section: ", cur_sec) else "")),
+                           if (nzchar(cur_sec)) paste0("  ·  Section: ", cur_sec) else "",
+                           if (tok_rev) "released" else sprintf("%d pending", as.integer(n_pending)))),
             fluidRow(
               column(3,
                 actionButton("run_draw_btn", "\U0001f3b2 Draw Jobs",
                              class = "btn btn-primary btn-sm",
-                             title = "Assign students in selected section to jobs")),
+                             title = if (mode == "random") "Draw per-section (select section above first)" else "Assign from this week\'s bids")),
               column(3,
                 actionButton("preview_draw_btn", "\U0001f441 Preview Draw",
                              class = "btn btn-outline-secondary btn-sm")),
               column(3,
                 if (revealed)
-                  actionButton("toggle_reveal_btn", "Hide from Students",
-                               class = "btn btn-outline-secondary btn-sm")
+                  actionButton("toggle_reveal_btn", "Hide Assignments",
+                               class = "btn btn-outline-secondary btn-sm",
+                               title = "Hide job assignments from student view")
                 else
-                  actionButton("toggle_reveal_btn", "Reveal to Students",
-                               class = "btn btn-success btn-sm")
+                  actionButton("toggle_reveal_btn", "Reveal Assignments",
+                               class = "btn btn-success btn-sm",
+                               title = "Make job assignments visible to students")
               ),
               column(3,
-                if (n_show > 0)
+                if (!tok_rev && n_pending > 0)
+                  actionButton("release_tokens_btn",
+                               sprintf("\U0001f4b0 Release %d tokens", as.integer(n_pending)),
+                               class = "btn btn-warning btn-sm",
+                               title = "Credit pending token earnings to students")
+                else if (n_show > 0)
                   actionButton("clear_assignments_btn", "\U274c Clear All",
                                class = "btn btn-outline-danger btn-sm",
-                               title = "Delete all assignments for current round"))
+                               title = "Delete all assignments for current round")
+              )
             ),
             if (n_show > 0)
               tags$p(style = "font-size:.8rem;color:#888;margin-top:.4rem;margin-bottom:0;",
                      sprintf("%d students assigned · %s", n_show,
                              if (revealed) "Visible to students" else "Hidden from students")),
             uiOutput("draw_preview_table")
-          )
+          )}
         }
       ),
 
@@ -3110,6 +3144,7 @@ server <- function(input, output, session) {
         "Round Setup"           = "round_setup",
         "Students"              = "students",
         "Token Admin"           = "token_admin",
+        "Grades"                = "grades",
         "Exports"               = "exports",
         "Grade Reweighting"     = "grade_reweighting",
         "Extensions"            = "extensions",
@@ -3461,6 +3496,20 @@ server <- function(input, output, session) {
                                          value = as.integer(r$tickets_per_student %||% 10L),
                                          min = 1, step = 1))
                 ),
+                selectInput("edit_round_tiebreak", "Bid tie-break method:",
+                  choices = c(
+                    "First submitted (earliest bid wins)"  = "first_submitted",
+                    "Random (coin flip among tied bids)"   = "random",
+                    "Lowest grade (struggling students first)" = "lowest_grade",
+                    "Fewest semester tokens (most behind wins)" = "lowest_tokens",
+                    "Weighted lottery (more tickets for fewer tokens)" = "weighted_lottery",
+                    "Most misses (most missed events wins)" = "most_misses",
+                    "Alphabetical"                         = "alphabetical"
+                  ),
+                  selected = r$tiebreak_method %||% "first_submitted"),
+                checkboxInput("edit_round_delayed_tokens",
+                  "Delay token reveal (students see pass/try/miss but not amounts until you release)",
+                  value = isTRUE(as.integer(r$tokens_revealed %||% 1L) == 0L)),
                 div(style = "display:flex;gap:.5rem;margin-top:.3rem;",
                   actionButton("update_round_btn", "Update round", class = "btn btn-sm btn-primary"),
                   tags$button(
@@ -3478,8 +3527,26 @@ server <- function(input, output, session) {
         },
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Create New Round"),
+        div(style = paste0("background:#f0f4ff;border-left:3px solid #4a6fa5;padding:.4rem .7rem;",
+                           "border-radius:0 4px 4px 0;margin-bottom:.5rem;font-size:.84rem;"),
+          tags$b("Random draw"), " runs per section — select a section in Live Tracker before drawing. ",
+          tags$b("Bidding"), " collects bids weekly from all students; the draw then resolves ties by the method below."
+        ),
         textInput("new_round_label", "Label (e.g. Week 3):"),
         selectInput("new_round_mode", "Assignment mode:", choices = mode_choices),
+        selectInput("new_round_tiebreak", "Bid tie-break method:",
+          choices = c(
+          "First submitted"           = "first_submitted",
+          "Random"                    = "random",
+          "Lowest grade"              = "lowest_grade",
+          "Fewest tokens"             = "lowest_tokens",
+          "Weighted lottery"          = "weighted_lottery",
+          "Most misses"               = "most_misses",
+          "Alphabetical"              = "alphabetical"
+        )),
+        checkboxInput("new_round_delayed_tokens",
+          "Delay token reveal (students see outcome but not amounts until you release)",
+          value = FALSE),
         fluidRow(
           column(4, dateInput("new_round_open",  "Bid opens:")),
           column(4, dateInput("new_round_close", "Bid closes:")),
@@ -3569,6 +3636,96 @@ server <- function(input, output, session) {
           column(4, tags$br(),
                  actionButton("reset_pw_btn", "Reset", class = "btn btn-sm btn-warning"))
         )
+      )
+
+    } else if (act == "grades") {
+      rv$jobs_ver  # refresh on upload/clear
+      grade_summary <- tryCatch(db_query(
+        "SELECT sg.user_id, u.display_name, COUNT(*) AS n_assignments,
+                ROUND(AVG(sg.grade_pct),1) AS avg_pct,
+                MAX(sg.uploaded_at) AS last_upload
+         FROM student_grades sg
+         LEFT JOIN users u ON u.user_id=sg.user_id
+         GROUP BY sg.user_id ORDER BY u.display_name;"),
+        error=function(e) data.frame())
+      grade_rows <- tryCatch(db_query(
+        "SELECT sg.user_id, u.display_name, sg.assignment_name, sg.score, sg.max_score,
+                sg.grade_pct, sg.week_tag
+         FROM student_grades sg LEFT JOIN users u ON u.user_id=sg.user_id
+         ORDER BY u.display_name, sg.assignment_name;"),
+        error=function(e) data.frame())
+      tagList(
+        tags$h6(style="font-weight:700;color:#951829;margin-top:.5rem;", "Grade Records"),
+        div(style=paste0("background:#f0f4ff;border-left:3px solid #4a6fa5;padding:.5rem .8rem;",
+                         "border-radius:0 4px 4px 0;margin-bottom:.6rem;font-size:.85rem;"),
+          "Upload a CSV or Excel file with student grades. Required columns: ",
+          tags$code("user_id"), " (or ", tags$code("student_id"), ") and ",
+          tags$code("assignment"), " (or ", tags$code("assignment_name"), "). ",
+          "Optional: ", tags$code("score"), ", ", tags$code("max_score"), ", ",
+          tags$code("grade_pct"), " (0–100), ", tags$code("week"), ".",
+          " Grades are used for the 'Lowest grade' and 'Weighted lottery' bid tie-break rules."
+        ),
+        fluidRow(
+          column(6, fileInput("grade_file_upload", "Upload CSV or Excel:",
+                              accept=c(".csv",".xls",".xlsx"), width="100%")),
+          column(3, textInput("grade_week_tag", "Week tag (optional):", width="100%")),
+          column(3, tags$br(),
+            actionButton("upload_grades_btn", "Upload", class="btn btn-sm btn-primary"),
+            tags$span(" "),
+            actionButton("clear_grades_btn", "Clear All",
+                         class="btn btn-sm btn-outline-danger",
+                         onclick="if(!confirm('Delete all grade records?')) return false;"))
+        ),
+        if (nrow(grade_summary)) {
+          tagList(
+            tags$hr(),
+            tags$h6(style="font-weight:700;", "Grade Summary by Student"),
+            div(style="overflow-x:auto;",
+              tags$table(class="table table-sm",
+                tags$thead(tags$tr(
+                  tags$th("Student"), tags$th("Assignments"), tags$th("Avg %"), tags$th("Last Upload")
+                )),
+                tags$tbody(lapply(seq_len(nrow(grade_summary)), function(i) {
+                  r <- grade_summary[i,]
+                  tags$tr(
+                    tags$td(r$display_name %||% r$user_id),
+                    tags$td(r$n_assignments),
+                    tags$td(if (!is.na(r$avg_pct)) sprintf("%.1f%%", r$avg_pct) else "—"),
+                    tags$td(style="color:#888;font-size:.82em;",
+                            substr(r$last_upload %||% "", 1, 10))
+                  )
+                }))
+              )
+            ),
+            if (nrow(grade_rows)) {
+              tags$details(
+                tags$summary(style="cursor:pointer;color:#951829;font-size:.88rem;",
+                             sprintf("All rows (%d)", nrow(grade_rows))),
+                div(style="overflow-x:auto;max-height:400px;overflow-y:auto;margin-top:.4rem;",
+                  tags$table(class="table table-sm",
+                    tags$thead(tags$tr(
+                      tags$th("Student"), tags$th("Assignment"),
+                      tags$th("Score"), tags$th("Max"), tags$th("%"), tags$th("Week")
+                    )),
+                    tags$tbody(lapply(seq_len(nrow(grade_rows)), function(i) {
+                      r <- grade_rows[i,]
+                      tags$tr(
+                        tags$td(style="font-size:.82em;", r$display_name %||% r$user_id),
+                        tags$td(r$assignment_name),
+                        tags$td(if (!is.na(r$score)) r$score else "—"),
+                        tags$td(if (!is.na(r$max_score)) r$max_score else "—"),
+                        tags$td(if (!is.na(r$grade_pct)) sprintf("%.1f%%", r$grade_pct) else "—"),
+                        tags$td(style="color:#888;font-size:.82em;", r$week_tag %||% "")
+                      )
+                    }))
+                  )
+                )
+              )
+            }
+          )
+        } else {
+          tags$p(style="color:#999;margin-top:.5rem;", "No grade records yet. Upload a file above.")
+        }
       )
 
     } else if (act == "exports") {
@@ -4108,7 +4265,8 @@ server <- function(input, output, session) {
     }
     row <- db_query(
       "SELECT ja.user_id, u.display_name, ja.assigned_wage,
-              COALESCE(ja.tokens_awarded,0) AS tokens_awarded
+              COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
+              ja.round_id
        FROM job_assignments ja
        JOIN users u ON u.user_id=ja.user_id
        WHERE ja.id=?;", list(assign_id))
@@ -4126,16 +4284,25 @@ server <- function(input, output, session) {
       tried    = round(wage * half_mult),
       missed   = 0,
       0)
+    # Check whether tokens should be credited now or held until instructor releases
+    rnd_row <- tryCatch(db_query("SELECT COALESCE(tokens_revealed,1) v FROM weekly_rounds WHERE id=?;",
+                                  list(as.integer(row$round_id[1]))), error=function(e) data.frame())
+    tokens_revealed <- if (nrow(rnd_row)) isTRUE(as.integer(rnd_row$v[1]) == 1L) else TRUE
     db_exec(
-      "UPDATE job_assignments SET outcome=?, tokens_awarded=1, updated_at=datetime('now') WHERE id=?;",
-      list(outcome, assign_id))
-    if (tokens_to_award > 0) {
+      "UPDATE job_assignments SET outcome=?, tokens_awarded=?, tokens_credited=?,
+              updated_at=datetime('now') WHERE id=?;",
+      list(outcome, tokens_to_award, if (tokens_revealed) 1L else 0L, assign_id))
+    if (tokens_to_award > 0 && tokens_revealed) {
       token_credit(uid, dname, tokens_to_award, 1L, "job", assign_id,
                    note = sprintf("Job wage (%s)", outcome))
       showNotification(
         sprintf("%s — awarded %d token%s to %s.",
                 switch(outcome, complete="Complete", tried="Tried", outcome),
                 as.integer(tokens_to_award), if (tokens_to_award == 1) "" else "s", dname),
+        type = "message")
+    } else if (tokens_to_award > 0) {
+      showNotification(
+        sprintf("%s — outcome logged (%d tokens pending release).", dname, as.integer(tokens_to_award)),
         type = "message")
     } else {
       showNotification(sprintf("Missed — no tokens for %s.", dname), type = "warning")
@@ -4178,33 +4345,130 @@ server <- function(input, output, session) {
       succeed = wage_val,
       try     = round(wage_val * half_mult),
       miss    = 0, 0)
+    rnd_row2 <- tryCatch(db_query("SELECT COALESCE(tokens_revealed,1) v FROM weekly_rounds WHERE id=?;",
+                                   list(rid)), error=function(e) data.frame())
+    tokens_revealed2 <- if (nrow(rnd_row2)) isTRUE(as.integer(rnd_row2$v[1]) == 1L) else TRUE
     db_exec(
       "INSERT INTO job_assignments(round_id, user_id, job_post_id, assigned_wage,
-              assignment_mode, outcome, tokens_awarded, updated_at)
-       VALUES(?,?,?,?,'voluntary',?,?,datetime('now'))
+              assignment_mode, outcome, tokens_awarded, tokens_credited, updated_at)
+       VALUES(?,?,?,?,'voluntary',?,?,?,datetime('now'))
        ON CONFLICT(round_id, user_id)
        DO UPDATE SET job_post_id=excluded.job_post_id,
                      assigned_wage=excluded.assigned_wage,
                      outcome=excluded.outcome,
                      tokens_awarded=excluded.tokens_awarded,
+                     tokens_credited=excluded.tokens_credited,
                      updated_at=excluded.updated_at;",
       list(rid, uid, post_id, wage_val, outcome_type,
-           if (tokens_to_award > 0) 1L else 0L))
-    if (tokens_to_award > 0)
+           tokens_to_award, if (tokens_revealed2) 1L else 0L))
+    if (tokens_to_award > 0 && tokens_revealed2) {
       token_credit(uid, dname, tokens_to_award, 1L, "participation", post_id,
                    note = sprintf("Participation (%s)", outcome_type))
-    showNotification(
-      sprintf("%s — %s%s", dname, outcome_type,
-              if (tokens_to_award > 0)
-                sprintf(" (+%d token%s)", as.integer(tokens_to_award),
-                        if (tokens_to_award == 1) "" else "s")
-              else " (no tokens)"),
-      type = "message")
+      showNotification(
+        sprintf("%s — %s (+%d token%s)", dname, outcome_type,
+                as.integer(tokens_to_award), if (tokens_to_award == 1) "" else "s"),
+        type = "message")
+    } else if (tokens_to_award > 0) {
+      showNotification(
+        sprintf("%s — %s (outcome logged, %d tokens pending release)", dname, outcome_type,
+                as.integer(tokens_to_award)),
+        type = "message")
+    } else {
+      showNotification(sprintf("%s — %s (no tokens)", dname, outcome_type), type = "warning")
+    }
   }
 
   observeEvent(input$log_succeed_btn, .log_participation("succeed"), ignoreNULL = TRUE)
   observeEvent(input$log_try_btn,     .log_participation("try"),     ignoreNULL = TRUE)
   observeEvent(input$log_miss_btn,    .log_participation("miss"),    ignoreNULL = TRUE)
+
+  # ── Release tokens (delayed reward) ──────────────────────────────────────────
+  observeEvent(input$release_tokens_btn, {
+    req(rv$is_admin)
+    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                        error=function(e) data.frame())
+    if (!nrow(rid_row)) { showNotification("No active round.", type="error"); return() }
+    rid <- rid_row$id[1]
+    pending <- tryCatch(db_query(
+      "SELECT ja.id, ja.user_id, ja.tokens_awarded, ja.outcome, ja.job_post_id,
+              u.display_name
+       FROM job_assignments ja
+       JOIN users u ON u.user_id=ja.user_id
+       WHERE ja.round_id=? AND COALESCE(ja.tokens_credited,1)=0
+         AND ja.tokens_awarded IS NOT NULL AND ja.tokens_awarded > 0;",
+      list(rid)), error=function(e) data.frame())
+    if (!nrow(pending)) {
+      showNotification("No pending tokens to release.", type="message"); return()
+    }
+    for (i in seq_len(nrow(pending))) {
+      r <- pending[i, ]
+      token_credit(r$user_id, r$display_name %||% r$user_id,
+                   as.numeric(r$tokens_awarded), 1L,
+                   "job", as.integer(r$id),
+                   note = sprintf("Job/participation (%s) — released", r$outcome %||% ""))
+    }
+    db_exec("UPDATE job_assignments SET tokens_credited=1 WHERE round_id=? AND COALESCE(tokens_credited,1)=0;",
+            list(rid))
+    db_exec("UPDATE weekly_rounds SET tokens_revealed=1 WHERE id=?;", list(rid))
+    showNotification(sprintf("Released tokens for %d students.", nrow(pending)), type="message")
+  }, ignoreNULL=TRUE)
+
+  # ── Grade upload ──────────────────────────────────────────────────────────────
+  observeEvent(input$upload_grades_btn, {
+    req(rv$is_admin)
+    fdata <- input$grade_file_upload
+    if (is.null(fdata)) { showNotification("No file selected.", type="error"); return() }
+    ext <- tolower(tools::file_ext(fdata$name))
+    df <- tryCatch({
+      if (ext == "csv") {
+        read.csv(fdata$datapath, stringsAsFactors=FALSE)
+      } else if (ext %in% c("xls","xlsx")) {
+        if (!requireNamespace("readxl", quietly=TRUE)) stop("readxl not available")
+        readxl::read_excel(fdata$datapath) |> as.data.frame()
+      } else stop("Unsupported file type")
+    }, error=function(e) { showNotification(paste("Read error:", e$message), type="error"); NULL })
+    if (is.null(df)) return()
+    # Flexible column mapping: look for user_id/student_id, assignment, score, max_score/max, grade_pct/pct
+    cn <- tolower(names(df))
+    uid_col   <- names(df)[cn %in% c("user_id","student_id","userid","id")][1]
+    asgn_col  <- names(df)[cn %in% c("assignment","assignment_name","name","task")][1]
+    scr_col   <- names(df)[cn %in% c("score","points","earned")][1]
+    max_col   <- names(df)[cn %in% c("max_score","max","total","points_possible")][1]
+    pct_col   <- names(df)[cn %in% c("grade_pct","pct","percent","grade","percentage")][1]
+    week_col  <- names(df)[cn %in% c("week","week_tag","period")][1]
+    if (is.na(uid_col) || is.na(asgn_col)) {
+      showNotification(
+        "File must have columns: user_id (or student_id) and assignment (or assignment_name).",
+        type="error"); return()
+    }
+    # Resolve week tag (optional input or file column)
+    week_tag_val <- trimws(input$grade_week_tag %||% "")
+    n_ins <- 0L
+    for (i in seq_len(nrow(df))) {
+      uid    <- as.character(df[[uid_col]][i])
+      asgn   <- as.character(df[[asgn_col]][i])
+      scr    <- if (!is.na(scr_col))  suppressWarnings(as.numeric(df[[scr_col]][i]))  else NA_real_
+      mx     <- if (!is.na(max_col))  suppressWarnings(as.numeric(df[[max_col]][i]))  else NA_real_
+      pct    <- if (!is.na(pct_col))  suppressWarnings(as.numeric(df[[pct_col]][i]))  else NA_real_
+      wk     <- if (!is.na(week_col)) as.character(df[[week_col]][i]) else week_tag_val
+      if (is.na(pct) && !is.na(scr) && !is.na(mx) && mx > 0) pct <- round(100 * scr / mx, 2)
+      if (!nzchar(uid) || !nzchar(asgn)) next
+      db_exec(
+        "INSERT INTO student_grades(user_id, assignment_name, score, max_score, grade_pct, week_tag)
+         VALUES(?,?,?,?,?,?);",
+        list(uid, asgn, scr, mx, pct, if (nzchar(wk)) wk else NA_character_))
+      n_ins <- n_ins + 1L
+    }
+    showNotification(sprintf("Imported %d grade rows.", n_ins), type="message")
+    rv$jobs_ver <- rv$jobs_ver + 1L
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$clear_grades_btn, {
+    req(rv$is_admin)
+    db_exec("DELETE FROM student_grades;")
+    showNotification("All grade records cleared.", type="message")
+    rv$jobs_ver <- rv$jobs_ver + 1L
+  }, ignoreNULL=TRUE)
 
   # ── Token Admin ───────────────────────────────────────────────────────────────
   observeEvent(input$bulk_award_btn, {
@@ -4276,12 +4540,68 @@ server <- function(input, output, session) {
   })
 
   # ── Job draw ──────────────────────────────────────────────────────────────────
-  compute_draw_pairs <- function(rid, mode, posts, students) {
+  # Helper: apply tiebreak ordering within groups of tied bids
+  .apply_tiebreak <- function(bids_df, tiebreak) {
+    if (!nrow(bids_df)) return(bids_df)
+    if (tiebreak == "first_submitted") return(bids_df)  # SQL already ordered by created_at
+    if (tiebreak == "random") {
+      bids_df[sample(nrow(bids_df)), , drop=FALSE]
+    } else if (tiebreak %in% c("lowest_grade", "lowest_tokens", "weighted_lottery", "most_misses")) {
+      uids <- bids_df$user_id
+      aux <- switch(tiebreak,
+        lowest_grade = tryCatch(db_query(
+          paste0("SELECT user_id, AVG(grade_pct) AS val FROM student_grades WHERE user_id IN (",
+                 paste(sprintf("'%s'", uids), collapse=","), ") GROUP BY user_id;")),
+          error=function(e) data.frame()),
+        lowest_tokens = tryCatch(db_query(
+          paste0("SELECT user_id, COALESCE(SUM(amount),0) AS val FROM token_ledger WHERE user_id IN (",
+                 paste(sprintf("'%s'", uids), collapse=","), ") AND earning=1 GROUP BY user_id;")),
+          error=function(e) data.frame()),
+        weighted_lottery = tryCatch(db_query(
+          paste0("SELECT user_id, COALESCE(SUM(amount),0) AS val FROM token_ledger WHERE user_id IN (",
+                 paste(sprintf("'%s'", uids), collapse=","), ") AND earning=1 GROUP BY user_id;")),
+          error=function(e) data.frame()),
+        most_misses = tryCatch(db_query(
+          paste0("SELECT user_id, COUNT(*) AS val FROM job_assignments WHERE user_id IN (",
+                 paste(sprintf("'%s'", uids), collapse=","), ") AND outcome='missed' GROUP BY user_id;")),
+          error=function(e) data.frame())
+      )
+      val_map <- if (nrow(aux)) setNames(as.numeric(aux$val), aux$user_id) else numeric(0)
+      bids_df$sort_val <- sapply(uids, function(u) val_map[u] %||% 0)
+      if (tiebreak == "weighted_lottery") {
+        max_val <- max(bids_df$sort_val, 1)
+        weights <- pmax(max_val - bids_df$sort_val + 1, 1)
+        bids_df[sample(nrow(bids_df), prob=weights), , drop=FALSE]
+      } else if (tiebreak == "most_misses") {
+        bids_df[order(-bids_df$sort_val), , drop=FALSE]
+      } else {
+        bids_df[order(bids_df$sort_val, na.last=TRUE), , drop=FALSE]
+      }
+    } else if (tiebreak == "alphabetical") {
+      uids_df <- tryCatch(db_query(
+        paste0("SELECT user_id, display_name FROM users WHERE user_id IN (",
+               paste(sprintf("'%s'", bids_df$user_id), collapse=","), ");")),
+        error=function(e) data.frame())
+      nm_map <- if (nrow(uids_df)) setNames(uids_df$display_name, uids_df$user_id) else character(0)
+      bids_df$sort_name <- sapply(bids_df$user_id, function(u) nm_map[u] %||% u)
+      bids_df[order(bids_df$sort_name), , drop=FALSE]
+    } else {
+      bids_df
+    }
+  }
+
+  compute_draw_pairs <- function(rid, mode, posts, students, tiebreak = "first_submitted") {
     tryCatch({
       if (mode == "wage_bidding") {
-        bids <- db_query(
+        bids_raw <- db_query(
           "SELECT user_id, category_id, min_wage FROM wage_bids WHERE round_id=? ORDER BY min_wage ASC;",
           list(rid))
+        # Apply tiebreak within each tied-wage group per category
+        bids <- if (nrow(bids_raw) && tiebreak != "first_submitted") {
+          do.call(rbind, lapply(split(bids_raw, bids_raw$min_wage), function(grp) {
+            .apply_tiebreak(grp, tiebreak)
+          }))
+        } else bids_raw
         assigned_ids <- character(0)
         result <- list()
         for (i in seq_len(nrow(posts))) {
@@ -4346,8 +4666,9 @@ server <- function(input, output, session) {
     round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
                       error = function(e) data.frame())
     if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
-    rid  <- round$id[1]
-    mode <- round$assignment_mode[1] %||% "random"
+    rid    <- round$id[1]
+    mode   <- round$assignment_mode[1] %||% "random"
+    tbrk   <- round$tiebreak_method[1] %||% "first_submitted"
 
     posts <- tryCatch(db_query(
       "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
@@ -4377,7 +4698,7 @@ server <- function(input, output, session) {
 
     db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(rid))
 
-    pairs <- compute_draw_pairs(rid, mode, posts, students)
+    pairs <- compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
     if (!length(pairs)) { showNotification("Draw produced no assignments.", type = "error"); return() }
 
     for (p in pairs) {
@@ -4400,6 +4721,7 @@ server <- function(input, output, session) {
     if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
     rid  <- round$id[1]
     mode <- round$assignment_mode[1] %||% "random"
+    tbrk <- round$tiebreak_method[1] %||% "first_submitted"
     posts <- tryCatch(db_query(
       "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
               COALESCE(jp.wage_override, jc.default_wage) AS wage
@@ -4428,7 +4750,7 @@ server <- function(input, output, session) {
     if (!nrow(students)) {
       showNotification("No eligible students found.", type = "error"); return()
     }
-    pairs <- compute_draw_pairs(rid, mode, posts, students)
+    pairs <- compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
     if (!length(pairs)) {
       showNotification("Preview produced no assignments.", type = "error")
       rv$draw_preview <- NULL
