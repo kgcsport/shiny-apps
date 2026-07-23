@@ -270,7 +270,7 @@ try(db_exec("ALTER TABLE job_assignments ADD COLUMN tokens_awarded INTEGER DEFAU
 try(db_exec("ALTER TABLE job_assignments ADD COLUMN updated_at TEXT;"), silent = TRUE)
 try(db_exec("ALTER TABLE job_assignments ADD COLUMN tokens_credited INTEGER DEFAULT 1;"), silent = TRUE)
 try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN tokens_revealed INTEGER DEFAULT 1;"), silent = TRUE)
-try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN tiebreak_method TEXT DEFAULT 'first_submitted';"), silent = TRUE)
+try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN tiebreak_method TEXT DEFAULT 'weighted_lottery';"), silent = TRUE)
 db_exec("CREATE TABLE IF NOT EXISTS student_grades(
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id         TEXT NOT NULL,
@@ -2591,7 +2591,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     lbl    <- trimws(input$new_round_label %||% "")
     mode   <- input$new_round_mode %||% "random"
-    tbrk   <- input$new_round_tiebreak %||% "first_submitted"
+    tbrk   <- input$new_round_tiebreak %||% "weighted_lottery"
     tok_rv <- if (isTRUE(input$new_round_delayed_tokens)) 0L else 1L
     open_d <- as.character(input$new_round_open %||% "")
     cls_d  <- as.character(input$new_round_close %||% "")
@@ -2616,7 +2616,7 @@ server <- function(input, output, session) {
     rid    <- round$id[1]
     lbl    <- trimws(input$edit_round_label %||% "")
     mode   <- input$edit_round_mode %||% "random"
-    tbrk   <- input$edit_round_tiebreak %||% "first_submitted"
+    tbrk   <- input$edit_round_tiebreak %||% "weighted_lottery"
     tok_rv <- if (isTRUE(input$edit_round_delayed_tokens)) 0L else 1L
     open_d <- as.character(input$edit_round_open %||% "")
     cls_d  <- as.character(input$edit_round_close %||% "")
@@ -3506,7 +3506,7 @@ server <- function(input, output, session) {
                     "Most misses (most missed events wins)" = "most_misses",
                     "Alphabetical"                         = "alphabetical"
                   ),
-                  selected = r$tiebreak_method %||% "first_submitted"),
+                  selected = r$tiebreak_method %||% "weighted_lottery"),
                 checkboxInput("edit_round_delayed_tokens",
                   "Delay token reveal (students see pass/try/miss but not amounts until you release)",
                   value = isTRUE(as.integer(r$tokens_revealed %||% 1L) == 0L)),
@@ -3543,7 +3543,7 @@ server <- function(input, output, session) {
           "Weighted lottery"          = "weighted_lottery",
           "Most misses"               = "most_misses",
           "Alphabetical"              = "alphabetical"
-        )),
+        ), selected = "weighted_lottery"),
         checkboxInput("new_round_delayed_tokens",
           "Delay token reveal (students see outcome but not amounts until you release)",
           value = FALSE),
@@ -4590,7 +4590,7 @@ server <- function(input, output, session) {
     }
   }
 
-  compute_draw_pairs <- function(rid, mode, posts, students, tiebreak = "first_submitted") {
+  compute_draw_pairs <- function(rid, mode, posts, students, tiebreak = "weighted_lottery") {
     tryCatch({
       if (mode == "wage_bidding") {
         bids_raw <- db_query(
@@ -4668,7 +4668,7 @@ server <- function(input, output, session) {
     if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
     rid    <- round$id[1]
     mode   <- round$assignment_mode[1] %||% "random"
-    tbrk   <- round$tiebreak_method[1] %||% "first_submitted"
+    tbrk   <- round$tiebreak_method[1] %||% "weighted_lottery"
 
     posts <- tryCatch(db_query(
       "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
@@ -4721,7 +4721,7 @@ server <- function(input, output, session) {
     if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
     rid  <- round$id[1]
     mode <- round$assignment_mode[1] %||% "random"
-    tbrk <- round$tiebreak_method[1] %||% "first_submitted"
+    tbrk <- round$tiebreak_method[1] %||% "weighted_lottery"
     posts <- tryCatch(db_query(
       "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
               COALESCE(jp.wage_override, jc.default_wage) AS wage
