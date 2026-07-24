@@ -1218,6 +1218,24 @@ server <- function(input, output, session) {
     remaining
   }
 
+  # Deduct up to amount from a student, consuming pending first then ledger balance.
+  # Never goes negative. Returns the amount actually deducted.
+  safe_deduct <- function(uid, dname, amount, source_type, note) {
+    if (amount <= 0) return(0)
+    leftover <- consume_pending_tokens(uid, amount)
+    if (leftover > 0) {
+      cur_bal <- tryCatch(as.numeric(db_query(
+        "SELECT COALESCE(SUM(amount),0) t FROM token_ledger WHERE user_id=?;",
+        list(uid))$t[1] %||% 0), error = function(e) 0)
+      ledger_deduct <- min(leftover, max(0, cur_bal))
+      if (ledger_deduct > 0)
+        token_credit(uid, dname, -ledger_deduct, 0L, source_type, note = note)
+      amount - leftover + ledger_deduct  # actual total deducted
+    } else {
+      amount  # all consumed from pending
+    }
+  }
+
   token_debit <- function(uid, dname, amount, source_type, source_id = NA, note = "") {
     token_credit(uid, dname, -abs(amount), 0L, source_type, source_id, note)
   }
@@ -4566,15 +4584,13 @@ server <- function(input, output, session) {
       uid_i   <- targets$user_id[i]
       dname_i <- targets$display_name[i] %||% uid_i
       if (amount < 0) {
-        leftover <- consume_pending_tokens(uid_i, abs(amount))
-        if (leftover > 0)
-          token_credit(uid_i, dname_i, -leftover, 0L, "bulk_award", note = lbl)
+        safe_deduct(uid_i, dname_i, abs(amount), "bulk_award", lbl)
       } else {
         token_credit(uid_i, dname_i, amount, 1L, "bulk_award", note = lbl)
       }
     }
     showNotification(
-      sprintf("%s %d token%s to %d student%s.",
+      sprintf("%s up to %d token%s to %d student%s (capped at each student's balance).",
               if (amount > 0) "Awarded" else "Deducted",
               abs(as.integer(amount)), if (abs(amount) == 1) "" else "s",
               nrow(targets), if (nrow(targets) == 1) "" else "s"),
@@ -4593,17 +4609,19 @@ server <- function(input, output, session) {
     dname  <- if (nrow(u_row)) u_row$display_name[1] %||% uid else uid
     lbl    <- if (nzchar(note)) note else "individual adjustment"
     if (amount < 0) {
-      leftover <- consume_pending_tokens(uid, abs(amount))
-      if (leftover > 0)
-        token_credit(uid, dname, -leftover, 0L, "individual_adj", note = lbl)
+      actual <- safe_deduct(uid, dname, abs(amount), "individual_adj", lbl)
+      showNotification(
+        sprintf("Deducted %d token%s from %s%s.",
+                as.integer(actual), if (actual == 1) "" else "s", dname,
+                if (actual < abs(amount)) sprintf(" (requested %d, capped at balance)", abs(as.integer(amount))) else ""),
+        type = "message")
     } else {
       token_credit(uid, dname, amount, 1L, "individual_adj", note = lbl)
+      showNotification(
+        sprintf("Awarded %d token%s to %s.",
+                as.integer(amount), if (amount == 1) "" else "s", dname),
+        type = "message")
     }
-    showNotification(
-      sprintf("%s %d token%s to %s.",
-              if (amount > 0) "Awarded" else "Deducted",
-              abs(as.integer(amount)), if (abs(amount) == 1) "" else "s", dname),
-      type = "message")
   })
 
   # ── Participation event type + half-wage settings ─────────────────────────────
