@@ -850,12 +850,8 @@ server <- function(input, output, session) {
               div(class = "preview-card-desc", "Bid for or apply to jobs")),
             div(class = "preview-card",
               div(class = "preview-card-icon", "\U0001f3ae"),
-              div(class = "preview-card-label", "Games"),
-              div(class = "preview-card-desc", "Live & elective games")),
-            div(class = "preview-card",
-              div(class = "preview-card-icon", "\U0001f52c"),
-              div(class = "preview-card-label", "Tools"),
-              div(class = "preview-card-desc", "Economics simulations"))
+              div(class = "preview-card-label", "Games & Demos"),
+              div(class = "preview-card-desc", "Live games + interactive demos"))
           ),
           tags$details(class = "login-howto",
             tags$summary("How to get started"),
@@ -863,7 +859,7 @@ server <- function(input, output, session) {
               tags$li(tags$strong("Sign in"), " using the username and password your instructor gave you."),
               tags$li(tags$strong("Today"), " shows your current job assignment, prevailing wages, and any active class game."),
               tags$li(tags$strong("Job Market"), " is where you submit wage bids or ticket allocations each round."),
-              tags$li(tags$strong("Games"), " shows the active game and the full catalog — play electively any time."),
+              tags$li(tags$strong("Games & Demos"), " shows the active game, the full game catalog, and interactive economic demos — always available."),
               tags$li(tags$strong("Account"), " tracks your Flex Pass balance, Participation Tokens, and transaction history.")
             )
           )
@@ -894,8 +890,7 @@ server <- function(input, output, session) {
           tabsetPanel(id = "arc_tabs", type = "tabs", selected = "Today",
             tabPanel("Today",        br(), uiOutput("today_tab")),
             tabPanel("Job Market",   br(), uiOutput("job_market_tab")),
-            tabPanel("Games",        br(), uiOutput("games_tab")),
-            tabPanel("Demos",        br(), uiOutput("demos_tab")),
+            tabPanel("Games & Demos", br(), uiOutput("games_tab")),
             tabPanel("Spend",        br(), uiOutput("spend_tab")),
             tabPanel("Account",      br(), uiOutput("account_tab")),
             tabPanel("Live Tracker", br(), uiOutput("live_tracker_tab")),
@@ -1291,7 +1286,7 @@ server <- function(input, output, session) {
               if (!is.null(ginfo)) ginfo$label else active),
           div(style = "color:#888;font-size:.84rem;", "A game is running now."),
           div(style = "margin-top:.65rem;",
-            actionButton("go_to_games", "Go to Games tab →", class = "btn btn-sm btn-primary"))
+            actionButton("go_to_games", "Go to Games & Demos →", class = "btn btn-sm btn-primary"))
         )
       },
 
@@ -1370,7 +1365,7 @@ server <- function(input, output, session) {
                      "How to use this site"),
         tags$ul(style = "margin:.5rem 0 0;padding-left:1.1rem;",
           tags$li(tags$strong("Job Market"), " — submit wage bids or ticket allocations before the round closes."),
-          tags$li(tags$strong("Games"), " — your instructor activates a game for class; you can also play electively."),
+          tags$li(tags$strong("Games & Demos"), " — your instructor activates a game for class; play electively or explore the always-on demos."),
           tags$li(tags$strong("Account"), " — track your Flex Pass balance, tokens, pledges, and history.")
         )
       )
@@ -1379,7 +1374,7 @@ server <- function(input, output, session) {
 
   # Navigate to Games tab from Today
   observeEvent(input$go_to_games, {
-    updateTabsetPanel(session, "arc_tabs", selected = "Games")
+    updateTabsetPanel(session, "arc_tabs", selected = "Games & Demos")
   })
   observeEvent(input$go_to_spend_fq, {
     rv$spend_mode <- "flex_question"
@@ -1662,7 +1657,7 @@ server <- function(input, output, session) {
 
     tagList(
       div(class = "tab-howto",
-          "Your instructor activates a game for class; you can also play any game electively. Click a game row to read how it works."
+          "Your instructor activates a game for class; you can also play any game electively. Demos are always available — no active session needed. Click a game row to read how it works."
       ),
 
       # Active slot
@@ -1678,8 +1673,8 @@ server <- function(input, output, session) {
         )
       },
 
-      # Full catalog
-      div(class = "sec-label", "All Games"),
+      # Full game catalog
+      div(class = "sec-label", "Games"),
       tagList(lapply(GAMES, function(g) {
         is_live     <- identical(g$id, active)
         is_expanded <- identical(rv$game_detail_id, g$id)
@@ -1714,7 +1709,23 @@ server <- function(input, output, session) {
             )
           }
         )
-      }))
+      })),
+
+      # Demos section
+      div(class = "sec-label", style = "margin-top:1.5rem;", "Demos"),
+      tags$p(style = "color:#666;font-size:.85rem;margin-bottom:.75rem;",
+             "Interactive demonstrations — always open, no session required."),
+      div(class = "demos-grid",
+        lapply(DEMOS, function(d) {
+          div(class = "demo-card",
+            div(class = "demo-card-label", d$label),
+            div(class = "demo-card-desc",  d$desc),
+            div(class = "demo-card-foot",
+              tags$a(href = d$url, target = "_blank",
+                     class = "btn btn-sm btn-outline-secondary", "Open →"))
+          )
+        })
+      )
     )
   })
 
