@@ -4163,58 +4163,93 @@ server <- function(input, output, session) {
           tagList(
             div(style = "overflow-x:auto;",
               tags$table(class = "table table-sm",
-                tags$thead(tags$tr(
-                  tags$th("Category"), tags$th("Weight"), tags$th("Items"),
-                  tags$th("Max pts/item"), tags$th("Source"), tags$th("")
-                )),
                 tags$tbody(lapply(seq_len(nrow(cats)), function(i) {
                   r       <- cats[i, ]
                   cid_js  <- as.integer(r$id)
                   nm_list <- get_item_names_for_cat(r)
+                  src     <- r$source %||% "manual"
+                  is_part <- identical(src, "participation")
+                  inp_style <- "width:100%;font-size:.82rem;padding:.15rem .35rem;border:1px solid #ddd;border-radius:4px;"
                   tags$tr(
-                    tags$td(
+                    tags$td(colspan = "5",
                       tags$details(
                         tags$summary(style = "cursor:pointer;font-weight:600;",
-                                     r$name %||% ""),
-                        div(style = "padding:.4rem 0;",
+                          r$name %||% "", " ",
+                          tags$small(style = "color:#888;font-weight:400;font-size:.82rem;",
+                            sprintf("%.4g%% · %d item%s · %s",
+                                    as.numeric(r$weight %||% 0),
+                                    as.integer(r$item_count %||% 1),
+                                    if (as.integer(r$item_count %||% 1) == 1L) "" else "s",
+                                    if (is_part) "auto" else sprintf("max %g", as.numeric(r$max_points %||% 100))))
+                        ),
+                        div(style = "padding:.5rem .25rem;",
+                          # Edit form
+                          tags$p(style = "color:#951829;font-size:.82rem;font-weight:600;margin-bottom:.35rem;",
+                                 "Edit category:"),
+                          div(style = "display:grid;grid-template-columns:repeat(3,1fr);gap:.4rem .7rem;margin-bottom:.45rem;",
+                            div(tags$label(style = "font-size:.78rem;color:#555;display:block;", "Name"),
+                                tags$input(type="text", id=sprintf("gbcat_name_%d",   cid_js), value=r$name %||% "",                          style=inp_style)),
+                            div(tags$label(style = "font-size:.78rem;color:#555;display:block;", "Weight %"),
+                                tags$input(type="number", id=sprintf("gbcat_weight_%d", cid_js), value=as.numeric(r$weight %||% 0), min=0, max=100, step=0.5, style=inp_style)),
+                            div(tags$label(style = "font-size:.78rem;color:#555;display:block;", "# of items"),
+                                tags$input(type="number", id=sprintf("gbcat_count_%d",  cid_js), value=as.integer(r$item_count %||% 1), min=1, step=1, style=inp_style)),
+                            div(tags$label(style = "font-size:.78rem;color:#555;display:block;", "Item prefix"),
+                                tags$input(type="text", id=sprintf("gbcat_prefix_%d", cid_js), value=r$item_prefix %||% "",                    style=inp_style)),
+                            div(tags$label(style = "font-size:.78rem;color:#555;display:block;", "Max pts/item"),
+                                tags$input(type="number", id=sprintf("gbcat_max_%d",    cid_js), value=as.integer(r$max_points %||% 100), min=0, step=1, style=inp_style)),
+                            div(tags$label(style = "font-size:.78rem;color:#555;display:block;", "Source"),
+                                tags$select(id=sprintf("gbcat_source_%d", cid_js), style=inp_style,
+                                  tags$option(value="manual",        `selected`=if (!is_part) "selected" else NULL, "Manual entry"),
+                                  tags$option(value="participation", `selected`=if ( is_part) "selected" else NULL, "Participation (auto from app)")))
+                          ),
+                          div(style = "display:flex;gap:.4rem;margin-bottom:.6rem;",
+                            tags$button(
+                              class = "btn btn-xs btn-primary",
+                              style = "padding:.2rem .6rem;font-size:.78rem;",
+                              onclick = sprintf(paste0(
+                                "var n=document.getElementById('gbcat_name_%d').value;",
+                                "var w=document.getElementById('gbcat_weight_%d').value;",
+                                "var c=document.getElementById('gbcat_count_%d').value;",
+                                "var p=document.getElementById('gbcat_prefix_%d').value;",
+                                "var m=document.getElementById('gbcat_max_%d').value;",
+                                "var s=document.getElementById('gbcat_source_%d').value;",
+                                "Shiny.setInputValue('edit_gb_cat_btn',",
+                                "{id:%d,name:n,weight:w,count:c,prefix:p,max:m,source:s},",
+                                "{priority:'event'});",
+                                "this.closest('details').removeAttribute('open');"),
+                                cid_js,cid_js,cid_js,cid_js,cid_js,cid_js,cid_js),
+                              "Save changes"),
+                            tags$button(
+                              class = "btn btn-xs btn-outline-danger",
+                              style = "padding:.2rem .5rem;font-size:.78rem;",
+                              onclick = sprintf(
+                                "if(confirm('Delete this category?')){Shiny.setInputValue('delete_gb_cat_btn',%d,{priority:'event'})}",
+                                cid_js),
+                              "Delete")
+                          ),
+                          # Item name overrides
+                          tags$hr(style = "margin:.3rem 0;"),
                           tags$p(style = "color:#555;font-size:.82rem;margin-bottom:.3rem;",
-                                 "Item names (click to rename):"),
+                                 "Override individual item names (optional):"),
                           lapply(seq_along(nm_list), function(j) {
                             div(style = "display:flex;align-items:center;gap:.4rem;margin-bottom:.25rem;",
-                              tags$input(
-                                type = "text", id = sprintf("gbi_%d_%d", cid_js, j),
-                                value = nm_list[j],
-                                style = "font-size:.82rem;padding:.15rem .35rem;border:1px solid #ccc;border-radius:4px;width:14rem;"),
+                              tags$span(style = "font-size:.78rem;color:#888;width:1.8rem;text-align:right;", paste0(j, ".")),
+                              tags$input(type="text", id=sprintf("gbi_%d_%d", cid_js, j),
+                                         value=nm_list[j],
+                                         style="font-size:.82rem;padding:.15rem .35rem;border:1px solid #ddd;border-radius:4px;width:14rem;"),
                               tags$button(
-                                class = "btn btn-xs btn-outline-secondary",
-                                style = "padding:.1rem .4rem;font-size:.72rem;",
-                                onclick = sprintf(paste0(
+                                class="btn btn-xs btn-outline-secondary",
+                                style="padding:.1rem .4rem;font-size:.72rem;",
+                                onclick=sprintf(paste0(
                                   "var v=document.getElementById('gbi_%d_%d').value;",
                                   "Shiny.setInputValue('rename_gb_item_btn',",
                                   "{cat_id:%d,idx:%d,name:v},{priority:'event'});"),
                                   cid_js, j, cid_js, j),
-                                "Save")
-                            )
+                                "Save"))
                           })
                         )
                       )
-                    ),
-                    tags$td(sprintf("%.1f%%", as.numeric(r$weight %||% 0))),
-                    tags$td(as.integer(r$item_count %||% 1)),
-                    tags$td(if (identical(r$source %||% "manual", "participation")) tags$em("(app)")
-                            else as.integer(r$max_points %||% 100)),
-                    tags$td(style = "font-size:.82rem;color:#555;",
-                            if (identical(r$source %||% "manual", "participation"))
-                              tags$span(style = "color:#1a6e3c;", "App (auto)")
-                            else "Manual"),
-                    tags$td(
-                      tags$button(
-                        class = "btn btn-xs btn-outline-danger",
-                        style = "padding:.1rem .3rem;font-size:.7rem;",
-                        onclick = sprintf(
-                          "if(confirm('Delete this category?')){Shiny.setInputValue('delete_gb_cat_btn',%d,{priority:'event'})}",
-                          cid_js),
-                        "\U274c"))
+                    )
                   )
                 }))
               )
@@ -4900,6 +4935,29 @@ server <- function(input, output, session) {
   }, ignoreNULL=TRUE)
 
   # ── Gradebook ─────────────────────────────────────────────────────────────────
+  observeEvent(input$edit_gb_cat_btn, {
+    req(rv$is_admin)
+    ev     <- input$edit_gb_cat_btn
+    cid    <- suppressWarnings(as.integer(ev$id    %||% 0))
+    nm     <- trimws(ev$name   %||% "")
+    weight <- suppressWarnings(as.numeric(ev$weight %||% 0))
+    count  <- max(1L, suppressWarnings(as.integer(ev$count %||% 1L)))
+    prefix <- trimws(ev$prefix %||% "")
+    maxpts <- suppressWarnings(as.numeric(ev$max   %||% 100))
+    source <- ev$source %||% "manual"
+    if (is.na(cid) || cid <= 0 || !nzchar(nm)) {
+      showNotification("Category name required.", type = "error"); return()
+    }
+    db_exec(
+      "UPDATE gradebook_categories SET name=?,weight=?,item_count=?,item_prefix=?,max_points=?,source=? WHERE id=?;",
+      list(nm, weight, count,
+           if (nzchar(prefix)) prefix else NA_character_,
+           if (!is.na(maxpts)) maxpts else 100,
+           source, cid))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification(sprintf("Category '%s' updated.", nm), type = "message")
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$add_gb_cat_btn, {
     req(rv$is_admin)
     nm     <- trimws(input$new_gb_name %||% "")
