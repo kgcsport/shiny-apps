@@ -1060,9 +1060,16 @@ server <- function(input, output, session) {
       students <- tryCatch(db_query(
         "SELECT u.user_id, u.display_name, u.section,
                 COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned,
-                COALESCE(SUM(tl.amount),0) AS tokens_on_hand
+                COALESCE(SUM(tl.amount),0) AS tokens_on_hand,
+                COALESCE(pend.tokens_pending, 0) AS tokens_pending
          FROM users u
          LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
+         LEFT JOIN (
+           SELECT user_id, SUM(COALESCE(tokens_awarded,0)) AS tokens_pending
+           FROM job_assignments
+           WHERE COALESCE(tokens_credited,1)=0 AND COALESCE(tokens_awarded,0)>0
+           GROUP BY user_id
+         ) pend ON pend.user_id=u.user_id
          WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
          GROUP BY u.user_id ORDER BY u.section, u.display_name;"),
         error = function(e) data.frame())
@@ -1190,6 +1197,27 @@ server <- function(input, output, session) {
            amount, as.integer(earning), note))
     tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1], error = function(e) NA_integer_)
   }
+  # Consume unreleased pending tokens (job_assignments with tokens_credited=0) LIFO.
+  # Returns any remainder that wasn't covered by pending tokens.
+  consume_pending_tokens <- function(uid, amount) {
+    if (amount <= 0) return(0)
+    pending <- tryCatch(db_query(
+      "SELECT id, tokens_awarded FROM job_assignments
+       WHERE user_id=? AND COALESCE(tokens_credited,1)=0 AND COALESCE(tokens_awarded,0)>0
+       ORDER BY id DESC;",
+      list(uid)), error = function(e) data.frame())
+    remaining <- amount
+    for (i in seq_len(nrow(pending))) {
+      if (remaining <= 0) break
+      row <- pending[i, ]
+      can_take <- min(remaining, as.numeric(row$tokens_awarded))
+      db_exec("UPDATE job_assignments SET tokens_awarded=? WHERE id=?;",
+              list(as.numeric(row$tokens_awarded) - can_take, as.integer(row$id)))
+      remaining <- remaining - can_take
+    }
+    remaining
+  }
+
   token_debit <- function(uid, dname, amount, source_type, source_id = NA, note = "") {
     token_credit(uid, dname, -abs(amount), 0L, source_type, source_id, note)
   }
@@ -3063,16 +3091,20 @@ server <- function(input, output, session) {
             tags$thead(tags$tr(
               tags$th("Student"), tags$th("Section"),
               tags$th(style = "text-align:right;", "Earned"),
-              tags$th(style = "text-align:right;", "On Hand")
+              tags$th(style = "text-align:right;", "On Hand"),
+              tags$th(style = "text-align:right;color:#856404;", "Pending")
             )),
             tags$tbody(lapply(seq_len(nrow(students_sec)), function(i) {
               r <- students_sec[i, ]
+              pend <- as.integer(r$tokens_pending %||% 0)
               tags$tr(
                 tags$td(r$display_name %||% r$user_id),
                 tags$td(style = "color:#888;", r$section %||% ""),
                 tags$td(style = "text-align:right;", as.integer(r$tokens_earned %||% 0)),
                 tags$td(style = "text-align:right;font-weight:600;",
-                        as.integer(r$tokens_on_hand %||% 0))
+                        as.integer(r$tokens_on_hand %||% 0)),
+                tags$td(style = "text-align:right;color:#856404;font-style:italic;",
+                        if (pend > 0) pend else "—")
               )
             }))
           )
@@ -4006,10 +4038,19 @@ server <- function(input, output, session) {
 
     } else if (act == "token_admin") {
       students <- tryCatch(db_query(
-        "SELECT user_id, display_name, section
-         FROM users
-         WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
-         ORDER BY section, display_name;"),
+        "SELECT u.user_id, u.display_name, u.section,
+                COALESCE(SUM(tl.amount),0) AS tokens_on_hand,
+                COALESCE(pend.tokens_pending, 0) AS tokens_pending
+         FROM users u
+         LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
+         LEFT JOIN (
+           SELECT user_id, SUM(COALESCE(tokens_awarded,0)) AS tokens_pending
+           FROM job_assignments
+           WHERE COALESCE(tokens_credited,1)=0 AND COALESCE(tokens_awarded,0)>0
+           GROUP BY user_id
+         ) pend ON pend.user_id=u.user_id
+         WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
+         GROUP BY u.user_id ORDER BY u.section, u.display_name;"),
         error = function(e) data.frame())
       sections <- c("All", sort(unique(Filter(nzchar, students$section %||% character(0)))))
       stu_lbl  <- if (nrow(students)) {
@@ -4019,6 +4060,32 @@ server <- function(input, output, session) {
                students$display_name %||% students$user_id)
       } else character(0)
       tagList(
+        if (nrow(students)) {
+          div(style = "margin-bottom:.8rem;overflow-x:auto;",
+            tags$p(style = "color:#555;font-size:.82rem;margin-bottom:.3rem;",
+                   tags$b("On Hand"), " = tokens in the ledger (released). ",
+                   tags$b(style="color:#856404;", "Pending"), " = earned from jobs but not yet released — deductions consume these first."),
+            tags$table(class = "table table-sm",
+              tags$thead(tags$tr(
+                tags$th("Student"), tags$th("Section"),
+                tags$th(style="text-align:right;", "On Hand"),
+                tags$th(style="text-align:right;color:#856404;", "Pending")
+              )),
+              tags$tbody(lapply(seq_len(nrow(students)), function(i) {
+                r    <- students[i, ]
+                pend <- as.integer(r$tokens_pending %||% 0)
+                tags$tr(
+                  tags$td(r$display_name %||% r$user_id),
+                  tags$td(style="color:#888;font-size:.82em;", r$section %||% ""),
+                  tags$td(style="text-align:right;font-weight:600;",
+                          as.integer(r$tokens_on_hand %||% 0)),
+                  tags$td(style="text-align:right;color:#856404;font-style:italic;",
+                          if (pend > 0) pend else "—")
+                )
+              }))
+            )
+          )
+        },
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Bulk Token Award / Deduct"),
         tags$p(style = "color:#555;font-size:.88rem;",
                "Award or deduct tokens from all students or a specific section at once."),
@@ -4494,11 +4561,18 @@ server <- function(input, output, session) {
     if (!nrow(targets)) {
       showNotification("No matching students found.", type = "error"); return()
     }
-    earning <- if (amount > 0) 1L else 0L
-    lbl     <- if (nzchar(note)) note else sprintf("Bulk award (section: %s)", section)
-    for (i in seq_len(nrow(targets)))
-      token_credit(targets$user_id[i], targets$display_name[i] %||% targets$user_id[i],
-                   amount, earning, "bulk_award", note = lbl)
+    lbl <- if (nzchar(note)) note else sprintf("Bulk award (section: %s)", section)
+    for (i in seq_len(nrow(targets))) {
+      uid_i   <- targets$user_id[i]
+      dname_i <- targets$display_name[i] %||% uid_i
+      if (amount < 0) {
+        leftover <- consume_pending_tokens(uid_i, abs(amount))
+        if (leftover > 0)
+          token_credit(uid_i, dname_i, -leftover, 0L, "bulk_award", note = lbl)
+      } else {
+        token_credit(uid_i, dname_i, amount, 1L, "bulk_award", note = lbl)
+      }
+    }
     showNotification(
       sprintf("%s %d token%s to %d student%s.",
               if (amount > 0) "Awarded" else "Deducted",
@@ -4517,9 +4591,14 @@ server <- function(input, output, session) {
     }
     u_row  <- db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid))
     dname  <- if (nrow(u_row)) u_row$display_name[1] %||% uid else uid
-    earning <- if (amount > 0) 1L else 0L
-    token_credit(uid, dname, amount, earning, "individual_adj",
-                 note = if (nzchar(note)) note else "individual adjustment")
+    lbl    <- if (nzchar(note)) note else "individual adjustment"
+    if (amount < 0) {
+      leftover <- consume_pending_tokens(uid, abs(amount))
+      if (leftover > 0)
+        token_credit(uid, dname, -leftover, 0L, "individual_adj", note = lbl)
+    } else {
+      token_credit(uid, dname, amount, 1L, "individual_adj", note = lbl)
+    }
     showNotification(
       sprintf("%s %d token%s to %s.",
               if (amount > 0) "Awarded" else "Deducted",
