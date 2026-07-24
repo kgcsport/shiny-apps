@@ -271,6 +271,24 @@ try(db_exec("ALTER TABLE job_assignments ADD COLUMN updated_at TEXT;"), silent =
 try(db_exec("ALTER TABLE job_assignments ADD COLUMN tokens_credited INTEGER DEFAULT 1;"), silent = TRUE)
 try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN tokens_revealed INTEGER DEFAULT 1;"), silent = TRUE)
 try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN tiebreak_method TEXT DEFAULT 'weighted_lottery';"), silent = TRUE)
+try(db_exec("ALTER TABLE flex_questions ADD COLUMN exam_tag TEXT;"), silent = TRUE)
+db_exec("CREATE TABLE IF NOT EXISTS gradebook_categories(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  weight REAL NOT NULL DEFAULT 0,
+  item_count INTEGER NOT NULL DEFAULT 1,
+  item_prefix TEXT,
+  max_points REAL NOT NULL DEFAULT 100,
+  source TEXT DEFAULT 'manual',
+  display_order INTEGER DEFAULT 0
+);")
+db_exec("CREATE TABLE IF NOT EXISTS gradebook_item_names(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category_id INTEGER NOT NULL,
+  item_index INTEGER NOT NULL,
+  item_name TEXT NOT NULL,
+  UNIQUE(category_id, item_index)
+);")
 db_exec("CREATE TABLE IF NOT EXISTS student_grades(
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id         TEXT NOT NULL,
@@ -794,7 +812,8 @@ server <- function(input, output, session) {
     orig_state     = NULL,
     draw_preview   = NULL,   # NULL | list of draw pairs for preview
     active_section = get_setting("active_section", ""),
-    jobs_ver       = 0L     # bumped after any job-post or category mutation
+    jobs_ver       = 0L,    # bumped after any job-post or category mutation
+    gradebook_ver  = 0L     # bumped after any gradebook category/item mutation
   )
 
   # ── Root UI ──────────────────────────────────────────────────────────────────
@@ -2795,13 +2814,14 @@ server <- function(input, output, session) {
 
   observeEvent(input$add_flex_question_btn, {
     req(rv$is_admin)
-    txt <- trimws(input$new_fq_text %||% "")
+    txt  <- trimws(input$new_fq_text %||% "")
+    etag <- trimws(input$new_fq_exam %||% "")
     if (!nzchar(txt)) { showNotification("Question text required.", type = "error"); return() }
     max_idx <- tryCatch(
       db_query("SELECT COALESCE(MAX(order_index),0) n FROM flex_questions;")$n[1],
       error = function(e) 0L)
-    db_exec("INSERT INTO flex_questions(question_text,order_index) VALUES(?,?);",
-            list(txt, as.integer(max_idx %||% 0L) + 1L))
+    db_exec("INSERT INTO flex_questions(question_text,order_index,exam_tag) VALUES(?,?,?);",
+            list(txt, as.integer(max_idx %||% 0L) + 1L, if (nzchar(etag)) etag else NA_character_))
     showNotification("Question added.", type = "message")
   })
 
@@ -2817,33 +2837,42 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     f <- input$upload_flex_questions
     if (is.null(f)) { showNotification("Choose a file first.", type = "error"); return() }
-    ext <- tolower(tools::file_ext(f$name))
-    lines <- tryCatch({
+    ext          <- tolower(tools::file_ext(f$name))
+    batch_etag   <- trimws(input$upload_fq_exam %||% "")
+    parsed <- tryCatch({
       if (ext == "csv") {
-        df <- read.csv(f$datapath, stringsAsFactors = FALSE)
+        df  <- read.csv(f$datapath, stringsAsFactors = FALSE)
         col <- intersect(c("question_text","question","text"), names(df))
         if (!length(col)) stop("CSV must have a 'question_text' column.")
-        df[[col[1]]]
+        etag_col <- intersect(c("exam_tag","exam"), names(df))
+        list(
+          texts = df[[col[1]]],
+          tags  = if (length(etag_col)) df[[etag_col[1]]] else rep(NA_character_, nrow(df))
+        )
       } else {
         raw <- readLines(f$datapath, warn = FALSE)
-        trimws(raw[nzchar(trimws(raw))])
+        txts <- trimws(raw[nzchar(trimws(raw))])
+        list(texts = txts, tags = rep(NA_character_, length(txts)))
       }
     }, error = function(e) { showNotification(paste("Error:", e$message), type = "error"); NULL })
-    if (is.null(lines)) return()
-    lines <- lines[nzchar(trimws(lines))]
-    if (!length(lines)) { showNotification("No questions found in file.", type = "warning"); return() }
-    if (isTRUE(input$fq_replace_all)) {
-      db_exec("UPDATE flex_questions SET active=0;")
-    }
-    max_idx <- tryCatch(
+    if (is.null(parsed)) return()
+    keep  <- nzchar(trimws(parsed$texts))
+    texts <- parsed$texts[keep]
+    etags <- parsed$tags[keep]
+    if (!length(texts)) { showNotification("No questions found in file.", type = "warning"); return() }
+    if (isTRUE(input$fq_replace_all)) db_exec("UPDATE flex_questions SET active=0;")
+    max_idx  <- tryCatch(
       db_query("SELECT COALESCE(MAX(order_index),0) n FROM flex_questions;")$n[1],
       error = function(e) 0L)
     base_idx <- as.integer(max_idx %||% 0L)
-    for (i in seq_along(lines)) {
-      db_exec("INSERT INTO flex_questions(question_text,order_index) VALUES(?,?);",
-              list(lines[i], base_idx + i))
+    for (i in seq_along(texts)) {
+      tag <- if (!is.na(etags[i]) && nzchar(trimws(etags[i]))) trimws(etags[i])
+             else if (nzchar(batch_etag)) batch_etag
+             else NA_character_
+      db_exec("INSERT INTO flex_questions(question_text,order_index,exam_tag) VALUES(?,?,?);",
+              list(texts[i], base_idx + i, tag))
     }
-    showNotification(sprintf("Uploaded %d questions.", length(lines)), type = "message")
+    showNotification(sprintf("Uploaded %d questions.", length(texts)), type = "message")
   })
 
   # quick_award_btn removed — use Settings → Token Admin for awards
@@ -3193,6 +3222,7 @@ server <- function(input, output, session) {
         "Grade Reweighting"     = "grade_reweighting",
         "Extensions"            = "extensions",
         "Flex Questions"        = "flex_questions",
+        "Gradebook"             = "gradebook",
         "Game Controls"         = "game_controls",
         "App Settings"          = "app_settings"
       ), selected = "jobs"),
@@ -3948,7 +3978,7 @@ server <- function(input, output, session) {
 
     } else if (act == "flex_questions") {
       fqs <- tryCatch(db_query(
-        "SELECT id, question_text, order_index, active FROM flex_questions ORDER BY order_index ASC, id ASC;"),
+        "SELECT id, question_text, order_index, active, exam_tag FROM flex_questions ORDER BY order_index ASC, id ASC;"),
         error = function(e) data.frame())
       cur_schedule <- tryCatch(get_setting("flex_cost_schedule", "2,4,6,8,10"),
                                error = function(e) "2,4,6,8,10")
@@ -3971,15 +4001,17 @@ server <- function(input, output, session) {
         if (nrow(fqs)) {
           tags$table(class = "table table-sm",
             tags$thead(tags$tr(
-              tags$th("#"), tags$th("Question"), tags$th("Active"), tags$th("")
+              tags$th("#"), tags$th("Question"), tags$th("Exam"), tags$th("Active"), tags$th("")
             )),
             tags$tbody(lapply(seq_len(nrow(fqs)), function(i) {
               r <- fqs[i, ]
               is_active <- isTRUE(as.integer(r$active %||% 1L) == 1L)
               tags$tr(
                 tags$td(style = "color:#888;width:2rem;", i),
-                tags$td(style = "font-size:.85rem;max-width:26rem;word-break:break-word;",
+                tags$td(style = "font-size:.85rem;max-width:22rem;word-break:break-word;",
                         r$question_text %||% ""),
+                tags$td(style = "font-size:.82rem;color:#555;white-space:nowrap;",
+                        r$exam_tag %||% "—"),
                 tags$td(if (is_active) "✓" else ""),
                 tags$td(
                   tags$button(
@@ -4000,6 +4032,7 @@ server <- function(input, output, session) {
                        "Add question manually"),
           div(style = "padding:.5rem 0;",
             textAreaInput("new_fq_text", "Question text:", rows = 3, width = "100%"),
+            textInput("new_fq_exam", "Exam (optional):", placeholder = "e.g. Midterm 1"),
             actionButton("add_flex_question_btn", "Add question",
                          class = "btn btn-sm btn-primary")
           )
@@ -4009,12 +4042,161 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;", "Upload Questions"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "Upload a plain-text file (one question per non-empty line) or a CSV with a 'question_text' column."),
+               "Upload a plain-text file (one question per non-empty line) or a CSV with 'question_text' and optional 'exam_tag' columns."),
         fileInput("upload_flex_questions", NULL,
                   accept = c(".txt", ".md", ".csv", ".yaml", ".yml"),
                   buttonLabel = "Choose file", placeholder = "No file chosen"),
+        textInput("upload_fq_exam", "Apply exam tag to all uploaded questions (optional):",
+                  placeholder = "e.g. Final — overridden by CSV's exam_tag column"),
         checkboxInput("fq_replace_all", "Replace all existing questions", value = FALSE),
         actionButton("upload_flex_questions_btn", "Upload", class = "btn btn-sm btn-primary")
+      )
+
+    } else if (act == "gradebook") {
+      rv$gradebook_ver
+      cats <- tryCatch(db_query(
+        "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
+        error = function(e) data.frame())
+      inames <- tryCatch(db_query(
+        "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
+        error = function(e) data.frame())
+      sections_df <- tryCatch(db_query(
+        "SELECT DISTINCT section FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND section IS NOT NULL AND section != '';"),
+        error = function(e) data.frame())
+      sec_choices <- c("All sections" = "all", sort(sections_df$section %||% character(0)))
+
+      get_item_names_for_cat <- function(cat_row) {
+        n      <- as.integer(cat_row$item_count %||% 1)
+        prefix <- if (!is.null(cat_row$item_prefix) && !is.na(cat_row$item_prefix) && nzchar(cat_row$item_prefix))
+                    cat_row$item_prefix else cat_row$name
+        overrides <- if (nrow(inames)) inames[inames$category_id == cat_row$id, , drop=FALSE] else data.frame()
+        sapply(seq_len(n), function(i) {
+          ov <- if (nrow(overrides)) overrides$item_name[overrides$item_index == i] else character(0)
+          if (length(ov) && nzchar(ov[1])) ov[1]
+          else if (n == 1) cat_row$name
+          else paste0(prefix, " ", i)
+        })
+      }
+
+      tagList(
+        tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Gradebook Builder"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+          "Define grade categories and download a pre-filled template spreadsheet for your gradebook."),
+
+        # Category list
+        if (!nrow(cats)) {
+          div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;",
+              "No categories defined yet. Add one below.")
+        } else {
+          total_w <- sum(as.numeric(cats$weight %||% 0), na.rm = TRUE)
+          tagList(
+            div(style = "overflow-x:auto;",
+              tags$table(class = "table table-sm",
+                tags$thead(tags$tr(
+                  tags$th("Category"), tags$th("Weight"), tags$th("Items"),
+                  tags$th("Max pts/item"), tags$th("Source"), tags$th("")
+                )),
+                tags$tbody(lapply(seq_len(nrow(cats)), function(i) {
+                  r       <- cats[i, ]
+                  cid_js  <- as.integer(r$id)
+                  nm_list <- get_item_names_for_cat(r)
+                  tags$tr(
+                    tags$td(
+                      tags$details(
+                        tags$summary(style = "cursor:pointer;font-weight:600;",
+                                     r$name %||% ""),
+                        div(style = "padding:.4rem 0;",
+                          tags$p(style = "color:#555;font-size:.82rem;margin-bottom:.3rem;",
+                                 "Item names (click to rename):"),
+                          lapply(seq_along(nm_list), function(j) {
+                            div(style = "display:flex;align-items:center;gap:.4rem;margin-bottom:.25rem;",
+                              tags$input(
+                                type = "text", id = sprintf("gbi_%d_%d", cid_js, j),
+                                value = nm_list[j],
+                                style = "font-size:.82rem;padding:.15rem .35rem;border:1px solid #ccc;border-radius:4px;width:14rem;"),
+                              tags$button(
+                                class = "btn btn-xs btn-outline-secondary",
+                                style = "padding:.1rem .4rem;font-size:.72rem;",
+                                onclick = sprintf(paste0(
+                                  "var v=document.getElementById('gbi_%d_%d').value;",
+                                  "Shiny.setInputValue('rename_gb_item_btn',",
+                                  "{cat_id:%d,idx:%d,name:v},{priority:'event'});"),
+                                  cid_js, j, cid_js, j),
+                                "Save")
+                            )
+                          })
+                        )
+                      )
+                    ),
+                    tags$td(sprintf("%.1f%%", as.numeric(r$weight %||% 0))),
+                    tags$td(as.integer(r$item_count %||% 1)),
+                    tags$td(if (identical(r$source %||% "manual", "participation")) tags$em("(app)")
+                            else as.integer(r$max_points %||% 100)),
+                    tags$td(style = "font-size:.82rem;color:#555;",
+                            if (identical(r$source %||% "manual", "participation"))
+                              tags$span(style = "color:#1a6e3c;", "App (auto)")
+                            else "Manual"),
+                    tags$td(
+                      tags$button(
+                        class = "btn btn-xs btn-outline-danger",
+                        style = "padding:.1rem .3rem;font-size:.7rem;",
+                        onclick = sprintf(
+                          "if(confirm('Delete this category?')){Shiny.setInputValue('delete_gb_cat_btn',%d,{priority:'event'})}",
+                          cid_js),
+                        "\U274c"))
+                  )
+                }))
+              )
+            ),
+            tags$p(style = sprintf("font-size:.82rem;%s;margin-top:-.4rem;",
+                                   if (abs(total_w - 100) < 0.01) "color:#1a6e3c;" else "color:#856404;font-weight:600;"),
+                   sprintf("Total weight: %.1f%% %s", total_w,
+                           if (abs(total_w - 100) < 0.01) "\U2713" else "(should sum to 100%)"))
+          )
+        },
+        tags$hr(),
+
+        # Add category form
+        tags$details(
+          tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
+                       "Add grade category"),
+          div(style = "padding:.5rem 0;",
+            fluidRow(
+              column(3, textInput("new_gb_name", "Category name:", placeholder = "e.g. Problem Sets")),
+              column(2, numericInput("new_gb_weight", "Weight (%):", value = NA, min = 0, max = 100, step = 0.5)),
+              column(2, numericInput("new_gb_count", "# of items:", value = 1, min = 1, step = 1)),
+              column(2, textInput("new_gb_prefix", "Item prefix:", placeholder = "e.g. Pset")),
+              column(2, numericInput("new_gb_max", "Max pts/item:", value = 100, min = 0, step = 1))
+            ),
+            fluidRow(
+              column(4, selectInput("new_gb_source", "Data source:",
+                choices = c("Manual entry" = "manual",
+                            "Participation tokens (auto from app)" = "participation"))),
+              column(2, tags$br(),
+                     actionButton("add_gb_cat_btn", "Add", class = "btn btn-sm btn-primary"))
+            ),
+            tags$p(style = "color:#888;font-size:.78rem;margin:.25rem 0 0;",
+                   "Item prefix + number = column name (e.g. 'Pset' → 'Pset 1', 'Pset 2'). Leave blank to use category name.")
+          )
+        ),
+        tags$hr(),
+
+        # Template download
+        tags$h6(style = "font-weight:700;", "Download Template"),
+        if (!nrow(cats)) {
+          tags$p(style = "color:#999;font-size:.9em;", "Add at least one category first.")
+        } else {
+          tagList(
+            fluidRow(
+              column(4, selectInput("gb_template_section", "Section:", choices = sec_choices)),
+              column(3, tags$br(),
+                     downloadButton("dl_gradebook_template", "Download CSV",
+                                    class = "btn btn-sm btn-outline-primary"))
+            ),
+            tags$p(style = "color:#888;font-size:.78rem;margin-top:.3rem;",
+                   "One row per student. Participation columns are pre-filled from the app. All other cells are blank for manual entry.")
+          )
+        }
       )
 
     } else if (act == "game_controls") {
@@ -4289,6 +4471,86 @@ server <- function(input, output, session) {
       file, row.names = FALSE)
   )
 
+  output$dl_gradebook_template <- downloadHandler(
+    filename = function() paste0("gradebook_template_", Sys.Date(), ".csv"),
+    content  = function(file) {
+      sec   <- isolate(input$gb_template_section %||% "all")
+      cats  <- tryCatch(db_query(
+        "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
+        error = function(e) data.frame())
+      inames_df <- tryCatch(db_query(
+        "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
+        error = function(e) data.frame())
+      students <- tryCatch({
+        q <- if (identical(sec, "all"))
+          "SELECT u.user_id, u.display_name, u.section,
+                  COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned
+           FROM users u LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
+           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
+           GROUP BY u.user_id ORDER BY u.section, u.display_name;"
+        else
+          "SELECT u.user_id, u.display_name, u.section,
+                  COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned
+           FROM users u LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
+           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
+             AND u.section=?
+           GROUP BY u.user_id ORDER BY u.section, u.display_name;"
+        if (identical(sec, "all")) db_query(q) else db_query(q, list(sec))
+      }, error = function(e) data.frame())
+      if (!nrow(cats) || !nrow(students)) { write.csv(data.frame(), file, row.names=FALSE); return() }
+
+      # Build column names + max-points row
+      col_names  <- character(0)
+      col_maxpts <- character(0)
+      col_weight <- character(0)
+      for (i in seq_len(nrow(cats))) {
+        r   <- cats[i, ]
+        n   <- as.integer(r$item_count %||% 1)
+        is_part <- identical(r$source %||% "manual", "participation")
+        prefix  <- if (!is.null(r$item_prefix) && !is.na(r$item_prefix) && nzchar(r$item_prefix))
+                     r$item_prefix else r$name
+        ovr_df  <- if (nrow(inames_df)) inames_df[inames_df$category_id == r$id, , drop=FALSE] else data.frame()
+        item_wt <- sprintf("%.4g%%", as.numeric(r$weight %||% 0) / n)
+        for (j in seq_len(n)) {
+          ov  <- if (nrow(ovr_df)) ovr_df$item_name[ovr_df$item_index == j] else character(0)
+          nm  <- if (length(ov) && nzchar(ov[1])) ov[1]
+                 else if (n == 1) r$name
+                 else paste0(prefix, " ", j)
+          col_names  <- c(col_names,  nm)
+          col_maxpts <- c(col_maxpts, if (is_part) "(from app)" else as.character(as.integer(r$max_points %||% 100)))
+          col_weight <- c(col_weight, item_wt)
+        }
+      }
+
+      # Build data frame: header + max-pts row + weight row + student rows
+      n_cols   <- length(col_names)
+      part_idx <- which(sapply(seq_len(nrow(cats)), function(i)
+        identical(cats$source[i] %||% "manual", "participation")))
+      # Column offsets: cumulative item counts per category
+      cat_col_start <- c(1L, cumsum(as.integer(cats$item_count %||% 1)) + 1L)
+
+      out_rows <- vector("list", nrow(students))
+      for (s in seq_len(nrow(students))) {
+        stu   <- students[s, ]
+        cells <- rep("", n_cols)
+        for (pi in part_idx) {
+          span_start <- cat_col_start[pi]
+          span_end   <- cat_col_start[pi] + as.integer(cats$item_count[pi] %||% 1) - 1L
+          cells[span_start:span_end] <- as.character(as.integer(stu$tokens_earned %||% 0))
+        }
+        out_rows[[s]] <- c(stu$display_name %||% stu$user_id, stu$section %||% "", cells)
+      }
+
+      meta_row1 <- c("(Max Points)", "", col_maxpts)
+      meta_row2 <- c("(Weight)",     "", col_weight)
+      header    <- c("Student", "Section", col_names)
+      all_rows  <- c(list(header, meta_row1, meta_row2), out_rows)
+      df_out    <- as.data.frame(do.call(rbind, all_rows), stringsAsFactors = FALSE)
+      colnames(df_out) <- header
+      write.csv(df_out[-1, ], file, row.names = FALSE)
+    }
+  )
+
   # Admin action observers
   observeEvent(input$set_active_btn, {
     req(rv$is_admin)
@@ -4554,6 +4816,55 @@ server <- function(input, output, session) {
     showNotification("All grade records cleared.", type="message")
     rv$jobs_ver <- rv$jobs_ver + 1L
   }, ignoreNULL=TRUE)
+
+  # ── Gradebook ─────────────────────────────────────────────────────────────────
+  observeEvent(input$add_gb_cat_btn, {
+    req(rv$is_admin)
+    nm     <- trimws(input$new_gb_name %||% "")
+    weight <- suppressWarnings(as.numeric(input$new_gb_weight))
+    count  <- max(1L, as.integer(input$new_gb_count %||% 1L))
+    prefix <- trimws(input$new_gb_prefix %||% "")
+    maxpts <- suppressWarnings(as.numeric(input$new_gb_max %||% 100))
+    source <- input$new_gb_source %||% "manual"
+    if (!nzchar(nm)) { showNotification("Category name required.", type = "error"); return() }
+    if (is.na(weight)) { showNotification("Weight (%) required.", type = "error"); return() }
+    ord <- tryCatch(
+      as.integer(db_query("SELECT COALESCE(MAX(display_order),0)+1 n FROM gradebook_categories;")$n[1]),
+      error = function(e) 1L)
+    db_exec(
+      "INSERT INTO gradebook_categories(name,weight,item_count,item_prefix,max_points,source,display_order)
+       VALUES(?,?,?,?,?,?,?);",
+      list(nm, weight, count,
+           if (nzchar(prefix)) prefix else NA_character_,
+           if (!is.na(maxpts)) maxpts else 100,
+           source, ord))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification(sprintf("Category '%s' added.", nm), type = "message")
+  })
+
+  observeEvent(input$delete_gb_cat_btn, {
+    req(rv$is_admin)
+    cid <- suppressWarnings(as.integer(input$delete_gb_cat_btn %||% 0))
+    if (is.na(cid) || cid <= 0) return()
+    db_exec("DELETE FROM gradebook_item_names WHERE category_id=?;", list(cid))
+    db_exec("DELETE FROM gradebook_categories WHERE id=?;", list(cid))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification("Category deleted.", type = "message")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$rename_gb_item_btn, {
+    req(rv$is_admin)
+    ev  <- input$rename_gb_item_btn
+    cid <- suppressWarnings(as.integer(ev$cat_id %||% 0))
+    idx <- suppressWarnings(as.integer(ev$idx %||% 0))
+    nm  <- trimws(ev$name %||% "")
+    if (is.na(cid) || cid <= 0 || is.na(idx) || idx <= 0 || !nzchar(nm)) return()
+    db_exec(
+      "INSERT OR REPLACE INTO gradebook_item_names(category_id,item_index,item_name) VALUES(?,?,?);",
+      list(cid, idx, nm))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification("Item name saved.", type = "message")
+  }, ignoreNULL = TRUE)
 
   # ── Token Admin ───────────────────────────────────────────────────────────────
   observeEvent(input$bulk_award_btn, {
