@@ -596,6 +596,9 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
                border: 1px solid rgba(255,255,255,.4); font-size: .82rem;
                padding: .25rem .6rem; border-radius: 6px; cursor: pointer; }
 .arc-signout:hover { background: rgba(255,255,255,.28); }
+.arc-font-ctrl { display:flex; align-items:center; gap:.3rem; font-size:.75rem;
+                 opacity:.8; white-space:nowrap; }
+.arc-font-ctrl input[type=range] { width:70px; accent-color:#fff; cursor:pointer; }
 
 /* ── Page body ──────────────────────────────────────────────────────────── */
 .arc-body { max-width: 900px; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
@@ -905,6 +908,15 @@ server <- function(input, output, session) {
         div(class = "arc-header",
           div(class = "arc-title", paste0("\U0001f393 ", APP_NAME)),
           uiOutput("header_widgets", inline = TRUE),
+          tags$div(class = "arc-font-ctrl",
+            tags$span("A"),
+            tags$input(
+              type  = "range", min = "80", max = "130", value = "100", step = "5",
+              title = "Adjust font size",
+              oninput = "document.body.style.fontSize = this.value + '%';"
+            ),
+            tags$span("A", style = "font-size:1.1em;")
+          ),
           actionButton("logout_btn", "Sign out", class = "arc-signout")
         ),
         if (rv$impersonating)
@@ -2012,7 +2024,11 @@ server <- function(input, output, session) {
 
       tagList(
         div(class = "tab-howto",
-            sprintf("Spend your tokens on academic benefits. Spendable balance: %d tokens.", as.integer(bal))),
+            sprintf("Spend your tokens on academic benefits. Spendable balance: %d tokens.", as.integer(bal)),
+            tags$p(style = "margin:.4rem 0 0;font-size:.85rem;color:#555;",
+              tags$b("Note:"),
+              " Spending tokens does not reduce your participation grade.",
+              " Your participation grade is based on total tokens earned during the semester, not your current balance.")),
         div(class = "spend-cards",
           div(class = "spend-card",
             div(class = "spend-card-icon", "\U0001f4c5"),
