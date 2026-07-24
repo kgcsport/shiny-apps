@@ -179,6 +179,7 @@ db_exec(paste0("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('particip
   '{"id":"correct","label":"Correct Answer","tokens":1}]', "');"))
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('active_section','');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('flex_cost_schedule','2,4,6,8,10');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('grade_reweight_max_points','5');")
 
 # token_ledger table
 db_exec("CREATE TABLE IF NOT EXISTS token_ledger(
@@ -418,23 +419,38 @@ parse_ext_prices <- function() {
   rows
 }
 
+# Safely evaluate an arithmetic expression (admin-set only) with one named variable
+eval_cost_expr <- function(expr_str, var_name, var_value) {
+  env <- new.env(parent = baseenv())
+  assign(var_name, as.numeric(var_value), envir = env)
+  tryCatch(
+    max(0, ceiling(as.numeric(eval(parse(text = expr_str), envir = env)))),
+    error = function(e) NA_real_
+  )
+}
+
 parse_flex_cost <- function(text = NULL) {
   if (is.null(text)) text <- tryCatch(get_setting("flex_cost_schedule", "2,4,6,8,10"), error=function(e)"2,4,6,8,10")
   text <- trimws(text %||% "")
-  if (!nzchar(text)) return(NULL)
-  tryCatch({
-    parts <- as.numeric(strsplit(text, ",")[[1]])
-    if (all(!is.na(parts))) return(parts)
-    NULL
-  }, error = function(e) NULL)
+  if (!nzchar(text)) return(list(type="table", values=c(2)))
+  parts <- suppressWarnings(as.numeric(strsplit(text, ",")[[1]]))
+  if (!any(is.na(parts))) return(list(type="table", values=parts))
+  list(type="expr", expr=text)
 }
 question_cost_for_n <- function(n, schedule_text = NULL) {
-  tbl <- parse_flex_cost(schedule_text)
-  if (is.null(tbl) || length(tbl) == 0) return(2 * n)
-  if (n <= length(tbl)) return(tbl[n])
-  last <- tbl[length(tbl)]
-  step <- if (length(tbl) >= 2) (tbl[length(tbl)] - tbl[length(tbl)-1]) else tbl[1]
-  last + step * (n - length(tbl))
+  n <- max(1L, as.integer(n))
+  sched <- parse_flex_cost(schedule_text)
+  if (sched$type == "table") {
+    tbl <- sched$values
+    if (length(tbl) == 0) return(as.integer(2 * n))
+    if (n <= length(tbl)) return(as.integer(tbl[n]))
+    last <- tbl[length(tbl)]
+    step <- if (length(tbl) >= 2) (tbl[length(tbl)] - tbl[length(tbl)-1]) else tbl[1]
+    return(as.integer(max(1, last + step * (n - length(tbl)))))
+  }
+  # Expression: q = questions already owned (0-indexed)
+  val <- eval_cost_expr(sched$expr, "q", n - 1L)
+  as.integer(if (is.na(val)) 2 * n else max(1, val))
 }
 parse_rw_costs <- function() {
   raw <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
@@ -449,6 +465,24 @@ parse_rw_costs <- function() {
     }
   }
   v
+}
+# Cost lookup that handles both table (k:v) and expression (variable n) formats
+rw_cost_for_n <- function(n, schedule_text = NULL) {
+  if (is.null(schedule_text))
+    schedule_text <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
+                              error = function(e) "1:2,2:5,3:9,4:14,5:20")
+  tbl <- parse_rw_costs()
+  if (length(tbl) > 0) {
+    v <- as.numeric(tbl[as.character(n)] %||% NA)
+    if (!is.na(v)) return(v)
+  }
+  # Fall through to expression if no table match (or table didn't parse)
+  text <- trimws(schedule_text %||% "")
+  if (grepl("[a-zA-Z]", text)) return(eval_cost_expr(text, "n", n))
+  NA_real_
+}
+get_rw_max_points <- function() {
+  as.integer(tryCatch(get_setting("grade_reweight_max_points", "5"), error=function(e)"5") %||% 5L)
 }
 parse_event_types <- function() {
   default_json <- '[{"id":"question","label":"Useful Question","tokens":1},{"id":"explain","label":"Explanation","tokens":2},{"id":"correct","label":"Correct Answer","tokens":1}]'
@@ -2057,9 +2091,8 @@ server <- function(input, output, session) {
                           error = function(e)
                             data.frame(name=c("Homework","Midterm","Final"),
                                        weight=c(33,33,34), stringsAsFactors=FALSE))
-      cats  <- cats_df$name
-      costs <- parse_rw_costs()
-      max_pts <- if (length(costs)) as.integer(max(as.integer(names(costs)), na.rm = TRUE)) else 5L
+      cats    <- cats_df$name
+      max_pts <- get_rw_max_points()
       div(class = "spend-form-box",
         tags$h6(style = "color:#951829;font-weight:700;", "⚖️ Grade Reweight"),
         fluidRow(
@@ -2134,10 +2167,10 @@ server <- function(input, output, session) {
 
   output$rw_cost_preview <- renderUI({
     req(rv$authed)
-    costs <- parse_rw_costs()
-    pts   <- as.integer(input$rw_points %||% 1)
-    cost  <- as.numeric(costs[as.character(pts)] %||% 0)
-    bal   <- token_bal()
+    pts  <- as.integer(input$rw_points %||% 1)
+    cost <- rw_cost_for_n(pts) %||% 0
+    if (is.na(cost)) cost <- 0
+    bal  <- token_bal()
     div(style = "font-size:.86rem;color:#555;margin:.4rem 0 .6rem;",
         sprintf("Cost: %d tokens  ·  Balance: %d  ·  After: %d",
                 as.integer(cost), as.integer(bal), as.integer(bal - cost)))
@@ -2205,8 +2238,8 @@ server <- function(input, output, session) {
       showNotification("From and to categories must differ.", type = "error"); return()
     }
     pts  <- as.integer(input$rw_points %||% 1)
-    costs <- parse_rw_costs()
-    cost <- as.numeric(costs[as.character(pts)] %||% 0)
+    cost <- rw_cost_for_n(pts) %||% 0
+    if (is.na(cost)) cost <- 0
     bal  <- isolate(token_bal())
     if (cost <= 0) { showNotification("Cost not configured for that point value.", type = "error"); return() }
     if (bal < cost) {
@@ -2814,9 +2847,14 @@ server <- function(input, output, session) {
     if (!nzchar(costs_str)) {
       showNotification("Enter a cost schedule.", type = "error"); return()
     }
+    max_pts <- max(1L, suppressWarnings(as.integer(input$rw_max_points_input %||% 5L)))
+    if (is.na(max_pts)) max_pts <- 5L
     db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('reweight_cost_schedule',?);",
             list(costs_str))
-    showNotification("Cost schedule saved.", type = "message")
+    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('grade_reweight_max_points',?);",
+            list(as.character(max_pts)))
+    showNotification("Reweighting setup saved.", type = "message")
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
   })
 
   observeEvent(input$add_grade_cat_btn, {
@@ -3881,10 +3919,30 @@ server <- function(input, output, session) {
         # Price schedule
         tags$h6(style = "font-weight:700;margin-top:.75rem;", "Price Schedule"),
         textInput("flex_cost_input", NULL, value = cur_schedule, width = "100%",
-                  placeholder = "e.g. 2,4,6,8,10"),
+                  placeholder = "e.g. 2,4,6,8,10  or  11+q^2"),
         tags$p(style = "color:#888;font-size:.82em;margin-top:-.4rem;",
-               "Comma-separated costs per question in order. Last value repeats for additional questions."),
+          tags$b("Table:"), " comma-separated costs in order (e.g. ", tags$code("2,4,6,8,10"),
+          ") — last value repeats beyond the list. ",
+          tags$b("Expression:"), " any arithmetic formula in ", tags$code("q"),
+          " where q = number of questions already owned (e.g. ", tags$code("11+q^2"), ")."),
         actionButton("save_flex_cost_btn", "Save schedule", class = "btn btn-sm btn-primary"),
+        # Live preview of first 8 question costs
+        {
+          sched_preview <- parse_flex_cost(cur_schedule)
+          costs_preview <- sapply(1:8, function(i) question_cost_for_n(i, cur_schedule))
+          tags$div(style = "margin-top:.6rem;",
+            tags$p(style = "font-size:.82em;color:#555;margin-bottom:.2rem;font-weight:600;",
+                   "Preview (first 8 questions):"),
+            div(style = "display:flex;gap:.4rem;flex-wrap:wrap;",
+              lapply(seq_along(costs_preview), function(i)
+                div(style = "background:#f0f4f8;border-radius:5px;padding:.2rem .5rem;font-size:.82rem;text-align:center;min-width:3rem;",
+                  div(style = "color:#888;font-size:.72rem;", paste0("Q", i)),
+                  div(style = "font-weight:600;", costs_preview[i])
+                )
+              )
+            )
+          )
+        },
         tags$hr(),
 
         # Question table
@@ -3957,8 +4015,9 @@ server <- function(input, output, session) {
          FROM student_grades sg LEFT JOIN users u ON u.user_id=sg.user_id
          ORDER BY u.section, u.display_name, sg.assignment_name;"),
         error = function(e) data.frame())
-      rw_costs_str <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
-                               error = function(e) "1:2,2:5,3:9,4:14,5:20")
+      rw_costs_str  <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
+                                error = function(e) "1:2,2:5,3:9,4:14,5:20")
+      rw_max_pts_cur <- get_rw_max_points()
       sections_df <- tryCatch(db_query(
         "SELECT DISTINCT section FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND section IS NOT NULL AND section != '';"),
         error = function(e) data.frame())
@@ -4312,11 +4371,40 @@ server <- function(input, output, session) {
         sec_hdr(4L, "Grade Reweighting Setup"),
         tags$p(style = "color:#555;font-size:.85rem;",
           "Students can spend tokens (in the Spend tab) to shift grade weight between categories defined in Section 1."),
-        textInput("rw_costs_input", "Cost schedule (points:tokens, comma-separated):",
-                  value = rw_costs_str, width = "100%"),
+        fluidRow(
+          column(8,
+            textInput("rw_costs_input", "Cost formula / schedule:",
+                      value = rw_costs_str, width = "100%",
+                      placeholder = "e.g. 1:2,2:5,3:9  or  2*n+n^2")),
+          column(4,
+            numericInput("rw_max_points_input", "Max pts student can move:",
+                         value = rw_max_pts_cur, min = 1, step = 1, width = "100%"))
+        ),
         tags$p(style = "color:#888;font-size:.82em;margin-top:-.3rem;",
-               "e.g. 1:2,2:5,3:9 — moving 1 pt costs 2 tokens, 2 pts costs 5, etc."),
-        actionButton("save_rw_setup_btn", "Save cost schedule", class = "btn btn-sm btn-primary")
+          tags$b("Table:"), " pairs of points:tokens (e.g. ", tags$code("1:2,2:5,3:9"),
+          " — moving 1 pt costs 2 tokens, 2 pts costs 5, etc.). ",
+          tags$b("Expression:"), " any arithmetic formula in ", tags$code("n"),
+          " where n = percentage points being moved (e.g. ", tags$code("2*n+n^2"), "). ",
+          "The cap controls the slider maximum shown to students."),
+        # Preview table for current formula
+        {
+          n_preview <- seq_len(rw_max_pts_cur)
+          costs_preview <- sapply(n_preview, rw_cost_for_n)
+          tags$div(style = "margin-top:.5rem;margin-bottom:.6rem;",
+            tags$p(style = "font-size:.82em;color:#555;margin-bottom:.2rem;font-weight:600;",
+                   "Cost preview:"),
+            div(style = "display:flex;gap:.4rem;flex-wrap:wrap;",
+              lapply(n_preview, function(i) {
+                cv <- costs_preview[i]
+                div(style = "background:#f0f4f8;border-radius:5px;padding:.2rem .5rem;font-size:.82rem;text-align:center;min-width:3.5rem;",
+                  div(style = "color:#888;font-size:.72rem;", sprintf("%d pt%s", i, if(i==1)""else"s")),
+                  div(style = "font-weight:600;", if (!is.na(cv)) as.integer(cv) else tags$span(style="color:#c00;","?"))
+                )
+              })
+            )
+          )
+        },
+        actionButton("save_rw_setup_btn", "Save reweighting setup", class = "btn btn-sm btn-primary")
       )
 
     } else if (act == "game_controls") {
