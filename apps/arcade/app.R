@@ -464,15 +464,19 @@ parse_event_types <- function() {
 }
 
 parse_grade_categories <- function() {
+  # Primary source: gradebook_categories table (same as gradebook builder)
+  gb <- tryCatch(db_query(
+    "SELECT name, weight FROM gradebook_categories ORDER BY display_order, id;"),
+    error = function(e) data.frame())
+  if (nrow(gb)) return(gb[, c("name","weight"), drop=FALSE])
+  # Legacy fallback: JSON stored in labor_settings
   default_json <- '[{"name":"Homework","weight":33},{"name":"Midterm","weight":33},{"name":"Final","weight":34}]'
   raw <- tryCatch(get_setting("grade_categories_json", default_json), error = function(e) default_json)
   tryCatch({
     df <- jsonlite::fromJSON(raw)
     if (is.data.frame(df) && all(c("name","weight") %in% names(df))) df
-    else jsonlite::fromJSON(default_json)
-  }, error = function(e)
-    data.frame(name=c("Homework","Midterm","Final"),
-               weight=c(33,33,34), stringsAsFactors=FALSE))
+    else data.frame(name=character(0), weight=numeric(0))
+  }, error = function(e) data.frame(name=character(0), weight=numeric(0)))
 }
 
 compute_clearing_wage <- function(category_id, round_id, slots) {
@@ -3272,12 +3276,10 @@ server <- function(input, output, session) {
         "Round Setup"           = "round_setup",
         "Students"              = "students",
         "Token Admin"           = "token_admin",
-        "Grades"                = "grades",
+        "Grades & Gradebook"    = "gradebook",
         "Exports"               = "exports",
-        "Grade Reweighting"     = "grade_reweighting",
         "Extensions"            = "extensions",
         "Flex Questions"        = "flex_questions",
-        "Gradebook"             = "gradebook",
         "Game Controls"         = "game_controls",
         "App Settings"          = "app_settings"
       ), selected = "jobs"),
@@ -3789,96 +3791,6 @@ server <- function(input, output, session) {
                      class = "btn btn-sm btn-primary")
       )
 
-    } else if (act == "grades") {
-      rv$jobs_ver  # refresh on upload/clear
-      grade_summary <- tryCatch(db_query(
-        "SELECT sg.user_id, u.display_name, COUNT(*) AS n_assignments,
-                ROUND(AVG(sg.grade_pct),1) AS avg_pct,
-                MAX(sg.uploaded_at) AS last_upload
-         FROM student_grades sg
-         LEFT JOIN users u ON u.user_id=sg.user_id
-         GROUP BY sg.user_id ORDER BY u.display_name;"),
-        error=function(e) data.frame())
-      grade_rows <- tryCatch(db_query(
-        "SELECT sg.user_id, u.display_name, sg.assignment_name, sg.score, sg.max_score,
-                sg.grade_pct, sg.week_tag
-         FROM student_grades sg LEFT JOIN users u ON u.user_id=sg.user_id
-         ORDER BY u.display_name, sg.assignment_name;"),
-        error=function(e) data.frame())
-      tagList(
-        tags$h6(style="font-weight:700;color:#951829;margin-top:.5rem;", "Grade Records"),
-        div(style=paste0("background:#f0f4ff;border-left:3px solid #4a6fa5;padding:.5rem .8rem;",
-                         "border-radius:0 4px 4px 0;margin-bottom:.6rem;font-size:.85rem;"),
-          "Upload a CSV or Excel file with student grades. Required columns: ",
-          tags$code("user_id"), " (or ", tags$code("student_id"), ") and ",
-          tags$code("assignment"), " (or ", tags$code("assignment_name"), "). ",
-          "Optional: ", tags$code("score"), ", ", tags$code("max_score"), ", ",
-          tags$code("grade_pct"), " (0–100), ", tags$code("week"), ".",
-          " Grades are used for the 'Lowest grade' and 'Weighted lottery' bid tie-break rules."
-        ),
-        fluidRow(
-          column(6, fileInput("grade_file_upload", "Upload CSV or Excel:",
-                              accept=c(".csv",".xls",".xlsx"), width="100%")),
-          column(3, textInput("grade_week_tag", "Week tag (optional):", width="100%")),
-          column(3, tags$br(),
-            actionButton("upload_grades_btn", "Upload", class="btn btn-sm btn-primary"),
-            tags$span(" "),
-            actionButton("clear_grades_btn", "Clear All",
-                         class="btn btn-sm btn-outline-danger",
-                         onclick="if(!confirm('Delete all grade records?')) return false;"))
-        ),
-        if (nrow(grade_summary)) {
-          tagList(
-            tags$hr(),
-            tags$h6(style="font-weight:700;", "Grade Summary by Student"),
-            div(style="overflow-x:auto;",
-              tags$table(class="table table-sm",
-                tags$thead(tags$tr(
-                  tags$th("Student"), tags$th("Assignments"), tags$th("Avg %"), tags$th("Last Upload")
-                )),
-                tags$tbody(lapply(seq_len(nrow(grade_summary)), function(i) {
-                  r <- grade_summary[i,]
-                  tags$tr(
-                    tags$td(r$display_name %||% r$user_id),
-                    tags$td(r$n_assignments),
-                    tags$td(if (!is.na(r$avg_pct)) sprintf("%.1f%%", r$avg_pct) else "—"),
-                    tags$td(style="color:#888;font-size:.82em;",
-                            substr(r$last_upload %||% "", 1, 10))
-                  )
-                }))
-              )
-            ),
-            if (nrow(grade_rows)) {
-              tags$details(
-                tags$summary(style="cursor:pointer;color:#951829;font-size:.88rem;",
-                             sprintf("All rows (%d)", nrow(grade_rows))),
-                div(style="overflow-x:auto;max-height:400px;overflow-y:auto;margin-top:.4rem;",
-                  tags$table(class="table table-sm",
-                    tags$thead(tags$tr(
-                      tags$th("Student"), tags$th("Assignment"),
-                      tags$th("Score"), tags$th("Max"), tags$th("%"), tags$th("Week")
-                    )),
-                    tags$tbody(lapply(seq_len(nrow(grade_rows)), function(i) {
-                      r <- grade_rows[i,]
-                      tags$tr(
-                        tags$td(style="font-size:.82em;", r$display_name %||% r$user_id),
-                        tags$td(r$assignment_name),
-                        tags$td(if (!is.na(r$score)) r$score else "—"),
-                        tags$td(if (!is.na(r$max_score)) r$max_score else "—"),
-                        tags$td(if (!is.na(r$grade_pct)) sprintf("%.1f%%", r$grade_pct) else "—"),
-                        tags$td(style="color:#888;font-size:.82em;", r$week_tag %||% "")
-                      )
-                    }))
-                  )
-                )
-              )
-            }
-          )
-        } else {
-          tags$p(style="color:#999;margin-top:.5rem;", "No grade records yet. Upload a file above.")
-        }
-      )
-
     } else if (act == "exports") {
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Export Data"),
@@ -3895,85 +3807,6 @@ server <- function(input, output, session) {
           downloadButton("dl_flex_purchases",       "Flex Q Purchases",     class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_students",             "Students",             class = "btn btn-sm btn-outline-secondary")
         )
-      )
-
-    } else if (act == "grade_reweighting") {
-      cats_df <- tryCatch(parse_grade_categories(),
-                          error = function(e)
-                            data.frame(name=character(0), weight=numeric(0)))
-      current_costs <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
-                                error = function(e) "1:2,2:5,3:9,4:14,5:20")
-      weight_sum <- if (nrow(cats_df)) sum(as.numeric(cats_df$weight), na.rm = TRUE) else 0
-      sum_ok     <- abs(weight_sum - 100) < 0.5
-
-      tagList(
-        tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;",
-                "Grade Categories"),
-        tags$p(style = "color:#555;font-size:.88rem;",
-               "Define the categories students can reweight. Weights should sum to 100."),
-
-        div(style = sprintf(
-          "padding:.35rem .7rem;border-radius:6px;font-size:.85rem;margin-bottom:.6rem;%s",
-          if (sum_ok)
-            "background:#d4edda;border:1px solid #c3e6cb;color:#155724;"
-          else
-            "background:#fff3cd;border:1px solid #ffc107;color:#856404;"),
-          sprintf("Weight total: %.0f%% %s", weight_sum,
-                  if (sum_ok) "✓ sums to 100" else "(should sum to 100)")),
-
-        if (nrow(cats_df)) {
-          tags$table(class = "table table-sm",
-            tags$thead(tags$tr(
-              tags$th("Category"), tags$th("Weight (%)"), tags$th("Remove")
-            )),
-            tags$tbody(lapply(seq_len(nrow(cats_df)), function(i) {
-              r <- cats_df[i, ]
-              tags$tr(
-                tags$td(r$name),
-                tags$td(sprintf("%.0f%%", as.numeric(r$weight %||% 0))),
-                tags$td(
-                  tags$button(
-                    onclick = sprintf(
-                      "Shiny.setInputValue('delete_grade_cat','%s',{priority:'event'});",
-                      gsub("'", "\\'", r$name, fixed = TRUE)),
-                    class = "btn btn-xs btn-outline-danger",
-                    style = "padding:.1rem .35rem;font-size:.72rem;",
-                    "Remove")
-                )
-              )
-            }))
-          )
-        } else {
-          div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;", "No categories defined yet.")
-        },
-
-        tags$details(
-          tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
-                       "Add category"),
-          div(style = "padding:.5rem 0;",
-            fluidRow(
-              column(5, textInput("new_grade_cat_name", "Category name:",
-                                  placeholder = "e.g. Quizzes")),
-              column(4, numericInput("new_grade_cat_weight", "Weight (%):",
-                                     value = 0, min = 0, max = 100, step = 1)),
-              column(3, tags$br(),
-                     actionButton("add_grade_cat_btn", "Add",
-                                  class = "btn btn-sm btn-primary"))
-            )
-          )
-        ),
-
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Cost Schedule"),
-        textInput("rw_costs_input", "Cost schedule (points:tokens, comma-separated):",
-                  value = current_costs, width = "100%"),
-        tags$p(style = "color:#888;font-size:.82em;margin-top:-.3rem;",
-               "e.g. 1:2,2:5,3:9 means moving 1 pt costs 2 tokens, 2 pts costs 5, etc."),
-        actionButton("save_rw_setup_btn", "Save cost schedule",
-                     class = "btn btn-sm btn-primary"),
-        tags$hr(),
-        div(class = "sec-label", "Pending Requests"),
-        uiOutput("rw_requests_panel")
       )
 
     } else if (act == "extensions") {
@@ -4131,6 +3964,14 @@ server <- function(input, output, session) {
       inames <- tryCatch(db_query(
         "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
         error = function(e) data.frame())
+      grade_rows <- tryCatch(db_query(
+        "SELECT sg.user_id, u.display_name, u.section, sg.assignment_name,
+                sg.score, sg.max_score, sg.grade_pct, sg.week_tag
+         FROM student_grades sg LEFT JOIN users u ON u.user_id=sg.user_id
+         ORDER BY u.section, u.display_name, sg.assignment_name;"),
+        error = function(e) data.frame())
+      rw_costs_str <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
+                               error = function(e) "1:2,2:5,3:9,4:14,5:20")
       sections_df <- tryCatch(db_query(
         "SELECT DISTINCT section FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND section IS NOT NULL AND section != '';"),
         error = function(e) data.frame())
@@ -4149,10 +3990,17 @@ server <- function(input, output, session) {
         })
       }
 
+      sec_hdr <- function(n, lbl) tags$h6(
+        style = "font-weight:700;border-bottom:1px solid #eee;padding-bottom:.3rem;margin-top:.8rem;",
+        sprintf("%d. %s", n, lbl))
+
       tagList(
-        tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Gradebook Builder"),
+        tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Grades & Gradebook"),
+
+        # ── 1. Grade Categories ─────────────────────────────────────────────────
+        sec_hdr(1L, "Grade Categories"),
         tags$p(style = "color:#555;font-size:.85rem;",
-          "Define grade categories and download a pre-filled template spreadsheet for your gradebook."),
+          "Define categories with weights and items. These drive the gradebook template, grade reweighting, and bid tiebreaks."),
 
         # Category list
         if (!nrow(cats)) {
@@ -4287,22 +4135,201 @@ server <- function(input, output, session) {
         ),
         tags$hr(),
 
-        # Template download
-        tags$h6(style = "font-weight:700;", "Download Template"),
+        # ── 2. Upload Grades ────────────────────────────────────────────────────
+        sec_hdr(2L, "Upload Grades"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+          "Required columns: ", tags$code("user_id"), " (or ", tags$code("student_id"),
+          ") and ", tags$code("assignment"), " (or ", tags$code("assignment_name"), "). ",
+          "Optional: ", tags$code("score"), ", ", tags$code("max_score"), ", ",
+          tags$code("grade_pct"), " (0–100). Assignment names should match your item names above."),
+        fluidRow(
+          column(5, fileInput("grade_file_upload", NULL,
+                              accept = c(".csv",".xls",".xlsx"), width = "100%")),
+          column(3, textInput("grade_week_tag", "Week tag (optional):", width = "100%")),
+          column(2, tags$br(),
+                 actionButton("upload_grades_btn", "Upload", class = "btn btn-sm btn-primary")),
+          column(2, tags$br(),
+                 actionButton("clear_grades_btn", "Clear All",
+                              class = "btn btn-sm btn-outline-danger",
+                              onclick = "if(!confirm('Delete all grade records?')) return false;"))
+        ),
+
+        tags$hr(),
+
+        # ── 3. Grades View & Downloads ──────────────────────────────────────────
+        sec_hdr(3L, "Grades View & Downloads"),
         if (!nrow(cats)) {
-          tags$p(style = "color:#999;font-size:.9em;", "Add at least one category first.")
+          tags$p(style = "color:#999;font-size:.9em;", "Define categories first.")
         } else {
+          # Build item → category mapping
+          item_cat_map <- if (nrow(cats)) do.call(rbind, lapply(seq_len(nrow(cats)), function(i) {
+            r       <- cats[i, ]
+            nm_list <- get_item_names_for_cat(r)
+            data.frame(item_name = nm_list,
+                       cat_id    = as.integer(r$id),
+                       cat_name  = r$name %||% "",
+                       weight    = as.numeric(r$weight %||% 0),
+                       source    = r$source %||% "manual",
+                       stringsAsFactors = FALSE)
+          })) else data.frame()
+
           tagList(
+            # Downloads
             fluidRow(
               column(4, selectInput("gb_template_section", "Section:", choices = sec_choices)),
-              column(3, tags$br(),
-                     downloadButton("dl_gradebook_template", "Download CSV",
-                                    class = "btn btn-sm btn-outline-primary"))
+              column(8, tags$br(),
+                downloadButton("dl_gradebook_template", "Blank template",
+                               class = "btn btn-sm btn-outline-secondary"),
+                " ",
+                downloadButton("dl_gradebook_filled", "Filled gradebook",
+                               class = "btn btn-sm btn-outline-primary"))
             ),
-            tags$p(style = "color:#888;font-size:.78rem;margin-top:.3rem;",
-                   "One row per student. Participation columns are pre-filled from the app. All other cells are blank for manual entry.")
+            tags$p(style = "color:#888;font-size:.78rem;margin-top:.25rem;",
+              tags$b("Blank template:"), " headers + participation pre-filled, manual columns empty. ",
+              tags$b("Filled gradebook:"), " all uploaded scores filled in, category averages and weighted total appended."),
+
+            # Online grade summary (if grades uploaded)
+            if (!nrow(grade_rows)) {
+              tags$p(style = "color:#999;font-size:.9em;margin-top:.5rem;",
+                     "No grades uploaded yet. Use Upload Grades above.")
+            } else {
+              # Map grades to categories
+              gr_mapped <- if (nrow(item_cat_map))
+                merge(grade_rows, item_cat_map, by.x = "assignment_name", by.y = "item_name", all.x = TRUE)
+              else grade_rows
+
+              # Unique students in grade data
+              stu_ids <- unique(grade_rows$user_id)
+              cat_names <- if (nrow(cats)) cats$name %||% character(0) else character(0)
+
+              tagList(
+                tags$p(style = "font-size:.85rem;color:#555;margin-bottom:.3rem;",
+                  sprintf("%d students · %d grade rows · %d distinct assignments",
+                          length(stu_ids), nrow(grade_rows),
+                          length(unique(grade_rows$assignment_name)))),
+                div(style = "overflow-x:auto;",
+                  tags$table(class = "table table-sm",
+                    tags$thead(tags$tr(tagList(
+                      tags$th("Student"), tags$th("Sec"),
+                      lapply(cat_names, function(cn) {
+                        w <- cats$weight[cats$name == cn][1] %||% 0
+                        tags$th(style = "text-align:right;",
+                                sprintf("%s (%.4g%%)", cn, as.numeric(w)))
+                      }),
+                      tags$th(style = "text-align:right;font-weight:700;", "Wtd Total")
+                    ))),
+                    tags$tbody(lapply(stu_ids, function(uid) {
+                      stu_nm  <- grade_rows$display_name[grade_rows$user_id == uid][1] %||% uid
+                      stu_sec <- grade_rows$section[grade_rows$user_id == uid][1] %||% ""
+                      stu_gr  <- if (nrow(gr_mapped)) gr_mapped[!is.na(gr_mapped$user_id) & gr_mapped$user_id == uid, , drop=FALSE] else data.frame()
+                      wt_num <- 0; wt_den <- 0
+                      cat_cells <- lapply(cat_names, function(cn) {
+                        cat_gr <- if (nrow(stu_gr) && "cat_name" %in% names(stu_gr))
+                          stu_gr[!is.na(stu_gr$cat_name) & stu_gr$cat_name == cn, , drop=FALSE]
+                        else data.frame()
+                        avg <- if (nrow(cat_gr) && any(!is.na(cat_gr$grade_pct)))
+                          mean(cat_gr$grade_pct, na.rm = TRUE) else NA_real_
+                        if (!is.na(avg)) {
+                          w <- as.numeric(cats$weight[cats$name == cn][1] %||% 0)
+                          wt_num <<- wt_num + avg * w
+                          wt_den <<- wt_den + w
+                        }
+                        tags$td(style = "text-align:right;",
+                                if (!is.na(avg)) sprintf("%.1f%%", avg) else tags$span(style="color:#ccc;","—"))
+                      })
+                      wtd <- if (wt_den > 0) sprintf("%.1f%%", wt_num / wt_den) else "—"
+                      tags$tr(
+                        tags$td(stu_nm),
+                        tags$td(style="color:#888;font-size:.82em;", stu_sec),
+                        tagList(cat_cells),
+                        tags$td(style="text-align:right;font-weight:600;", wtd)
+                      )
+                    }))
+                  )
+                ),
+                # Raw rows
+                tags$details(style = "margin-top:.4rem;",
+                  tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;",
+                               sprintf("All raw rows (%d)", nrow(grade_rows))),
+                  div(style = "overflow-x:auto;max-height:380px;overflow-y:auto;margin-top:.4rem;",
+                    tags$table(class = "table table-sm",
+                      tags$thead(tags$tr(
+                        tags$th("Student"), tags$th("Assignment"), tags$th("Category"),
+                        tags$th("Score"), tags$th("Max"), tags$th("%"), tags$th("Week")
+                      )),
+                      tags$tbody(lapply(seq_len(nrow(grade_rows)), function(i) {
+                        r   <- grade_rows[i, ]
+                        cat_lbl <- if (nrow(item_cat_map)) {
+                          m <- item_cat_map$cat_name[item_cat_map$item_name == (r$assignment_name %||% "")]
+                          if (length(m) && nzchar(m[1])) m[1] else tags$span(style="color:#ccc;","—")
+                        } else "—"
+                        tags$tr(
+                          tags$td(style="font-size:.82em;", r$display_name %||% r$user_id),
+                          tags$td(r$assignment_name %||% ""),
+                          tags$td(style="color:#888;font-size:.82em;", cat_lbl),
+                          tags$td(if (!is.na(r$score))    r$score    else "—"),
+                          tags$td(if (!is.na(r$max_score)) r$max_score else "—"),
+                          tags$td(if (!is.na(r$grade_pct)) sprintf("%.1f%%", r$grade_pct) else "—"),
+                          tags$td(style="color:#888;font-size:.82em;", r$week_tag %||% "")
+                        )
+                      }))
+                    )
+                  )
+                ),
+                # Reweight requests per student
+                {
+                  rw_rows <- tryCatch(db_query(
+                    "SELECT r.id, u.display_name, r.from_category, r.to_category,
+                            r.points, r.cost, r.status, r.created_at
+                     FROM grade_reweight_requests r
+                     LEFT JOIN users u ON u.user_id=r.user_id
+                     ORDER BY r.created_at DESC LIMIT 50;"),
+                    error = function(e) data.frame())
+                  if (nrow(rw_rows)) {
+                    tags$details(style = "margin-top:.4rem;",
+                      tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;",
+                                   sprintf("Student weight adjustment requests (%d)", nrow(rw_rows))),
+                      div(style = "overflow-x:auto;margin-top:.4rem;",
+                        tags$table(class = "table table-sm",
+                          tags$thead(tags$tr(
+                            tags$th("Student"), tags$th("From"), tags$th("To"),
+                            tags$th("Pts"), tags$th("Cost"), tags$th("Status"), tags$th("Date")
+                          )),
+                          tags$tbody(lapply(seq_len(nrow(rw_rows)), function(i) {
+                            r <- rw_rows[i, ]
+                            tags$tr(
+                              tags$td(r$display_name %||% ""),
+                              tags$td(r$from_category %||% ""),
+                              tags$td(r$to_category %||% ""),
+                              tags$td(r$points %||% ""),
+                              tags$td(r$cost %||% ""),
+                              tags$td(style = if (identical(r$status, "pending")) "color:#856404;" else "color:#1a6e3c;",
+                                      r$status %||% ""),
+                              tags$td(style = "color:#888;font-size:.82em;",
+                                      tryCatch(format(as.POSIXct(r$created_at), "%b %d"), error=function(e)""))
+                            )
+                          }))
+                        )
+                      )
+                    )
+                  }
+                }
+              )
+            }
           )
-        }
+        },
+
+        tags$hr(),
+
+        # ── 4. Reweighting Setup ────────────────────────────────────────────────
+        sec_hdr(4L, "Grade Reweighting Setup"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+          "Students can spend tokens (in the Spend tab) to shift grade weight between categories defined in Section 1."),
+        textInput("rw_costs_input", "Cost schedule (points:tokens, comma-separated):",
+                  value = rw_costs_str, width = "100%"),
+        tags$p(style = "color:#888;font-size:.82em;margin-top:-.3rem;",
+               "e.g. 1:2,2:5,3:9 — moving 1 pt costs 2 tokens, 2 pts costs 5, etc."),
+        actionButton("save_rw_setup_btn", "Save cost schedule", class = "btn btn-sm btn-primary")
       )
 
     } else if (act == "game_controls") {
@@ -4668,6 +4695,134 @@ server <- function(input, output, session) {
     }
   )
 
+  output$dl_gradebook_filled <- downloadHandler(
+    filename = function() paste0("gradebook_filled_", Sys.Date(), ".csv"),
+    content  = function(file) {
+      sec   <- isolate(input$gb_template_section %||% "all")
+      cats  <- tryCatch(db_query(
+        "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
+        error = function(e) data.frame())
+      inames_df <- tryCatch(db_query(
+        "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
+        error = function(e) data.frame())
+      students <- tryCatch({
+        q_base <- "SELECT u.user_id, u.display_name, u.section,
+                          COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned
+                   FROM users u LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
+                   WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0"
+        if (identical(sec, "all"))
+          db_query(paste0(q_base, " GROUP BY u.user_id ORDER BY u.section, u.display_name;"))
+        else
+          db_query(paste0(q_base, " AND u.section=? GROUP BY u.user_id ORDER BY u.section, u.display_name;"), list(sec))
+      }, error = function(e) data.frame())
+      grade_rows_dl <- tryCatch(db_query(
+        "SELECT sg.user_id, sg.assignment_name, sg.score, sg.max_score, sg.grade_pct, sg.week_tag
+         FROM student_grades sg;"),
+        error = function(e) data.frame())
+      if (!nrow(cats) || !nrow(students)) { write.csv(data.frame(), file, row.names=FALSE); return() }
+
+      # Build item column names per category
+      col_names  <- character(0)
+      col_maxpts <- character(0)
+      col_weight <- character(0)
+      cat_col_start <- integer(0)
+      cur_col <- 1L
+      for (i in seq_len(nrow(cats))) {
+        cat_col_start[i] <- cur_col
+        r   <- cats[i, ]
+        n   <- as.integer(r$item_count %||% 1L)
+        is_part <- identical(r$source %||% "manual", "participation")
+        prefix  <- if (!is.null(r$item_prefix) && !is.na(r$item_prefix) && nzchar(r$item_prefix))
+                     r$item_prefix else r$name
+        ovr_df  <- if (nrow(inames_df)) inames_df[inames_df$category_id == r$id, , drop=FALSE] else data.frame()
+        item_wt <- sprintf("%.4g%%", as.numeric(r$weight %||% 0) / n)
+        for (j in seq_len(n)) {
+          ov  <- if (nrow(ovr_df)) ovr_df$item_name[ovr_df$item_index == j] else character(0)
+          nm  <- if (length(ov) && nzchar(ov[1])) ov[1]
+                 else if (n == 1) r$name
+                 else paste0(prefix, " ", j)
+          col_names  <- c(col_names,  nm)
+          col_maxpts <- c(col_maxpts, if (is_part) "(from app)" else as.character(as.integer(r$max_points %||% 100)))
+          col_weight <- c(col_weight, item_wt)
+        }
+        cur_col <- cur_col + n
+      }
+      n_cols <- length(col_names)
+
+      # Build category average columns
+      cat_avg_names <- paste0(cats$name %||% paste0("Cat", seq_len(nrow(cats))), " Avg%")
+      total_weight  <- sum(as.numeric(cats$weight %||% 0), na.rm = TRUE)
+
+      header <- c("Student", "Section", col_names, cat_avg_names, "Weighted Total%")
+      meta_row1 <- c("(Max Points)", "", col_maxpts, rep("", nrow(cats) + 1L))
+      meta_row2 <- c("(Weight)",     "", col_weight,  rep("", nrow(cats) + 1L))
+
+      out_rows <- vector("list", nrow(students))
+      for (s in seq_len(nrow(students))) {
+        stu   <- students[s, ]
+        cells <- rep(NA_character_, n_cols)
+        cat_avgs <- rep(NA_character_, nrow(cats))
+        wt_num <- 0; wt_den <- 0
+
+        for (i in seq_len(nrow(cats))) {
+          r   <- cats[i, ]
+          n   <- as.integer(r$item_count %||% 1L)
+          is_part <- identical(r$source %||% "manual", "participation")
+          cs  <- cat_col_start[i]
+          ovr_df <- if (nrow(inames_df)) inames_df[inames_df$category_id == r$id, , drop=FALSE] else data.frame()
+          prefix <- if (!is.null(r$item_prefix) && !is.na(r$item_prefix) && nzchar(r$item_prefix))
+                      r$item_prefix else r$name
+
+          item_pcts <- numeric(0)
+          for (j in seq_len(n)) {
+            ov  <- if (nrow(ovr_df)) ovr_df$item_name[ovr_df$item_index == j] else character(0)
+            col_nm <- if (length(ov) && nzchar(ov[1])) ov[1]
+                      else if (n == 1) r$name
+                      else paste0(prefix, " ", j)
+            col_idx <- cs + j - 1L
+            if (is_part) {
+              tok_val <- as.character(as.integer(stu$tokens_earned %||% 0))
+              cells[col_idx] <- tok_val
+              maxpts <- as.numeric(r$max_points %||% 100)
+              if (!is.na(maxpts) && maxpts > 0) {
+                pct <- min(100, 100 * as.numeric(stu$tokens_earned %||% 0) / maxpts)
+                item_pcts <- c(item_pcts, pct)
+              }
+            } else if (nrow(grade_rows_dl)) {
+              match_rows <- grade_rows_dl[!is.na(grade_rows_dl$user_id) &
+                                          grade_rows_dl$user_id == stu$user_id &
+                                          !is.na(grade_rows_dl$assignment_name) &
+                                          grade_rows_dl$assignment_name == col_nm, , drop=FALSE]
+              if (nrow(match_rows) && !is.na(match_rows$grade_pct[1])) {
+                pct_val <- as.numeric(match_rows$grade_pct[1])
+                cells[col_idx] <- sprintf("%.1f", pct_val)
+                item_pcts <- c(item_pcts, pct_val)
+              }
+            }
+          }
+
+          cat_pct <- if (length(item_pcts) > 0) mean(item_pcts, na.rm = TRUE) else NA_real_
+          cat_avgs[i] <- if (!is.na(cat_pct)) sprintf("%.1f%%", cat_pct) else ""
+          if (!is.na(cat_pct)) {
+            w <- as.numeric(r$weight %||% 0)
+            wt_num <- wt_num + cat_pct * w
+            wt_den <- wt_den + w
+          }
+        }
+
+        wtd_total <- if (wt_den > 0) sprintf("%.2f%%", wt_num / wt_den) else ""
+        cells[is.na(cells)] <- ""
+        out_rows[[s]] <- c(stu$display_name %||% stu$user_id, stu$section %||% "",
+                           cells, cat_avgs, wtd_total)
+      }
+
+      all_rows <- c(list(header, meta_row1, meta_row2), out_rows)
+      df_out   <- as.data.frame(do.call(rbind, all_rows), stringsAsFactors = FALSE)
+      colnames(df_out) <- header
+      write.csv(df_out[-1, ], file, row.names = FALSE)
+    }
+  )
+
   # Admin action observers
   observeEvent(input$set_active_btn, {
     req(rv$is_admin)
@@ -4924,14 +5079,14 @@ server <- function(input, output, session) {
       n_ins <- n_ins + 1L
     }
     showNotification(sprintf("Imported %d grade rows.", n_ins), type="message")
-    rv$jobs_ver <- rv$jobs_ver + 1L
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
   }, ignoreNULL=TRUE)
 
   observeEvent(input$clear_grades_btn, {
     req(rv$is_admin)
     db_exec("DELETE FROM student_grades;")
     showNotification("All grade records cleared.", type="message")
-    rv$jobs_ver <- rv$jobs_ver + 1L
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
   }, ignoreNULL=TRUE)
 
   # ── Gradebook ─────────────────────────────────────────────────────────────────
