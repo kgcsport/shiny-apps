@@ -2462,6 +2462,61 @@ server <- function(input, output, session) {
     showNotification(sprintf("Password reset for %s.", uid), type = "message")
   })
 
+  observeEvent(input$bulk_upload_students_btn, {
+    req(rv$is_admin)
+    f <- input$upload_students_csv
+    if (is.null(f)) { showNotification("Choose a CSV file first.", type = "error"); return() }
+    do_update <- isTRUE(input$upload_stu_update)
+    df <- tryCatch(read.csv(f$datapath, stringsAsFactors = FALSE, colClasses = "character"),
+                   error = function(e) { showNotification(paste("CSV error:", e$message), type = "error"); NULL })
+    if (is.null(df)) return()
+    # Normalize column names
+    names(df) <- tolower(trimws(names(df)))
+    uid_col  <- intersect(c("username","user_id","userid","login"), names(df))
+    name_col <- intersect(c("display_name","name","fullname","full_name"), names(df))
+    sec_col  <- intersect(c("section","class","group"), names(df))
+    pw_col   <- intersect(c("password","pw","pass"), names(df))
+    if (!length(uid_col)) {
+      showNotification("CSV must have a 'username' column.", type = "error"); return()
+    }
+    n_created <- 0L; n_updated <- 0L; n_skipped <- 0L; n_bad_pw <- 0L
+    for (i in seq_len(nrow(df))) {
+      uid  <- trimws(df[[uid_col[1]]][i] %||% "")
+      nm   <- if (length(name_col))  trimws(df[[name_col[1]]][i] %||% "") else ""
+      sec  <- if (length(sec_col))   trimws(df[[sec_col[1]]][i]  %||% "") else ""
+      pw   <- if (length(pw_col))    trimws(df[[pw_col[1]]][i]   %||% "") else ""
+      if (!nzchar(uid)) next
+      exists <- nrow(db_query("SELECT user_id FROM users WHERE LOWER(user_id)=LOWER(?);", list(uid))) > 0
+      if (!exists) {
+        if (!nzchar(pw) || nchar(pw) < 4) { n_bad_pw <- n_bad_pw + 1L; next }
+        db_exec(
+          "INSERT INTO users(user_id,display_name,pw_hash,is_admin,section,active,is_demo)
+           VALUES(?,?,?,0,?,1,0);",
+          list(uid, if (nzchar(nm)) nm else uid, bcrypt::hashpw(pw),
+               if (nzchar(sec)) sec else NA_character_))
+        n_created <- n_created + 1L
+      } else if (do_update) {
+        if (nzchar(nm))
+          db_exec("UPDATE users SET display_name=? WHERE LOWER(user_id)=LOWER(?);", list(nm, uid))
+        if (nzchar(sec))
+          db_exec("UPDATE users SET section=? WHERE LOWER(user_id)=LOWER(?);", list(sec, uid))
+        if (nzchar(pw) && nchar(pw) >= 4)
+          db_exec("UPDATE users SET pw_hash=? WHERE LOWER(user_id)=LOWER(?);",
+                  list(bcrypt::hashpw(pw), uid))
+        n_updated <- n_updated + 1L
+      } else {
+        n_skipped <- n_skipped + 1L
+      }
+    }
+    parts <- character(0)
+    if (n_created > 0) parts <- c(parts, sprintf("%d created",  n_created))
+    if (n_updated > 0) parts <- c(parts, sprintf("%d updated",  n_updated))
+    if (n_skipped > 0) parts <- c(parts, sprintf("%d skipped (already exist)", n_skipped))
+    if (n_bad_pw  > 0) parts <- c(parts, sprintf("%d skipped (missing/short password)", n_bad_pw))
+    showNotification(paste("Upload complete:", paste(parts, collapse = ", ")), type = "message",
+                     duration = 8)
+  })
+
   # ── Job management ────────────────────────────────────────────────────────────
   observeEvent(input$add_job_cat_btn, {
     req(rv$is_admin)
@@ -3715,7 +3770,23 @@ server <- function(input, output, session) {
           column(4, passwordInput("reset_pw_new", "New password:")),
           column(4, tags$br(),
                  actionButton("reset_pw_btn", "Reset", class = "btn btn-sm btn-warning"))
-        )
+        ),
+        tags$hr(),
+        tags$h6(style = "font-weight:700;color:#951829;", "Bulk Upload Students"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+               "Upload a CSV with columns ", tags$code("username"), ", ",
+               tags$code("display_name"), ", ", tags$code("section"), ", ",
+               tags$code("password"), ". Password must be at least 4 characters."),
+        downloadButton("dl_student_template", "Download CSV template",
+                       class = "btn btn-sm btn-outline-secondary"),
+        tags$br(), tags$br(),
+        fileInput("upload_students_csv", NULL, accept = ".csv",
+                  buttonLabel = "Choose CSV", placeholder = "No file chosen"),
+        checkboxInput("upload_stu_update",
+                      "Update existing students (display name + section; password only if provided in CSV)",
+                      value = FALSE),
+        actionButton("bulk_upload_students_btn", "Upload",
+                     class = "btn btn-sm btn-primary")
       )
 
     } else if (act == "grades") {
@@ -4402,6 +4473,17 @@ server <- function(input, output, session) {
       "SELECT user_id, display_name, section, COALESCE(active,1) AS active
        FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0
        ORDER BY section, display_name;"), error = function(e) data.frame()),
+      file, row.names = FALSE)
+  )
+  output$dl_student_template <- downloadHandler(
+    filename = function() "student_upload_template.csv",
+    content  = function(file) write.csv(
+      data.frame(
+        username     = c("jsmith", "jdoe"),
+        display_name = c("Jane Smith", "John Doe"),
+        section      = c("101", "102"),
+        password     = c("changeme1", "changeme2"),
+        stringsAsFactors = FALSE),
       file, row.names = FALSE)
   )
   output$dl_participation_events <- downloadHandler(
