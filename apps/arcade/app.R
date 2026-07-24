@@ -1663,7 +1663,15 @@ server <- function(input, output, session) {
       # Active slot
       if (nzchar(active)) {
         div(class = "slot-card",
-          div(class = "slot-header", "▶ Active Now", span(class = "badge-live", "LIVE")),
+          div(class = "slot-header",
+            "▶ Active Now", span(class = "badge-live", "LIVE"),
+            if (isTRUE(rv$is_admin) && !isTRUE(rv$impersonating))
+              tags$button(
+                style = "float:right;font-size:.75rem;padding:.1rem .45rem;",
+                class = "btn btn-xs btn-outline-secondary",
+                onclick = "if(confirm('Clear the active game?')) Shiny.setInputValue('clear_active_game_btn',+new Date(),{priority:'event'});",
+                "Clear game")
+          ),
           uiOutput("active_slot_inner")
         )
       } else {
@@ -3059,11 +3067,13 @@ server <- function(input, output, session) {
                   actionButton("release_tokens_btn",
                                sprintf("\U0001f4b0 Release %d tokens", as.integer(n_pending)),
                                class = "btn btn-warning btn-sm",
-                               title = "Credit pending token earnings to students")
+                               title = "Credit pending token earnings to students",
+                               onclick = "if(!confirm('Release tokens to all students? This cannot be undone.')) return false;")
                 else if (n_show > 0)
                   actionButton("clear_assignments_btn", "\U274c Clear All",
                                class = "btn btn-outline-danger btn-sm",
-                               title = "Delete all assignments for current round")
+                               title = "Delete all assignments for current round",
+                               onclick = "if(!confirm('Delete all job assignments for this round?')) return false;")
               )
             ),
             if (n_show > 0)
@@ -4338,7 +4348,8 @@ server <- function(input, output, session) {
             fluidRow(
               column(4, actionButton("adm_open",   "Open",   class = "btn btn-success btn-sm btn-block")),
               column(4, actionButton("adm_close",  "Close",  class = "btn btn-warning btn-sm btn-block")),
-              column(4, actionButton("adm_reveal", "Reveal", class = "btn btn-danger  btn-sm btn-block"))
+              column(4, actionButton("adm_reveal", "Reveal", class = "btn btn-danger  btn-sm btn-block",
+                                     onclick = "if(!confirm('Reveal round results? This cannot be undone.')) return false;"))
             ),
             tags$p(style = "font-size:.8em;color:#999;margin-top:.5rem;margin-bottom:0;",
                    "For full payout setup use the Coordination Games app.")
@@ -4801,6 +4812,11 @@ server <- function(input, output, session) {
   )
 
   # Admin action observers
+  observeEvent(input$clear_active_game_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    db_exec("UPDATE arcade_state SET active_game=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    showNotification("Active game cleared.", type = "message")
+  })
   observeEvent(input$set_active_btn, {
     req(rv$is_admin)
     g <- input$admin_game_sel %||% ""
