@@ -2917,11 +2917,18 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     sched <- trimws(input$flex_cost_input %||% "")
     if (!nzchar(sched)) { showNotification("Enter a schedule.", type = "error"); return() }
-    parts <- tryCatch(as.numeric(strsplit(sched, ",")[[1]]), error=function(e) NA_real_)
-    if (any(is.na(parts))) { showNotification("Invalid schedule — use comma-separated numbers.", type = "error"); return() }
+    parsed <- parse_flex_cost(sched)
+    if (parsed$type == "expr") {
+      test <- eval_cost_expr(parsed$expr, "q", 0)
+      if (is.na(test)) {
+        showNotification("Expression error — check syntax (use q for questions owned, e.g. 11+q^2).",
+                         type = "error"); return()
+      }
+    }
     db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('flex_cost_schedule',?);",
             list(sched))
     showNotification("Price schedule saved.", type = "message")
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
   })
 
   observeEvent(input$add_flex_question_btn, {
