@@ -2367,16 +2367,12 @@ server <- function(input, output, session) {
     showNotification("Display name updated.", type = "message")
   })
 
-  # ── Show/hide admin tabs based on is_admin (hidden when impersonating) ────────
+  # ── Show/hide admin/demo tabs (hidden when impersonating) ────────────────────
   observe({
     show_admin <- isTRUE(rv$is_admin) && !isTRUE(rv$impersonating)
-    if (show_admin) {
-      showTab("arc_tabs", "Live Tracker")
-      showTab("arc_tabs", "Settings")
-    } else {
-      hideTab("arc_tabs", "Live Tracker")
-      hideTab("arc_tabs", "Settings")
-    }
+    show_tracker <- (isTRUE(rv$is_admin) || isTRUE(rv$is_demo)) && !isTRUE(rv$impersonating)
+    if (show_tracker) showTab("arc_tabs", "Live Tracker") else hideTab("arc_tabs", "Live Tracker")
+    if (show_admin)   showTab("arc_tabs", "Settings")    else hideTab("arc_tabs", "Settings")
   })
 
   # ── Impersonation ─────────────────────────────────────────────────────────────
@@ -2949,7 +2945,7 @@ server <- function(input, output, session) {
 
   # ── Live Tracker tab (admin) ──────────────────────────────────────────────────
   output$live_tracker_tab <- renderUI({
-    req(rv$authed, rv$is_admin)
+    req(rv$authed, rv$is_admin || rv$is_demo)
     td        <- tracker_poll()
     revealed  <- td$revealed
     round     <- td$round
@@ -3197,36 +3193,6 @@ server <- function(input, output, session) {
         }
       ),
 
-      # Student token summary
-      div(class = "sec-label",
-          sprintf("Students (%d)", nrow(students_sec))),
-      div(class = "tracker-wrap",
-        if (!nrow(students_sec)) {
-          div(style = "color:#999;", "No students found.")
-        } else {
-          tags$table(class = "table table-sm table-hover",
-            tags$thead(tags$tr(
-              tags$th("Student"), tags$th("Section"),
-              tags$th(style = "text-align:right;", "Earned"),
-              tags$th(style = "text-align:right;", "On Hand"),
-              tags$th(style = "text-align:right;color:#856404;", "Pending")
-            )),
-            tags$tbody(lapply(seq_len(nrow(students_sec)), function(i) {
-              r <- students_sec[i, ]
-              pend <- as.integer(r$tokens_pending %||% 0)
-              tags$tr(
-                tags$td(r$display_name %||% r$user_id),
-                tags$td(style = "color:#888;", r$section %||% ""),
-                tags$td(style = "text-align:right;", as.integer(r$tokens_earned %||% 0)),
-                tags$td(style = "text-align:right;font-weight:600;",
-                        as.integer(r$tokens_on_hand %||% 0)),
-                tags$td(style = "text-align:right;color:#856404;font-style:italic;",
-                        if (pend > 0) pend else "—")
-              )
-            }))
-          )
-        }
-      )
     )
   })
 
