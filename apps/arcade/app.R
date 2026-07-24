@@ -291,6 +291,7 @@ db_exec("CREATE TABLE IF NOT EXISTS job_categories(
   display_order INTEGER DEFAULT 99
 );")
 try(db_exec("ALTER TABLE job_categories ADD COLUMN voluntary INTEGER DEFAULT 0;"), silent = TRUE)
+try(db_exec("ALTER TABLE job_categories ADD COLUMN in_draw INTEGER DEFAULT 1;"), silent = TRUE)
 db_exec("CREATE TABLE IF NOT EXISTS weekly_rounds(
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   label               TEXT,
@@ -2403,9 +2404,11 @@ server <- function(input, output, session) {
     wage <- as.numeric(input$new_cat_wage %||% 10)
     desc <- trimws(input$new_cat_desc %||% "")
     if (!nzchar(nm)) { showNotification("Category name required.", type = "error"); return() }
+    vol2  <- as.integer(isTRUE(input$new_cat_voluntary))
+    idraw <- as.integer(!isTRUE(input$new_cat_not_in_draw))
     db_exec(
-      "INSERT INTO job_categories(name, default_wage, description) VALUES(?,?,?);",
-      list(nm, if (is.na(wage)) 10 else wage, desc))
+      "INSERT INTO job_categories(name, default_wage, description, voluntary, in_draw) VALUES(?,?,?,?,?);",
+      list(nm, if (is.na(wage)) 10 else wage, desc, vol2, idraw))
     showNotification("Job category added.", type = "message")
   })
 
@@ -2416,20 +2419,19 @@ server <- function(input, output, session) {
     slots   <- max(1L, as.integer(input$new_post_slots %||% 1L))
     wage    <- suppressWarnings(as.numeric(input$new_post_wage))
     in_draw <- as.integer(isTRUE(input$new_post_in_draw))
-    vol     <- as.integer(isTRUE(input$new_post_voluntary))
     rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
                         error = function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("Create a round first.", type = "error"); return() }
     if (!nzchar(nm)) { showNotification("Post name required.", type = "error"); return() }
     rid <- rid_row$id[1]
     db_exec(
-      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw, voluntary)
-       VALUES(?,?,?,?,?,?,?);",
+      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw)
+       VALUES(?,?,?,?,?,?);",
       list(rid, nm,
            if (!is.na(cat_id) && cat_id > 0) cat_id else NA_integer_,
            slots,
            if (!is.null(wage) && !is.na(wage) && wage > 0) wage else NA_real_,
-           in_draw, vol))
+           in_draw))
     showNotification("Job post added.", type = "message")
   })
 
@@ -2511,17 +2513,6 @@ server <- function(input, output, session) {
     rv$jobs_ver <- rv$jobs_ver + 1L
   }, ignoreNULL = TRUE)
 
-  observeEvent(input$toggle_post_voluntary, {
-    req(rv$is_admin)
-    pid <- suppressWarnings(as.integer(input$toggle_post_voluntary %||% 0))
-    if (is.na(pid) || pid <= 0) return()
-    cur <- db_query("SELECT COALESCE(voluntary,0) v FROM job_posts WHERE id=?;", list(pid))
-    if (!nrow(cur)) return()
-    new_v <- if (isTRUE(as.integer(cur$v[1]) == 1L)) 0L else 1L
-    db_exec("UPDATE job_posts SET voluntary=? WHERE id=?;", list(new_v, pid))
-    rv$jobs_ver <- rv$jobs_ver + 1L
-  }, ignoreNULL = TRUE)
-
   observeEvent(input$delete_job_post_btn, {
     req(rv$is_admin)
     pid <- suppressWarnings(as.integer(input$delete_job_post_btn %||% 0))
@@ -2581,8 +2572,10 @@ server <- function(input, output, session) {
     desc <- trimws(ev$desc %||% "")
     if (!nzchar(nm)) { showNotification("Category name required.", type = "error"); return() }
     if (is.na(cid) || cid <= 0) return()
-    db_exec("UPDATE job_categories SET name=?, default_wage=?, description=? WHERE id=?;",
-            list(nm, if (is.na(wage)) 0 else wage, desc, cid))
+    vol_cat  <- as.integer(ev$vol %||% 0)
+    draw_cat <- as.integer(ev$in_draw %||% 1)
+    db_exec("UPDATE job_categories SET name=?, default_wage=?, description=?, voluntary=?, in_draw=? WHERE id=?;",
+            list(nm, if (is.na(wage)) 0 else wage, desc, vol_cat, draw_cat, cid))
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Category updated.", type = "message")
   }, ignoreNULL = TRUE)
@@ -2841,11 +2834,12 @@ server <- function(input, output, session) {
     rid <- if (nrow(round)) round$id[1] else NA_integer_
 
     # Voluntary job posts for participation panel (Panel 2)
+    # voluntary is now a category-level attribute (jc.voluntary)
     vol_cats <- if (!is.na(rid)) {
       tryCatch(db_query(
         "SELECT jp.id, jp.job_name AS name, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
          FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
-         WHERE jp.round_id=? AND COALESCE(jp.voluntary,0)=1 AND COALESCE(jp.active,1)=1
+         WHERE jp.round_id=? AND COALESCE(jc.voluntary,0)=1 AND COALESCE(jp.active,1)=1
          ORDER BY jp.job_name;", list(rid)),
         error = function(e) data.frame())
     } else data.frame()
@@ -3022,7 +3016,7 @@ server <- function(input, output, session) {
                 "\U0001f64b Voluntary Participation"),
         if (!nrow(vol_cats)) {
           tags$p(style = "color:#999;margin:0;",
-                 "No voluntary job posts yet. Go to Settings > Jobs, find a post, and click its 'Not Voluntary' button so it turns into '✓ Voluntary'.")
+                 "No voluntary job posts yet. Go to Settings → Jobs and mark a job category as Voluntary.")
         } else if (!nrow(students_sec)) {
           tags$p(style = "color:#999;margin:0;", "No students in the selected section.")
         } else {
@@ -3235,8 +3229,8 @@ server <- function(input, output, session) {
                            "border-radius:0 4px 4px 0;margin-bottom:.6rem;font-size:.85rem;color:#333;"),
           tags$strong("How flags work:"), " ",
           tags$b("\U0001f3b2 In Draw"), " — included when you run the job draw (Panel 1 of Live Tracker). ",
-          tags$b("\U0001f64b Voluntary"), " — appears in the Voluntary Participation panel (Panel 2) for you to log attend/try/miss. ",
-          "A post can have both flags at once (e.g. a job that is also optionally attended)."
+          tags$b("\U0001f64b Voluntary"), " — set at the ", tags$em("category"), " level (see the category list below); all posts in a voluntary category appear in Panel 2 for attendance logging. ",
+          "A category can be both in-draw and voluntary."
         ),
         if (is.na(rid)) {
           div(style = "color:#999;font-size:.9em;", "Create a round first (Round Setup).")
@@ -3246,13 +3240,12 @@ server <- function(input, output, session) {
               tags$thead(tags$tr(
                 tags$th("Post"), tags$th("Cat"), tags$th("Slots"),
                 tags$th("Wage"), tags$th("Clearing Wage"),
-                tags$th("In Draw"), tags$th("Voluntary"), tags$th("Active"), tags$th("")
+                tags$th("In Draw"), tags$th("Active"), tags$th("")
               )),
               tags$tbody(lapply(seq_len(nrow(all_posts)), function(i) {
                 r        <- all_posts[i, ]
-                is_act   <- isTRUE(as.integer(r$active)   == 1L)
-                in_draw  <- isTRUE(as.integer(r$in_draw)  == 1L)
-                is_vol   <- isTRUE(as.integer(r$voluntary) == 1L)
+                is_act   <- isTRUE(as.integer(r$active)  == 1L)
+                in_draw  <- isTRUE(as.integer(r$in_draw) == 1L)
                 clr_wage <- compute_clearing_wage(r$category_id, rid, as.integer(r$slots %||% 1L))
                 tags$tr(
                   tags$td(r$job_name %||% ""),
@@ -3272,8 +3265,6 @@ server <- function(input, output, session) {
                   ),
                   tags$td(make_flag_btn("\U2713 In Draw", "\U2715 Skip Draw", "toggle_post_in_draw",
                                         r$id, in_draw, "btn-success", "btn-outline-secondary")),
-                  tags$td(make_flag_btn("\U2713 Voluntary", "\U2715 Not Voluntary", "toggle_post_voluntary",
-                                        r$id, is_vol, "btn-info", "btn-outline-secondary")),
                   tags$td(make_flag_btn("\U2713 Active", "\U2715 Inactive", "toggle_post_active",
                                         r$id, is_act, "btn-success", "btn-outline-secondary")),
                   tags$td(
@@ -3307,8 +3298,7 @@ server <- function(input, output, session) {
                 column(1, numericInput("new_post_slots", "Slots:", value = 1L, min = 1L, step = 1L)),
                 column(2, numericInput("new_post_wage", "Wage:", value = NA, min = 0, step = 1)),
                 column(2, tags$br(),
-                       checkboxInput("new_post_in_draw", "In draw", value = TRUE),
-                       checkboxInput("new_post_voluntary", "Voluntary", value = FALSE)),
+                       checkboxInput("new_post_in_draw", "In draw", value = TRUE)),
                 column(2, tags$br(),
                        actionButton("add_job_post_btn", "Add", class = "btn btn-sm btn-primary"))
               )
@@ -3338,13 +3328,18 @@ server <- function(input, output, session) {
                 ),
                 div(style = "padding:.4rem 0;",
                   fluidRow(
-                    column(3, textInput(paste0("edit_cat_name_",  cid_js), "Name:",
+                    column(2, textInput(paste0("edit_cat_name_",  cid_js), "Name:",
                                         value = r$name %||% "")),
                     column(2, numericInput(paste0("edit_cat_wage_",  cid_js), "Default wage:",
                                            value = as.numeric(r$default_wage %||% 0),
                                            min = 0, step = 1)),
-                    column(4, textInput(paste0("edit_cat_desc_",  cid_js), "Description:",
+                    column(3, textInput(paste0("edit_cat_desc_",  cid_js), "Description:",
                                         value = r$description %||% "")),
+                    column(2, tags$br(),
+                      checkboxInput(paste0("edit_cat_vol_",  cid_js), "Voluntary",
+                                   value = isTRUE(as.integer(r$voluntary %||% 0L) == 1L)),
+                      checkboxInput(paste0("edit_cat_draw_", cid_js), "In draw by default",
+                                   value = isTRUE(as.integer(r$in_draw %||% 1L) == 1L))),
                     column(3, tags$br(),
                       div(style = "display:flex;gap:.4rem;flex-wrap:wrap;",
                         tags$button(
@@ -3353,12 +3348,14 @@ server <- function(input, output, session) {
                             "var n=document.getElementById('edit_cat_name_%d').value;",
                             "var w=document.getElementById('edit_cat_wage_%d').value;",
                             "var d=document.getElementById('edit_cat_desc_%d').value;",
-                            "Shiny.setInputValue('edit_cat_btn',{id:%d,name:n,wage:w,desc:d},{priority:'event'});",
+                            "var v=document.getElementById('edit_cat_vol_%d').checked?1:0;",
+                            "var dr=document.getElementById('edit_cat_draw_%d').checked?1:0;",
+                            "Shiny.setInputValue('edit_cat_btn',{id:%d,name:n,wage:w,desc:d,vol:v,in_draw:dr},{priority:'event'});",
                             "this.closest('details').removeAttribute('open');",
                             "this.textContent='Saved ✓';",
                             "setTimeout(function(b){b.textContent='Save changes';}",
                             ",1500,this);"),
-                            cid_js, cid_js, cid_js, cid_js),
+                            cid_js, cid_js, cid_js, cid_js, cid_js, cid_js),
                           "Save changes"),
                         tags$button(
                           class = "btn btn-sm btn-outline-danger",
@@ -3380,8 +3377,11 @@ server <- function(input, output, session) {
             fluidRow(
               column(3, textInput("new_cat_name", "Name:")),
               column(2, numericInput("new_cat_wage", "Default wage:", value = 10, min = 0, step = 1)),
-              column(4, textInput("new_cat_desc", "Description (optional):")),
-              column(3, tags$br(),
+              column(3, textInput("new_cat_desc", "Description (optional):")),
+              column(2, tags$br(),
+                checkboxInput("new_cat_voluntary", "Voluntary", value = FALSE),
+                checkboxInput("new_cat_not_in_draw", "Exclude from draw", value = FALSE)),
+              column(2, tags$br(),
                      actionButton("add_job_cat_btn", "Add", class = "btn btn-sm btn-primary"))
             )
           )
