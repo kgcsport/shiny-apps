@@ -125,6 +125,7 @@ db_exec("CREATE TABLE IF NOT EXISTS grade_reweight_requests(
   status TEXT DEFAULT 'pending',
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+try(db_exec("ALTER TABLE grade_reweight_requests ADD COLUMN level TEXT DEFAULT 'category';"), silent=TRUE)
 db_exec("CREATE TABLE IF NOT EXISTS public_goods(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -483,6 +484,31 @@ rw_cost_for_n <- function(n, schedule_text = NULL) {
 }
 get_rw_max_points <- function() {
   as.integer(tryCatch(get_setting("grade_reweight_max_points", "5"), error=function(e)"5") %||% 5L)
+}
+
+# Returns a named list suitable for selectInput grouped choices: list(CatName = c(item1, item2, ...))
+get_all_gradebook_items <- function() {
+  cats   <- tryCatch(db_query("SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
+                     error = function(e) data.frame())
+  inames <- tryCatch(db_query("SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
+                     error = function(e) data.frame())
+  if (!nrow(cats)) return(list())
+  out <- list()
+  for (i in seq_len(nrow(cats))) {
+    r      <- cats[i, ]
+    n      <- as.integer(r$item_count %||% 1L)
+    prefix <- if (!is.null(r$item_prefix) && !is.na(r$item_prefix) && nzchar(r$item_prefix))
+                r$item_prefix else r$name
+    ovr    <- if (nrow(inames)) inames[inames$category_id == r$id, , drop=FALSE] else data.frame()
+    items  <- sapply(seq_len(n), function(j) {
+      ov <- if (nrow(ovr)) ovr$item_name[ovr$item_index == j] else character(0)
+      if (length(ov) && nzchar(ov[1])) ov[1]
+      else if (n == 1) r$name
+      else paste0(prefix, " ", j)
+    })
+    out[[r$name %||% paste0("Cat", i)]] <- setNames(items, items)
+  }
+  out
 }
 parse_event_types <- function() {
   default_json <- '[{"id":"question","label":"Useful Question","tokens":1},{"id":"explain","label":"Explanation","tokens":2},{"id":"correct","label":"Correct Answer","tokens":1}]'
@@ -2103,18 +2129,14 @@ server <- function(input, output, session) {
       )
 
     } else if (mode == "reweight") {
-      cats_df <- tryCatch(parse_grade_categories(),
-                          error = function(e)
-                            data.frame(name=c("Homework","Midterm","Final"),
-                                       weight=c(33,33,34), stringsAsFactors=FALSE))
-      cats    <- cats_df$name
       max_pts <- get_rw_max_points()
       div(class = "spend-form-box",
         tags$h6(style = "color:#951829;font-weight:700;", "⚖️ Grade Reweight"),
-        fluidRow(
-          column(5, selectInput("rw_from", "Move weight from:", choices = cats)),
-          column(5, selectInput("rw_to",   "Move weight to:",   choices = cats))
-        ),
+        radioButtons("rw_level", NULL,
+          choices  = c("Between categories" = "category",
+                       "Between individual assignments" = "assignment"),
+          selected = "category", inline = TRUE),
+        uiOutput("rw_selectors"),
         sliderInput("rw_points", "Percentage points to move:",
                     min = 1, max = max_pts, value = 1, step = 1),
         uiOutput("rw_cost_preview"),
@@ -2179,6 +2201,31 @@ server <- function(input, output, session) {
     div(style = "font-size:.86rem;color:#555;margin:.4rem 0 .6rem;",
         sprintf("Cost: %d tokens  ·  Balance: %d  ·  After: %d",
                 as.integer(cost), as.integer(bal), as.integer(bal - cost)))
+  })
+
+  output$rw_selectors <- renderUI({
+    req(rv$authed, identical(rv$spend_mode, "reweight"))
+    level <- input$rw_level %||% "category"
+    if (level == "assignment") {
+      item_choices <- get_all_gradebook_items()
+      if (!length(item_choices))
+        return(div(style="color:#999;font-size:.88rem;",
+                   "No gradebook items defined yet. Add categories in Grades & Gradebook."))
+      fluidRow(
+        column(5, selectInput("rw_from", "Move weight from:", choices = item_choices)),
+        column(5, selectInput("rw_to",   "Move weight to:",   choices = item_choices))
+      )
+    } else {
+      cats_df <- tryCatch(parse_grade_categories(),
+                          error = function(e)
+                            data.frame(name=c("Homework","Midterm","Final"),
+                                       weight=c(33,33,34), stringsAsFactors=FALSE))
+      cats <- cats_df$name
+      fluidRow(
+        column(5, selectInput("rw_from", "Move weight from:", choices = cats)),
+        column(5, selectInput("rw_to",   "Move weight to:",   choices = cats))
+      )
+    }
   })
 
   output$rw_cost_preview <- renderUI({
@@ -2250,8 +2297,14 @@ server <- function(input, output, session) {
   observeEvent(input$submit_reweight, {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
-    if (identical(input$rw_from, input$rw_to)) {
-      showNotification("From and to categories must differ.", type = "error"); return()
+    from  <- input$rw_from %||% ""
+    to    <- input$rw_to   %||% ""
+    level <- input$rw_level %||% "category"
+    if (identical(from, to)) {
+      showNotification(
+        if (level == "assignment") "From and to assignments must differ."
+        else "From and to categories must differ.",
+        type = "error"); return()
     }
     pts  <- as.integer(input$rw_points %||% 1)
     cost <- rw_cost_for_n(pts) %||% 0
@@ -2263,11 +2316,11 @@ server <- function(input, output, session) {
                        type = "error"); return()
     }
     lid <- token_debit(rv$user_id, rv$name, cost, "grade_reweight", NA,
-                       note = sprintf("%s → %s, %d pt", input$rw_from, input$rw_to, pts))
+                       note = sprintf("[%s] %s → %s, %d pt", level, from, to, pts))
     db_exec(
-      "INSERT INTO grade_reweight_requests(user_id,from_category,to_category,points,cost,ledger_id)
-       VALUES(?,?,?,?,?,?);",
-      list(rv$user_id, input$rw_from, input$rw_to, pts, cost, as.integer(lid %||% NA_integer_)))
+      "INSERT INTO grade_reweight_requests(user_id,from_category,to_category,points,cost,ledger_id,level)
+       VALUES(?,?,?,?,?,?,?);",
+      list(rv$user_id, from, to, pts, cost, as.integer(lid %||% NA_integer_), level))
     showNotification(
       sprintf("Request submitted (%d tokens spent). Your instructor will review it.", as.integer(cost)),
       type = "message")
@@ -4348,7 +4401,8 @@ server <- function(input, output, session) {
                 # Reweight requests per student
                 {
                   rw_rows <- tryCatch(db_query(
-                    "SELECT r.id, u.display_name, r.from_category, r.to_category,
+                    "SELECT r.id, u.display_name, COALESCE(r.level,'category') AS level,
+                            r.from_category, r.to_category,
                             r.points, r.cost, r.status, r.created_at
                      FROM grade_reweight_requests r
                      LEFT JOIN users u ON u.user_id=r.user_id
@@ -4361,13 +4415,16 @@ server <- function(input, output, session) {
                       div(style = "overflow-x:auto;margin-top:.4rem;",
                         tags$table(class = "table table-sm",
                           tags$thead(tags$tr(
-                            tags$th("Student"), tags$th("From"), tags$th("To"),
+                            tags$th("Student"), tags$th("Level"), tags$th("From"), tags$th("To"),
                             tags$th("Pts"), tags$th("Cost"), tags$th("Status"), tags$th("Date")
                           )),
                           tags$tbody(lapply(seq_len(nrow(rw_rows)), function(i) {
                             r <- rw_rows[i, ]
+                            lv <- r$level %||% "category"
                             tags$tr(
                               tags$td(r$display_name %||% ""),
+                              tags$td(style="color:#888;font-size:.82em;",
+                                      if (identical(lv,"assignment")) "Assignment" else "Category"),
                               tags$td(r$from_category %||% ""),
                               tags$td(r$to_category %||% ""),
                               tags$td(r$points %||% ""),
@@ -4564,7 +4621,8 @@ server <- function(input, output, session) {
   output$rw_requests_panel <- renderUI({
     req(rv$is_admin)
     rows <- tryCatch(db_query(
-      "SELECT r.id, u.display_name, r.from_category, r.to_category, r.points,
+      "SELECT r.id, u.display_name, COALESCE(r.level,'category') AS level,
+              r.from_category, r.to_category, r.points,
               r.cost, r.status, r.created_at
        FROM grade_reweight_requests r
        LEFT JOIN users u ON u.user_id=r.user_id
@@ -4574,13 +4632,16 @@ server <- function(input, output, session) {
       return(div(style = "color:#999;font-size:.88rem;", "No requests yet."))
     tags$table(class = "table table-sm",
       tags$thead(tags$tr(
-        tags$th("Student"), tags$th("From"), tags$th("To"), tags$th("Pts"),
+        tags$th("Student"), tags$th("Level"), tags$th("From"), tags$th("To"), tags$th("Pts"),
         tags$th("Cost"), tags$th("Status"), tags$th("Date")
       )),
       tags$tbody(lapply(seq_len(nrow(rows)), function(i) {
-        r <- rows[i, ]
+        r  <- rows[i, ]
+        lv <- r$level %||% "category"
         tags$tr(
           tags$td(r$display_name %||% ""),
+          tags$td(style="color:#888;font-size:.82em;",
+                  if (identical(lv,"assignment")) "Assignment" else "Category"),
           tags$td(r$from_category %||% ""),
           tags$td(r$to_category %||% ""),
           tags$td(r$points %||% ""),
@@ -4672,7 +4733,8 @@ server <- function(input, output, session) {
   output$dl_reweight_requests <- downloadHandler(
     filename = function() paste0("reweight_requests_", Sys.Date(), ".csv"),
     content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT r.id, u.display_name AS student, r.from_category, r.to_category,
+      "SELECT r.id, u.display_name AS student, COALESCE(r.level,'category') AS level,
+              r.from_category, r.to_category,
               r.points, r.cost, r.status, r.created_at
        FROM grade_reweight_requests r
        LEFT JOIN users u ON u.user_id=r.user_id
