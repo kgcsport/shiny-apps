@@ -539,6 +539,75 @@ parse_grade_categories <- function() {
   }, error = function(e) data.frame(name=character(0), weight=numeric(0)))
 }
 
+compute_student_grade <- function(uid) {
+  cats      <- tryCatch(db_query(
+    "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
+    error = function(e) data.frame())
+  inames_df <- tryCatch(db_query(
+    "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
+    error = function(e) data.frame())
+  grades    <- tryCatch(db_query(
+    "SELECT assignment_name, score, max_score, grade_pct FROM student_grades WHERE user_id=?;",
+    list(uid)), error = function(e) data.frame())
+
+  if (!nrow(cats)) return(list(cats = data.frame(), items = data.frame(), overall = NA_real_))
+
+  all_items <- data.frame(item_name=character(), cat_idx=integer(),
+                          category_name=character(), weight=numeric(),
+                          item_count=integer(), grade_pct=numeric(),
+                          score=numeric(), max_score=numeric(),
+                          stringsAsFactors=FALSE)
+  for (i in seq_len(nrow(cats))) {
+    r      <- cats[i, ]
+    n      <- as.integer(r$item_count %||% 1L)
+    prefix <- if (!is.null(r$item_prefix) && !is.na(r$item_prefix) && nzchar(r$item_prefix))
+                r$item_prefix else r$name
+    ovr    <- if (nrow(inames_df)) inames_df[inames_df$category_id == r$id, , drop=FALSE]
+              else data.frame()
+    for (j in seq_len(n)) {
+      ov  <- if (nrow(ovr)) ovr$item_name[ovr$item_index == j] else character(0)
+      nm  <- if (length(ov) && nzchar(ov[1])) ov[1]
+             else if (n == 1) r$name
+             else paste0(prefix, " ", j)
+      matched <- if (nrow(grades)) grades[grades$assignment_name == nm, , drop=FALSE]
+                 else data.frame()
+      all_items <- rbind(all_items, data.frame(
+        item_name     = nm,
+        cat_idx       = i,
+        category_name = r$name,
+        weight        = as.numeric(r$weight %||% 0),
+        item_count    = n,
+        grade_pct     = if (nrow(matched)) as.numeric(matched$grade_pct[1]) else NA_real_,
+        score         = if (nrow(matched)) as.numeric(matched$score[1] %||% NA) else NA_real_,
+        max_score     = if (nrow(matched)) as.numeric(matched$max_score[1] %||% NA) else NA_real_,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+
+  cat_summary <- do.call(rbind, lapply(seq_len(nrow(cats)), function(i) {
+    r      <- cats[i, ]
+    items  <- all_items[all_items$cat_idx == i, , drop=FALSE]
+    graded <- items$grade_pct[!is.na(items$grade_pct)]
+    cat_avg <- if (length(graded)) mean(graded) else NA_real_
+    data.frame(
+      category     = r$name,
+      weight       = as.numeric(r$weight %||% 0),
+      cat_avg      = cat_avg,
+      contribution = if (!is.na(cat_avg)) cat_avg * as.numeric(r$weight %||% 0) / 100
+                     else NA_real_,
+      stringsAsFactors = FALSE
+    )
+  }))
+
+  graded_wt   <- sum(cat_summary$weight[!is.na(cat_summary$cat_avg)], na.rm = TRUE)
+  graded_cont <- sum(cat_summary$contribution, na.rm = TRUE)
+  overall <- if (graded_wt > 0) graded_cont / graded_wt * 100 else NA_real_
+
+  list(cats = cat_summary, items = all_items, overall = overall,
+       graded_weight = graded_wt, total_weight = sum(cats$weight, na.rm = TRUE))
+}
+
 compute_clearing_wage <- function(category_id, round_id, slots) {
   if (is.na(category_id %||% NA) || is.na(round_id %||% NA) || is.na(slots %||% NA))
     return(NA_real_)
@@ -796,6 +865,35 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
 .dr { color: #b00020; }
 .profile-panel { background: #fff; border-radius: 10px; padding: 1.1rem;
                  border: 1px solid #e8e8e8; height: 100%; }
+.grade-section { margin: .25rem 0 1.25rem; }
+.grade-section .sec-label { margin-bottom: .6rem; }
+.grade-overall-row { display:flex; align-items:center; gap:1.25rem; margin-bottom:.85rem; flex-wrap:wrap; }
+.grade-overall-tile { background:#fff; border-radius:10px; border:1px solid #e8e8e8;
+                      padding:.7rem 1.1rem; text-align:center; min-width:110px; }
+.grade-overall-val  { font-size:2rem; font-weight:700; color:#951829; line-height:1.05; }
+.grade-overall-lbl  { font-size:.72rem; color:#888; margin-top:.15rem; }
+.grade-tbl { font-size:.85rem; width:100%; border-collapse:collapse; }
+.grade-tbl th { color:#666; font-weight:600; padding:.28rem .5rem;
+                border-bottom:2px solid #eee; text-align:left; }
+.grade-tbl td { padding:.28rem .5rem; border-bottom:1px solid #f2f2f2; }
+.grade-tbl .cat-row td { font-weight:600; background:#fafafa; }
+.grade-tbl .cat-row td:first-child { padding-left:.35rem; }
+.grade-tbl .item-row td { color:#555; }
+.grade-tbl .item-row td:first-child { padding-left:1.5rem; }
+.grade-tbl .total-row td { font-weight:700; border-top:2px solid #ddd; background:#f7f7f7; }
+.grade-na { color:#bbb; font-style:italic; }
+.rw-preview { margin:.65rem 0 .9rem; background:#f9f9f9; border:1px solid #eee;
+              border-radius:8px; padding:.75rem .9rem; }
+.rw-preview-title { font-size:.75rem; font-weight:700; color:#888; text-transform:uppercase;
+                    letter-spacing:.07em; margin-bottom:.5rem; }
+.rw-preview-tbl { font-size:.83rem; width:100%; border-collapse:collapse; }
+.rw-preview-tbl th { color:#666; font-weight:600; padding:.25rem .4rem;
+                     border-bottom:1px solid #e0e0e0; text-align:left; white-space:nowrap; }
+.rw-preview-tbl td { padding:.25rem .4rem; border-bottom:1px solid #f0f0f0; }
+.rw-preview-tbl .changed { color:#951829; font-weight:600; }
+.rw-preview-tbl .total-row td { font-weight:700; border-top:2px solid #ddd; }
+.rw-delta-pos { color:#1a6e3c; font-weight:600; }
+.rw-delta-neg { color:#b00020; font-weight:600; }
 
 /* ── Job Market tab ─────────────────────────────────────────────────────── */
 .jm-card { background: #fff; border-radius: 10px; border: 1px solid #e8e8e8;
@@ -2140,6 +2238,7 @@ server <- function(input, output, session) {
         sliderInput("rw_points", "Percentage points to move:",
                     min = 1, max = max_pts, value = 1, step = 1),
         uiOutput("rw_cost_preview"),
+        uiOutput("rw_grade_preview"),
         actionButton("submit_reweight", "Submit request", class = "btn btn-warning"),
         tags$p(style = "font-size:.8rem;color:#888;margin-top:.4rem;",
                "Your instructor will review and apply approved requests.")
@@ -2237,6 +2336,189 @@ server <- function(input, output, session) {
     div(style = "font-size:.86rem;color:#555;margin:.4rem 0 .6rem;",
         sprintf("Cost: %d tokens  ·  Balance: %d  ·  After: %d",
                 as.integer(cost), as.integer(bal), as.integer(bal - cost)))
+  })
+
+  output$rw_grade_preview <- renderUI({
+    req(rv$authed, identical(rv$spend_mode, "reweight"))
+    from  <- input$rw_from  %||% ""
+    to    <- input$rw_to    %||% ""
+    pts   <- as.integer(input$rw_points %||% 1)
+    level <- input$rw_level %||% "category"
+    if (!nzchar(from) || !nzchar(to) || from == to) return(NULL)
+
+    gb <- compute_student_grade(rv$user_id)
+    cats_df <- gb$cats
+    if (!nrow(cats_df)) return(NULL)
+
+    # Build revised weights: adjust at category level (for both category and assignment level)
+    # For assignment level, the from/to are item names — map them to categories
+    if (level == "assignment") {
+      items_df <- gb$items
+      from_cat <- if (nrow(items_df)) {
+        r <- items_df[items_df$item_name == from, , drop=FALSE]
+        if (nrow(r)) r$category_name[1] else from
+      } else from
+      to_cat   <- if (nrow(items_df)) {
+        r <- items_df[items_df$item_name == to, , drop=FALSE]
+        if (nrow(r)) r$category_name[1] else to
+      } else to
+    } else {
+      from_cat <- from
+      to_cat   <- to
+    }
+
+    rev_cats <- cats_df
+    rev_cats$weight[rev_cats$category == from_cat] <-
+      pmax(0, rev_cats$weight[rev_cats$category == from_cat] - pts)
+    rev_cats$weight[rev_cats$category == to_cat] <-
+      rev_cats$weight[rev_cats$category == to_cat] + pts
+
+    # Compute revised overall
+    rev_graded_wt   <- sum(rev_cats$weight[!is.na(cats_df$cat_avg)], na.rm = TRUE)
+    rev_graded_cont <- sum(
+      rev_cats$weight * ifelse(is.na(cats_df$cat_avg), 0, cats_df$cat_avg) / 100,
+      na.rm = TRUE)
+    rev_overall <- if (rev_graded_wt > 0) rev_graded_cont / rev_graded_wt * 100 else NA_real_
+
+    fmt_pct <- function(x) if (is.na(x)) span(class="grade-na", "—")
+                           else sprintf("%.1f%%", x)
+
+    header_row <- tags$tr(
+      tags$th("Category"),
+      tags$th("Current wt"),
+      tags$th("Revised wt"),
+      tags$th("Your score"),
+      tags$th("Current pts"),
+      tags$th("Revised pts")
+    )
+
+    data_rows <- lapply(seq_len(nrow(cats_df)), function(i) {
+      cr  <- cats_df[i, ]
+      rr  <- rev_cats[i, ]
+      wt_changed  <- abs(rr$weight - cr$weight) > 0.001
+      cur_cont    <- if (!is.na(cr$cat_avg) && gb$graded_weight > 0)
+                       cr$cat_avg * cr$weight / gb$graded_weight
+                     else NA_real_
+      rev_cont    <- if (!is.na(cr$cat_avg) && rev_graded_wt > 0)
+                       cr$cat_avg * rr$weight / rev_graded_wt
+                     else NA_real_
+      tags$tr(
+        tags$td(cr$category),
+        tags$td(sprintf("%.4g%%", cr$weight)),
+        tags$td(if (wt_changed) span(class="changed", sprintf("%.4g%%", rr$weight))
+                else sprintf("%.4g%%", rr$weight)),
+        tags$td(fmt_pct(cr$cat_avg)),
+        tags$td(fmt_pct(cur_cont)),
+        tags$td(fmt_pct(rev_cont))
+      )
+    })
+
+    cur_grade  <- gb$overall
+    delta      <- if (!is.na(rev_overall) && !is.na(cur_grade)) rev_overall - cur_grade else NA_real_
+    delta_ui   <- if (is.na(delta)) NULL
+                  else if (delta > 0.001) span(class="rw-delta-pos", sprintf(" (+%.2f%%)", delta))
+                  else if (delta < -0.001) span(class="rw-delta-neg", sprintf(" (%.2f%%)", delta))
+                  else span(style="color:#888;", " (no change)")
+
+    total_row <- tags$tr(class="total-row",
+      tags$td(tags$strong("Overall")),
+      tags$td(""),
+      tags$td(""),
+      tags$td(""),
+      tags$td(fmt_pct(cur_grade)),
+      tags$td(tagList(fmt_pct(rev_overall), delta_ui))
+    )
+
+    note <- if (gb$graded_weight < gb$total_weight)
+      tags$p(style="font-size:.75rem;color:#aaa;margin:.4rem 0 0;",
+             sprintf("Overall shown as average of graded categories (%g%% of total weight).",
+                     gb$graded_weight))
+    else NULL
+
+    div(class = "rw-preview",
+      div(class = "rw-preview-title", "Grade impact preview"),
+      div(style = "overflow-x:auto;",
+        tags$table(class = "rw-preview-tbl",
+          tags$thead(header_row),
+          tags$tbody(c(data_rows, list(total_row)))
+        )
+      ),
+      note
+    )
+  })
+
+  output$account_grade_breakdown <- renderUI({
+    req(rv$authed)
+    gb <- compute_student_grade(rv$user_id)
+    if (!nrow(gb$cats)) return(NULL)
+
+    fmt_pct <- function(x) if (is.na(x)) span(class="grade-na", "—")
+                           else sprintf("%.1f%%", x)
+
+    overall_ui <- if (!is.na(gb$overall))
+      div(class="grade-overall-row",
+        div(class="grade-overall-tile",
+          div(class="grade-overall-val", sprintf("%.1f%%", gb$overall)),
+          div(class="grade-overall-lbl",
+              if (gb$graded_weight < gb$total_weight)
+                sprintf("Grade (%.4g%% of total weight graded)", gb$graded_weight)
+              else "Overall grade")
+        )
+      )
+    else
+      div(style="color:#aaa;font-size:.88rem;margin-bottom:.6rem;", "No grades on file yet.")
+
+    tbl_rows <- lapply(seq_len(nrow(gb$cats)), function(i) {
+      cr    <- gb$cats[i, ]
+      items <- gb$items[gb$items$cat_idx == i, , drop=FALSE]
+      cat_row <- tags$tr(class="cat-row",
+        tags$td(cr$category),
+        tags$td(sprintf("%.4g%%", cr$weight)),
+        tags$td(fmt_pct(cr$cat_avg)),
+        tags$td(if (!is.na(cr$contribution)) fmt_pct(cr$contribution) else span(class="grade-na","—"))
+      )
+      item_rows <- if (cr$weight > 0 && nrow(items) > 0 && any(!is.na(items$grade_pct)))
+        lapply(seq_len(nrow(items)), function(j) {
+          it   <- items[j, ]
+          score_txt <- if (!is.na(it$score) && !is.na(it$max_score))
+            sprintf("%.4g / %.4g", it$score, it$max_score)
+          else if (!is.na(it$grade_pct)) sprintf("%.1f%%", it$grade_pct)
+          else NA_character_
+          if (is.na(score_txt)) return(NULL)
+          tags$tr(class="item-row",
+            tags$td(it$item_name),
+            tags$td(""),
+            tags$td(fmt_pct(it$grade_pct)),
+            tags$td(score_txt)
+          )
+        })
+      else list()
+      c(list(cat_row), item_rows)
+    })
+
+    total_row <- tags$tr(class="total-row",
+      tags$td(tags$strong("Overall")),
+      tags$td(sprintf("%.4g%%", gb$total_weight)),
+      tags$td(if (!is.na(gb$overall)) tags$strong(sprintf("%.1f%%", gb$overall))
+              else span(class="grade-na","—")),
+      tags$td("")
+    )
+
+    div(class = "grade-section",
+      div(class = "sec-label", "Grade Breakdown"),
+      overall_ui,
+      div(style = "overflow-x:auto;",
+        tags$table(class = "grade-tbl",
+          tags$thead(tags$tr(
+            tags$th("Category / Assignment"),
+            tags$th("Weight"),
+            tags$th("Score"),
+            tags$th("Points")
+          )),
+          tags$tbody(c(unlist(tbl_rows, recursive=FALSE), list(total_row)))
+        )
+      )
+    )
   })
 
   output$spend_history <- renderUI({
@@ -2397,6 +2679,8 @@ server <- function(input, output, session) {
           div(class = "bal-tile-sub",   "after spending")
         )
       ),
+
+      uiOutput("account_grade_breakdown"),
 
       fluidRow(
         column(6,
