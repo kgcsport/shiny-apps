@@ -63,6 +63,12 @@ ANTHROPIC_MODELS <- c(
   "Claude Sonnet (latest)" = "claude-sonnet-4-5-20251001",
   "Claude Haiku (fast)"    = "claude-haiku-4-5-20251001"
 )
+OPENAI_MODELS <- c(
+  "GPT-4o"        = "gpt-4o",
+  "GPT-4o mini"   = "gpt-4o-mini",
+  "o1-mini"       = "o1-mini",
+  "o3-mini"       = "o3-mini"
+)
 OPENROUTER_MODELS <- c(
   "Claude Sonnet via OpenRouter"  = "anthropic/claude-sonnet-4-5",
   "GPT-4o via OpenRouter"         = "openai/gpt-4o",
@@ -97,6 +103,21 @@ call_anthropic <- function(api_key, prompt, model) {
   )
   if (httr::http_error(resp)) stop(httr::content(resp, "text", encoding = "UTF-8"))
   httr::content(resp, "parsed")$content[[1]]$text
+}
+
+call_openai <- function(api_key, prompt, model) {
+  resp <- httr::POST(
+    "https://api.openai.com/v1/chat/completions",
+    httr::add_headers(Authorization = paste("Bearer", api_key)),
+    body = list(model = model,
+                messages = list(
+                  list(role = "system", content = GEN_SYSTEM),
+                  list(role = "user",   content = prompt)
+                )),
+    encode = "json"
+  )
+  if (httr::http_error(resp)) stop(httr::content(resp, "text", encoding = "UTF-8"))
+  httr::content(resp, "parsed")$choices[[1]]$message$content
 }
 
 call_openrouter <- function(api_key, prompt, model) {
@@ -284,7 +305,9 @@ ui <- navbarPage(
               div(
                 tags$label(class = "control-label", "Provider"),
                 selectInput("gen_provider", NULL,
-                            c("Anthropic" = "anthropic", "OpenRouter" = "openrouter"),
+                            c("Anthropic"  = "anthropic",
+                              "OpenAI"     = "openai",
+                              "OpenRouter" = "openrouter"),
                             width = "100%")
               ),
               div(
@@ -441,8 +464,10 @@ Requirements:
 
   # ── Model selector ────────────────────────────────────────────────────────────
   output$gen_model_ui <- renderUI({
-    choices <- if (identical(input$gen_provider %||% "anthropic", "openrouter"))
-                 OPENROUTER_MODELS else ANTHROPIC_MODELS
+    choices <- switch(input$gen_provider %||% "anthropic",
+                      openai     = OPENAI_MODELS,
+                      openrouter = OPENROUTER_MODELS,
+                      ANTHROPIC_MODELS)
     selectInput("gen_model", NULL, choices, width = "100%")
   })
 
@@ -468,10 +493,10 @@ Requirements:
     result <- tryCatch({
       provider <- input$gen_provider %||% "anthropic"
       model    <- input$gen_model    %||% names(ANTHROPIC_MODELS)[1]
-      raw <- if (provider == "openrouter")
-               call_openrouter(key, rv$prompt, model)
-             else
-               call_anthropic(key, rv$prompt, model)
+      raw <- switch(provider,
+               openai     = call_openai(key, rv$prompt, model),
+               openrouter = call_openrouter(key, rv$prompt, model),
+               call_anthropic(key, rv$prompt, model))
       parse_sections(raw)
     }, error = function(e) {
       gen_status(paste0("error: ", conditionMessage(e)))
