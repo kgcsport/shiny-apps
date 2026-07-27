@@ -3,7 +3,7 @@
 # file validation, and CLI command construction.
 # Run: testthat::test_file("tests/unit/test-prompt-builder.R")
 
-here <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) "tests/unit")
+here <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) ".")
 source(file.path(here, "helpers.R"), local = TRUE)
 
 # ── parse_sections (from demo-kit-site/app.R) ─────────────────────────────────

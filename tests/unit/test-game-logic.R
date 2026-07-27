@@ -3,7 +3,7 @@
 # weighted draw, and security guards.
 # Run: testthat::test_file("tests/unit/test-game-logic.R")
 
-here <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) "tests/unit")
+here <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) ".")
 source(file.path(here, "helpers.R"), local = TRUE)
 
 # ── Default PD payoff matrix (matches app defaults) ──────────────────────────

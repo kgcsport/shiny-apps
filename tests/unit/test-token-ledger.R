@@ -5,7 +5,7 @@
 source(file.path(dirname(dirname(rstudioapi::getSourceEditorContext()$path %||% ".")),
                  "unit", "helpers.R"), local = TRUE)
 # Portable source path:
-here <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) "tests/unit")
+here <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) ".")
 source(file.path(here, "helpers.R"), local = TRUE)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
