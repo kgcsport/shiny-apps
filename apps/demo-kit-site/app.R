@@ -64,19 +64,20 @@ CATS   <- c("Public goods game", "Auction", "Policy calculator", "Prediction mar
 STACKS <- c("R Shiny + SQLite", "R Shiny + CSV", "Python Dash + SQLite", "Other")
 
 ANTHROPIC_MODELS <- c(
-  "Claude Sonnet (latest)" = "claude-sonnet-4-5-20251001",
-  "Claude Haiku (fast)"    = "claude-haiku-4-5-20251001"
+  "Claude Sonnet 5 (latest)"  = "claude-sonnet-5",
+  "Claude Opus 5 (powerful)"  = "claude-opus-5",
+  "Claude Haiku 4.5 (fast)"   = "claude-haiku-4-5-20251001"
 )
 OPENAI_MODELS <- c(
   "GPT-4o"        = "gpt-4o",
-  "GPT-4o mini"   = "gpt-4o-mini",
-  "o1-mini"       = "o1-mini",
-  "o3-mini"       = "o3-mini"
+  "GPT-4o mini"   = "gpt-4o-mini"
 )
 OPENROUTER_MODELS <- c(
-  "Claude Sonnet via OpenRouter"  = "anthropic/claude-sonnet-4-5",
-  "GPT-4o via OpenRouter"         = "openai/gpt-4o",
-  "Gemini 1.5 Pro via OpenRouter" = "google/gemini-pro-1.5"
+  "Claude Sonnet 5"           = "anthropic/claude-sonnet-5",
+  "GPT-4o"                    = "openai/gpt-4o",
+  "Gemini Flash 1.5"          = "google/gemini-flash-1.5",
+  "Llama 4 Maverick (cheap)"  = "meta-llama/llama-4-maverick",
+  "DeepSeek V4 Pro"           = "deepseek/deepseek-v4-pro"
 )
 
 GEN_SYSTEM <- "You are an expert R Shiny developer building instructor-owned classroom teaching tools.
@@ -300,11 +301,28 @@ ui <- navbarPage(
           div(class = "pb-label", "Generated prompt"),
           uiOutput("pb_output_ui"),
 
-          # ── AI code generation ──────────────────────────────────────────────
+          # ── Option A: Use your own subscription ─────────────────────────────
           div(class = "gen-box",
-            tags$h5("✨ Generate app code"),
+            tags$h5("Use your own subscription"),
             tags$p(class = "note",
-                   "Your API key is used only for this request and never stored."),
+                   "Copy a ready-to-run command for Claude Code, Codex CLI, or Gemini CLI."),
+            div(style = "display:flex; gap:.5rem; align-items:center; margin-bottom:.6rem; flex-wrap:wrap;",
+              selectInput("sub_tool", NULL,
+                          c("Claude Code"     = "claude_code",
+                            "Codex CLI"       = "codex",
+                            "Gemini CLI"      = "gemini",
+                            "Just the prompt" = "chat"),
+                          width = "160px"),
+              uiOutput("copy_cmd_ui", inline = TRUE)
+            ),
+            uiOutput("cmd_block_ui")
+          ),
+
+          # ── Option B: Generate with API key ─────────────────────────────────
+          div(class = "gen-box",
+            tags$h5("✨ Generate with an API key"),
+            tags$p(class = "note",
+                   "Your key is used only for this request and never stored."),
             div(class = "gen-api-row",
               div(
                 tags$label(class = "control-label", "Provider"),
@@ -320,8 +338,13 @@ ui <- navbarPage(
               ),
               div(
                 tags$label(class = "control-label", "API key"),
-                passwordInput("gen_key", NULL, placeholder = "sk-ant-… or or-…", width = "100%")
+                passwordInput("gen_key", NULL, placeholder = "sk-ant-… or sk-or-…", width = "100%")
               )
+            ),
+            div(style = "margin-bottom:.75rem;",
+              tags$label(class = "control-label", style = "font-size:.8rem;",
+                         "Email result to (optional — opens your mail client when done)"),
+              textInput("gen_email", NULL, placeholder = "you@example.com", width = "100%")
             ),
             actionButton("gen_code_btn", "Generate app code",
                          class = "btn btn-success",
@@ -365,6 +388,12 @@ ui <- navbarPage(
         ),
         textAreaInput("sub_desc", "Short description", rows = 3, width = "100%",
                       placeholder = "What does it demonstrate? What do students do?"),
+        fileInput("sub_files",
+                  "Attach app files (optional — app.R, data files, etc.)",
+                  multiple = TRUE,
+                  accept   = c(".R", ".r", ".csv", ".txt", ".rds", ".sqlite", ".md"),
+                  width    = "100%"),
+        uiOutput("sub_file_info"),
         actionButton("sub_submit", "Submit", class = "btn btn-primary"),
         uiOutput("sub_msg")
       )
@@ -466,6 +495,35 @@ Requirements:
                  });")
   })
 
+  # ── Subscription command (Option A) ──────────────────────────────────────────
+  output$copy_cmd_ui <- renderUI({
+    req(rv$prompt)
+    tags$button("Copy command", class = "btn btn-outline-secondary btn-sm",
+      onclick = "var t = document.getElementById('sub_cmd_blk');
+                 if (t) navigator.clipboard.writeText(t.innerText).then(function() {
+                   var b = event.target; b.textContent = 'Copied!';
+                   setTimeout(function() { b.textContent = 'Copy command'; }, 2000);
+                 });")
+  })
+
+  output$cmd_block_ui <- renderUI({
+    req(rv$prompt)
+    tool <- input$sub_tool %||% "claude_code"
+    p    <- trimws(rv$prompt)
+    sys  <- trimws(GEN_SYSTEM)
+    full <- paste0(sys, "\n\n", p)
+    safe <- function(s) gsub("'", "'\\''", s)  # escape single quotes for shell
+    cmd  <- switch(tool,
+      claude_code = paste0("claude -p $'\n", safe(full), "\n'"),
+      codex       = paste0("codex -q $'\n", safe(full), "\n'"),
+      gemini      = paste0("gemini -m gemini-2.0-flash $'\n", safe(p), "\n'"),
+      full
+    )
+    pre(id = "sub_cmd_blk", class = "pb-output",
+        style = "max-height:200px; font-size:.76rem; margin-top:.25rem;",
+        cmd)
+  })
+
   # ── Model selector ────────────────────────────────────────────────────────────
   output$gen_model_ui <- renderUI({
     choices <- switch(input$gen_provider %||% "anthropic",
@@ -522,11 +580,24 @@ Requirements:
 
   output$gen_download_ui <- renderUI({
     req(rv$generated)
+    g    <- rv$generated
+    mail <- trimws(input$gen_email %||% "")
+    email_btn <- if (nzchar(mail)) {
+      subj <- utils::URLencode("Your generated Shiny app", reserved = TRUE)
+      snip <- substr(utils::URLencode(
+        paste0("=== app.R ===\n\n", g$app_r, "\n\n=== install.R ===\n\n", g$install_r),
+        reserved = TRUE), 1, 1800)
+      href <- paste0("mailto:", mail, "?subject=", subj, "&body=", snip)
+      tags$a("Open in email client", href = href, class = "btn btn-outline-secondary btn-sm",
+             target = "_blank",
+             title  = "Opens your mail client with app code in the body (truncated for large apps — download ZIP for full code)")
+    } else NULL
     div(class = "gen-actions",
       downloadButton("dl_generated_zip", "Download app (ZIP)",
                      class = "btn btn-primary btn-sm"),
       downloadButton("dl_generated_r", "Download app.R only",
-                     class = "btn btn-outline-secondary btn-sm")
+                     class = "btn btn-outline-secondary btn-sm"),
+      email_btn
     )
   })
 
@@ -546,6 +617,27 @@ Requirements:
     filename = function() "app.R",
     content  = function(f) writeLines(rv$generated$app_r, f)
   )
+
+  # ── Uploaded file preview / validation ───────────────────────────────────────
+  output$sub_file_info <- renderUI({
+    f <- input$sub_files
+    if (is.null(f) || nrow(f) == 0) return(NULL)
+    items <- lapply(seq_len(nrow(f)), function(i) {
+      nm   <- f$name[i]
+      sz   <- f$size[i]
+      is_r <- grepl("\\.r$", nm, ignore.case = TRUE)
+      status <- if (is_r) {
+        res <- tryCatch(parse(f$datapath[i]), error = function(e) e)
+        if (inherits(res, "error"))
+          tags$span(style = "color:#c00;", " ✗ syntax error: ", res$message)
+        else
+          tags$span(style = "color:#2d6a4f;", " ✓ valid R")
+      } else NULL
+      tags$li(tags$code(nm), " (", format(sz, big.mark = ","), " bytes)", status)
+    })
+    div(style = "margin-bottom:.75rem;",
+      tags$ul(style = "font-size:.85rem; margin:.3rem 0;", items))
+  })
 
   # ── Gallery submission ────────────────────────────────────────────────────────
   observeEvent(input$sub_submit, {
