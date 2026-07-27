@@ -924,6 +924,13 @@ question_cost_for_index <- function(idx) {
   rule <- trimws(get_setting("public_good_question_cost_schedule", "11 + 2 * question^2"))
   sched <- parse_cost_schedule(rule)
   if (length(sched)) return(if (idx <= length(sched)) sched[idx] else tail(sched, 1))
+  # Validate before eval: replace known variable names then ensure only arithmetic chars remain.
+  # This prevents admin-configurable strings from executing arbitrary R code.
+  sanitized <- gsub("\\b(question|index|q|n)\\b", "0", rule)
+  if (!grepl("^[0-9 .+\\-*/^()[:space:]]+$", sanitized)) {
+    warning("question_cost_for_index: non-arithmetic rule rejected, using default: ", rule)
+    return(11 + 2 * idx^2)
+  }
   val <- tryCatch(
     eval(parse(text = rule), envir = list(question = idx, q = idx, index = idx, n = idx)),
     error = function(e) NA_real_

@@ -515,15 +515,16 @@ ui <- fluidPage(
   uiOutput("main_ui")
 )
 
+# One-time startup restore — runs when the R process starts, not per session.
+# Moved out of server() to prevent overwriting DB state on every new connection.
+tryCatch({
+  if (drive_enabled()) restore_db_from_drive()
+}, error = function(e) logf("Startup restore (auction db) failed:", conditionMessage(e)))
+
 server <- function(input, output, session) {
 
   onStop(function() logf("==== onStop() fired (R process stopping) ===="))
   session$onSessionEnded(function() logf("==== session ended (client disconnected) ===="))
-
-  # Restore auction DB snapshot if available (Drive optional)
-  tryCatch({
-    if (drive_enabled()) restore_db_from_drive()
-  }, error = function(e) logf("Startup restore (auction db) failed:", conditionMessage(e)))
 
   # Ensure schema exists
   init_db()

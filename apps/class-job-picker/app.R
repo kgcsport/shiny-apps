@@ -257,6 +257,8 @@ student_job_counts <- function(section_id, names) {
 weighted_draw <- function(pool, section_id, wt_A = 1, wt_B = 2) {
   cnts <- student_job_counts(section_id, pool)
   wts  <- 1 / (wt_A * cnts^wt_B + 1)
+  if (!length(wts) || sum(wts, na.rm = TRUE) == 0 || any(!is.finite(wts)))
+    wts <- rep(1, length(pool))
   sample(pool, 1, prob = wts / sum(wts))
 }
 
@@ -1200,14 +1202,16 @@ server <- function(input, output, session) {
     exclusions  <- compute_exclusions(input$section, roster, max_commits = max_c)
     rv$exclusions <- exclusions
 
-    res      <- draw_jobs_day(input$section, jobs, absentees = absentees,
-                              exclusions = exclusions,
-                              wt_A = input$wt_A %||% 1, wt_B = input$wt_B %||% 2)
-    rv$prev_draft     <- rv$draft
-    rv$prev_draft_res <- rv$draft_res
-    rv$draft_res      <- res
-    rv$draft          <- res$assignments
-    rv$jobs_committed <- FALSE
+    tryCatch({
+      res      <- draw_jobs_day(input$section, jobs, absentees = absentees,
+                                exclusions = exclusions,
+                                wt_A = input$wt_A %||% 1, wt_B = input$wt_B %||% 2)
+      rv$prev_draft     <- rv$draft
+      rv$prev_draft_res <- rv$draft_res
+      rv$draft_res      <- res
+      rv$draft          <- res$assignments
+      rv$jobs_committed <- FALSE
+    }, error = function(e) showNotification(e$message, type = "error"))
   })
 
   # --- Draw cold call ---
@@ -1477,12 +1481,14 @@ server <- function(input, output, session) {
       showNotification("Check the confirmation box first.", type = "warning")
       return()
     }
-    ok <- rebuild_state_from_log(input$section, upto_date = input$date)
-    if (ok) {
-      rv$jobs_committed <- FALSE
-      rv$draft <- NULL
-      showNotification("State rebuilt from log.", type = "message")
-    }
+    tryCatch({
+      ok <- rebuild_state_from_log(input$section, upto_date = input$date)
+      if (ok) {
+        rv$jobs_committed <- FALSE
+        rv$draft <- NULL
+        showNotification("State rebuilt from log.", type = "message")
+      }
+    }, error = function(e) showNotification(e$message, type = "error"))
   })
 
   # --- Admin: generate summary ---
