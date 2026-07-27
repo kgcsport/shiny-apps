@@ -56,8 +56,7 @@ logf <- function(...) {
 # -----------------------------------------------------------------------
 
 data_dir <- local({
-  root <- if (dir.exists("/srv/shiny-server")) "/srv/shiny-server/appdata"
-          else file.path(getwd(), "appdata")
+  root <- appdata_root(getwd())
   dir.create(root, recursive = TRUE, showWarnings = FALSE)
   root
 })
@@ -146,7 +145,13 @@ init_db()
 # Token / code helpers
 # -----------------------------------------------------------------------
 
-gen_room_code    <- function() paste(sample(c(LETTERS, 0:9), 5, replace = TRUE), collapse = "")
+gen_room_code    <- function() {
+  for (i in seq_len(10)) {
+    code <- paste(sample(c(LETTERS, 0:9), 5, replace = TRUE), collapse = "")
+    if (!nrow(db_query("SELECT 1 FROM rooms WHERE room_id=?;", list(code)))) return(code)
+  }
+  stop("Could not generate a unique room code after 10 attempts.")
+}
 gen_pin          <- function() sprintf("%04d", sample(1000:9999, 1))
 gen_player_token <- function() paste0("p_", substr(digest::digest(runif(1)), 1, 10))
 

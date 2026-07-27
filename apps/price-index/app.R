@@ -766,7 +766,8 @@ server <- function(input, output, session) {
       db_exec(
         "INSERT INTO basket_items(user_id, item_name, store, category, times_per_month)
          VALUES(?,?,?,?,?)
-         ON CONFLICT(user_id, item_name, store) DO NOTHING;",
+         ON CONFLICT(user_id, item_name, store) DO UPDATE
+           SET category=excluded.category, times_per_month=excluded.times_per_month;",
         list(uid, nm, st, cat, fr))
 
       iid <- db_query(
@@ -784,7 +785,7 @@ server <- function(input, output, session) {
       updateTextInput(session, "ni_store", value = "")
       updateSelectizeInput(session, "ni_source", selected = character(0))
       updateNumericInput(session, "ni_price", value = NA)
-      showNotification(paste0('"', nm, '" added.'), type = "message")
+      showNotification(paste0('"', nm, '" saved.'), type = "message")
       bump()
     }, error = function(e) showNotification(paste("Error:", e$message), type = "error"))
   })

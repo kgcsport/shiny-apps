@@ -64,10 +64,12 @@ server <- function(input, output, session) {
     df <- rv()
     i <- info$row
     j <- info$col + 1  # DT is 0-indexed; +1 because rownames=FALSE
+    if (i < 1 || i > nrow(df) || j < 1 || j > ncol(df)) return()
     v <- info$value
-
-    # coerce numeric columns
-    if (names(df)[j] %in% c("workers","output")) v <- suppressWarnings(as.numeric(v))
+    if (names(df)[j] %in% c("workers","output")) {
+      v <- suppressWarnings(as.numeric(v))
+      if (is.na(v)) { showNotification("Value must be numeric.", type = "error"); return() }
+    }
     df[i, j] <- v
     rv(df)
   })

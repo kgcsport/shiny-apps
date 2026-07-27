@@ -1068,9 +1068,14 @@ reweight_preview <- function(from, to, points) {
 }
 
 csv_download <- function(table_name, filename) {
+  allowed <- c("students", "weekly_rounds", "job_posts", "job_assignments",
+               "wage_bids", "application_bids", "participation_events",
+               "token_ledger", "public_goods", "extension_purchases",
+               "grade_reweight_requests")
   downloadHandler(
     filename = function() filename,
     content = function(file) {
+      if (!table_name %in% allowed) stop("Table not allowed for download: ", table_name)
       write.csv(db_query(sprintf("SELECT * FROM %s;", table_name)), file, row.names = FALSE)
     }
   )

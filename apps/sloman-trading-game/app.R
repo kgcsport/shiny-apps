@@ -249,9 +249,10 @@ server <- function(input, output, session) {
   )
 
   # ── Timer ──────────────────────────────────────────────────────────────
-  observeEvent(input$btn_start,   session$sendCustomMessage("timerStart",  as.integer(input$timer_min) * 60L))
+  timer_mins <- function() { m <- suppressWarnings(as.integer(input$timer_min)); if (is.na(m) || m < 1L) 5L else m }
+  observeEvent(input$btn_start,   session$sendCustomMessage("timerStart",  timer_mins() * 60L))
   observeEvent(input$btn_stop,    session$sendCustomMessage("timerStop",   ""))
-  observeEvent(input$btn_reset_t, session$sendCustomMessage("timerReset",  as.integer(input$timer_min)))
+  observeEvent(input$btn_reset_t, session$sendCustomMessage("timerReset",  timer_mins()))
   observeEvent(input$timer_done,  showNotification("⏰ Time is up!", type = "warning", duration = 10))
 
   # ── Helpers ─────────────────────────────────────────────────────────────
@@ -348,7 +349,7 @@ server <- function(input, output, session) {
 
   # ── Round badge ──────────────────────────────────────────────────────────
   output$round_badge <- renderUI(
-    div(class = "round-badge", sprintf("Round %d of 3", rv$round))
+    div(class = "round-badge", sprintf("Round %d", rv$round))
   )
 
   # ── Record round ──────────────────────────────────────────────────────────

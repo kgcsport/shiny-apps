@@ -36,7 +36,9 @@ ATC <- function(Q, F, a, b, c, d) {
 }
 
 AVC <- function(Q, F, a, b, c, d) {
-    VC(Q, F, a, b, c, d)/Q
+  out <- VC(Q, F, a, b, c, d) / Q
+  out[Q == 0] <- NA_real_
+  out
 }
 AFC <- function(Q, F, a, b, c, d) {
     ATC(Q, F, a, b, c, d) - AVC(Q, F, a, b, c, d)
