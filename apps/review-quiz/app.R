@@ -29,6 +29,7 @@ if (!length(shared_sqlite)) {
 }
 shared_sqlite <- shared_sqlite[[1]]
 source(shared_sqlite)
+source(file.path(dirname(shared_sqlite), "demo_login.R"))
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 logf   <- function(...) cat(format(Sys.time()), "-", paste(...), "\n", file = stderr())
@@ -299,7 +300,8 @@ login_ui <- function(msg = NULL) {
       textInput("login_user", "Username"),
       passwordInput("login_pw", "Password"),
       actionButton("login_btn", "Sign in", class = "btn-primary"),
-      tags$p(tags$small("Same login as the Price Index app."))
+      tags$p(tags$small("Same login as the Price Index app.")),
+      demo_login_ui
     )
   )
 }

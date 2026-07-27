@@ -30,6 +30,7 @@ if (!length(shared_sqlite)) {
 }
 shared_sqlite <- shared_sqlite[[1]]
 source(shared_sqlite)
+source(file.path(dirname(shared_sqlite), "demo_login.R"))
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 
@@ -673,7 +674,8 @@ login_ui <- fluidPage(
     passwordInput("login_pw", "Password"),
     actionButton("login_btn", "Sign in", class = "btn-primary"),
     tags$small(style = "color:#666;",
-      "Use your shared class login. Instructors must use an admin account.")
+      "Use your shared class login. Instructors must use an admin account."),
+    demo_login_ui
   )
 )
 

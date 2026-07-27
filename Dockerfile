@@ -1,5 +1,8 @@
 FROM ghcr.io/kgcsport/shiny-apps-base:latest
 
+# Test-only packages (not in base image)
+RUN R -e "install.packages('testthat', repos='https://cloud.r-project.org')"
+
 # Copy app code (fast layer — rebuilds whenever apps/ changes)
 RUN rm -rf /srv/shiny-server/*
 COPY apps/ /srv/shiny-server/

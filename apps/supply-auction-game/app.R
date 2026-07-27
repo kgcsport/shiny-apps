@@ -33,6 +33,7 @@ if (!length(shared_sqlite)) {
 }
 shared_sqlite <- shared_sqlite[[1]]
 source(shared_sqlite)
+source(file.path(dirname(shared_sqlite), "demo_login.R"))
 
 # ---- Debug/Crash visibility ----
 options(shiny.error = function() traceback(2))
@@ -474,7 +475,8 @@ login_ui <- function(msg = NULL) {
     if (!is.null(msg)) div(style="color:#b00; font-weight:600;", msg),
     textInput("login_user", "Username"),
     passwordInput("login_pw", "Password"),
-    actionButton("login_btn", "Sign in", class="btn-primary")
+    actionButton("login_btn", "Sign in", class="btn-primary"),
+    demo_login_ui
   )
 }
 

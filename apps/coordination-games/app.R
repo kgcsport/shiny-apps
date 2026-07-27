@@ -57,6 +57,7 @@ if (!length(shared_sqlite)) {
 }
 shared_sqlite <- shared_sqlite[[1]]
 source(shared_sqlite)
+source(file.path(dirname(shared_sqlite), "demo_login.R"))
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 
@@ -561,7 +562,8 @@ login_ui <- function(msg = NULL) {
     textInput("login_user", "Username"),
     passwordInput("login_pw", "Password"),
     actionButton("login_btn", "Sign in", class = "btn-primary"),
-    tags$small("Use the same username/password as the class job market.")
+    tags$small("Use the same username/password as the class job market."),
+    demo_login_ui
   )
 }
 

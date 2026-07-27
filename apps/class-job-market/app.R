@@ -31,6 +31,7 @@ if (!length(shared_sqlite)) {
 }
 shared_sqlite <- shared_sqlite[[1]]
 source(shared_sqlite)
+source(file.path(dirname(shared_sqlite), "demo_login.R"))
 
 HAS_BCRYPT <- requireNamespace("bcrypt", quietly = TRUE)
 bcrypt_check <- function(password, hash) {
@@ -1167,7 +1168,8 @@ login_ui <- fluidPage(
   wellPanel(
     textInput("login_user", "Username"),
     passwordInput("login_pw", "Password"),
-    actionButton("login_btn", "Sign in", class = "btn-primary")
+    actionButton("login_btn", "Sign in", class = "btn-primary"),
+    demo_login_ui
   )
 )
 

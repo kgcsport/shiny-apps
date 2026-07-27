@@ -30,6 +30,7 @@ if (!length(shared_sqlite)) {
 }
 shared_sqlite <- shared_sqlite[[1]]
 source(shared_sqlite)
+source(file.path(dirname(shared_sqlite), "demo_login.R"))
 
 future::plan(future::multisession, workers = 1)  # backup_async() runs off the main thread
 
@@ -477,7 +478,8 @@ login_ui <- function(msg = NULL) {
           textInput("login_user", "Username"),
           passwordInput("login_pw", "Password"),
           actionButton("login_btn", "Sign in", class = "btn-primary"),
-          tags$p(tags$small("Use the username and password from your instructor."))
+          tags$p(tags$small("Use the username and password from your instructor.")),
+          demo_login_ui
         )
       ),
       column(7, offset = 1,
