@@ -3,7 +3,10 @@
 
 suppressPackageStartupMessages(library(testthat))
 
-results <- test_dir("tests/unit", reporter = "progress", stop_on_failure = FALSE)
+args0    <- commandArgs(trailingOnly = FALSE)
+this_file <- sub("--file=", "", args0[grep("--file=", args0)])
+unit_dir  <- file.path(dirname(normalizePath(this_file, mustWork = FALSE)), "unit")
+results <- test_dir(unit_dir, reporter = "progress", stop_on_failure = FALSE)
 summary(results)
 
 if (any(as.data.frame(results)$failed > 0)) quit(status = 1)
