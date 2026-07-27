@@ -1175,12 +1175,20 @@ login_ui <- fluidPage(
 
 app_ui <- fluidPage(
   tags$head(tags$style(HTML(CSS))),
+  uiOutput("demo_banner"),
   titlePanel("Class Job Market"),
   uiOutput("role_banner"),
   uiOutput("main_tabs")
 )
 
 server <- function(input, output, session) {
+  dm       <- demo_server_init(session, DB_PATH)
+  db_exec  <- dm$db_exec
+  db_query <- dm$db_query
+  .is_demo <- dm$is_demo
+
+  output$demo_banner <- renderUI(demo_banner_ui(.is_demo, authed_admin()))
+
   SHINY_PASSWORD <- Sys.getenv("SHINY_PASSWORD", "")
   authed_admin <- reactiveVal(FALSE)
   student_user <- reactiveVal(NULL)

@@ -600,6 +600,7 @@ ui <- fluidPage(
     .shiny-notification-error   { background: #951829; }
     .shiny-notification-close   { color: rgba(255,255,255,0.8); font-size: 1.2rem; }
   "))),
+  uiOutput("demo_banner"),
   uiOutput("auth_gate"),
   conditionalPanel("output.authed",
     tabsetPanel(
@@ -611,9 +612,15 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
+  dm       <- demo_server_init(session, DB_PATH)
+  db_exec  <- dm$db_exec
+  db_query <- dm$db_query
+  .is_demo <- dm$is_demo
+
   rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE,
                        impersonate = FALSE, impersonate_uid = NULL, impersonate_name = NULL)
 
+  output$demo_banner <- renderUI(demo_banner_ui(.is_demo, rv$is_admin))
   output$authed <- reactive(rv$authed)
   outputOptions(output, "authed", suspendWhenHidden = FALSE)
   output$auth_gate <- renderUI({ if (!rv$authed) login_ui() else NULL })

@@ -507,10 +507,14 @@ login_ui <- function(msg = NULL) {
 }
 
 # ── UI ────────────────────────────────────────────────────────────────────────
-ui <- fluidPage(uiOutput("app_ui"))
+ui <- fluidPage(uiOutput("demo_banner"), uiOutput("app_ui"))
 
 # ── Server ────────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
+  dm       <- demo_server_init(session, DB_PATH)
+  db_exec  <- dm$db_exec
+  db_query <- dm$db_query
+  .is_demo <- dm$is_demo
 
   rv <- reactiveValues(
     authed          = FALSE,
@@ -525,6 +529,8 @@ server <- function(input, output, session) {
 
   categories_r <- reactive({ rv$tick; get_categories()    })
   sources_r    <- reactive({ rv$tick; get_price_sources() })
+
+  output$demo_banner <- renderUI(demo_banner_ui(.is_demo, rv$is_admin))
 
   # ── Auth ────────────────────────────────────────────────────────────────────
   output$app_ui <- renderUI({

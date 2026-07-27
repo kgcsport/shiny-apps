@@ -503,6 +503,7 @@ ui <- fluidPage(
     .ok { color: #0a0; font-weight: 600; }
     .bad { color: #b00; font-weight: 600; }
   "))),
+  uiOutput("demo_banner"),
   uiOutput("auth_gate"),
   uiOutput("main_ui")
 )
@@ -514,6 +515,51 @@ tryCatch({
 }, error = function(e) logf("Startup restore (auction db) failed:", conditionMessage(e)))
 
 server <- function(input, output, session) {
+  dm        <- demo_server_init(session, SHARED_DB_PATH, auction_prod = DB_PATH)
+  .is_demo  <- dm$is_demo
+  .auc_path <- dm$auc_path %||% DB_PATH
+
+  # Shadow global db_exec/db_query so auction writes go to the correct DB
+  .auc_conn <- NULL
+  .get_auc  <- function() {
+    if (is.null(.auc_conn) || !DBI::dbIsValid(.auc_conn)) {
+      dir.create(dirname(.auc_path), recursive = TRUE, showWarnings = FALSE)
+      .auc_conn <<- connect_sqlite(.auc_path)
+    }
+    .auc_conn
+  }
+  db_exec  <- function(sql, params = NULL) DBI::dbExecute(.get_auc(), sql, params = params)
+  db_query <- function(sql, params = NULL) DBI::dbGetQuery(.get_auc(), sql, params = params)
+  session$onSessionEnded(function() {
+    if (!is.null(.auc_conn) && DBI::dbIsValid(.auc_conn)) try(DBI::dbDisconnect(.auc_conn), silent = TRUE)
+    if (!is.null(dm)) try(NULL, silent = TRUE)  # dm's own cleanup runs via its own onSessionEnded
+  })
+  # Override read_shared_users to use the demo shared DB when in demo mode
+  read_shared_users <- local({
+    path <- dm$db_path
+    function() {
+      con <- connect_sqlite(path)
+      on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
+      cols <- DBI::dbGetQuery(con, "PRAGMA table_info(users);")
+      need <- c("user_id", "display_name", "pw_hash", "is_admin")
+      if (!all(need %in% cols$name))
+        stop("Shared users table missing columns: ", paste(setdiff(need, cols$name), collapse = ", "))
+      has_active <- "active" %in% cols$name
+      sel <- paste("SELECT user_id, display_name, pw_hash, is_admin",
+                   if (has_active) ", active" else "", "FROM users;")
+      u <- DBI::dbGetQuery(con, sel) |>
+        as.data.frame() |>
+        mutate(
+          user_id = trimws(as.character(user_id)),
+          display_name = as.character(display_name),
+          pw_hash = as.character(pw_hash),
+          is_admin = as.integer(is_admin),
+          active = if (has_active) ifelse(is.na(active), 1L, as.integer(active)) else 1L
+        )
+      logf("Users in shared DB: ", paste(u$user_id, collapse = ", "))
+      list(users = u, snapshot_when = format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
+    }
+  })
 
   onStop(function() logf("==== onStop() fired (R process stopping) ===="))
   session$onSessionEnded(function() logf("==== session ended (client disconnected) ===="))
@@ -521,7 +567,7 @@ server <- function(input, output, session) {
   # Ensure schema exists
   init_db()
 
-  # Load credentials from the shared finalqdata.sqlite
+  # Load credentials from the shared DB (demo or production depending on session)
   cred_cache <- reactiveValues(users = NULL, when = NA_character_)
   refresh_creds <- function() {
     out <- read_shared_users()
@@ -577,6 +623,8 @@ server <- function(input, output, session) {
     if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_name)) rv$impersonate_name else rv$name
   })
   is_admin <- reactive(rv$is_admin)
+
+  output$demo_banner <- renderUI(demo_banner_ui(.is_demo, is_admin()))
 
   # Main UI
   output$main_ui <- renderUI({

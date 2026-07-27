@@ -309,13 +309,20 @@ login_ui <- function(msg = NULL) {
 # ── UI ────────────────────────────────────────────────────────────────────────
 ui <- fluidPage(
   tags$head(tags$style(quiz_css)),
+  uiOutput("demo_banner"),
   uiOutput("app_ui")
 )
 
 # ── Server ────────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
+  dm       <- demo_server_init(session, DB_PATH)
+  db_exec  <- dm$db_exec
+  db_query <- dm$db_query
+  .is_demo <- dm$is_demo
 
   rv <- reactiveValues(authed = FALSE, user_id = NULL, name = NULL, alias = NULL, is_admin = FALSE, my_q = 1L)
+
+  output$demo_banner <- renderUI(demo_banner_ui(.is_demo, rv$is_admin))
 
   # ── Auth ────────────────────────────────────────────────────────────────────
   output$app_ui <- renderUI({

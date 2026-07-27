@@ -664,6 +664,7 @@ ui <- fluidPage(
     .bigbtn button { font-size: 16px; padding: 10px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
   "))),
+  uiOutput("demo_banner"),
   uiOutput("main_ui")
 )
 
@@ -896,6 +897,10 @@ app_ui <- tagList(
 # SERVER
 # ----------------------------
 server <- function(input, output, session) {
+  dm        <- demo_server_init(session, JOB_DB_PATH)
+  .is_demo  <- dm$is_demo
+  jdb_exec  <- dm$db_exec
+  jdb_query <- dm$db_query
 
   # --- Auth state ---
   authed           <- reactiveVal(FALSE)  # TRUE = admin
@@ -906,6 +911,8 @@ server <- function(input, output, session) {
   view_student <- reactive({
     impersonate_user() %||% student_user()
   })
+
+  output$demo_banner <- renderUI(demo_banner_ui(.is_demo, authed()))
 
   output$main_ui <- renderUI({
     if (authed()) {

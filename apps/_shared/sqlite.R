@@ -22,9 +22,8 @@ appdata_root <- function(default = getwd()) {
 # to the sibling class-job-market directory.
 # When DEMO_MODE=1 the "-demo" variant is used so sandbox data never touches
 # the production database.
-shared_db_path <- function() {
-  demo <- identical(Sys.getenv("DEMO_MODE"), "1")
-  db   <- if (demo) "class-job-market-demo.sqlite" else "class-job-market.sqlite"
+shared_db_path <- function(demo = identical(Sys.getenv("DEMO_MODE"), "1")) {
+  db <- if (demo) "class-job-market-demo.sqlite" else "class-job-market.sqlite"
   r <- Sys.getenv("CONNECT_CONTENT_DIR", "")
   if (nzchar(r)) return(file.path(r, "data", db))
   docker_appdata <- "/srv/shiny-server/appdata"
@@ -33,9 +32,8 @@ shared_db_path <- function() {
   file.path(dirname(normalizePath(getwd())), "class-job-market", "data", db)
 }
 
-auction_db_path <- function() {
-  demo <- identical(Sys.getenv("DEMO_MODE"), "1")
-  db   <- if (demo) "auction-demo.sqlite" else "auction.sqlite"
+auction_db_path <- function(demo = identical(Sys.getenv("DEMO_MODE"), "1")) {
+  db <- if (demo) "auction-demo.sqlite" else "auction.sqlite"
   r <- Sys.getenv("CONNECT_CONTENT_DIR", "")
   if (nzchar(r)) return(file.path(r, "data", db))
   docker_appdata <- "/srv/shiny-server/appdata"
