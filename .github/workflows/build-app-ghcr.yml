@@ -5,6 +5,8 @@ on:
     branches: [ main ]
     paths:
       - "apps/**"
+      - "tests/**"
+      - "scripts/**"
       - "shiny-server.conf"
       - "Dockerfile"
   workflow_dispatch:
