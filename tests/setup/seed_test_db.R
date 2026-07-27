@@ -30,22 +30,25 @@ suppressPackageStartupMessages({
 # ── Path resolution (mirrors shared_db_path() + app DATA_DIR logic) ──────────
 
 shared_db_path <- function() {
+  demo <- identical(Sys.getenv("DEMO_MODE"), "1")
+  db   <- if (demo) "class-job-market-demo.sqlite" else "class-job-market.sqlite"
   r <- Sys.getenv("CONNECT_CONTENT_DIR", "")
-  if (nzchar(r)) return(file.path(r, "data", "class-job-market.sqlite"))
+  if (nzchar(r)) return(file.path(r, "data", db))
   docker <- "/srv/shiny-server/appdata"
-  if (dir.exists(docker)) return(file.path(docker, "data", "class-job-market.sqlite"))
-  # Local dev: relative to this script → repo/apps/class-job-market/data/
+  if (dir.exists(docker)) return(file.path(docker, "data", db))
   script_dir <- tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) ".")
-  file.path(script_dir, "..", "..", "apps", "class-job-market", "data", "class-job-market.sqlite")
+  file.path(script_dir, "..", "..", "apps", "class-job-market", "data", db)
 }
 
 auction_db_path <- function() {
+  demo <- identical(Sys.getenv("DEMO_MODE"), "1")
+  db   <- if (demo) "auction-demo.sqlite" else "auction.sqlite"
   r <- Sys.getenv("CONNECT_CONTENT_DIR", "")
-  if (nzchar(r)) return(file.path(r, "data", "auction.sqlite"))
+  if (nzchar(r)) return(file.path(r, "data", db))
   docker <- "/srv/shiny-server/appdata"
-  if (dir.exists(docker)) return(file.path(docker, "data", "auction.sqlite"))
+  if (dir.exists(docker)) return(file.path(docker, "data", db))
   script_dir <- tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) ".")
-  file.path(script_dir, "..", "..", "apps", "supply-auction-game", "data", "auction.sqlite")
+  file.path(script_dir, "..", "..", "apps", "supply-auction-game", "data", db)
 }
 
 open_db <- function(path) {

@@ -36,3 +36,23 @@ services:
       # SHINY_SIMPLE_SCHEDULER: "15"
       # SHINY_APP_IDLE_TIMEOUT: "30"
       # SHINY_APP_SESSION_TIMEOUT: "0"
+
+  # Demo / sandbox instance — identical image, separate DB files (*-demo.sqlite).
+  # Quick-login panel is always visible (no ?demo=1 needed).
+  # Seed:  ./scripts/rtest.sh seed-demo
+  # Reset: ./scripts/rtest.sh reset-demo
+  shiny-demo:
+    image: ghcr.io/kgcsport/shiny-apps:latest
+    build: .
+    restart: always
+    ports:
+      - "${DEMO_PORT:-8080}:3838"
+    volumes:
+      - ./appdata:/srv/shiny-server/appdata
+      - ./shiny-logs:/var/log/shiny-server
+    env_file: .env
+    environment:
+      DEMO_MODE: "1"
+      SHINY_SIMPLE_SCHEDULER: "10"
+      SHINY_APP_IDLE_TIMEOUT: "120"
+      SHINY_APP_SESSION_TIMEOUT: "0"

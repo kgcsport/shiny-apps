@@ -15,11 +15,14 @@
 #   dan / eve            — section S02, password test123
 #   instructor           — admin, password admin123
 
+demo_mode <- identical(Sys.getenv("DEMO_MODE"), "1")
+
 demo_login_ui <- tagList(
   tags$div(
     id    = "demo-login-panel",
     style = paste0(
-      "display:none;margin-top:14px;padding:10px 12px;",
+      "display:", if (demo_mode) "block" else "none", ";",
+      "margin-top:14px;padding:10px 12px;",
       "background:#fff8e1;border:1px solid #ffe082;border-radius:4px;"
     ),
     tags$p(

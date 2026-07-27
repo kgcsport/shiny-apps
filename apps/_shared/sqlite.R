@@ -20,13 +20,28 @@ appdata_root <- function(default = getwd()) {
 # All other apps that need auth or participation tokens use this path.
 # On Connect/Shiny Server the env-var/fixed path wins; on local dev we walk up
 # to the sibling class-job-market directory.
+# When DEMO_MODE=1 the "-demo" variant is used so sandbox data never touches
+# the production database.
 shared_db_path <- function() {
+  demo <- identical(Sys.getenv("DEMO_MODE"), "1")
+  db   <- if (demo) "class-job-market-demo.sqlite" else "class-job-market.sqlite"
   r <- Sys.getenv("CONNECT_CONTENT_DIR", "")
-  if (nzchar(r)) return(file.path(r, "data", "class-job-market.sqlite"))
+  if (nzchar(r)) return(file.path(r, "data", db))
   docker_appdata <- "/srv/shiny-server/appdata"
   if (dir.exists(docker_appdata))
-    return(file.path(docker_appdata, "data", "class-job-market.sqlite"))
-  file.path(dirname(normalizePath(getwd())), "class-job-market", "data", "class-job-market.sqlite")
+    return(file.path(docker_appdata, "data", db))
+  file.path(dirname(normalizePath(getwd())), "class-job-market", "data", db)
+}
+
+auction_db_path <- function() {
+  demo <- identical(Sys.getenv("DEMO_MODE"), "1")
+  db   <- if (demo) "auction-demo.sqlite" else "auction.sqlite"
+  r <- Sys.getenv("CONNECT_CONTENT_DIR", "")
+  if (nzchar(r)) return(file.path(r, "data", db))
+  docker_appdata <- "/srv/shiny-server/appdata"
+  if (dir.exists(docker_appdata))
+    return(file.path(docker_appdata, "data", db))
+  file.path(dirname(normalizePath(getwd())), "supply-auction-game", "data", db)
 }
 
 harden_sqlite_connection <- function(con) {
