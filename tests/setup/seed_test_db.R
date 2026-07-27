@@ -58,7 +58,7 @@ open_db <- function(path) {
 }
 
 exec <- function(con, sql, p = list()) {
-  if (length(p)) DBI::dbExecute(con, sql, p) else DBI::dbExecute(con, sql)
+  invisible(if (length(p)) DBI::dbExecute(con, sql, p) else DBI::dbExecute(con, sql))
 }
 qry <- function(con, sql, p = list()) {
   if (length(p)) DBI::dbGetQuery(con, sql, p) else DBI::dbGetQuery(con, sql)
@@ -265,7 +265,7 @@ for (u in users) {
   exec(con,
     "INSERT OR REPLACE INTO users(user_id, display_name, is_admin, pw_hash, section, active)
      VALUES(?,?,?,?,?,1);",
-    list(u$id, u$name, u$admin, ph, if (is.na(u$section)) NULL else u$section))
+    list(u$id, u$name, u$admin, ph, if (is.na(u$section)) NA_character_ else u$section))
   if (u$admin == 0L) {
     exec(con,
       "INSERT OR REPLACE INTO students(user_id, display_name, section, active)
