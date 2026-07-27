@@ -246,9 +246,8 @@ restore_db_from_drive <- function(filename = latest_zip_name()) {
   TRUE
 }
 
-# ---- Credentials: read from the auction's own DB ----
-# Users table is managed locally; seed via the DB admin or a setup script.
-SHARED_DB_PATH <- AUCTION_DB_PATH
+# ---- Credentials: read from shared DB (class-job-market owns users table) ----
+SHARED_DB_PATH <- shared_db_path()
 
 read_shared_users <- function() {
   con <- connect_sqlite(SHARED_DB_PATH)

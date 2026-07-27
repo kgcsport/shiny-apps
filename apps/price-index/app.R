@@ -1,7 +1,7 @@
 try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R — Personal Price Index Activity
 # Students build a basket of goods and track prices across waves.
-# Auth: bcrypt + SQLite. Users (including passwords) live in finalqdata.sqlite.
+# Auth: bcrypt + SQLite. Users (including passwords) live in class-job-market.sqlite.
 # DB backed up to Google Drive on session end if FLEX_PASS_FOLDER_ID is set.
 
 library(shiny); library(DT); library(bcrypt); library(dplyr); library(tidyr)
@@ -50,7 +50,7 @@ app_data_dir <- local({
   }
 })
 
-DB_PATH <- file.path(app_data_dir(), "finalqdata.sqlite")
+DB_PATH <- shared_db_path()
 conn    <- NULL
 
 get_con <- function() {
@@ -171,7 +171,7 @@ backup_db <- function() {
   }
   if (!isTRUE(google_auth())) return(invisible(FALSE))
   try(DBI::dbExecute(get_con(), "PRAGMA wal_checkpoint(FULL);"), silent = TRUE)
-  zf <- file.path(tempdir(), sprintf("finalqdata_%s.zip", format(Sys.time(), "%Y%m%d_%H%M%S")))
+  zf <- file.path(tempdir(), sprintf("shared_db_%s.zip", format(Sys.time(), "%Y%m%d_%H%M%S")))
   utils::zip(zf, files = DB_PATH[file.exists(DB_PATH)], flags = "-j")
   googledrive::drive_upload(media = zf, path = googledrive::as_id(folder_id),
                             name = basename(zf), type = "application/zip", overwrite = FALSE)

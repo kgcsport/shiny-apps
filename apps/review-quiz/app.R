@@ -3,7 +3,7 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 # Real-time multiple-choice quiz for in-class review.
 # Instructor controls pacing (Admin tab); students answer on phones/laptops.
 # Questions: upload a CSV via Admin tab, or fall back to built-in defaults.
-# Auth: finalqdata.sqlite (bcrypt users table, shared with price-index).
+# Auth: class-job-market.sqlite (shared users table).
 
 library(shiny); library(DBI); library(RSQLite); library(bcrypt); library(dplyr); library(ggplot2); library(DT)
 
@@ -132,7 +132,7 @@ app_data_dir <- local({
   }
 })
 
-DB_PATH <- file.path(app_data_dir(), "finalqdata.sqlite")
+DB_PATH <- shared_db_path()
 conn    <- NULL
 get_con <- function() {
   if (is.null(conn) || !DBI::dbIsValid(conn)) {

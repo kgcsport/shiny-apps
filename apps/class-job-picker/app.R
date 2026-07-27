@@ -43,7 +43,7 @@ logf <- function(...) {
 # ----------------------------
 # SQLite CONNECTION
 # ----------------------------
-JOB_DB_PATH <- file.path(appdata_root(getwd()), "data", "class-job-picker.sqlite")
+JOB_DB_PATH <- shared_db_path()
 
 job_conn <- NULL
 get_job_con <- function() {
@@ -55,9 +55,28 @@ get_job_con <- function() {
 jdb_exec  <- function(sql, p = NULL) DBI::dbExecute(get_job_con(), sql, params = p)
 jdb_query <- function(sql, p = NULL) DBI::dbGetQuery(get_job_con(), sql, params = p)
 
-# Defensive: other apps own the users table, but make sure 'active' exists
-# regardless of which app starts first against a fresh DB.
+# Defensive schema init — class-job-market owns users/token_ledger; we only
+# create the tables this app owns and ensure any missing columns exist.
 try(jdb_exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1;"), silent = TRUE)
+
+jdb_exec("CREATE TABLE IF NOT EXISTS job_state (
+  section      TEXT NOT NULL,
+  job          TEXT NOT NULL,
+  cycle_id     INTEGER DEFAULT 0,
+  bag_json     TEXT    DEFAULT '[]',
+  last_updated TEXT    DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (section, job)
+);")
+
+jdb_exec("CREATE TABLE IF NOT EXISTS job_log (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  logged_date  TEXT,
+  section      TEXT,
+  job          TEXT,
+  display_name TEXT,
+  cycle_id     INTEGER,
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);")
 
 # ----------------------------
 # CONFIG (Google Sheets for summary write-back only)

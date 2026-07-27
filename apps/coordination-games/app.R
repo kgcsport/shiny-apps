@@ -1,35 +1,32 @@
 try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R -- Coordination Games (Bonus Pot + Price War / PD)
 # -------------------------------------------------------------------
-# Integrated with the shared Flex Pass SQLite DB + Login.
+# Uses the shared DB (class-job-market.sqlite) for auth and token accounting.
 # Section-aware: sections are stored in the `sections` DB table with
 # their enrolled class size. The bonus-pot denominator is either the
 # section's class size OR the submitter count -- no other values.
 #
-# Uses the SAME SQLite database and credential table as the flex-pass app:
-#   - users(user_id, display_name, pw_hash, is_admin)
-#   - settings(id=1, initial_fp, ...)
-#   - ledger(user_id, purpose, amount, meta, created_at, ...)
+# Shared tables (owned by class-job-market):
+#   - users(user_id, display_name, pw_hash, is_admin, section, active)
+#   - token_ledger(user_id, display_name, round_id, source_type, amount, earning, note)
 #
 # This app adds/manages:
-#   - sections                     <- NEW: section_id, section_name, class_size
 #   - olig_settings (singleton)   <- section + use_section_size flag
 #   - olig_rounds
 #   - olig_submissions             <- section-tagged
 #   - olig_payouts                 <- section-tagged
 #
 # Key behavior:
-# - Students log in with existing flex-pass credentials.
+# - Students log in with class-job-market credentials.
 # - Bonus Pot: students UPSERT their contribution while the round is open (no debit yet).
-#   When admin sets status → 'closed', contributions are DEBITED (purpose='oligopoly_contrib').
+#   When admin sets status → 'closed', contributions are DEBITED (source_type='coordination_contrib').
 #   On reveal each student in the section gets a CREDIT = pot / class_size
 #   (or / submitter count if class_size is 0/NULL), rounded to nearest 0.5.
 # - Price War (PD): no staking; payoff = pd_payoff_points * pd_scale, rounded 0.5.
 #   PD choices can also be changed while the round is open (upsert).
 #
 # Env vars:
-# - CONNECT_CONTENT_DIR (Posit) optional; otherwise uses getwd()
-# - DB_PATH_OVERRIDE (optional absolute/relative path to the shared sqlite db)
+# - CONNECT_CONTENT_DIR (Posit) optional; otherwise uses /srv/shiny-server/appdata or sibling dir
 #
 # Packages: shiny, DT, bcrypt, dplyr, DBI, RSQLite, stringr, ggplot2, tidyr
 # -------------------------------------------------------------------
@@ -70,25 +67,9 @@ logf <- function(...) {
 }
 
 # -------------------------
-# DB path
+# DB path — shared DB owned by class-job-market
 # -------------------------
-app_data_dir <- local({
-  dir <- NULL
-  function() {
-    if (!is.null(dir)) return(dir)
-    root <- appdata_root(getwd())
-    d <- file.path(root, "data")
-    if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
-    if (!dir.exists(d)) stop("Data directory not created: ", d)
-    tf <- file.path(d, ".writetest"); on.exit(unlink(tf, force = TRUE), add = TRUE)
-    if (!isTRUE(try(file.create(tf), silent = TRUE))) stop("Data directory not writable: ", d)
-    dir <<- normalizePath(d, winslash = "/", mustWork = TRUE)
-    dir
-  }
-})
-
-DATA_DIR <- app_data_dir()
-DB_PATH  <- Sys.getenv("DB_PATH_OVERRIDE", file.path(DATA_DIR, "finalqdata.sqlite"))
+DB_PATH <- shared_db_path()
 logf("DB_PATH:", DB_PATH)
 
 conn <- NULL
@@ -142,7 +123,7 @@ init_olig <- function() {
     db_exec("ALTER TABLE olig_settings ADD COLUMN class_size INTEGER;"),
     error = function(e) NULL
   )
-  # contrib_cap: max flex passes a student can wager per bonus round (0 = no cap)
+  # contrib_cap: max participation tokens a student can wager per bonus round (0 = no cap)
   tryCatch(
     db_exec("ALTER TABLE olig_settings ADD COLUMN contrib_cap REAL DEFAULT 0;"),
     error = function(e) NULL
@@ -387,25 +368,15 @@ backup_db_to_drive <- function() {
 }
 
 # -------------------------
-# Flex-pass accounting
+# Participation token accounting (token_ledger in class-job-market.sqlite)
 # -------------------------
-get_settings <- function() {
-  s <- db_query("SELECT * FROM settings WHERE id=1;")
-  if (!nrow(s)) stop("Missing settings row in shared DB.")
-  s
-}
-
-spent_total <- function(uid) {
-  x <- db_query("SELECT COALESCE(SUM(amount),0) AS s FROM ledger WHERE user_id=?;", list(uid))$s[1]
-  x <- suppressWarnings(as.numeric(x))
+token_balance <- function(uid) {
+  r <- db_query(
+    "SELECT COALESCE(SUM(amount),0) AS spendable_balance FROM token_ledger WHERE user_id=?;",
+    list(uid)
+  )
+  x <- suppressWarnings(as.numeric(r$spendable_balance[1]))
   if (!is.finite(x)) 0 else x
-}
-
-remaining_fp <- function(uid) {
-  s <- get_settings()
-  initial <- suppressWarnings(as.numeric(s$initial_fp[1]))
-  if (!is.finite(initial)) initial <- 5
-  pmax(0, initial - spent_total(uid))
 }
 
 # -------------------------
@@ -501,9 +472,12 @@ apply_payouts <- function(round, game) {
       pay <- payouts$payout[i]
       if (!is.finite(pay) || pay <= 0) next
       db_exec(
-        "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?, ?, 'grant', ?, ?);",
-        list(uid, as.integer(round), -pay,
-             sprintf("coordination_bonus_share round=%d section=%s denom=%s", round, sec, denom_source))
+        "INSERT INTO token_ledger(user_id, display_name, round_id, source_type, amount, earning, note)
+         SELECT user_id, display_name, ?, 'coordination_grant', ?, 1, ?
+         FROM users WHERE user_id=?;",
+        list(as.integer(round), pay,
+             sprintf("coordination_bonus_share round=%d section=%s denom=%s", round, sec, denom_source),
+             uid)
       )
       db_exec(
         "INSERT INTO olig_payouts(round, user_id, game, payout, meta, section) VALUES(?, ?, ?, ?, ?, ?);",
@@ -526,9 +500,12 @@ apply_payouts <- function(round, game) {
       p   <- pay$payout[i]
       if (!is.finite(p) || p <= 0) next
       db_exec(
-        "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?, ?, 'grant', ?, ?);",
-        list(uid, as.integer(round), -p,
-             sprintf("coordination_pd_payout round=%d section=%s", round, sec))
+        "INSERT INTO token_ledger(user_id, display_name, round_id, source_type, amount, earning, note)
+         SELECT user_id, display_name, ?, 'coordination_grant', ?, 1, ?
+         FROM users WHERE user_id=?;",
+        list(as.integer(round), p,
+             sprintf("coordination_pd_payout round=%d section=%s", round, sec),
+             uid)
       )
       db_exec(
         "INSERT INTO olig_payouts(round, user_id, game, payout, meta, section) VALUES(?, ?, ?, ?, ?, ?);",
@@ -557,14 +534,17 @@ debit_pending_contributions <- function(round, sec) {
     c_val <- suppressWarnings(as.numeric(subs$contribute[i]))
     if (!is.finite(c_val) || c_val <= 0) next
     already <- db_query(
-      "SELECT COUNT(*) n FROM ledger WHERE user_id=? AND round=? AND purpose='oligopoly_contrib';",
+      "SELECT COUNT(*) n FROM token_ledger WHERE user_id=? AND round_id=? AND source_type='coordination_contrib';",
       list(uid, as.integer(round))
     )$n[1]
     if (as.integer(already) > 0) next
     db_exec(
-      "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?, ?, 'oligopoly_contrib', ?, ?);",
-      list(uid, as.integer(round), c_val,
-           sprintf("coordination_bonus_contribution round=%d section=%s", as.integer(round), sec))
+      "INSERT INTO token_ledger(user_id, display_name, round_id, source_type, amount, earning, note)
+       SELECT user_id, display_name, ?, 'coordination_contrib', ?, 0, ?
+       FROM users WHERE user_id=?;",
+      list(as.integer(round), -c_val,
+           sprintf("coordination_bonus_contribution round=%d section=%s", as.integer(round), sec),
+           uid)
     )
     debited <- debited + 1L
   }
@@ -581,7 +561,7 @@ login_ui <- function(msg = NULL) {
     textInput("login_user", "Username"),
     passwordInput("login_pw", "Password"),
     actionButton("login_btn", "Sign in", class = "btn-primary"),
-    tags$small("Use the same username/password as the flex passes app.")
+    tags$small("Use the same username/password as the class job market.")
   )
 }
 
@@ -708,11 +688,11 @@ server <- function(input, output, session) {
     o   <- olig_poll()
     sec <- olig_section(o)
 
-    bal    <- remaining_fp(user_id())
+    bal    <- token_balance(user_id())
     game   <- as.character(o$current_game[1])
     status <- as.character(o$round_status[1])
 
-    game_lbl <- if (game == "pd") "Price War (High vs Low)" else "Bonus Pot (Contribute flex passes)"
+    game_lbl <- if (game == "pd") "Price War (High vs Low)" else "Bonus Pot (Contribute participation tokens)"
     tagList(
       h4(sprintf("Logged in as: %s (%s)", rv$user, rv$name)),
       if (isTRUE(rv$impersonate)) div(
@@ -739,7 +719,7 @@ server <- function(input, output, session) {
           {
             cap <- as.numeric(o$contrib_cap[1] %||% 0)
             eff_max <- if (is.finite(cap) && cap > 0) min(bal, cap) else bal
-            sliderInput("bonus_c", "Contribute flex passes",
+            sliderInput("bonus_c", "Contribute participation tokens",
                         min = 0, max = max(0, floor(eff_max * 2) / 2), value = 0, step = 0.5)
           },
           actionButton("submit_bonus", "Save contribution", class = "btn-primary"),
@@ -802,13 +782,13 @@ server <- function(input, output, session) {
     c_val <- round_to_half(as.numeric(input$bonus_c %||% 0))
     if (!is.finite(c_val) || c_val < 0) c_val <- 0
 
-    bal <- remaining_fp(user_id())
+    bal <- token_balance(user_id())
     if (c_val > bal + 1e-9) {
-      showNotification("Not enough flex passes.", type = "error"); return()
+      showNotification("Not enough participation tokens.", type = "error"); return()
     }
     cap <- as.numeric(o$contrib_cap[1] %||% 0)
     if (is.finite(cap) && cap > 0 && c_val > cap + 1e-9) {
-      showNotification(sprintf("Contribution exceeds the cap of %.1f flex passes.", cap), type = "error"); return()
+      showNotification(sprintf("Contribution exceeds the cap of %.1f participation tokens.", cap), type = "error"); return()
     }
 
     # Upsert -- no debit yet; debit happens when admin closes the round.
@@ -821,7 +801,7 @@ server <- function(input, output, session) {
            as.character(name()), c_val, sec)
     )
     showNotification(
-      sprintf("Saved %.1f flex pass(es) as your contribution. You can change it until the round closes.", c_val),
+      sprintf("Saved %.1f participation token(s) as your contribution. You can change it until the round closes.", c_val),
       type = "message"
     )
   })
@@ -838,7 +818,7 @@ server <- function(input, output, session) {
         c_saved <- suppressWarnings(as.numeric(my_sub$contribute[1]))
         c_saved <- if (is.finite(c_saved)) c_saved else 0
         return(tagList(
-          p(strong(sprintf("Saved contribution: %.1f flex pass(es).", c_saved))),
+          p(strong(sprintf("Saved contribution: %.1f participation token(s).", c_saved))),
           p(if (status == "open")
               "You can update your contribution until the round closes."
             else
@@ -879,7 +859,7 @@ server <- function(input, output, session) {
         h5("Your result"),
         p(sprintf("You chose: %s", as.character(me$action[1]))),
         p(sprintf("Pair payoff (points): %.2f", as.numeric(me$payoff[1]))),
-        p(sprintf("Payout to flex passes: %.2f (credited; rounded to nearest 0.5)", payout))
+        p(sprintf("Payout to participation tokens: %.2f (credited; rounded to nearest 0.5)", payout))
       )
     }
   })
@@ -922,7 +902,7 @@ server <- function(input, output, session) {
             if (nrow(shares) > 0) {
               tagList(
                 h4("Results"),
-                p(sprintf("Pot total: %.2f | %s | Each student receives: %.2f flex passes",
+                p(sprintf("Pot total: %.2f | %s | Each student receives: %.2f participation tokens",
                           shares$pot_total[1], shares$denom_source[1],
                           round_to_half(shares$share_each[1])))
               )
@@ -1005,7 +985,7 @@ server <- function(input, output, session) {
         " The ", tags$code("users"), " table does not have a ",
         tags$code("section"), " column. Add a ",
         tags$code("section TEXT"), " column to the ", tags$code("users"),
-        " table in ", tags$code("finalqdata.sqlite"),
+        " table in ", tags$code("class-job-market.sqlite"),
         " and assign each student to their section before using section-based class sizes."
       ),
 
@@ -1069,7 +1049,7 @@ server <- function(input, output, session) {
         tags$small(
           "Switch Active Section when moving between class sections. ",
           "Clearing removes submissions for the current section and reverses ",
-          "any bonus contribution debits from the ledger."
+          "any bonus contribution debits from the token ledger."
         )
       ),
 
@@ -1078,9 +1058,9 @@ server <- function(input, output, session) {
         h5("Game Parameters"),
         numericInput("adm_m", "Bonus multiplier m",
                      value = as.numeric(o$bonus_multiplier[1]), min = 1, step = 0.1),
-        numericInput("adm_contrib_cap", "Max flex passes students can wager (0 = no cap)",
+        numericInput("adm_contrib_cap", "Max participation tokens students can wager (0 = no cap)",
                      value = as.numeric(o$contrib_cap[1] %||% 0), min = 0, step = 0.5),
-        numericInput("adm_pd_scale", "PD scale (flex passes per payoff point)",
+        numericInput("adm_pd_scale", "PD scale (participation tokens per payoff point)",
                      value = as.numeric(o$pd_scale[1]), min = 0, step = 0.01),
         tags$hr(),
         h5("PD payoff matrix (A, B)"),
@@ -1107,9 +1087,9 @@ server <- function(input, output, session) {
       wellPanel(
         h5("Settlement"),
         p("Set status to REVEALED, then click below to post payouts for the current section."),
-        actionButton("adm_payout", "Apply payouts to ledger (one-time per section)", class = "btn-success"),
+        actionButton("adm_payout", "Apply payouts to token ledger (one-time per section)", class = "btn-success"),
         tags$small(
-          "Credits students in the current section via purpose='grant' (negative amount). ",
+          "Credits students in the current section via source_type='coordination_grant'. ",
           "Bonus contributions are debited when the round is closed."
         )
       ),
@@ -1180,8 +1160,8 @@ server <- function(input, output, session) {
     # Reverse contribution debits before removing submissions, so student
     # balances are restored as if the round never happened.
     n_debits <- db_exec(
-      "DELETE FROM ledger
-       WHERE round=? AND purpose='oligopoly_contrib'
+      "DELETE FROM token_ledger
+       WHERE round_id=? AND source_type='coordination_contrib'
          AND user_id IN (
            SELECT user_id FROM olig_submissions
            WHERE round=? AND (section=? OR section IS NULL)

@@ -16,6 +16,19 @@ appdata_root <- function(default = getwd()) {
   default
 }
 
+# Central shared DB — class-job-market owns the users and token_ledger tables.
+# All other apps that need auth or participation tokens use this path.
+# On Connect/Shiny Server the env-var/fixed path wins; on local dev we walk up
+# to the sibling class-job-market directory.
+shared_db_path <- function() {
+  r <- Sys.getenv("CONNECT_CONTENT_DIR", "")
+  if (nzchar(r)) return(file.path(r, "data", "class-job-market.sqlite"))
+  docker_appdata <- "/srv/shiny-server/appdata"
+  if (dir.exists(docker_appdata))
+    return(file.path(docker_appdata, "data", "class-job-market.sqlite"))
+  file.path(dirname(normalizePath(getwd())), "class-job-market", "data", "class-job-market.sqlite")
+}
+
 harden_sqlite_connection <- function(con) {
   # WAL allows concurrent readers while one writer is active. The busy timeout
   # makes brief write contention wait instead of immediately failing.
