@@ -246,18 +246,9 @@ restore_db_from_drive <- function(filename = latest_zip_name()) {
   TRUE
 }
 
-# ---- Credentials: read directly from the shared finalqdata.sqlite ----
-# Every other app in this monorepo (price-index, class-job-picker, etc.)
-# reads `users` straight from the shared DB instead of via a Drive backup.
-# Doing the same here removes the hard Google Drive dependency for login
-# and the staleness lag of waiting on the next snapshot.
-SHARED_DB_PATH <- local({
-  root <- appdata_root({
-    # local dev: walk up to sibling app directory
-    file.path(dirname(normalizePath(getwd())), "flex_pass_actions")
-  })
-  file.path(root, "data", "finalqdata.sqlite")
-})
+# ---- Credentials: read from the auction's own DB ----
+# Users table is managed locally; seed via the DB admin or a setup script.
+SHARED_DB_PATH <- AUCTION_DB_PATH
 
 read_shared_users <- function() {
   con <- connect_sqlite(SHARED_DB_PATH)

@@ -1,9 +1,8 @@
 try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R — Personal Price Index Activity
 # Students build a basket of goods and track prices across waves.
-# Auth: bcrypt + SQLite — shares finalqdata.sqlite with flex_pass_actions.
-# Users (including passwords) come from that shared DB; no separate credentials file needed.
-# DB backed up to Google Drive on session end (same FLEX_PASS_FOLDER_ID as flex_pass_actions).
+# Auth: bcrypt + SQLite. Users (including passwords) live in finalqdata.sqlite.
+# DB backed up to Google Drive on session end if FLEX_PASS_FOLDER_ID is set.
 
 library(shiny); library(DT); library(bcrypt); library(dplyr); library(tidyr)
 library(tibble); library(forcats); library(DBI); library(RSQLite); library(ggplot2)
@@ -51,7 +50,6 @@ app_data_dir <- local({
   }
 })
 
-# Shared DB with flex_pass_actions — same CONNECT_CONTENT_DIR resolution
 DB_PATH <- file.path(app_data_dir(), "finalqdata.sqlite")
 conn    <- NULL
 
@@ -65,8 +63,7 @@ db_exec  <- function(sql, params = NULL) DBI::dbExecute(get_con(), sql, params =
 db_query <- function(sql, params = NULL) DBI::dbGetQuery(get_con(), sql, params = params)
 
 init_db <- function() {
-  # users table is owned by flex_pass_actions — do not create or seed here.
-  # Ensure optional columns exist in case this runs before flex_pass_actions does.
+  # users table is seeded externally; ensure optional columns exist.
   try(db_exec("ALTER TABLE users ADD COLUMN pw_hash  TEXT;"), silent = TRUE)
   try(db_exec("ALTER TABLE users ADD COLUMN section  TEXT;"), silent = TRUE)
   try(db_exec("ALTER TABLE users ADD COLUMN active   INTEGER DEFAULT 1;"), silent = TRUE)
@@ -167,7 +164,6 @@ google_auth <- function() {
 }
 
 backup_db <- function() {
-  # Uses the same folder as flex_pass_actions so all DB backups land together.
   folder_id <- Sys.getenv("FLEX_PASS_FOLDER_ID", "")
   if (!nzchar(folder_id)) {
     logf("backup_db(): FLEX_PASS_FOLDER_ID not set — skipping backup.")

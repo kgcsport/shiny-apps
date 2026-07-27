@@ -59,10 +59,7 @@ logf <- function(...) {
   flush(stderr())
 }
 
-DB_PATH <- local({
-  root <- appdata_root(file.path(dirname(normalizePath(getwd())), "flex_pass_actions"))
-  file.path(root, "data", "finalqdata.sqlite")
-})
+DB_PATH <- file.path(appdata_root(getwd()), "data", "class-job-market.sqlite")
 
 conn <- NULL
 get_con <- function() {

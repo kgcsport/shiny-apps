@@ -1,6 +1,6 @@
 try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TRUE)
 # app.R — class-job-picker
-# Data layer migrated from Google Sheets → shared SQLite (finalqdata.sqlite)
+# Data layer: SQLite (class-job-picker.sqlite)
 # Google Sheets auth is still used for the summary write-back only.
 #
 # shiny::runApp(appDir = "C:/Users/kgcsp/OneDrive/Documents/Education/Teaching/shiny-apps/apps/class-job-picker", port = 3838, host = "127.0.0.1")
@@ -41,15 +41,9 @@ logf <- function(...) {
 }
 
 # ----------------------------
-# SQLite CONNECTION (shared with flex_pass_actions)
+# SQLite CONNECTION
 # ----------------------------
-JOB_DB_PATH <- local({
-  root <- appdata_root({
-    # local dev: walk up to sibling app directory
-    file.path(dirname(normalizePath(getwd())), "flex_pass_actions")
-  })
-  file.path(root, "data", "finalqdata.sqlite")
-})
+JOB_DB_PATH <- file.path(appdata_root(getwd()), "data", "class-job-picker.sqlite")
 
 job_conn <- NULL
 get_job_con <- function() {

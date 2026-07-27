@@ -3,7 +3,7 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 # Real-time multiple-choice quiz for in-class review.
 # Instructor controls pacing (Admin tab); students answer on phones/laptops.
 # Questions: upload a CSV via Admin tab, or fall back to built-in defaults.
-# Auth: shared finalqdata.sqlite (same users as price-index app).
+# Auth: finalqdata.sqlite (bcrypt users table, shared with price-index).
 
 library(shiny); library(DBI); library(RSQLite); library(bcrypt); library(dplyr); library(ggplot2); library(DT)
 
@@ -804,41 +804,6 @@ server <- function(input, output, session) {
       uiOutput("submissions_review_ui"),
 
       tags$hr(),
-      tags$details(
-        tags$summary(
-          style = "cursor:pointer; list-style:none; user-select:none; padding:6px 0; color:#555; font-size:0.9em;",
-          "\u25B6  Award flex passes by quiz rank (click to expand)"
-        ),
-        div(style = "padding:10px 0 4px;",
-          tags$p(style = "font-size:0.85em; color:#555;",
-                 "Credits are written directly to the flex pass game ledger. Ties share the same rank."),
-          wellPanel(style = "padding:12px;",
-            tags$p(tags$strong("Passes per rank")),
-            fluidRow(
-              column(3, numericInput("fp_rank1",         "1st place",     value = 3,   min = 0, step = 0.5)),
-              column(3, numericInput("fp_rank2",         "2nd place",     value = 2,   min = 0, step = 0.5)),
-              column(3, numericInput("fp_rank3",         "3rd place",     value = 1,   min = 0, step = 0.5)),
-              column(3, numericInput("fp_participation", "All others",    value = 0.5, min = 0, step = 0.5))
-            ),
-            tags$p(tags$strong("Students to include")),
-            tags$p(style = "font-size:0.82em; color:#888;",
-                   "Default: all students. Deselect to award within one section only."),
-            {
-              all_students <- tryCatch(
-                db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 ORDER BY display_name;"),
-                error = function(e) data.frame(user_id=character(), display_name=character())
-              )
-              selectInput("fp_students", NULL,
-                choices  = setNames(all_students$user_id, all_students$display_name),
-                selected = all_students$user_id,
-                multiple = TRUE, width = "100%")
-            },
-            uiOutput("fp_award_preview_ui"),
-            tags$br(),
-            actionButton("fp_award_btn", "Award passes", class = "btn-success btn-sm")
-          )
-        )
-      )
     )
   })
 
@@ -1091,94 +1056,6 @@ server <- function(input, output, session) {
     showNotification("DB state reinitialized — quiz is back at Q1.", type = "message")
   })
 
-  # ── Flex-pass award by rank ───────────────────────────────────────────────────
-  fp_award_table <- reactive({
-    sc <- get_scores(questions_r())
-    if (!nrow(sc)) return(NULL)
-    # filter to selected students
-    selected <- input$fp_students
-    if (length(selected)) sc <- sc[sc$user_id %in% selected, , drop = FALSE]
-    if (!nrow(sc)) return(NULL)
-    # dense rank within this subset: ties share the lowest rank number
-    sc$rank <- dplyr::min_rank(dplyr::desc(sc$score))
-    sc$fp_award <- dplyr::case_when(
-      sc$rank == 1 ~ as.numeric(input$fp_rank1         %||% 3),
-      sc$rank == 2 ~ as.numeric(input$fp_rank2         %||% 2),
-      sc$rank == 3 ~ as.numeric(input$fp_rank3         %||% 1),
-      TRUE         ~ as.numeric(input$fp_participation %||% 0.5)
-    )
-    sc[, c("rank", "display_name", "score", "fp_award", "user_id")]
-  })
-
-  output$fp_award_preview_ui <- renderUI({
-    req(rv$is_admin)
-    tbl <- fp_award_table()
-    if (is.null(tbl) || !nrow(tbl))
-      return(tags$p(style = "color:#888; font-size:0.85em;", "No scores yet — run the quiz first."))
-
-    medal <- c("1" = "\U1F947", "2" = "\U1F948", "3" = "\U1F949")
-    rows <- lapply(seq_len(nrow(tbl)), function(i) {
-      r <- tbl[i, ]
-      icon <- medal[[as.character(r$rank)]] %||% ""
-      tags$tr(
-        tags$td(style = "padding:4px 8px;", paste(icon, r$rank)),
-        tags$td(style = "padding:4px 8px;", r$display_name),
-        tags$td(style = "padding:4px 8px; text-align:right;", r$score),
-        tags$td(style = "padding:4px 8px; text-align:right; font-weight:600; color:#2d6a4f;",
-                sprintf("+%.2g fp", r$fp_award))
-      )
-    })
-
-    tagList(
-      tags$p(style = "font-size:0.85em; color:#555; margin:10px 0 4px;", "Preview:"),
-      tags$table(class = "table table-condensed table-bordered",
-        style = "width:auto; font-size:0.88em; margin-bottom:0;",
-        tags$thead(tags$tr(
-          tags$th("Rank"), tags$th("Student"), tags$th("Correct"), tags$th("Award")
-        )),
-        tags$tbody(.list = rows)
-      )
-    )
-  })
-
-  observeEvent(input$fp_award_btn, {
-    req(rv$is_admin)
-    tbl <- isolate(fp_award_table())
-    if (is.null(tbl) || !nrow(tbl)) {
-      showNotification("No scores to award.", type = "warning"); return()
-    }
-    showModal(modalDialog(
-      title = "Award flex passes?",
-      tags$p("This will credit each student's flex pass balance in the game."),
-      tags$p(style = "color:#888; font-size:0.85em;",
-             "Students with 0 fp award are skipped. This cannot be undone."),
-      footer = tagList(
-        modalButton("Cancel"),
-        actionButton("confirm_fp_award", "Yes, award passes", class = "btn-success")
-      )
-    ))
-  })
-
-  observeEvent(input$confirm_fp_award, {
-    req(rv$is_admin)
-    tbl <- isolate(fp_award_table())
-    req(!is.null(tbl) && nrow(tbl))
-    awarded <- 0L
-    for (i in seq_len(nrow(tbl))) {
-      r <- tbl[i, ]
-      if (r$fp_award <= 0) next
-      tryCatch(
-        db_exec(
-          "INSERT INTO ledger(user_id, round, purpose, amount, meta) VALUES(?,?,?,?,?);",
-          list(r$user_id, 0L, "grant", -as.numeric(r$fp_award),
-               sprintf("review-quiz rank %d (%g correct)", r$rank, r$score))),
-        error = function(e) logf("ledger insert error:", e$message)
-      )
-      awarded <- awarded + 1L
-    }
-    removeModal()
-    showNotification(sprintf("Flex passes awarded to %d student(s).", awarded), type = "message")
-  })
 
   output$dl_responses <- downloadHandler(
     filename = function() paste0("quiz_responses_", Sys.Date(), ".csv"),
