@@ -189,8 +189,8 @@ server <- function(input, output, session) {
     e <- eq()
 
     cat("Parameters\n")
-    cat(sprintf("  Demand: P(Q) = A - BQ  with  A = %.2f,  B = %.6f (log10 B = %.2f)\n",
-                p$A, p$B, input$logB))
+    cat(sprintf("  Demand: P(Q) = A - BQ  with  A = %.2f,  B = %.6f (log10|B| = %.2f)\n",
+                p$A, p$B, log10(abs(p$B))))
     cat(sprintf("  Costs:  Fixed F = %.2f;  MC(Q)= a + bQ + cQ^2 + dQ^3 with a=%.2f, b=%.2f, c=%.3f, d=%.3f\n\n",
                 p$F, p$a, p$b, p$c, p$d))
 

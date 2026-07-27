@@ -116,7 +116,8 @@ server <- function(input, output, session) {
         final_name <- paste0(final_name, "-", substr(token, 1, 4))
       }
       rv$roster <- bind_rows(rv$roster, tibble(token = token, name = final_name))
-      rv$balances <- bind_rows(rv$balances, tibble(token = token, name = final_name, balance = input$initial_income))
+      init_bal <- isolate(input$initial_income)
+      rv$balances <- bind_rows(rv$balances, tibble(token = token, name = final_name, balance = if (!is.null(init_bal) && !is.na(init_bal)) init_bal else 10))
     }
     TRUE
   }
@@ -351,6 +352,10 @@ server <- function(input, output, session) {
 
   observeEvent(input$admin_login, {
     req(input$admin_pass)
+    if (!nzchar(ADMIN_PASSWORD)) {
+      showNotification("Admin login is not configured on this server.", type = "error")
+      return()
+    }
     if (identical(input$admin_pass, ADMIN_PASSWORD)) {
       rv$admin_authed <- TRUE
       showNotification("Admin access granted.", type = "message")

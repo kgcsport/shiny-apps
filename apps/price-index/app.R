@@ -32,7 +32,7 @@ if (!length(shared_sqlite)) {
 shared_sqlite <- shared_sqlite[[1]]
 source(shared_sqlite)
 
-future::plan(future::sequential)  # backup_async() is fire-and-forget; no workers needed
+future::plan(future::multisession, workers = 1)  # backup_async() runs off the main thread
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 logf   <- function(...) cat(format(Sys.time()), "-", paste(...), "\n", file = stderr())
@@ -790,11 +790,14 @@ server <- function(input, output, session) {
   })
 
   # ── Price-update and item edit/delete — dynamic observers ───────────────────
-  # Observers are cheap and idempotent; re-register on items change is fine here.
+  # Track which item IDs have been observed to avoid accumulating duplicate observers.
+  observed_item_ids <- character(0)
   observeEvent(my_items(), {
-    items <- my_items()
-    uid   <- isolate(rv$user_id)
-    lapply(items$item_id, function(iid) {
+    items   <- my_items()
+    uid     <- isolate(rv$user_id)
+    new_ids <- setdiff(items$item_id, observed_item_ids)
+    observed_item_ids <<- c(observed_item_ids, new_ids)
+    lapply(new_ids, function(iid) {
       # Save price for whatever wave the student has selected
       btn_id <- paste0("upd_btn_", iid)
       observeEvent(input[[btn_id]], ignoreInit = TRUE, {

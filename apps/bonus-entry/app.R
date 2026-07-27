@@ -65,6 +65,10 @@ server <- function(input, output, session) {
   
   observeEvent(input$admin_auth, {
     passphrase <- Sys.getenv("SHINY_PASSWORD")
+    if (!nzchar(passphrase)) {
+      showNotification("Admin login is not configured on this server.", type = "error")
+      return()
+    }
     if (!is.null(input$admin_pass) && identical(input$admin_pass, passphrase)) {
       admin_logged_in(TRUE)
       showNotification("Admin logged in. Download enabled.", type = "message")

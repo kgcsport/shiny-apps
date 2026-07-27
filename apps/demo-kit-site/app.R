@@ -6,8 +6,12 @@ library(RSQLite)
 `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 && !is.na(a[1])) a else b
 
 # ── Shared SQLite ─────────────────────────────────────────────────────────────
-source(Filter(file.exists, c("../_shared/sqlite.R", "_shared/sqlite.R",
-                              "/srv/shiny-server/_shared/sqlite.R"))[[1]])
+local({
+  candidates <- Filter(file.exists, c("../_shared/sqlite.R", "_shared/sqlite.R",
+                                       "/srv/shiny-server/_shared/sqlite.R"))
+  if (!length(candidates)) stop("Cannot find shared SQLite helper. Tried paths relative to: ", getwd())
+  source(candidates[[1]])
+})
 
 DB_PATH <- file.path(appdata_root(getwd()), "data", "demo_kit.sqlite")
 .con <- NULL
