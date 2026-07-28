@@ -168,7 +168,11 @@ demo_server_init <- function(session, prod_db_path, auction_prod = NULL) {
     is_demo  = is_demo,
     db_path  = sess_db,
     auc_path = auc_db,
-    db_exec  = function(sql, params = NULL) DBI::dbExecute(get_lcon(), sql, params = params),
-    db_query = function(sql, params = NULL) DBI::dbGetQuery(get_lcon(), sql, params = params)
+    db_exec  = function(sql, params = NULL)
+      tryCatch(DBI::dbExecute(get_lcon(), sql, params = params),
+               error = function(e) { message("demo db_exec: ", e$message); -1L }),
+    db_query = function(sql, params = NULL)
+      tryCatch(DBI::dbGetQuery(get_lcon(), sql, params = params),
+               error = function(e) { message("demo db_query: ", e$message); data.frame() })
   )
 }
