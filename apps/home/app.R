@@ -4,7 +4,7 @@ library(shiny)
 ui <- fluidPage(
   tags$head(
     tags$title("Classroom Economy"),
-    tags$meta(`http-equiv` = "refresh", content = "0; url=/arcade/"),
+    tags$meta(`http-equiv` = "refresh", content = "0; url=/class-job-market/"),
     tags$style(HTML("
       body { font-family: system-ui, -apple-system, sans-serif;
              background: #f4f5f7; display: flex; align-items: center;
@@ -15,7 +15,7 @@ ui <- fluidPage(
   ),
   div(class = "redir-box",
     tags$p("Redirecting to the Classroom Economy app…"),
-    tags$p(tags$a(href = "/arcade/", "Click here if you are not redirected automatically."))
+    tags$p(tags$a(href = "/class-job-market/", "Click here if you are not redirected automatically."))
   )
 )
 
