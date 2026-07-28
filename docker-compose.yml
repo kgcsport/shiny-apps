@@ -1,10 +1,19 @@
 services:
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - shiny
+      - demo-kit
+
   shiny:
     image: ghcr.io/kgcsport/shiny-apps:latest
     build: .
     restart: always
-    ports:
-      - "80:3838"
     volumes:
       # Optional: only needed if you want Google Drive backups/Sheets sync
       # via a credentials *file*. Simpler alternative: set
