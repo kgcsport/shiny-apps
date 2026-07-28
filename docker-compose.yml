@@ -73,7 +73,7 @@ services:
   # Optional:           DEMO_KIT_DAILY_LIMIT (default 25), DEMO_KIT_EDU_ONLY (default true)
   # Note: Anthropic API key is entered by each user in the UI — not stored on server.
   demo-kit:
-    build: apps/demo-kit-site
+    image: ghcr.io/kgcsport/demo-kit:latest
     restart: always
     ports:
       - "${DEMO_KIT_PORT:-3000}:3000"
