@@ -2081,7 +2081,8 @@ server <- function(input, output, session) {
         "Job setup" = "job_setup",
         "Extensions" = "extensions",
         "Public goods" = "public_goods",
-        "Grade reweighting" = "grade_reweighting"
+        "Grade reweighting" = "grade_reweighting",
+        "Demo / testing" = "demo"
       ), selected = panel)
     )
     if (!identical(panel, "general")) {
@@ -2092,6 +2093,7 @@ server <- function(input, output, session) {
           extensions = uiOutput("extensions_ui"),
           public_goods = uiOutput("public_goods_ui"),
           grade_reweighting = uiOutput("reweight_admin_ui"),
+          demo = div(class = "panel", demo_settings_panel(.is_demo)),
           div(class = "panel", "Choose a settings panel.")
         )
       ))
