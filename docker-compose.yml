@@ -1,10 +1,19 @@
 services:
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - shiny
+      - demo-kit
+
   shiny:
     image: ghcr.io/kgcsport/shiny-apps:latest
     build: .
     restart: always
-    ports:
-      - "80:3838"
     volumes:
       # Optional: only needed if you want Google Drive backups/Sheets sync
       # via a credentials *file*. Simpler alternative: set
@@ -56,3 +65,26 @@ services:
       SHINY_SIMPLE_SCHEDULER: "10"
       SHINY_APP_IDLE_TIMEOUT: "120"
       SHINY_APP_SESSION_TIMEOUT: "0"
+
+  # Classroom Game Builder — Node.js app with Google OAuth, Anthropic proxy, WebSocket multiplayer.
+  # Access at http://yourserver:3000  (or put behind nginx on a subdomain).
+  # Required .env vars: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+  #                     DEMO_KIT_BASE_URL (e.g. https://gamebuilder.kylecoombs.com)
+  # Optional:           DEMO_KIT_DAILY_LIMIT (default 25), DEMO_KIT_EDU_ONLY (default true)
+  # Note: Anthropic API key is entered by each user in the UI — not stored on server.
+  demo-kit:
+    build: apps/demo-kit-site
+    restart: always
+    ports:
+      - "${DEMO_KIT_PORT:-3000}:3000"
+    volumes:
+      - ./appdata/data:/app/data
+    env_file: .env
+    environment:
+      PORT: "3000"
+      DATA_DIR: /app/data
+      DB_PATH: /app/data/demo_kit.sqlite
+      BASE_URL: ${DEMO_KIT_BASE_URL:-http://localhost:3000}
+      ANTHROPIC_MODEL: ${DEMO_KIT_MODEL:-claude-sonnet-5}
+      DEMO_KIT_DAILY_LIMIT: ${DEMO_KIT_DAILY_LIMIT:-25}
+      DEMO_KIT_EDU_ONLY: ${DEMO_KIT_EDU_ONLY:-true}

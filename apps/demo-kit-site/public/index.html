@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Classroom Game Builder</title>
+<style>
+/* ── Tokens ── */
+:root {
+  --bg:       #f0f2f6;
+  --surface:  #ffffff;
+  --border:   #e2e6ee;
+  --text:     #1a1f2e;
+  --muted:    #6b7280;
+  --accent:   #2563eb;
+  --accent-h: #1d4ed8;
+  --danger:   #dc2626;
+  --warn:     #d97706;
+  --green:    #16a34a;
+  --multi-bg: #fff7ed;
+  --multi-border: #fdba74;
+  --multi-text:   #92400e;
+  --radius:   8px;
+  --shadow:   0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:      #0f1117;
+    --surface: #1a1f2e;
+    --border:  #2a3045;
+    --text:    #e8eaf0;
+    --muted:   #9ca3af;
+    --multi-bg: #1c1200;
+    --multi-border: #92400e;
+    --multi-text: #fcd34d;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f0f2f6; --surface: #ffffff; --border: #e2e6ee; --text: #1a1f2e; --muted: #6b7280;
+  --multi-bg: #fff7ed; --multi-border: #fdba74; --multi-text: #92400e;
+}
+:root[data-theme="dark"] {
+  --bg: #0f1117; --surface: #1a1f2e; --border: #2a3045; --text: #e8eaf0; --muted: #9ca3af;
+  --multi-bg: #1c1200; --multi-border: #92400e; --multi-text: #fcd34d;
+}
+
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; font-size: 15px; background: var(--bg); color: var(--text); height: 100dvh; overflow: hidden; }
+button { font-family: inherit; cursor: pointer; }
+a { color: var(--accent); }
+
+/* ── Login screen ── */
+#login-screen {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100dvh; padding: 2rem;
+}
+.login-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 2.5rem 2rem; max-width: 420px; width: 100%; text-align: center;
+  box-shadow: var(--shadow);
+}
+.login-card h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: .5rem; }
+.login-card p  { color: var(--muted); font-size: .92rem; margin-bottom: 1.75rem; line-height: 1.6; }
+.login-card .edu-note {
+  font-size: .8rem; color: var(--muted); margin-top: 1rem; line-height: 1.5;
+}
+.google-btn {
+  display: inline-flex; align-items: center; gap: .6rem;
+  padding: .65rem 1.4rem; background: var(--surface); border: 1.5px solid var(--border);
+  border-radius: 6px; text-decoration: none; color: var(--text); font-size: .95rem; font-weight: 500;
+  transition: background .15s, box-shadow .15s;
+}
+.google-btn:hover { background: var(--bg); box-shadow: 0 2px 6px rgba(0,0,0,.12); }
+.google-btn svg { width: 18px; height: 18px; flex-shrink: 0; }
+
+/* ── App shell ── */
+#app { display: none; flex-direction: column; height: 100dvh; }
+#app.visible { display: flex; }
+
+header {
+  display: flex; align-items: center; gap: .75rem; padding: .6rem 1rem;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  flex-shrink: 0; min-height: 48px;
+}
+.header-logo { font-weight: 700; font-size: .95rem; white-space: nowrap; }
+.header-spacer { flex: 1; }
+.header-user { font-size: .8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+.header-btn {
+  padding: .28rem .7rem; border-radius: 5px; border: 1px solid var(--border);
+  background: transparent; color: var(--text); font-size: .78rem; white-space: nowrap;
+  transition: background .15s;
+}
+.header-btn:hover { background: var(--bg); }
+.mode-toggle {
+  display: flex; gap: 2px; background: var(--bg); border-radius: 6px; padding: 2px;
+  border: 1px solid var(--border); flex-shrink: 0;
+}
+.mode-btn {
+  padding: .25rem .65rem; border-radius: 4px; border: none; font-size: .78rem;
+  background: transparent; color: var(--muted); transition: all .15s; white-space: nowrap;
+}
+.mode-btn.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.1); }
+.mode-btn.active.multi { background: var(--multi-bg); color: var(--multi-text); border: 1px solid var(--multi-border); }
+
+/* ── Main workspace ── */
+#workspace { display: flex; flex: 1; overflow: hidden; }
+
+/* ── Chat panel ── */
+#chat-panel {
+  display: flex; flex-direction: column;
+  width: 380px; min-width: 280px; flex-shrink: 0;
+  background: var(--surface); border-right: 1px solid var(--border);
+}
+#messages { flex: 1; overflow-y: auto; padding: .75rem; display: flex; flex-direction: column; gap: .6rem; }
+.msg { max-width: 90%; padding: .55rem .75rem; border-radius: 10px; font-size: .88rem; line-height: 1.55; }
+.msg.user    { background: var(--accent); color: #fff; align-self: flex-end; border-bottom-right-radius: 3px; }
+.msg.assistant { background: var(--bg); color: var(--text); align-self: flex-start; border-bottom-left-radius: 3px; border: 1px solid var(--border); }
+.msg.system  { background: transparent; color: var(--muted); align-self: center; font-size: .8rem; font-style: italic; text-align: center; }
+.msg.error   { background: #fef2f2; color: var(--danger); align-self: stretch; border: 1px solid #fecaca; }
+.msg-dots { display: inline-flex; gap: 3px; padding: 2px 0; }
+.msg-dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: bounce .9s infinite; }
+.msg-dots span:nth-child(2) { animation-delay: .15s; }
+.msg-dots span:nth-child(3) { animation-delay: .3s; }
+@keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-5px)} }
+
+#input-area {
+  padding: .75rem; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: .5rem;
+}
+#multi-hint {
+  display: none; font-size: .75rem; padding: .4rem .6rem; background: var(--multi-bg);
+  border: 1px solid var(--multi-border); border-radius: 5px; color: var(--multi-text); line-height: 1.5;
+}
+#multi-hint.visible { display: block; }
+#user-input {
+  width: 100%; resize: none; border: 1px solid var(--border); border-radius: 6px;
+  padding: .55rem .65rem; font-family: inherit; font-size: .88rem; background: var(--bg); color: var(--text);
+  outline: none; line-height: 1.5;
+}
+#user-input:focus { border-color: var(--accent); }
+#send-btn {
+  align-self: flex-end; padding: .45rem 1.1rem; background: var(--accent); color: #fff;
+  border: none; border-radius: 6px; font-size: .88rem; font-weight: 600;
+  transition: background .15s, opacity .15s;
+}
+#send-btn:hover:not(:disabled) { background: var(--accent-h); }
+#send-btn:disabled { opacity: .5; cursor: not-allowed; }
+.usage-line { font-size: .72rem; color: var(--muted); text-align: right; }
+
+/* ── Preview panel ── */
+#preview-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+
+#preview-header {
+  display: flex; align-items: center; gap: .6rem; padding: .5rem .85rem;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  flex-shrink: 0; flex-wrap: wrap; min-height: 46px;
+}
+.preview-title { font-size: .82rem; font-weight: 600; color: var(--muted); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badge {
+  font-size: .7rem; font-weight: 700; padding: .18rem .5rem; border-radius: 4px;
+  text-transform: uppercase; letter-spacing: .04em; flex-shrink: 0;
+}
+.badge.solo  { background: #dcfce7; color: #15803d; }
+.badge.multi { background: var(--multi-bg); color: var(--multi-text); border: 1px solid var(--multi-border); }
+
+#room-info {
+  display: none; align-items: center; gap: .5rem; flex-wrap: wrap;
+}
+#room-info.visible { display: flex; }
+.room-code-label { font-size: .78rem; color: var(--muted); }
+.room-code-val {
+  font-family: monospace; font-size: .88rem; font-weight: 700;
+  background: var(--multi-bg); color: var(--multi-text); padding: .1rem .4rem;
+  border-radius: 4px; border: 1px solid var(--multi-border);
+}
+.icon-btn {
+  padding: .28rem .6rem; border-radius: 5px; border: 1px solid var(--border);
+  background: transparent; color: var(--text); font-size: .78rem; transition: background .15s;
+}
+.icon-btn:hover { background: var(--bg); }
+.icon-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.icon-btn.primary:hover { background: var(--accent-h); }
+
+#preview-wrap { flex: 1; overflow: hidden; position: relative; background: var(--bg); }
+#preview-placeholder {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: .75rem; color: var(--muted);
+}
+#preview-placeholder svg { width: 48px; height: 48px; opacity: .3; }
+#preview-placeholder p { font-size: .9rem; }
+#preview-frame {
+  width: 100%; height: 100%; border: none; display: none;
+}
+#preview-frame.visible { display: block; }
+
+/* ── API key banner ── */
+#key-banner {
+  display: none; align-items: center; gap: .6rem; padding: .45rem .85rem;
+  background: #fffbeb; border-bottom: 1px solid #fde68a; flex-shrink: 0; flex-wrap: wrap;
+}
+#key-banner.visible { display: flex; }
+#key-banner label { font-size: .8rem; color: #92400e; font-weight: 600; white-space: nowrap; }
+#key-input {
+  flex: 1; min-width: 200px; max-width: 340px; padding: .28rem .55rem;
+  border: 1px solid #fcd34d; border-radius: 5px; font-size: .82rem;
+  background: #fff; color: var(--text); font-family: monospace; outline: none;
+}
+#key-input:focus { border-color: var(--accent); }
+#key-save-btn {
+  padding: .28rem .7rem; border-radius: 5px; border: none;
+  background: var(--accent); color: #fff; font-size: .8rem; font-weight: 600; cursor: pointer;
+}
+#key-save-btn:hover { background: var(--accent-h); }
+#key-status { font-size: .78rem; color: var(--green); }
+.key-help { font-size: .75rem; color: #92400e; }
+.key-help a { color: #92400e; }
+
+/* ── Responsive ── */
+@media (max-width: 680px) {
+  #workspace { flex-direction: column; }
+  #chat-panel { width: 100%; border-right: none; border-bottom: 1px solid var(--border); height: 50%; min-width: unset; }
+  #preview-panel { height: 50%; }
+  .header-user { display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── Login screen ───────────────────────────────────────────────────────── -->
+<div id="login-screen">
+  <div class="login-card">
+    <h1>Classroom Game Builder</h1>
+    <p>Describe a classroom activity in plain language and get a working, interactive game in seconds. Single-screen or real-time multiplayer across student devices.</p>
+    <a href="/auth/google" class="google-btn">
+      <svg viewBox="0 0 48 48"><path fill="#4285F4" d="M44.5 20H24v8.5h11.8C34.7 33.9 29.8 37 24 37c-7.2 0-13-5.8-13-13s5.8-13 13-13c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.6 5.1 29.6 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21c10.5 0 20-7.6 20-21 0-1.4-.1-2.7-.5-4z"/><path fill="#34A853" d="M6.3 14.7l7 5.1C15.2 16.5 19.3 14 24 14c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.6 5.1 29.6 3 24 3c-7.6 0-14.2 4.6-17.7 11.7z"/><path fill="#FBBC05" d="M24 45c5.5 0 10.5-1.9 14.4-5L31.6 34c-2.1 1.5-4.8 2.5-7.6 2.5-5.7 0-10.6-3.9-12.4-9.2L4.8 33.5C8.4 40.5 15.7 45 24 45z"/><path fill="#EA4335" d="M44.5 20H24v8.5h11.8c-.7 3.5-2.7 6.4-5.4 8.3l6.8 5.2C41.4 38.3 45 32 45 24c0-1.4-.1-2.7-.5-4z"/></svg>
+      Sign in with Google
+    </a>
+    <p class="edu-note">Requires a <strong>.edu</strong> email address. Your API usage is covered — no key needed.</p>
+  </div>
+</div>
+
+<!-- ── Main app ───────────────────────────────────────────────────────────── -->
+<div id="app">
+  <header>
+    <span class="header-logo">🎮 Game Builder</span>
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="btn-solo" onclick="setMode('solo')">Single-screen</button>
+      <button class="mode-btn" id="btn-multi" onclick="setMode('multi')">Multi-device ⚡</button>
+    </div>
+    <div class="header-spacer"></div>
+    <span class="header-user" id="user-label"></span>
+    <a href="/auth/logout" class="header-btn">Sign out</a>
+  </header>
+
+  <!-- API key entry — visible until a valid key is saved to sessionStorage -->
+  <div id="key-banner">
+    <label for="key-input">Anthropic API key</label>
+    <input id="key-input" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+    <button id="key-save-btn" onclick="saveKey()">Save</button>
+    <span id="key-status"></span>
+    <span class="key-help">Key is stored in your browser tab only — never sent to our server except as a header on each generation request. <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Get a key ↗</a></span>
+  </div>
+
+  <div id="workspace">
+
+    <!-- Chat panel -->
+    <div id="chat-panel">
+      <div id="messages">
+        <div class="msg system">Describe the classroom game you want to build. Be as specific or as vague as you like — iterate in conversation.</div>
+      </div>
+      <div id="input-area">
+        <div id="multi-hint">
+          ⚡ <strong>Multi-device mode:</strong> students each open the game on their own device and interact in real-time. All state is <em>public</em> — no hidden entries. Great for contribution games, polls, auctions, coordination problems.
+        </div>
+        <textarea id="user-input" rows="3" placeholder="e.g. A public goods game where each of 5 students contributes 0-10 tokens per round. Show a live bar chart of contributions."></textarea>
+        <button id="send-btn" onclick="sendMessage()">Generate ↵</button>
+        <div class="usage-line" id="usage-line"></div>
+      </div>
+    </div>
+
+    <!-- Preview panel -->
+    <div id="preview-panel">
+      <div id="preview-header">
+        <span class="preview-title" id="preview-title">No game yet</span>
+        <span class="badge solo" id="game-badge" style="display:none"></span>
+        <div id="room-info">
+          <span class="room-code-label">Room:</span>
+          <span class="room-code-val" id="room-code-val">—</span>
+          <button class="icon-btn" id="copy-room-btn" onclick="copyRoomUrl()">Copy student URL</button>
+          <button class="icon-btn" onclick="openFullscreen()">Full screen ↗</button>
+        </div>
+        <div id="solo-actions" style="display:none">
+          <button class="icon-btn" onclick="openFullscreen()">Full screen ↗</button>
+        </div>
+        <button class="icon-btn primary" id="share-btn" onclick="shareGame()" style="display:none">Save &amp; share</button>
+      </div>
+      <div id="preview-wrap">
+        <div id="preview-placeholder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="3" width="20" height="14" rx="2"/>
+            <path d="M8 21h8M12 17v4"/>
+          </svg>
+          <p>Your game will appear here</p>
+        </div>
+        <iframe id="preview-frame" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+      </div>
+    </div>
+
+  </div><!-- #workspace -->
+</div><!-- #app -->
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+let mode = 'solo';           // 'solo' | 'multi'
+let messages = [];           // [{role, content}]
+let generating = false;
+let currentHtml = null;     // last generated HTML (raw, without room injection)
+let currentRoomCode = null; // room code after Save & Share
+let dailyRemaining = null;
+
+// ── API key (sessionStorage only — never persisted to disk) ──────────────────
+function getKey() { return sessionStorage.getItem('_ak') || ''; }
+
+function saveKey() {
+  const val = document.getElementById('key-input').value.trim();
+  if (!val.startsWith('sk-')) {
+    document.getElementById('key-status').textContent = 'Key should start with sk-';
+    document.getElementById('key-status').style.color = 'var(--danger)';
+    return;
+  }
+  sessionStorage.setItem('_ak', val);
+  document.getElementById('key-input').value = '';            // clear field immediately
+  document.getElementById('key-status').textContent = '✓ Key saved for this session';
+  document.getElementById('key-status').style.color = 'var(--green)';
+  updateKeyBanner();
+}
+
+function updateKeyBanner() {
+  const banner = document.getElementById('key-banner');
+  const hasKey = !!getKey();
+  banner.classList.toggle('visible', !hasKey);
+  // If they just saved a key, show a brief confirmation then hide banner
+  if (hasKey) setTimeout(() => { banner.classList.remove('visible'); }, 2500);
+}
+
+// Allow Enter in key field
+document.getElementById('key-input')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') saveKey();
+});
+
+// ── Boot ────────────────────────────────────────────────────────────────────
+(async function boot() {
+  try {
+    const r = await fetch('/api/me');
+    if (!r.ok) return; // stays on login screen
+    const me = await r.json();
+    document.getElementById('user-label').textContent = me.email;
+    dailyRemaining = me.dailyLimit - me.usedToday;
+    updateUsageLine();
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('app').classList.add('visible');
+    updateKeyBanner();  // show key banner if no key yet
+  } catch {}
+})();
+
+// ── Mode toggle ──────────────────────────────────────────────────────────────
+function setMode(m) {
+  mode = m;
+  document.getElementById('btn-solo').classList.toggle('active', m === 'solo');
+  document.getElementById('btn-multi').classList.toggle('active', m === 'multi');
+  document.getElementById('btn-multi').classList.toggle('multi', m === 'multi');
+  document.getElementById('multi-hint').classList.toggle('visible', m === 'multi');
+  document.getElementById('user-input').placeholder = m === 'multi'
+    ? 'e.g. Public goods game: each student contributes 0-10 tokens. Show a live bar chart. 5 rounds.'
+    : 'e.g. A single-screen auction where the instructor controls price and students raise hands to bid.';
+}
+
+// ── Send message ─────────────────────────────────────────────────────────────
+document.getElementById('user-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+async function sendMessage() {
+  if (generating) return;
+  const input = document.getElementById('user-input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  if (!getKey()) {
+    document.getElementById('key-banner').classList.add('visible');
+    document.getElementById('key-input').focus();
+    appendMsg('system', 'Enter your Anthropic API key in the yellow bar above first.');
+    return;
+  }
+
+  input.value = '';
+  messages.push({ role: 'user', content: text });
+  appendMsg('user', text);
+
+  const thinkingEl = appendMsg('assistant', '<div class="msg-dots"><span></span><span></span><span></span></div>');
+  setGenerating(true);
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': getKey() },
+      body: JSON.stringify({ messages, multiplayer: mode === 'multi' })
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error || res.statusText);
+    }
+
+    // Update remaining from response header
+    const rem = res.headers.get('X-Remaining-Today');
+    if (rem !== null) { dailyRemaining = parseInt(rem); updateUsageLine(); }
+
+    // Stream SSE from Anthropic → accumulate text
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullText = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]' || data === '') continue;
+        try {
+          const event = JSON.parse(data);
+          if (event.type === 'error') throw new Error(event.error);
+          if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+            fullText += event.delta.text;
+          }
+        } catch (e) {
+          if (e.message.includes('content_block_delta')) continue; // parse noise
+          throw e;
+        }
+      }
+    }
+
+    // Extract HTML from response
+    const html = extractHtml(fullText);
+    messages.push({ role: 'assistant', content: fullText });
+
+    if (html) {
+      currentHtml = html;
+      currentRoomCode = null;
+      const isMulti = mode === 'multi';
+      thinkingEl.innerHTML = isMulti
+        ? '⚡ Multiplayer game generated — preview in the panel. Click <strong>Save &amp; share</strong> to get a URL for students.'
+        : '✓ Game generated — see preview. You can keep refining in conversation.';
+      showPreview(html, isMulti);
+    } else {
+      // Non-HTML response (clarifying question, explanation)
+      thinkingEl.innerHTML = escapeHtml(fullText);
+    }
+
+  } catch (e) {
+    thinkingEl.className = 'msg error';
+    thinkingEl.textContent = 'Error: ' + e.message;
+  } finally {
+    setGenerating(false);
+  }
+}
+
+// ── Preview ──────────────────────────────────────────────────────────────────
+function showPreview(html, isMulti) {
+  const frame = document.getElementById('preview-frame');
+  const placeholder = document.getElementById('preview-placeholder');
+  const badge = document.getElementById('game-badge');
+  const shareBtn = document.getElementById('share-btn');
+  const roomInfo = document.getElementById('room-info');
+  const soloActions = document.getElementById('solo-actions');
+  const previewTitle = document.getElementById('preview-title');
+
+  // Inject a preview room code so GameSync connects to a temporary room
+  const previewRoom = 'prev_' + Math.random().toString(36).slice(2, 8);
+  let srcdoc = isMulti
+    ? html.replace('<head>', `<head><script>window.GAME_ROOM='${previewRoom}';<\/script>`)
+    : html;
+
+  frame.srcdoc = srcdoc;
+  frame.classList.add('visible');
+  placeholder.style.display = 'none';
+
+  badge.textContent = isMulti ? 'Multi-device' : 'Single-screen';
+  badge.className = 'badge ' + (isMulti ? 'multi' : 'solo');
+  badge.style.display = '';
+
+  previewTitle.textContent = isMulti ? 'Multiplayer preview (you only)' : 'Preview';
+
+  roomInfo.classList.toggle('visible', false);
+  document.getElementById('room-code-val').textContent = '—';
+
+  shareBtn.style.display = '';
+  soloActions.style.display = isMulti ? 'none' : '';
+}
+
+async function shareGame() {
+  if (!currentHtml) return;
+  document.getElementById('share-btn').disabled = true;
+  document.getElementById('share-btn').textContent = 'Saving…';
+
+  try {
+    const res = await fetch('/api/game', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        html: currentHtml,
+        is_multiplayer: mode === 'multi',
+        title: 'Game'
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+
+    currentRoomCode = data.room_code;
+    document.getElementById('room-code-val').textContent = data.room_code;
+    document.getElementById('room-info').classList.add('visible');
+    document.getElementById('solo-actions').style.display = 'none';
+    document.getElementById('share-btn').textContent = 'Saved ✓';
+    appendMsg('system', `Game saved. Student URL: ${data.url}`);
+  } catch (e) {
+    document.getElementById('share-btn').disabled = false;
+    document.getElementById('share-btn').textContent = 'Save & share';
+    appendMsg('system', 'Save failed: ' + e.message);
+  }
+}
+
+function copyRoomUrl() {
+  if (!currentRoomCode) return;
+  const url = location.origin + '/play?room=' + currentRoomCode;
+  navigator.clipboard.writeText(url).then(() => {
+    const btn = document.getElementById('copy-room-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy student URL'; }, 2000);
+  });
+}
+
+function openFullscreen() {
+  const frame = document.getElementById('preview-frame');
+  if (frame.requestFullscreen) frame.requestFullscreen();
+  else if (frame.webkitRequestFullscreen) frame.webkitRequestFullscreen();
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function extractHtml(text) {
+  // Match <!DOCTYPE html>...or <html>...
+  const m = text.match(/<!DOCTYPE\s+html[\s\S]*<\/html>/i)
+         || text.match(/<html[\s\S]*<\/html>/i);
+  return m ? m[0] : null;
+}
+
+function appendMsg(role, html) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.innerHTML = html;
+  document.getElementById('messages').appendChild(div);
+  div.scrollIntoView({ block: 'end', behavior: 'smooth' });
+  return div;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function setGenerating(v) {
+  generating = v;
+  document.getElementById('send-btn').disabled = v;
+  document.getElementById('send-btn').textContent = v ? '…' : 'Generate ↵';
+}
+
+function updateUsageLine() {
+  const el = document.getElementById('usage-line');
+  if (dailyRemaining !== null) {
+    el.textContent = dailyRemaining + ' generations left today';
+  }
+}
+</script>
+</body>
+</html>
