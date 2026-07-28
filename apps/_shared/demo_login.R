@@ -23,16 +23,12 @@ demo_login_ui <- tagList(
       "background:#fff8e1;border:1px solid #ffe082;border-radius:4px;"
     ),
     tags$p(
-      tags$strong("Test users"),
-      tags$span(" — sandbox database, safe to mess around in"),
+      tags$strong("Sandbox demo"),
+      tags$span(" — separate database, nothing here is real"),
       style = "margin:0 0 8px;font-size:13px;"
     ),
-    tags$button("Alice (S01)",  onclick = "demoLogin('alice','test123')",       class = "btn btn-xs btn-default", style = "margin:2px;"),
-    tags$button("Bob (S01)",    onclick = "demoLogin('bob','test123')",         class = "btn btn-xs btn-default", style = "margin:2px;"),
-    tags$button("Carol (S01)",  onclick = "demoLogin('carol','test123')",       class = "btn btn-xs btn-default", style = "margin:2px;"),
-    tags$button("Dan (S02)",    onclick = "demoLogin('dan','test123')",         class = "btn btn-xs btn-default", style = "margin:2px;"),
-    tags$button("Eve (S02)",    onclick = "demoLogin('eve','test123')",         class = "btn btn-xs btn-default", style = "margin:2px;"),
-    tags$button("Instructor",   onclick = "demoLogin('instructor','admin123')", class = "btn btn-xs btn-warning", style = "margin:2px;")
+    tags$button("Demo (Admin)",   onclick = "demoLogin('instructor','admin123')", class = "btn btn-sm btn-warning", style = "margin:2px;"),
+    tags$button("Demo (Student)", onclick = "demoLogin('alice','test123')",       class = "btn btn-sm btn-default", style = "margin:2px;")
   ),
   tags$script(HTML('
     (function () {
