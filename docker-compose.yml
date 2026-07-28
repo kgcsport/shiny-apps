@@ -68,9 +68,10 @@ services:
 
   # Classroom Game Builder — Node.js app with Google OAuth, Anthropic proxy, WebSocket multiplayer.
   # Access at http://yourserver:3000  (or put behind nginx on a subdomain).
-  # Required .env vars: ANTHROPIC_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
-  #                     DEMO_KIT_BASE_URL (e.g. https://kit.yourdomain.com)
+  # Required .env vars: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+  #                     DEMO_KIT_BASE_URL (e.g. https://gamebuilder.kylecoombs.com)
   # Optional:           DEMO_KIT_DAILY_LIMIT (default 25), DEMO_KIT_EDU_ONLY (default true)
+  # Note: Anthropic API key is entered by each user in the UI — not stored on server.
   demo-kit:
     build: apps/demo-kit-site
     restart: always

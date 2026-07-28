@@ -193,6 +193,28 @@ header {
 }
 #preview-frame.visible { display: block; }
 
+/* ── API key banner ── */
+#key-banner {
+  display: none; align-items: center; gap: .6rem; padding: .45rem .85rem;
+  background: #fffbeb; border-bottom: 1px solid #fde68a; flex-shrink: 0; flex-wrap: wrap;
+}
+#key-banner.visible { display: flex; }
+#key-banner label { font-size: .8rem; color: #92400e; font-weight: 600; white-space: nowrap; }
+#key-input {
+  flex: 1; min-width: 200px; max-width: 340px; padding: .28rem .55rem;
+  border: 1px solid #fcd34d; border-radius: 5px; font-size: .82rem;
+  background: #fff; color: var(--text); font-family: monospace; outline: none;
+}
+#key-input:focus { border-color: var(--accent); }
+#key-save-btn {
+  padding: .28rem .7rem; border-radius: 5px; border: none;
+  background: var(--accent); color: #fff; font-size: .8rem; font-weight: 600; cursor: pointer;
+}
+#key-save-btn:hover { background: var(--accent-h); }
+#key-status { font-size: .78rem; color: var(--green); }
+.key-help { font-size: .75rem; color: #92400e; }
+.key-help a { color: #92400e; }
+
 /* ── Responsive ── */
 @media (max-width: 680px) {
   #workspace { flex-direction: column; }
@@ -229,6 +251,15 @@ header {
     <span class="header-user" id="user-label"></span>
     <a href="/auth/logout" class="header-btn">Sign out</a>
   </header>
+
+  <!-- API key entry — visible until a valid key is saved to sessionStorage -->
+  <div id="key-banner">
+    <label for="key-input">Anthropic API key</label>
+    <input id="key-input" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+    <button id="key-save-btn" onclick="saveKey()">Save</button>
+    <span id="key-status"></span>
+    <span class="key-help">Key is stored in your browser tab only — never sent to our server except as a header on each generation request. <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Get a key ↗</a></span>
+  </div>
 
   <div id="workspace">
 
@@ -287,6 +318,36 @@ let currentHtml = null;     // last generated HTML (raw, without room injection)
 let currentRoomCode = null; // room code after Save & Share
 let dailyRemaining = null;
 
+// ── API key (sessionStorage only — never persisted to disk) ──────────────────
+function getKey() { return sessionStorage.getItem('_ak') || ''; }
+
+function saveKey() {
+  const val = document.getElementById('key-input').value.trim();
+  if (!val.startsWith('sk-')) {
+    document.getElementById('key-status').textContent = 'Key should start with sk-';
+    document.getElementById('key-status').style.color = 'var(--danger)';
+    return;
+  }
+  sessionStorage.setItem('_ak', val);
+  document.getElementById('key-input').value = '';            // clear field immediately
+  document.getElementById('key-status').textContent = '✓ Key saved for this session';
+  document.getElementById('key-status').style.color = 'var(--green)';
+  updateKeyBanner();
+}
+
+function updateKeyBanner() {
+  const banner = document.getElementById('key-banner');
+  const hasKey = !!getKey();
+  banner.classList.toggle('visible', !hasKey);
+  // If they just saved a key, show a brief confirmation then hide banner
+  if (hasKey) setTimeout(() => { banner.classList.remove('visible'); }, 2500);
+}
+
+// Allow Enter in key field
+document.getElementById('key-input')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') saveKey();
+});
+
 // ── Boot ────────────────────────────────────────────────────────────────────
 (async function boot() {
   try {
@@ -298,6 +359,7 @@ let dailyRemaining = null;
     updateUsageLine();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('app').classList.add('visible');
+    updateKeyBanner();  // show key banner if no key yet
   } catch {}
 })();
 
@@ -324,6 +386,13 @@ async function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
 
+  if (!getKey()) {
+    document.getElementById('key-banner').classList.add('visible');
+    document.getElementById('key-input').focus();
+    appendMsg('system', 'Enter your Anthropic API key in the yellow bar above first.');
+    return;
+  }
+
   input.value = '';
   messages.push({ role: 'user', content: text });
   appendMsg('user', text);
@@ -334,7 +403,7 @@ async function sendMessage() {
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': getKey() },
       body: JSON.stringify({ messages, multiplayer: mode === 'multi' })
     });
 

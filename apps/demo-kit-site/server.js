@@ -15,7 +15,6 @@ const PORT        = parseInt(process.env.PORT || '3000');
 const DATA_DIR    = process.env.DATA_DIR || join(__dirname, 'data');
 const DB_PATH     = process.env.DB_PATH  || join(DATA_DIR, 'demo_kit.sqlite');
 const BASE_URL    = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
-const ANTHROPIC_KEY     = process.env.ANTHROPIC_API_KEY || '';
 const ANTHROPIC_MODEL   = process.env.ANTHROPIC_MODEL   || 'claude-sonnet-5';
 const GOOGLE_CLIENT_ID  = process.env.GOOGLE_CLIENT_ID  || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
@@ -229,8 +228,11 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   const { messages, multiplayer } = req.body;
   if (!Array.isArray(messages) || !messages.length)
     return res.status(400).json({ error: 'messages array required' });
-  if (!ANTHROPIC_KEY)
-    return res.status(503).json({ error: 'ANTHROPIC_API_KEY not configured on server.' });
+
+  // Key comes from the client on every request — never stored server-side.
+  const apiKey = (req.headers['x-api-key'] || '').trim();
+  if (!apiKey || !apiKey.startsWith('sk-'))
+    return res.status(400).json({ error: 'No Anthropic API key provided. Enter your key in the sidebar.' });
 
   let remaining;
   try {
@@ -248,7 +250,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     const upstream = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
-        'x-api-key': ANTHROPIC_KEY,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json'
       },
@@ -383,6 +385,6 @@ httpServer.listen(PORT, () => {
   console.log(`  BASE_URL   : ${BASE_URL}`);
   console.log(`  EDU_ONLY   : ${EDU_ONLY}`);
   console.log(`  Model      : ${ANTHROPIC_MODEL}`);
-  console.log(`  API key    : ${ANTHROPIC_KEY ? '✓ set' : '✗ MISSING'}`);
+  console.log(`  API key    : user-supplied per request`);
   console.log(`  Google     : ${GOOGLE_CLIENT_ID ? '✓ configured' : '✗ not configured'}`);
 });
