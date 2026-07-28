@@ -131,6 +131,65 @@ demo_settings_panel <- function(is_demo) {
   )
 }
 
+# ── Demo DB bootstrapper ──────────────────────────────────────────────────────
+# Called the first time a demo session connects. Copies the full schema from
+# the production DB so every table/index exists, then seeds test users.
+# Safe to call repeatedly — CREATE IF NOT EXISTS / INSERT OR IGNORE are idempotent.
+demo_db_bootstrap <- function(demo_con, prod_path) {
+  tryCatch({
+    prod_con <- DBI::dbConnect(RSQLite::SQLite(), prod_path)
+    on.exit(try(DBI::dbDisconnect(prod_con), silent = TRUE), add = TRUE)
+
+    # Copy all table schemas from production
+    schema <- DBI::dbGetQuery(prod_con,
+      "SELECT sql FROM sqlite_master WHERE type IN ('table','index') AND sql IS NOT NULL;")
+    for (sql in schema$sql)
+      try(DBI::dbExecute(demo_con, sql), silent = TRUE)
+
+    # Copy app config / settings so the app starts with sane defaults
+    for (tbl in c("labor_settings", "arcade_config")) {
+      rows <- tryCatch(DBI::dbGetQuery(prod_con, sprintf("SELECT * FROM %s;", tbl)),
+                       error = function(e) data.frame())
+      if (nrow(rows))
+        for (i in seq_len(nrow(rows)))
+          try(DBI::dbExecute(demo_con,
+            sprintf("INSERT OR IGNORE INTO %s(key,value) VALUES(?,?);", tbl),
+            list(rows$key[i], rows$value[i])), silent = TRUE)
+    }
+
+    # Copy arcade_state singleton
+    tryCatch({
+      st <- DBI::dbGetQuery(prod_con, "SELECT * FROM arcade_state WHERE id=1;")
+      if (nrow(st))
+        DBI::dbExecute(demo_con,
+          "INSERT OR IGNORE INTO arcade_state(id, active_game, assignments_revealed) VALUES(?,?,?);",
+          list(1L, st$active_game[1], as.integer(st$assignments_revealed[1] %||% 0L)))
+      else
+        DBI::dbExecute(demo_con,
+          "INSERT OR IGNORE INTO arcade_state(id, active_game, assignments_revealed) VALUES(1,NULL,0);")
+    }, error = function(e) NULL)
+
+    # Seed test users (INSERT OR IGNORE so re-runs are safe)
+    hash_pw <- if (requireNamespace("bcrypt", quietly = TRUE)) bcrypt::hashpw
+               else function(p) p
+    test_users <- list(
+      list(id = "instructor", name = "Dr. Instructor", admin = 1L, pw = "admin123", sec = NA_character_),
+      list(id = "alice",      name = "Alice",           admin = 0L, pw = "test123",  sec = "S01"),
+      list(id = "bob",        name = "Bob",             admin = 0L, pw = "test123",  sec = "S01"),
+      list(id = "carol",      name = "Carol",           admin = 0L, pw = "test123",  sec = "S01"),
+      list(id = "dan",        name = "Dan",             admin = 0L, pw = "test123",  sec = "S02"),
+      list(id = "eve",        name = "Eve",             admin = 0L, pw = "test123",  sec = "S02")
+    )
+    for (u in test_users)
+      try(DBI::dbExecute(demo_con,
+        "INSERT OR IGNORE INTO users(user_id,display_name,is_admin,pw_hash,section,active,is_demo)
+         VALUES(?,?,?,?,?,1,0);",
+        list(u$id, u$name, u$admin, hash_pw(u$pw), u$sec)), silent = TRUE)
+
+  }, error = function(e) message("demo_db_bootstrap: ", e$message))
+  invisible(demo_con)
+}
+
 # ── Session DB initialiser ────────────────────────────────────────────────────
 # Call at the very top of server() before any db_exec/db_query calls.
 # Returns list with is_demo, db_path, db_exec, db_query.
@@ -155,6 +214,7 @@ demo_server_init <- function(session, prod_db_path, auction_prod = NULL) {
     if (is.null(local_con) || !DBI::dbIsValid(local_con)) {
       dir.create(dirname(sess_db), recursive = TRUE, showWarnings = FALSE)
       local_con <<- connect_sqlite(sess_db)
+      if (is_demo) demo_db_bootstrap(local_con, prod_db_path)
     }
     local_con
   }
