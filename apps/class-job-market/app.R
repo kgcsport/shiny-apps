@@ -163,6 +163,10 @@ init_db <- function() {
       display_order INTEGER DEFAULT 100
     );
   ")
+  try(db_exec("ALTER TABLE job_categories ADD COLUMN default_wage REAL DEFAULT 3;"), silent = TRUE)
+  try(db_exec("ALTER TABLE job_categories ADD COLUMN description TEXT;"), silent = TRUE)
+  try(db_exec("ALTER TABLE job_categories ADD COLUMN active INTEGER DEFAULT 1;"), silent = TRUE)
+  try(db_exec("ALTER TABLE job_categories ADD COLUMN display_order INTEGER DEFAULT 100;"), silent = TRUE)
 
   db_exec("
     CREATE TABLE IF NOT EXISTS job_posts (
