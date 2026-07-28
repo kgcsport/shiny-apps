@@ -3,7 +3,6 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import Database from 'better-sqlite3';
 import session from 'express-session';
-import SQLiteStore from 'connect-sqlite3';
 import crypto from 'crypto';
 import { mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -51,18 +50,50 @@ db.exec(`
     state      TEXT PRIMARY KEY,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS sessions (
+    sid     TEXT PRIMARY KEY,
+    sess    TEXT NOT NULL,
+    expired TEXT
+  );
 `);
+
+// ── Inline SQLite session store (uses the same better-sqlite3 db) ─────────────
+function makeSQLiteStore(Store) {
+  return class SQLiteSessionStore extends Store {
+    get(sid, cb) {
+      try {
+        const row = db.prepare('SELECT sess, expired FROM sessions WHERE sid=?').get(sid);
+        if (!row) return cb(null, null);
+        if (row.expired && new Date(row.expired) < new Date()) {
+          this.destroy(sid, () => {});
+          return cb(null, null);
+        }
+        cb(null, JSON.parse(row.sess));
+      } catch (e) { cb(e); }
+    }
+    set(sid, sess, cb) {
+      try {
+        const exp = sess?.cookie?.expires ? new Date(sess.cookie.expires).toISOString() : null;
+        db.prepare('INSERT OR REPLACE INTO sessions(sid,sess,expired) VALUES(?,?,?)').run(sid, JSON.stringify(sess), exp);
+        cb(null);
+      } catch (e) { cb(e); }
+    }
+    destroy(sid, cb) {
+      try { db.prepare('DELETE FROM sessions WHERE sid=?').run(sid); cb(null); } catch (e) { cb(e); }
+    }
+    touch(sid, sess, cb) { this.set(sid, sess, cb); }
+  };
+}
 
 // ── Express ───────────────────────────────────────────────────────────────────
 const app = express();
 const httpServer = createServer(app);
-const SQLiteSessionStore = SQLiteStore(session);
 
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(join(__dirname, 'public')));
 app.use(session({
-  store: new SQLiteSessionStore({ db: 'sessions.sqlite', dir: DATA_DIR }),
+  store: new (makeSQLiteStore(session.Store))(),
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
