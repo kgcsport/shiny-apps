@@ -73,6 +73,14 @@ a { color: var(--accent); }
 }
 .google-btn:hover { background: var(--bg); box-shadow: 0 2px 6px rgba(0,0,0,.12); }
 .google-btn svg { width: 18px; height: 18px; flex-shrink: 0; }
+.demo-panel { margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--border); display: none; }
+.demo-panel p { font-size: .78rem; color: var(--muted); margin-bottom: .6rem; }
+.demo-panel input { width: 100%; padding: .5rem .7rem; margin-bottom: .5rem; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg); color: var(--text); font-size: .9rem; }
+.demo-panel button { width: 100%; padding: .55rem; background: var(--accent); color: #fff;
+  border: none; border-radius: 6px; font-size: .9rem; font-weight: 500; cursor: pointer; }
+.demo-panel button:hover { background: var(--accent-h); }
+.demo-panel .err { color: var(--danger); font-size: .8rem; margin-top: .4rem; display: none; }
 
 /* ── App shell ── */
 #app { display: none; flex-direction: column; height: 100dvh; }
@@ -236,6 +244,13 @@ header {
       Sign in with Google
     </a>
     <p class="edu-note">Requires a <strong>.edu</strong> email address. Your API usage is covered — no key needed.</p>
+    <div class="demo-panel" id="demo-panel">
+      <p>Demo access</p>
+      <input type="text"     id="demo-user" placeholder="Username" autocomplete="username">
+      <input type="password" id="demo-pass" placeholder="Password" autocomplete="current-password">
+      <button onclick="demoLogin()">Sign in</button>
+      <p class="err" id="demo-err"></p>
+    </div>
   </div>
 </div>
 
@@ -363,6 +378,32 @@ function updateKeyBanner() {
 document.getElementById('key-input')?.addEventListener('keydown', e => {
   if (e.key === 'Enter') saveKey();
 });
+
+// ── Demo login ───────────────────────────────────────────────────────────────
+if (new URLSearchParams(location.search).get('demo') === '1')
+  document.getElementById('demo-panel').style.display = 'block';
+
+async function demoLogin() {
+  const btn = document.querySelector('#demo-panel button');
+  const err = document.getElementById('demo-err');
+  err.style.display = 'none';
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  try {
+    const r = await fetch('/auth/demo-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: document.getElementById('demo-user').value.trim(),
+        password: document.getElementById('demo-pass').value
+      })
+    });
+    if (r.ok) { location.href = '/'; return; }
+    const data = await r.json().catch(() => ({}));
+    err.textContent = data.error || 'Invalid credentials';
+    err.style.display = 'block';
+  } catch { err.textContent = 'Connection error'; err.style.display = 'block'; }
+  btn.disabled = false; btn.textContent = 'Sign in';
+}
 
 // ── Boot ────────────────────────────────────────────────────────────────────
 (async function boot() {

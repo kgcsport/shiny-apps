@@ -21,6 +21,8 @@ const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toSt
 const DAILY_LIMIT   = parseInt(process.env.DEMO_KIT_DAILY_LIMIT || '25');
 const EDU_ONLY      = (process.env.DEMO_KIT_EDU_ONLY || 'true') !== 'false';
 const AUTH_DISABLED = process.env.DEMO_KIT_AUTH_DISABLED === 'true';
+const DEMO_USER     = process.env.DEMO_KIT_DEMO_USER || '';
+const DEMO_PASS     = process.env.DEMO_KIT_DEMO_PASS || '';
 
 mkdirSync(DATA_DIR, { recursive: true });
 
@@ -191,6 +193,18 @@ app.get('/auth/callback', async (req, res) => {
     console.error('OAuth callback error:', e);
     res.status(500).send(`Authentication failed: ${e.message}. <a href="/">Try again</a>`);
   }
+});
+
+app.post('/auth/demo-login', (req, res) => {
+  if (!DEMO_USER || !DEMO_PASS) return res.status(404).json({ error: 'Not found' });
+  const { username, password } = req.body;
+  if (username !== DEMO_USER || password !== DEMO_PASS)
+    return res.status(401).json({ error: 'Invalid credentials' });
+  req.session.user = { email: `${DEMO_USER}@demo.local`, name: 'Demo Teacher' };
+  req.session.save(err => {
+    if (err) return res.status(500).json({ error: 'Session error' });
+    res.json({ ok: true });
+  });
 });
 
 app.get('/auth/logout', (req, res) => {
