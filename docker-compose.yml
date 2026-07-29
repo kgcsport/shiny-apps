@@ -94,3 +94,5 @@ services:
       DEMO_KIT_AUTH_DISABLED: ${DEMO_KIT_AUTH_DISABLED:-false}
       DEMO_KIT_DEMO_USER: ${DEMO_KIT_DEMO_USER:-}
       DEMO_KIT_DEMO_PASS: ${DEMO_KIT_DEMO_PASS:-}
+      SHINY_BASE_URL: ${SHINY_BASE_URL:-}
+      SHINY_DB_PATH: /app/data/data/class-job-market.sqlite

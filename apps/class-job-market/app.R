@@ -1031,9 +1031,8 @@ server <- function(input, output, session) {
               if (GOOGLE_AUTH_ENABLED) "Sign in with your school Google account."
               else "Log in with credentials from your instructor."),
           if (GOOGLE_AUTH_ENABLED)
-            tags$button(
-              type = "button", class = "btn-google",
-              onclick = "Shiny.setInputValue('google_login_btn', +new Date(), {priority:'event'});",
+            tags$a(
+              href = "/auth/login", class = "btn-google",
               tags$svg(xmlns = "http://www.w3.org/2000/svg", viewBox = "0 0 24 24",
                        height = "18", width = "18",
                 tags$path(fill = "#4285F4", d = "M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"),
@@ -1182,84 +1181,6 @@ server <- function(input, output, session) {
     if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) return()
     rv$token <- tok
     do_login(row)
-  }, ignoreInit = FALSE)
-
-  # ── Google OAuth: initiate ────────────────────────────────────────────────────
-  observeEvent(input$google_login_btn, {
-    if (!GOOGLE_AUTH_ENABLED || rv$authed) return()
-    state <- paste(sample(c(letters, LETTERS, 0:9), 32, replace = TRUE), collapse = "")
-    db_exec("INSERT OR REPLACE INTO oauth_states(state) VALUES(?);", list(state))
-    params <- c(client_id = GOOGLE_CLIENT_ID, redirect_uri = SHINY_APP_URL,
-                response_type = "code", scope = "openid email profile",
-                state = state, prompt = "select_account")
-    qs <- paste(mapply(function(k, v)
-      paste0(utils::URLencode(k, reserved = TRUE), "=", utils::URLencode(v, reserved = TRUE)),
-      names(params), params), collapse = "&")
-    session$sendCustomMessage("oauth_redirect",
-      list(url = paste0("https://accounts.google.com/o/oauth2/v2/auth?", qs)))
-  })
-
-  # ── Google OAuth: callback ────────────────────────────────────────────────────
-  observeEvent(session$clientData$url_search, {
-    if (rv$authed || !GOOGLE_AUTH_ENABLED) return()
-    q     <- parseQueryString(session$clientData$url_search)
-    code  <- q[["code"]]  %||% ""
-    state <- q[["state"]] %||% ""
-    if (!nzchar(code) || !nzchar(state)) return()
-
-    state_row <- db_query("SELECT state FROM oauth_states WHERE state = ?;", list(state))
-    db_exec("DELETE FROM oauth_states WHERE state = ?;", list(state))
-    if (!nrow(state_row)) {
-      showNotification("Login failed: invalid state. Please try again.", type = "error")
-      return()
-    }
-
-    tryCatch({
-      tok <- httr2::request("https://oauth2.googleapis.com/token") |>
-        httr2::req_body_form(
-          code = code, client_id = GOOGLE_CLIENT_ID, client_secret = GOOGLE_CLIENT_SECRET,
-          redirect_uri = SHINY_APP_URL, grant_type = "authorization_code"
-        ) |>
-        httr2::req_perform() |>
-        httr2::resp_body_json()
-
-      if (!is.null(tok$error)) {
-        showNotification(paste("Google error:", tok$error_description %||% tok$error), type = "error")
-        return()
-      }
-
-      profile <- httr2::request("https://www.googleapis.com/oauth2/v3/userinfo") |>
-        httr2::req_headers(Authorization = paste("Bearer", tok$access_token)) |>
-        httr2::req_perform() |>
-        httr2::resp_body_json()
-
-      email <- tolower(profile$email %||% "")
-      if (!nzchar(email)) {
-        showNotification("Could not retrieve your email from Google.", type = "error")
-        return()
-      }
-
-      row <- db_query(
-        "SELECT user_id, display_name, is_admin, section, active,
-                COALESCE(is_demo, 0) AS is_demo
-         FROM users WHERE LOWER(user_id) = ?;", list(email))
-
-      if (!nrow(row)) {
-        showNotification("Your email is not registered. Contact your instructor.", type = "error")
-        return()
-      }
-      if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
-        showNotification("Your account has been archived. Contact your instructor.", type = "error")
-        return()
-      }
-
-      do_login(row)
-      issue_cookie(row$user_id[1])
-      session$sendCustomMessage("clean_url", list())
-
-    }, error = function(e) {
-      showNotification(paste("Login error:", conditionMessage(e)), type = "error")
-    })
   }, ignoreInit = FALSE)
 
   # ── Manual login ──────────────────────────────────────────────────────────────

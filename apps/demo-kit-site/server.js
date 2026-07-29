@@ -23,6 +23,8 @@ const EDU_ONLY      = (process.env.DEMO_KIT_EDU_ONLY || 'true') !== 'false';
 const AUTH_DISABLED = process.env.DEMO_KIT_AUTH_DISABLED === 'true';
 const DEMO_USER     = process.env.DEMO_KIT_DEMO_USER || '';
 const DEMO_PASS     = process.env.DEMO_KIT_DEMO_PASS || '';
+const SHINY_BASE_URL = (process.env.SHINY_BASE_URL || '').replace(/\/$/, '');
+const SHINY_DB_PATH  = process.env.SHINY_DB_PATH || join(DATA_DIR, 'data', 'class-job-market.sqlite');
 
 mkdirSync(DATA_DIR, { recursive: true });
 
@@ -209,6 +211,98 @@ app.post('/auth/demo-login', (req, res) => {
 
 app.get('/auth/logout', (req, res) => {
   req.session.destroy(() => res.redirect('/'));
+});
+
+// ── Shiny OAuth relay: /shiny-auth/login + /shiny-auth/callback ───────────────
+// nginx routes shiny.kylecoombs.com/auth/* → demo-kit:3000/shiny-auth/*
+// so the session cookie appears to the browser as the shiny domain.
+app.get('/shiny-auth/login', (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !SHINY_BASE_URL) {
+    return res.status(503).send('Google OAuth or SHINY_BASE_URL not configured.');
+  }
+  const state = crypto.randomBytes(16).toString('hex');
+  db.prepare('INSERT INTO oauth_states(state) VALUES(?)').run(state);
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: `${SHINY_BASE_URL}/auth/callback`,
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    prompt: 'select_account'
+  });
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+});
+
+app.get('/shiny-auth/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) return res.status(400).send(`Google returned error: ${error}`);
+
+  const stateRow = db.prepare('DELETE FROM oauth_states WHERE state=? RETURNING state').get(state);
+  if (!stateRow) return res.status(400).send('Invalid or expired OAuth state. <a href="/auth/login">Try again</a>');
+
+  try {
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code, client_id: GOOGLE_CLIENT_ID, client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri: `${SHINY_BASE_URL}/auth/callback`, grant_type: 'authorization_code'
+      })
+    });
+    const tokens = await tokenRes.json();
+    if (!tokenRes.ok) throw new Error(tokens.error_description || 'Token exchange failed');
+
+    const userRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` }
+    });
+    const profile = await userRes.json();
+
+    // Check this email is enrolled in class-job-market
+    let shinyDb;
+    try {
+      shinyDb = new Database(SHINY_DB_PATH, { readonly: true });
+    } catch (e) {
+      console.error('Cannot open Shiny DB:', e.message);
+      return res.status(500).send('Authentication unavailable (cannot read course database).');
+    }
+    const enrolled = shinyDb.prepare('SELECT user_id FROM users WHERE user_id=?').get(profile.email);
+    shinyDb.close();
+    if (!enrolled) {
+      return res.status(403).send(`
+        <html><body style="font-family:system-ui;max-width:480px;margin:80px auto;padding:0 1rem">
+          <h2>Access restricted</h2>
+          <p>Your account (<strong>${profile.email}</strong>) is not enrolled in this course.</p>
+          <a href="/auth/login" style="display:inline-block;margin-top:1rem;padding:.5rem 1.2rem;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none">Try a different account</a>
+        </body></html>
+      `);
+    }
+
+    // Create arcade_session token matching R's make_token() — 48-char alphanumeric
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const token = Array.from(crypto.randomBytes(48), b => chars[b % chars.length]).join('');
+    const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+
+    let writeDb;
+    try {
+      writeDb = new Database(SHINY_DB_PATH);
+      writeDb.prepare(`
+        INSERT OR REPLACE INTO arcade_sessions(token, user_id, expires_at)
+        VALUES (?, ?, ?)
+      `).run(token, profile.email, expiresAt);
+      writeDb.close();
+    } catch (e) {
+      console.error('Cannot write arcade_session:', e.message);
+      return res.status(500).send('Authentication failed (session write error).');
+    }
+
+    const cookieExpires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toUTCString();
+    // Not httpOnly — Shiny JS reads arcade_token via document.cookie
+    res.setHeader('Set-Cookie', `arcade_token=${encodeURIComponent(token)}; Expires=${cookieExpires}; Path=/; SameSite=Lax`);
+    res.redirect('/class-job-market/');
+  } catch (e) {
+    console.error('Shiny OAuth callback error:', e);
+    res.status(500).send(`Authentication failed: ${e.message}. <a href="/auth/login">Try again</a>`);
+  }
 });
 
 // ── LLM system prompts ────────────────────────────────────────────────────────
