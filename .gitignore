@@ -49,6 +49,7 @@ po/*~
 rsconnect/
 *.csv
 *.txt
+!apps/demo-kit-site/public/robots.txt
 shinycannon-1.2.0-85f280d.jar
 *.zip
 *.sqlite*
