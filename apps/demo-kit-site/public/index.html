@@ -325,7 +325,7 @@ header {
           </svg>
           <p>Your game will appear here</p>
         </div>
-        <iframe id="preview-frame" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+        <iframe id="preview-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals"></iframe>
       </div>
     </div>
 
@@ -605,13 +605,19 @@ function openFullscreen() {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function extractHtml(text) {
-  // Code fence: ```html ... ``` or ``` ... ``` — DOCTYPE may be preceded by comments/blanks
-  const fenced = text.match(/```(?:html)?\s*[\s\S]*?(<!DOCTYPE[\s\S]*?<\/html>)\s*```/i);
-  if (fenced) return fenced[1].trim();
-  // Bare HTML anywhere in the text
-  const m = text.match(/<!DOCTYPE\s+html[\s\S]*<\/html>/i)
-         || text.match(/<html[\s\S]*<\/html>/i);
-  return m ? m[0].trim() : null;
+  // Find the first <!DOCTYPE html (or bare <html) and the LAST </html>
+  // This handles code fences, surrounding text, comments — anything the model adds.
+  const lower = text.toLowerCase();
+  let start = lower.indexOf('<!doctype html');
+  if (start === -1) {
+    // Try bare <html> without DOCTYPE
+    const m = text.match(/<html[\s>]/i);
+    if (!m) return null;
+    start = m.index;
+  }
+  const end = lower.lastIndexOf('</html>');
+  if (end === -1 || end < start) return null;
+  return text.slice(start, end + 7).trim();
 }
 
 function appendMsg(role, html) {
