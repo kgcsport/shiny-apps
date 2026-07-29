@@ -183,7 +183,10 @@ app.get('/auth/callback', async (req, res) => {
 
     db.prepare('INSERT OR REPLACE INTO users(email,name) VALUES(?,?)').run(profile.email, profile.name);
     req.session.user = { email: profile.email, name: profile.name };
-    res.redirect('/');
+    req.session.save(err => {
+      if (err) { console.error('Session save error:', err); return res.status(500).send('Session error. <a href="/">Try again</a>'); }
+      res.redirect('/');
+    });
   } catch (e) {
     console.error('OAuth callback error:', e);
     res.status(500).send(`Authentication failed: ${e.message}. <a href="/">Try again</a>`);
