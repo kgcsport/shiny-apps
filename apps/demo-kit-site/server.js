@@ -20,6 +20,7 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const DAILY_LIMIT   = parseInt(process.env.DEMO_KIT_DAILY_LIMIT || '25');
 const EDU_ONLY      = (process.env.DEMO_KIT_EDU_ONLY || 'true') !== 'false';
+const AUTH_DISABLED = process.env.DEMO_KIT_AUTH_DISABLED === 'true';
 
 mkdirSync(DATA_DIR, { recursive: true });
 
@@ -102,7 +103,7 @@ app.use(session({
 
 // ── Middleware helpers ────────────────────────────────────────────────────────
 function requireAuth(req, res, next) {
-  if (req.session?.user) return next();
+  if (AUTH_DISABLED || req.session?.user) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not authenticated' });
   res.redirect('/');
 }
@@ -121,10 +122,13 @@ function checkRateLimit(email) {
 
 // ── Auth: /api/me, /auth/google, /auth/callback, /auth/logout ────────────────
 app.get('/api/me', (req, res) => {
-  if (!req.session?.user) return res.status(401).json({ error: 'Not authenticated' });
+  const user = AUTH_DISABLED
+    ? { email: 'dev@localhost', name: 'Dev (auth disabled)' }
+    : req.session?.user;
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
   const today = new Date().toISOString().slice(0, 10);
-  const row = db.prepare('SELECT count FROM rate_limits WHERE email=? AND date=?').get(req.session.user.email, today);
-  res.json({ ...req.session.user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT });
+  const row = db.prepare('SELECT count FROM rate_limits WHERE email=? AND date=?').get(user.email, today);
+  res.json({ ...user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT });
 });
 
 app.get('/auth/google', (req, res) => {
