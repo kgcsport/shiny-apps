@@ -258,7 +258,7 @@ header {
     <input id="key-input" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
     <button id="key-save-btn" onclick="saveKey()">Save</button>
     <span id="key-status"></span>
-    <span class="key-help">Key is stored in your browser tab only — never sent to our server except as a header on each generation request. <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Get a key ↗</a></span>
+    <span class="key-help">Accepts Anthropic (<code>sk-ant-</code>), OpenAI (<code>sk-</code>), or OpenRouter (<code>sk-or-</code>) keys. Stored in this browser tab only — never saved to the server.</span>
   </div>
 
   <div id="workspace">
@@ -321,16 +321,24 @@ let dailyRemaining = null;
 // ── API key (sessionStorage only — never persisted to disk) ──────────────────
 function getKey() { return sessionStorage.getItem('_ak') || ''; }
 
+function detectProvider(key) {
+  if (key.startsWith('sk-ant-')) return 'Anthropic';
+  if (key.startsWith('sk-or-'))  return 'OpenRouter';
+  if (key.startsWith('sk-'))     return 'OpenAI';
+  return null;
+}
+
 function saveKey() {
   const val = document.getElementById('key-input').value.trim();
-  if (!val.startsWith('sk-')) {
+  const provider = detectProvider(val);
+  if (!provider) {
     document.getElementById('key-status').textContent = 'Key should start with sk-';
     document.getElementById('key-status').style.color = 'var(--danger)';
     return;
   }
   sessionStorage.setItem('_ak', val);
-  document.getElementById('key-input').value = '';            // clear field immediately
-  document.getElementById('key-status').textContent = '✓ Key saved for this session';
+  document.getElementById('key-input').value = '';
+  document.getElementById('key-status').textContent = `✓ ${provider} key saved`;
   document.getElementById('key-status').style.color = 'var(--green)';
   updateKeyBanner();
 }
@@ -432,17 +440,12 @@ async function sendMessage() {
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6).trim();
-        if (data === '[DONE]' || data === '') continue;
+        if (!data || data === '[DONE]') continue;
         try {
           const event = JSON.parse(data);
           if (event.type === 'error') throw new Error(event.error);
-          if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-            fullText += event.delta.text;
-          }
-        } catch (e) {
-          if (e.message.includes('content_block_delta')) continue; // parse noise
-          throw e;
-        }
+          if (event.type === 'text') fullText += event.text;
+        } catch (e) { if (e.message) throw e; }
       }
     }
 

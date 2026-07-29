@@ -258,16 +258,64 @@ Rules:
 
 ${GAMESYNC_API_DOC}`;
 
-// ── POST /api/chat — streaming Anthropic proxy ────────────────────────────────
+// ── Provider detection + streaming helpers ────────────────────────────────────
+function detectProvider(key) {
+  if (key.startsWith('sk-ant-')) return 'anthropic';
+  if (key.startsWith('sk-or-'))  return 'openrouter';
+  return 'openai';
+}
+
+const DEFAULT_MODELS = {
+  anthropic:   'claude-sonnet-5',
+  openai:      'gpt-4o',
+  openrouter:  'anthropic/claude-sonnet-5'
+};
+
+async function* normalizeStream(provider, response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (!data || data === '[DONE]') continue;
+      try {
+        const event = JSON.parse(data);
+        if (provider === 'anthropic') {
+          if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta')
+            yield event.delta.text;
+          else if (event.type === 'error')
+            throw new Error(event.error?.message || JSON.stringify(event.error));
+        } else {
+          // OpenAI-compatible (OpenAI + OpenRouter)
+          const text = event.choices?.[0]?.delta?.content;
+          if (text) yield text;
+        }
+      } catch (e) { if (e.message) throw e; }
+    }
+  }
+}
+
+// ── POST /api/chat — multi-provider streaming proxy ───────────────────────────
 app.post('/api/chat', requireAuth, async (req, res) => {
   const { messages, multiplayer } = req.body;
   if (!Array.isArray(messages) || !messages.length)
     return res.status(400).json({ error: 'messages array required' });
 
-  // Key comes from the client on every request — never stored server-side.
+  // Key supplied by client on every request — never stored server-side.
   const apiKey = (req.headers['x-api-key'] || '').trim();
   if (!apiKey || !apiKey.startsWith('sk-'))
-    return res.status(400).json({ error: 'No Anthropic API key provided. Enter your key in the sidebar.' });
+    return res.status(400).json({ error: 'Enter an API key (Anthropic, OpenAI, or OpenRouter) in the bar above.' });
+
+  const provider = detectProvider(apiKey);
+  const model    = DEFAULT_MODELS[provider];
+  const system   = multiplayer ? SYSTEM_MULTI : SYSTEM_SOLO;
 
   let remaining;
   try {
@@ -281,22 +329,30 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Remaining-Today', remaining);
 
+  const emit = text => res.write(`data: ${JSON.stringify({ type: 'text', text })}\n\n`);
+
   try {
-    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 8192,
-        stream: true,
-        system: multiplayer ? SYSTEM_MULTI : SYSTEM_SOLO,
-        messages
-      })
-    });
+    let upstream;
+
+    if (provider === 'anthropic') {
+      upstream = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, max_tokens: 8192, stream: true, system, messages })
+      });
+    } else {
+      const baseUrl = provider === 'openrouter'
+        ? 'https://openrouter.ai/api/v1'
+        : 'https://api.openai.com/v1';
+      upstream = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model, max_tokens: 8192, stream: true,
+          messages: [{ role: 'system', content: system }, ...messages]
+        })
+      });
+    }
 
     if (!upstream.ok) {
       const err = await upstream.text();
@@ -304,16 +360,15 @@ app.post('/api/chat', requireAuth, async (req, res) => {
       return res.end();
     }
 
-    // Pass Anthropic SSE stream through to client
-    for await (const chunk of upstream.body) {
+    for await (const text of normalizeStream(provider, upstream)) {
       if (res.writableEnded) break;
-      res.write(chunk);
+      emit(text);
     }
   } catch (e) {
-    if (!res.writableEnded) {
+    if (!res.writableEnded)
       res.write(`data: ${JSON.stringify({ type: 'error', error: e.message })}\n\n`);
-    }
   }
+  res.write('data: [DONE]\n\n');
   res.end();
 });
 
