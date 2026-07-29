@@ -405,7 +405,7 @@ app.post('/api/game', requireAuth, (req, res) => {
 });
 
 // ── GET /play — serve saved game (auth required) ─────────────────────────────
-app.get('/play', requireAuth, (req, res) => {
+app.get('/play', (req, res) => {
   const { room } = req.query;
   if (!room) return res.status(400).send('room parameter required');
 
