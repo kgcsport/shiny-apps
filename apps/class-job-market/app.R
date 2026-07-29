@@ -1045,7 +1045,7 @@ server <- function(input, output, session) {
             ),
           if (GOOGLE_AUTH_ENABLED)
             tags$details(class = "admin-login-toggle",
-              tags$summary("Instructor password login"),
+              tags$summary("Sign in with password"),
               textInput("login_user", NULL, placeholder = "Username"),
               passwordInput("login_pw", NULL, placeholder = "Password"),
               actionButton("login_btn", "Sign In →", class = "btn btn-primary btn-block")
