@@ -17,6 +17,16 @@ RENDERED_CONF="${SHINY_SERVER_CONF:-/tmp/shiny-server.conf}"
 mkdir -p /srv/shiny-server/appdata/data /var/log/shiny-server
 chown -R shiny:shiny /srv/shiny-server/appdata /var/log/shiny-server 2>/dev/null || true
 
+# Shiny apps run as the 'shiny' user and don't inherit container env vars.
+# Write the vars apps need to R's site-level environment file so all R
+# processes pick them up regardless of which user spawned them.
+R_RENVIRON_SITE="$(Rscript --no-save --no-restore -e 'cat(file.path(R.home("etc"), "Renviron.site"))')"
+{
+  [ -n "${GOOGLE_CLIENT_ID:-}"     ] && printf 'GOOGLE_CLIENT_ID=%s\n'     "$GOOGLE_CLIENT_ID"
+  [ -n "${GOOGLE_CLIENT_SECRET:-}" ] && printf 'GOOGLE_CLIENT_SECRET=%s\n' "$GOOGLE_CLIENT_SECRET"
+  [ -n "${SHINY_APP_URL:-}"        ] && printf 'SHINY_APP_URL=%s\n'        "$SHINY_APP_URL"
+} >> "$R_RENVIRON_SITE"
+
 awk '
 {
   gsub(/\$\{SHINY_SIMPLE_SCHEDULER\}/, ENVIRON["SHINY_SIMPLE_SCHEDULER"]);
