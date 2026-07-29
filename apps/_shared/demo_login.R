@@ -34,7 +34,7 @@ demo_login_ui <- tagList(
     (function () {
       function demoLogin(user, pass) {
         // If the password form is collapsed inside <details>, open it first
-        var details = document.querySelector('.admin-login-toggle');
+        var details = document.querySelector(".admin-login-toggle");
         if (details) details.open = true;
         var u = document.getElementById("login_user");
         var p = document.getElementById("login_pw");
