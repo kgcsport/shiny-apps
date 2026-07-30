@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Airplane Production Experiment</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f8f9fb;color:#1a1f2e;padding:1.2rem;font-size:14px}
+h1{font-size:1.15rem;font-weight:700;margin-bottom:.25rem}
+.subtitle{color:#6b7280;font-size:.82rem;margin-bottom:1rem}
+.layout{display:flex;gap:1.2rem;flex-wrap:wrap;align-items:flex-start}
+.table-side{flex-shrink:0}
+.chart-side{flex:1;min-width:280px}
+table{border-collapse:collapse;background:#fff;border:1px solid #e2e6ee;border-radius:8px;overflow:hidden;min-width:260px}
+th,td{padding:.45rem .6rem;font-size:.82rem;text-align:center;border-bottom:1px solid #f3f4f6}
+th{background:#f8f9fb;font-weight:600;color:#374151;font-size:.76rem;text-transform:uppercase;letter-spacing:.03em}
+tr:last-child td{border-bottom:none}
+td input{width:72px;padding:.22rem .35rem;border:1px solid #e2e6ee;border-radius:4px;font-size:.82rem;text-align:center;background:transparent;color:inherit}
+td input.firm-input{width:64px}
+td input:focus{outline:none;border-color:#2563eb}
+td input[type=number]::-webkit-inner-spin-button{opacity:.4}
+.del-btn{background:none;border:none;color:#dc2626;font-size:1.1rem;cursor:pointer;line-height:1;opacity:.5;padding:0 .1rem}
+.del-btn:hover{opacity:1}
+.actions{display:flex;gap:.5rem;margin-top:.55rem}
+.btn{padding:.3rem .75rem;border-radius:5px;border:none;font-size:.8rem;font-weight:600;cursor:pointer;transition:background .15s}
+.btn-add{background:#2563eb;color:#fff}.btn-add:hover{background:#1d4ed8}
+.btn-reset{background:#fff;color:#374151;border:1px solid #e2e6ee}.btn-reset:hover{background:#f3f4f6}
+svg{background:#fff;border:1px solid #e2e6ee;border-radius:8px;width:100%;display:block}
+.empty-msg{color:#9ca3af;font-size:.85rem;font-style:italic;padding:1rem 0}
+</style>
+</head>
+<body>
+<h1>Airplane Production Experiment</h1>
+<p class="subtitle">Edit the table during class. The scatter plot updates automatically.</p>
+<div class="layout">
+  <div class="table-side">
+    <table>
+      <thead><tr><th>Firm</th><th>Workers</th><th>Planes</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="actions">
+      <button class="btn btn-add" onclick="addRow()">+ Add row</button>
+      <button class="btn btn-reset" onclick="resetData()">Reset</button>
+    </div>
+  </div>
+  <div class="chart-side">
+    <svg id="chart" viewBox="0 0 480 380"></svg>
+  </div>
+</div>
+<script>
+const COLORS = ['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#db2777','#0891b2','#65a30d','#ea580c','#0284c7'];
+const INIT = [
+  {firm:'A',workers:1,output:''},
+  {firm:'B',workers:1,output:''},
+  {firm:'C',workers:1,output:''},
+];
+
+let rows = INIT.map(r=>({...r}));
+
+function render() {
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = '';
+  rows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      `<td><input class="firm-input" value="${esc(r.firm)}" oninput="rows[${i}].firm=this.value;draw()"></td>` +
+      `<td><input type="number" min="0" step="1" value="${r.workers}" oninput="rows[${i}].workers=Math.max(0,+this.value||0);draw()"></td>` +
+      `<td><input type="number" min="0" step="1" value="${r.output}" placeholder="—" oninput="rows[${i}].output=this.value===''?'':Math.max(0,+this.value);draw()"></td>` +
+      `<td><button class="del-btn" onclick="deleteRow(${i})" title="Remove">×</button></td>`;
+    tbody.appendChild(tr);
+  });
+  draw();
+}
+
+function addRow() {
+  rows.push({firm: String.fromCharCode(65 + rows.length % 26), workers: 1, output: ''});
+  render();
+}
+
+function deleteRow(i) {
+  if (rows.length <= 1) return;
+  rows.splice(i, 1);
+  render();
+}
+
+function resetData() {
+  rows = INIT.map(r=>({...r}));
+  render();
+}
+
+function esc(s) { return String(s).replace(/"/g,'&quot;'); }
+
+// ── Chart ─────────────────────────────────────────────────────────────────────
+const M = {t:20, r:24, b:50, l:52};
+const W=480, H=380, iW=W-M.l-M.r, iH=H-M.t-M.b;
+
+function draw() {
+  const pts = rows
+    .filter(r => r.workers >= 0 && r.output !== '' && !isNaN(+r.output))
+    .map((r, i) => ({x: +r.workers, y: +r.output, firm: r.firm, color: COLORS[i % COLORS.length]}));
+
+  const maxW = Math.max(4, ...pts.map(p=>p.x));
+  const maxO = Math.max(4, ...pts.map(p=>p.y));
+  const xMax = maxW * 1.2;
+  const yMax = maxO * 1.2;
+
+  const qx = v => M.l + (v/xMax)*iW;
+  const py = v => M.t + iH - (v/yMax)*iH;
+
+  let h = '';
+
+  // Grid lines
+  for (let i=1; i<=5; i++) {
+    const xv = xMax*i/5, yv = yMax*i/5;
+    h += `<line x1="${qx(xv)}" y1="${M.t}" x2="${qx(xv)}" y2="${M.t+iH}" stroke="#f0f2f6" stroke-width="1"/>`;
+    h += `<line x1="${M.l}" y1="${py(yv)}" x2="${M.l+iW}" y2="${py(yv)}" stroke="#f0f2f6" stroke-width="1"/>`;
+  }
+
+  // Axes
+  h += `<line x1="${M.l}" y1="${py(0)}" x2="${M.l+iW}" y2="${py(0)}" stroke="#9ca3af" stroke-width="1.5"/>`;
+  h += `<line x1="${M.l}" y1="${M.t}" x2="${M.l}" y2="${py(0)}" stroke="#9ca3af" stroke-width="1.5"/>`;
+
+  // Ticks & labels
+  for (let i=0; i<=5; i++) {
+    const xv = xMax*i/5, yv = yMax*i/5;
+    h += `<line x1="${qx(xv)}" y1="${py(0)}" x2="${qx(xv)}" y2="${py(0)+5}" stroke="#9ca3af" stroke-width="1"/>`;
+    h += `<text x="${qx(xv)}" y="${py(0)+18}" font-size="11" fill="#6b7280" text-anchor="middle">${Math.round(xv)}</text>`;
+    h += `<line x1="${M.l-5}" y1="${py(yv)}" x2="${M.l}" y2="${py(yv)}" stroke="#9ca3af" stroke-width="1"/>`;
+    h += `<text x="${M.l-8}" y="${py(yv)+4}" font-size="11" fill="#6b7280" text-anchor="end">${Math.round(yv)}</text>`;
+  }
+
+  // Axis labels
+  h += `<text x="${M.l+iW/2}" y="${H-4}" font-size="12" fill="#6b7280" text-anchor="middle">Workers</text>`;
+  h += `<text x="13" y="${M.t+iH/2}" font-size="12" fill="#6b7280" text-anchor="middle" transform="rotate(-90 13 ${M.t+iH/2})">Planes Produced</text>`;
+
+  if (pts.length === 0) {
+    h += `<text x="${M.l+iW/2}" y="${M.t+iH/2}" font-size="13" fill="#9ca3af" text-anchor="middle">Enter output values to see the chart</text>`;
+  } else {
+    // Points with firm labels
+    pts.forEach(p => {
+      const cx = qx(p.x), cy = py(p.y);
+      h += `<circle cx="${cx}" cy="${cy}" r="8" fill="${p.color}" stroke="#fff" stroke-width="2"/>`;
+      // Firm label — offset to avoid overlap
+      const lx = cx + 12, ly = cy - 2;
+      h += `<text x="${lx}" y="${ly+4}" font-size="11" fill="${p.color}" font-weight="700">${esc(p.firm)}</text>`;
+    });
+  }
+
+  document.getElementById('chart').innerHTML = h;
+}
+
+render();
+</script>
+</body>
+</html>

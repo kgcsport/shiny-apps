@@ -32,11 +32,46 @@ mkdirSync(DATA_DIR, { recursive: true });
 // ── Pre-built game templates ──────────────────────────────────────────────────
 const TEMPLATE_META = [
   {
-    id:           'tax-incidence',
-    title:        'Tax Incidence Explorer',
-    description:  'Interactive supply & demand chart showing how a per-unit tax is split between buyers and sellers. Adjust demand slope, supply slope, and tax level with sliders. Equilibrium is fixed at Q*=6, P*=8.',
+    id:          'tax-incidence',
+    title:       'Tax Incidence Explorer',
+    description: 'Interactive supply & demand chart showing how a per-unit tax is split between buyers and sellers. Adjust demand and supply slope sliders — see consumer vs. producer burden shift in real time.',
     is_multiplayer: 0,
-    source:       'tax-incidence',
+    source:      'tax-incidence',
+  },
+  {
+    id:          'airplanes-game',
+    title:       'Airplane Production Experiment',
+    description: 'Live data-entry tool for the in-class airplane-folding production experiment. Edit a table of firms, worker counts, and output during class — a scatter plot updates automatically.',
+    is_multiplayer: 0,
+    source:      'airplanes-game',
+  },
+  {
+    id:          'sloman-trading-game',
+    title:       'Sloman Trading Game',
+    description: 'Multi-round trading game for up to 8 teams producing three goods (Square, Triangle, Rectangle). Prices fall as total output rises. Includes a countdown timer, live leaderboard, and price-trend chart.',
+    is_multiplayer: 0,
+    source:      'sloman-trading-game',
+  },
+  {
+    id:          'theory-of-firm',
+    title:       'Theory of the Firm',
+    description: 'Interactive cost-curve diagram with adjustable demand (A, B) and cubic MC polynomial parameters. Finds the profit-maximizing Q*, shows MC/MR/ATC/AVC/AFC curves, and a TR vs. TC profit rectangle.',
+    is_multiplayer: 0,
+    source:      'theory-of-firm',
+  },
+  {
+    id:          'restricted-seller',
+    title:       'The Restricted Seller',
+    description: 'Phased classroom experiment contrasting competitive market (Round 1) with monopoly (Round 2). Configurable WTP list generates a step-function demand curve; shows CS, PS, and deadweight loss.',
+    is_multiplayer: 0,
+    source:      'restricted-seller',
+  },
+  {
+    id:          'indifference-to-demand',
+    title:       'Indifference Curves & Demand Derivation',
+    description: 'Plots indifference curves + budget constraint for four utility types (Cobb-Douglas, Perfect Substitutes, Perfect Complements, Quasilinear), then derives the demand curve by sweeping the price of good X.',
+    is_multiplayer: 0,
+    source:      'indifference-to-demand',
   },
 ];
 
