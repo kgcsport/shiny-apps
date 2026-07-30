@@ -432,7 +432,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Enter an API key (Anthropic, OpenAI, or OpenRouter) in the bar above.' });
 
   const provider = detectProvider(apiKey);
-  const model    = DEFAULT_MODELS[provider];
+  const model    = (isDemo && provider === 'openai') ? 'gpt-4o-mini' : DEFAULT_MODELS[provider];
   const system   = multiplayer ? SYSTEM_MULTI : SYSTEM_SOLO;
 
   let remaining;
