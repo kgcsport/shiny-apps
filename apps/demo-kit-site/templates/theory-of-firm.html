@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Theory of the Firm — Interactive Tool</title>
+<style>
+/* ── Tokens ── */
+:root {
+  --bg:       #f8f9fb;
+  --surface:  #ffffff;
+  --alt:      #f3f4f6;
+  --border:   #e2e6ee;
+  --text:     #1a1f2e;
+  --text2:    #374151;
+  --text3:    #6b7280;
+  --shadow:   0 1px 3px rgba(0,0,0,0.07);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:      #0d1117;
+    --surface: #161b27;
+    --alt:     #1e2535;
+    --border:  #2a3347;
+    --text:    #e2e8f0;
+    --text2:   #94a3b8;
+    --text3:   #64748b;
+    --shadow:  0 1px 4px rgba(0,0,0,0.35);
+  }
+}
+:root[data-theme="light"] {
+  --bg:#f8f9fb; --surface:#ffffff; --alt:#f3f4f6; --border:#e2e6ee;
+  --text:#1a1f2e; --text2:#374151; --text3:#6b7280; --shadow:0 1px 3px rgba(0,0,0,0.07);
+}
+:root[data-theme="dark"] {
+  --bg:#0d1117; --surface:#161b27; --alt:#1e2535; --border:#2a3347;
+  --text:#e2e8f0; --text2:#94a3b8; --text3:#64748b; --shadow:0 1px 4px rgba(0,0,0,0.35);
+}
+
+/* ── Reset / base ── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:system-ui,-apple-system,sans-serif;
+  background:var(--bg);color:var(--text);
+  padding:1.2rem;font-size:14px;min-height:100vh;
+}
+
+/* ── Top bar ── */
+.topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:1rem}
+h1{font-size:1.12rem;font-weight:700;letter-spacing:-0.01em}
+.subtitle{font-size:.75rem;color:var(--text3);margin-top:.15rem}
+.theme-btn{
+  font-family:inherit;font-size:.73rem;background:var(--surface);
+  border:1px solid var(--border);border-radius:5px;color:var(--text2);
+  padding:.28rem .6rem;cursor:pointer;white-space:nowrap;flex-shrink:0;
+  transition:border-color .15s,color .15s;
+}
+.theme-btn:hover{border-color:#2563eb;color:var(--text)}
+
+/* ── Layout ── */
+.layout{display:flex;gap:1rem;align-items:flex-start}
+@media(max-width:740px){.layout{flex-direction:column}.sidebar{width:100%!important}}
+
+/* ── Sidebar ── */
+.sidebar{width:228px;flex-shrink:0;display:flex;flex-direction:column;gap:.65rem}
+
+.card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:7px;padding:.75rem .8rem;box-shadow:var(--shadow);
+}
+.card-hd{
+  font-size:.67rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:.07em;color:var(--text3);margin-bottom:.6rem;
+}
+
+/* Controls */
+.ctrl{display:flex;align-items:center;gap:.4rem;margin-bottom:.48rem}
+.ctrl:last-of-type{margin-bottom:0}
+.lbl{font-size:.75rem;color:var(--text2);width:20px;flex-shrink:0;font-style:italic}
+.lbl-w{font-size:.75rem;color:var(--text2);width:52px;flex-shrink:0}
+.val{font-size:.75rem;font-weight:700;font-variant-numeric:tabular-nums;color:#2563eb;width:30px;text-align:right;flex-shrink:0}
+
+input[type=range]{
+  flex:1;height:3px;appearance:none;-webkit-appearance:none;
+  background:var(--border);border-radius:2px;cursor:pointer;outline:none;
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:13px;height:13px;
+  border-radius:50%;background:#2563eb;cursor:pointer;
+}
+input[type=range]::-moz-range-thumb{
+  width:13px;height:13px;border-radius:50%;background:#2563eb;border:none;cursor:pointer;
+}
+
+/* MC inputs */
+.mc-grid{display:grid;grid-template-columns:1fr 1fr;gap:.4rem}
+.mc-field{display:flex;flex-direction:column;gap:2px}
+.mc-field label{font-size:.68rem;color:var(--text3);font-style:italic}
+.mc-field input[type=number]{
+  width:100%;padding:3px 5px;border:1px solid var(--border);
+  border-radius:4px;background:var(--alt);color:var(--text);
+  font-size:.75rem;font-family:inherit;font-variant-numeric:tabular-nums;outline:none;
+  transition:border-color .15s;
+}
+.mc-field input[type=number]:focus{border-color:#2563eb}
+
+/* Checkbox */
+.chk-row{display:flex;align-items:center;gap:.4rem;font-size:.75rem;color:var(--text2);cursor:pointer;padding-top:.22rem}
+input[type=checkbox]{accent-color:#2563eb;width:13px;height:13px;cursor:pointer;flex-shrink:0}
+
+/* Legend */
+.legend{display:flex;flex-wrap:wrap;gap:.28rem .55rem}
+.leg{display:flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text3)}
+.swatch{width:18px;height:2.5px;border-radius:1px;flex-shrink:0}
+
+/* Summary */
+.sum-row{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:.19rem 0;border-bottom:1px solid var(--border);
+  font-size:.75rem;gap:.4rem;
+}
+.sum-row:last-child{border-bottom:none}
+.sum-k{color:var(--text3)}
+.sum-v{font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
+.sum-v.profit{color:#16a34a}
+.sum-v.loss{color:#dc2626}
+
+/* Alert */
+.alert{
+  font-size:.73rem;color:#dc2626;background:rgba(220,38,38,.07);
+  border-left:3px solid #dc2626;border-radius:0 4px 4px 0;
+  padding:.3rem .55rem;margin-bottom:.45rem;display:none;
+}
+
+/* ── Main / Charts ── */
+.main{flex:1;min-width:0;display:flex;flex-direction:column;gap:.75rem}
+.chart-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:7px;padding:.85rem;box-shadow:var(--shadow);
+}
+.chart-hd{font-size:.8rem;font-weight:600;color:var(--text);margin-bottom:.45rem}
+.chart-wrap{width:100%;overflow-x:auto}
+.chart-wrap svg{display:block;width:100%;height:auto}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <h1>Theory of the Firm</h1>
+    <p class="subtitle">Monopoly &amp; competitive firm — cost &amp; revenue analysis</p>
+  </div>
+  <button class="theme-btn" onclick="toggleTheme()">Toggle theme</button>
+</div>
+
+<div class="layout">
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+
+    <div class="card">
+      <div class="card-hd">Demand: P = A − B·Q</div>
+      <div class="ctrl">
+        <span class="lbl">A</span>
+        <input type="range" id="sl-A" min="10" max="50" step="1" value="30" oninput="update()">
+        <span class="val" id="v-A">30</span>
+      </div>
+      <div class="ctrl">
+        <span class="lbl">B</span>
+        <input type="range" id="sl-B" min="0.1" max="5" step="0.1" value="2" oninput="update()">
+        <span class="val" id="v-B">2.0</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd">Fixed Cost</div>
+      <div class="ctrl">
+        <span class="lbl">F</span>
+        <input type="range" id="sl-F" min="0" max="100" step="5" value="20" oninput="update()">
+        <span class="val" id="v-F">20</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd">MC(Q) = a + b·Q + c·Q² + d·Q³</div>
+      <div class="mc-grid">
+        <div class="mc-field">
+          <label for="in-a">a (intercept)</label>
+          <input type="number" id="in-a" value="4" step="0.5" oninput="update()">
+        </div>
+        <div class="mc-field">
+          <label for="in-b">b (linear)</label>
+          <input type="number" id="in-b" value="-6" step="0.5" oninput="update()">
+        </div>
+        <div class="mc-field">
+          <label for="in-c">c (quadratic)</label>
+          <input type="number" id="in-c" value="3" step="0.1" oninput="update()">
+        </div>
+        <div class="mc-field">
+          <label for="in-d">d (cubic)</label>
+          <input type="number" id="in-d" value="0" step="0.01" oninput="update()">
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd">View</div>
+      <div class="ctrl">
+        <span class="lbl-w">Q max</span>
+        <input type="range" id="sl-Qmax" min="5" max="30" step="1" value="15" oninput="update()">
+        <span class="val" id="v-Qmax">15</span>
+      </div>
+      <div class="ctrl">
+        <span class="lbl-w">Y max</span>
+        <input type="range" id="sl-Ymax" min="10" max="100" step="5" value="40" oninput="update()">
+        <span class="val" id="v-Ymax">40</span>
+      </div>
+      <label class="chk-row">
+        <input type="checkbox" id="cb-afc" onchange="update()"> Show AFC
+      </label>
+    </div>
+
+    <div class="card">
+      <div class="card-hd">Legend</div>
+      <div class="legend">
+        <div class="leg"><span class="swatch" style="background:#2563eb"></span>Demand</div>
+        <div class="leg"><span class="swatch" style="background:#7c3aed"></span>MR</div>
+        <div class="leg"><span class="swatch" style="background:#dc2626"></span>MC</div>
+        <div class="leg"><span class="swatch" style="background:#d97706"></span>ATC</div>
+        <div class="leg"><span class="swatch" style="background:#16a34a"></span>AVC</div>
+        <div class="leg"><span class="swatch" style="background:#6b7280"></span>AFC</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd">Equilibrium</div>
+      <div class="sum-row"><span class="sum-k">Q*</span><span class="sum-v" id="s-q">—</span></div>
+      <div class="sum-row"><span class="sum-k">P*</span><span class="sum-v" id="s-p">—</span></div>
+      <div class="sum-row"><span class="sum-k">TR = P·Q*</span><span class="sum-v" id="s-tr">—</span></div>
+      <div class="sum-row"><span class="sum-k">TC</span><span class="sum-v" id="s-tc">—</span></div>
+      <div class="sum-row"><span class="sum-k">ATC*</span><span class="sum-v" id="s-atc">—</span></div>
+      <div class="sum-row"><span class="sum-k">Profit / Loss</span><span class="sum-v" id="s-pi">—</span></div>
+    </div>
+
+  </aside>
+
+  <!-- ── Main charts ── -->
+  <main class="main">
+
+    <div class="chart-card">
+      <div class="chart-hd">Cost &amp; Revenue Curves</div>
+      <div class="alert" id="alert1"></div>
+      <div class="chart-wrap">
+        <svg id="svg1" viewBox="0 0 608 372" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-hd">Total Revenue vs. Total Cost at Q*</div>
+      <div class="chart-wrap">
+        <svg id="svg2" viewBox="0 0 608 262" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+'use strict';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Math functions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function getP() {
+  return {
+    A:    +document.getElementById('sl-A').value,
+    B:    +document.getElementById('sl-B').value,
+    F:    +document.getElementById('sl-F').value,
+    a:    parseFloat(document.getElementById('in-a').value) || 0,
+    b:    parseFloat(document.getElementById('in-b').value) || 0,
+    c:    parseFloat(document.getElementById('in-c').value) || 0,
+    d:    parseFloat(document.getElementById('in-d').value) || 0,
+    Qmax: +document.getElementById('sl-Qmax').value,
+    Ymax: +document.getElementById('sl-Ymax').value,
+    showAFC: document.getElementById('cb-afc').checked,
+  };
+}
+
+// Demand
+function fDemand(Q, p) { return p.A - p.B * Q; }
+// Marginal Revenue
+function fMR(Q, p)     { return p.A - 2 * p.B * Q; }
+// Marginal Cost
+function fMC(Q, p)     { return p.a + p.b*Q + p.c*Q*Q + p.d*Q*Q*Q; }
+// Total Cost: F + a·Q + b·Q²/2 + c·Q³/3 + d·Q⁴/4
+function fTC(Q, p)     { return p.F + p.a*Q + p.b*Q*Q/2 + p.c*Q*Q*Q/3 + p.d*Q*Q*Q*Q/4; }
+// Average Total Cost
+function fATC(Q, p)    { return Q > 0.0005 ? fTC(Q,p)/Q : Infinity; }
+// Average Variable Cost: (TC-F)/Q = a + b·Q/2 + c·Q²/3 + d·Q³/4
+function fAVC(Q, p)    { return Q > 0.0005 ? (fTC(Q,p)-p.F)/Q : p.a; }
+// Average Fixed Cost
+function fAFC(Q, p)    { return Q > 0.0005 ? p.F/Q : Infinity; }
+// Total Revenue
+function fTR(Q, p)     { return p.A*Q - p.B*Q*Q; }
+// Profit
+function fProfit(Q, p) { return fTR(Q,p) - fTC(Q,p); }
+
+// Find Q* where MR = MC using grid scan + bisection.
+// Returns null if no intersection found in (0, Qmax].
+function findQstar(p) {
+  const N = 3000;
+  const step = p.Qmax / N;
+  const hits = [];
+
+  for (let i = 0; i < N; i++) {
+    const Q1 = Math.max(0.01, i * step);
+    const Q2 = Math.max(0.01, (i+1) * step);
+    const f1 = fMR(Q1, p) - fMC(Q1, p);
+    const f2 = fMR(Q2, p) - fMC(Q2, p);
+    if (!isFinite(f1) || !isFinite(f2)) continue;
+    if (f1 * f2 <= 0) {
+      // bisect to precision
+      let lo = Q1, hi = Q2;
+      for (let k = 0; k < 56; k++) {
+        const mid = (lo + hi) / 2;
+        const fm = fMR(mid,p) - fMC(mid,p);
+        if ((fMR(lo,p)-fMC(lo,p)) * fm <= 0) hi = mid; else lo = mid;
+      }
+      const Qs = (lo + hi) / 2;
+      if (Qs > 0.01 && isFinite(fProfit(Qs,p))) hits.push(Qs);
+    }
+  }
+
+  if (hits.length === 0) return null;
+
+  // Prefer crossing where MR was above MC just before (profit-maximising condition)
+  const profitMax = hits.filter(Q => (fMR(Q - 0.02, p) - fMC(Q - 0.02, p)) > 0);
+  const pool = profitMax.length > 0 ? profitMax : hits;
+  // Among those, pick highest profit
+  return pool.reduce((best, Q) => fProfit(Q,p) > fProfit(best,p) ? Q : best);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SVG path builder
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Builds an SVG path string for a function over [0, Qmax].
+// Points are dropped if |Y| > YMAX_CLIP (avoids SVG overflow on near-vertical curves).
+function buildPath(getFn, p, Qmax, Ymax, qx, py, steps) {
+  steps = steps || 400;
+  var YMAX_CLIP = Ymax * 9;
+  var d = '', pen = false;
+  for (var i = 1; i <= steps; i++) {
+    var Q = (i / steps) * Qmax;
+    var Y = getFn(Q, p);
+    if (!isFinite(Y) || isNaN(Y) || Y > YMAX_CLIP || Y < -(Ymax * 0.6)) {
+      pen = false; continue;
+    }
+    var x = qx(Q).toFixed(1);
+    var y = py(Y).toFixed(1);
+    if (!pen) { d += 'M' + x + ',' + y; pen = true; }
+    else      { d += 'L' + x + ',' + y; }
+  }
+  return d;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Theme helper
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function isDark() {
+  var t = document.documentElement.dataset.theme;
+  if (t === 'dark')  return true;
+  if (t === 'light') return false;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function toggleTheme() {
+  document.documentElement.dataset.theme = isDark() ? 'light' : 'dark';
+  update();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Chart 1 — Cost & Revenue Curves
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function drawChart1(p, Qstar) {
+  var W = 608, H = 372;
+  var ml = 56, mr = 20, mt = 18, mb = 44;
+  var pw = W - ml - mr;   // 532
+  var ph = H - mt - mb;   // 310
+
+  var Qmax = p.Qmax, Ymax = p.Ymax;
+
+  function qx(Q) { return ml + (Q / Qmax) * pw; }
+  function py(Y) { return mt + (1 - Y / Ymax) * ph; }
+
+  var dk = isDark();
+  var gridClr  = dk ? 'rgba(255,255,255,0.065)' : 'rgba(0,0,0,0.065)';
+  var axClr    = dk ? 'rgba(255,255,255,0.28)'  : 'rgba(0,0,0,0.28)';
+  var tickClr  = dk ? '#64748b' : '#9ca3af';
+  var lblClr   = dk ? '#94a3b8' : '#6b7280';
+  var bgFill   = dk ? 'rgba(255,255,255,0.02)'  : 'rgba(0,0,0,0.012)';
+  var dotBg    = dk ? '#161b27' : '#ffffff';
+  var eqHClr   = dk ? 'rgba(255,255,255,0.16)'  : 'rgba(0,0,0,0.14)';
+  var vLineClr = dk ? 'rgba(255,255,255,0.33)'  : 'rgba(0,0,0,0.30)';
+
+  var s = '';
+
+  // Clip path
+  s += '<defs><clipPath id="cp1"><rect x="' + ml + '" y="' + mt + '" width="' + pw + '" height="' + ph + '"/></clipPath></defs>';
+
+  // Plot background
+  s += '<rect x="' + ml + '" y="' + mt + '" width="' + pw + '" height="' + ph + '" fill="' + bgFill + '" rx="2"/>';
+
+  // ── Grid & ticks ──
+  var yticks = 5, xticks = 6;
+  var i, Y, Q, x, y, lbl;
+
+  for (i = 0; i <= yticks; i++) {
+    Y = (i / yticks) * Ymax;
+    y = py(Y).toFixed(1);
+    s += '<line x1="' + ml + '" y1="' + y + '" x2="' + (ml+pw) + '" y2="' + y + '" stroke="' + gridClr + '" stroke-width="1"/>';
+    lbl = (Y % 1 === 0) ? Y.toFixed(0) : Y.toFixed(1);
+    s += '<text x="' + (ml-5) + '" y="' + (+y+3.5) + '" text-anchor="end" font-size="10" fill="' + tickClr + '" font-family="system-ui,-apple-system,sans-serif" font-variant-numeric="tabular-nums">' + lbl + '</text>';
+  }
+  for (i = 0; i <= xticks; i++) {
+    Q = (i / xticks) * Qmax;
+    x = qx(Q).toFixed(1);
+    s += '<line x1="' + x + '" y1="' + mt + '" x2="' + x + '" y2="' + (mt+ph) + '" stroke="' + gridClr + '" stroke-width="1"/>';
+    lbl = (Q % 1 === 0) ? Q.toFixed(0) : Q.toFixed(1);
+    s += '<text x="' + x + '" y="' + (mt+ph+14) + '" text-anchor="middle" font-size="10" fill="' + tickClr + '" font-family="system-ui,-apple-system,sans-serif" font-variant-numeric="tabular-nums">' + lbl + '</text>';
+  }
+
+  // ── Axes ──
+  s += '<line x1="' + ml + '" y1="' + (mt+ph) + '" x2="' + (ml+pw+4) + '" y2="' + (mt+ph) + '" stroke="' + axClr + '" stroke-width="1.5"/>';
+  s += '<line x1="' + ml + '" y1="' + (mt-4) + '" x2="' + ml + '" y2="' + (mt+ph) + '" stroke="' + axClr + '" stroke-width="1.5"/>';
+
+  // ── Axis labels ──
+  var yCx = 14, yCy = mt + ph/2;
+  s += '<text x="' + yCx + '" y="' + yCy + '" text-anchor="middle" font-size="11" fill="' + lblClr + '" font-family="system-ui,-apple-system,sans-serif" transform="rotate(-90,' + yCx + ',' + yCy + ')">Price / Cost ($)</text>';
+  s += '<text x="' + (ml+pw/2) + '" y="' + (H-5) + '" text-anchor="middle" font-size="11" fill="' + lblClr + '" font-family="system-ui,-apple-system,sans-serif">Quantity (Q)</text>';
+
+  // ── Curves ──
+  function curve(fn, color, sw, dash) {
+    var d = buildPath(fn, p, Qmax, Ymax, qx, py, 440);
+    if (!d) return '';
+    var extra = dash ? ' stroke-dasharray="' + dash + '"' : '';
+    return '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="' + sw + '" stroke-linejoin="round" stroke-linecap="round" clip-path="url(#cp1)"' + extra + '/>';
+  }
+
+  // Draw in z-order: AFC (bottom), AVC, ATC, Demand, MR, MC (top)
+  if (p.showAFC) s += curve(fAFC, '#6b7280', 1.5, '4,3');
+  s += curve(fAVC, '#16a34a', 1.75, null);
+  s += curve(fATC, '#d97706', 1.75, null);
+  s += curve(fDemand, '#2563eb', 2, null);
+  s += curve(fMR, '#7c3aed', 2, null);
+  s += curve(fMC, '#dc2626', 2.25, null);
+
+  // ── Equilibrium markers ──
+  if (Qstar !== null && Qstar > 0 && Qstar <= Qmax) {
+    var Pstar   = fDemand(Qstar, p);
+    var MCstar  = fMC(Qstar, p);
+    var ATCstar = fATC(Qstar, p);
+    var xs = qx(Qstar).toFixed(1);
+
+    // Subtle horizontal line at MR=MC level
+    if (MCstar >= 0 && MCstar <= Ymax) {
+      var yEq = py(MCstar).toFixed(1);
+      s += '<line x1="' + ml + '" y1="' + yEq + '" x2="' + xs + '" y2="' + yEq + '" stroke="' + eqHClr + '" stroke-width="1" stroke-dasharray="3,4" clip-path="url(#cp1)"/>';
+    }
+
+    // Vertical dashed line at Q*
+    s += '<line x1="' + xs + '" y1="' + mt + '" x2="' + xs + '" y2="' + (mt+ph) + '" stroke="' + vLineClr + '" stroke-width="1.5" stroke-dasharray="5,4" clip-path="url(#cp1)"/>';
+    s += '<text x="' + xs + '" y="' + (mt+ph+28) + '" text-anchor="middle" font-size="10" font-weight="600" fill="' + lblClr + '" font-family="system-ui,-apple-system,sans-serif" font-variant-numeric="tabular-nums">Q*=' + Qstar.toFixed(2) + '</text>';
+
+    // P* horizontal dashed guide + y-axis label
+    if (Pstar >= 0 && Pstar <= Ymax) {
+      var yP1 = py(Pstar).toFixed(1);
+      s += '<line x1="' + ml + '" y1="' + yP1 + '" x2="' + xs + '" y2="' + yP1 + '" stroke="#2563eb" stroke-width="1" stroke-dasharray="3,3" opacity="0.5" clip-path="url(#cp1)"/>';
+      s += '<text x="' + (ml-4) + '" y="' + (+yP1+3.5) + '" text-anchor="end" font-size="10" font-weight="600" fill="#2563eb" font-family="system-ui,-apple-system,sans-serif" font-variant-numeric="tabular-nums">P*=' + Pstar.toFixed(1) + '</text>';
+    }
+
+    // ATC* subtle horizontal guide
+    if (ATCstar >= 0 && ATCstar <= Ymax) {
+      var yA1 = py(ATCstar).toFixed(1);
+      s += '<line x1="' + ml + '" y1="' + yA1 + '" x2="' + xs + '" y2="' + yA1 + '" stroke="#d97706" stroke-width="1" stroke-dasharray="3,3" opacity="0.38" clip-path="url(#cp1)"/>';
+    }
+
+    // Dot at MR=MC intersection
+    if (MCstar >= 0 && MCstar <= Ymax) {
+      var xd = qx(Qstar).toFixed(1), yd = py(MCstar).toFixed(1);
+      s += '<circle cx="' + xd + '" cy="' + yd + '" r="4" fill="#dc2626" stroke="' + dotBg + '" stroke-width="1.5"/>';
+    }
+    // Dot on demand at Q*
+    if (Pstar >= 0 && Pstar <= Ymax) {
+      var xd2 = qx(Qstar).toFixed(1), yd2 = py(Pstar).toFixed(1);
+      s += '<circle cx="' + xd2 + '" cy="' + yd2 + '" r="4" fill="#2563eb" stroke="' + dotBg + '" stroke-width="1.5"/>';
+    }
+    // Dot on ATC at Q*
+    if (ATCstar >= 0 && ATCstar <= Ymax) {
+      var xd3 = qx(Qstar).toFixed(1), yd3 = py(ATCstar).toFixed(1);
+      s += '<circle cx="' + xd3 + '" cy="' + yd3 + '" r="3.5" fill="#d97706" stroke="' + dotBg + '" stroke-width="1.5"/>';
+    }
+  }
+
+  document.getElementById('svg1').innerHTML = s;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Chart 2 — TR vs TC area diagram
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function drawChart2(p, Qstar) {
+  var W = 608, H = 262;
+  var ml = 56, mr = 100, mt = 16, mb = 44;
+  var pw = W - ml - mr;   // 452
+  var ph = H - mt - mb;   // 202
+
+  var svg2 = document.getElementById('svg2');
+  var dk = isDark();
+  var tickClr  = dk ? '#64748b' : '#9ca3af';
+  var lblClr   = dk ? '#94a3b8' : '#6b7280';
+  var gridClr  = dk ? 'rgba(255,255,255,0.065)' : 'rgba(0,0,0,0.065)';
+  var axClr    = dk ? 'rgba(255,255,255,0.28)'  : 'rgba(0,0,0,0.28)';
+  var bgFill   = dk ? 'rgba(255,255,255,0.02)'  : 'rgba(0,0,0,0.012)';
+  var lblBg    = dk ? '#161b27' : '#ffffff';
+  var vLineClr = dk ? 'rgba(255,255,255,0.30)'  : 'rgba(0,0,0,0.28)';
+
+  if (Qstar === null || Qstar <= 0 || !isFinite(Qstar)) {
+    svg2.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" text-anchor="middle" font-size="13" fill="' + tickClr + '" font-family="system-ui,-apple-system,sans-serif">No equilibrium — adjust parameters to continue</text>';
+    return;
+  }
+
+  var Pstar   = fDemand(Qstar, p);
+  var ATCstar = fATC(Qstar, p);
+  var TRval   = fTR(Qstar, p);
+  var TCval   = fTC(Qstar, p);
+  var piVal   = TRval - TCval;
+
+  if (!isFinite(ATCstar) || !isFinite(Pstar) || ATCstar < 0) {
+    svg2.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" text-anchor="middle" font-size="13" fill="' + tickClr + '" font-family="system-ui,-apple-system,sans-serif">Values out of range — try adjusting Qmax or MC coefficients</text>';
+    return;
+  }
+
+  var Qmax  = p.Qmax;
+  var Ymax2 = Math.max(Pstar, ATCstar, 0.5) * 1.40;
+
+  function qx(Q) { return ml + (Q / Qmax) * pw; }
+  function py(Y) { return mt + (1 - Y / Ymax2) * ph; }
+
+  var s = '';
+  s += '<defs><clipPath id="cp2"><rect x="' + ml + '" y="' + mt + '" width="' + pw + '" height="' + ph + '"/></clipPath></defs>';
+  s += '<rect x="' + ml + '" y="' + mt + '" width="' + pw + '" height="' + ph + '" fill="' + bgFill + '" rx="2"/>';
+
+  // ── Grid & ticks ──
+  var yticks2 = 4, xticks2 = 5;
+  var i, Y, Q, x, y, lbl;
+  for (i = 0; i <= yticks2; i++) {
+    Y = (i / yticks2) * Ymax2;
+    y = py(Y).toFixed(1);
+    s += '<line x1="' + ml + '" y1="' + y + '" x2="' + (ml+pw) + '" y2="' + y + '" stroke="' + gridClr + '" stroke-width="1"/>';
+    lbl = Y.toFixed(1);
+    s += '<text x="' + (ml-5) + '" y="' + (+y+3.5) + '" text-anchor="end" font-size="10" fill="' + tickClr + '" font-family="system-ui,-apple-system,sans-serif" font-variant-numeric="tabular-nums">' + lbl + '</text>';
+  }
+  for (i = 0; i <= xticks2; i++) {
+    Q = (i / xticks2) * Qmax;
+    x = qx(Q).toFixed(1);
+    s += '<line x1="' + x + '" y1="' + mt + '" x2="' + x + '" y2="' + (mt+ph) + '" stroke="' + gridClr + '" stroke-width="1"/>';
+    lbl = (Q % 1 === 0) ? Q.toFixed(0) : Q.toFixed(1);
+    s += '<text x="' + x + '" y="' + (mt+ph+14) + '" text-anchor="middle" font-size="10" fill="' + tickClr + '" font-family="system-ui,-apple-system,sans-serif" font-variant-numeric="tabular-nums">' + lbl + '</text>';
+  }
+
+  // ── Axes ──
+  s += '<line x1="' + ml + '" y1="' + (mt+ph) + '" x2="' + (ml+pw+4) + '" y2="' + (mt+ph) + '" stroke="' + axClr + '" stroke-width="1.5"/>';
+  s += '<line x1="' + ml + '" y1="' + (mt-4) + '" x2="' + ml + '" y2="' + (mt+ph) + '" stroke="' + axClr + '" stroke-width="1.5"/>';
+
+  // ── Axis labels ──
+  var yCx2 = 14, yCy2 = mt + ph/2;
+  s += '<text x="' + yCx2 + '" y="' + yCy2 + '" text-anchor="middle" font-size="11" fill="' + lblClr + '" font-family="system-ui,-apple-system,sans-serif" transform="rotate(-90,' + yCx2 + ',' + yCy2 + ')">Price / Cost ($)</text>';
+  s += '<text x="' + (ml+pw/2) + '" y="' + (H-5) + '" text-anchor="middle" font-size="11" fill="' + lblClr + '" font-family="system-ui,-apple-system,sans-serif">Quantity (Q)</text>';
+
+  // ── Rectangles ──
+  var x0    = +qx(0).toFixed(1);
+  var xQ    = +qx(Qstar).toFixed(1);
+  var yBase = +py(0).toFixed(1);
+  var yP    = +py(Pstar).toFixed(1);
+  var yATC  = +py(ATCstar).toFixed(1);
+  var rW    = (xQ - x0).toFixed(1);
+
+  // TC rectangle — amber, dashed border
+  var tcH = (yBase - yATC).toFixed(1);
+  s += '<rect x="' + x0 + '" y="' + yATC.toFixed(1) + '" width="' + rW + '" height="' + tcH + '" fill="#d97706" opacity="0.10" clip-path="url(#cp2)"/>';
+  s += '<rect x="' + x0 + '" y="' + yATC.toFixed(1) + '" width="' + rW + '" height="' + tcH + '" fill="none" stroke="#d97706" stroke-width="1.5" stroke-dasharray="5,3" clip-path="url(#cp2)"/>';
+
+  // TR rectangle — blue, solid border
+  var trH = (yBase - yP).toFixed(1);
+  s += '<rect x="' + x0 + '" y="' + yP.toFixed(1) + '" width="' + rW + '" height="' + trH + '" fill="#2563eb" opacity="0.10" clip-path="url(#cp2)"/>';
+  s += '<rect x="' + x0 + '" y="' + yP.toFixed(1) + '" width="' + rW + '" height="' + trH + '" fill="none" stroke="#2563eb" stroke-width="1.5" clip-path="url(#cp2)"/>';
+
+  // Profit / Loss shading
+  var isProfit   = Pstar > ATCstar;
+  var profColor  = isProfit ? '#16a34a' : '#dc2626';
+  var shadTop    = isProfit ? yP    : yATC;
+  var shadBot    = isProfit ? yATC  : yP;
+  var shadH_val  = Math.max(0, shadBot - shadTop);
+
+  if (shadH_val > 1) {
+    s += '<rect x="' + x0 + '" y="' + shadTop.toFixed(1) + '" width="' + rW + '" height="' + shadH_val.toFixed(1) + '" fill="' + profColor + '" opacity="0.28" clip-path="url(#cp2)"/>';
+  }
+
+  // ── Horizontal level lines + right-side labels ──
+  // P* line (extends slightly right of Q* into right margin)
+  s += '<line x1="' + x0 + '" y1="' + yP.toFixed(1) + '" x2="' + (xQ+3) + '" y2="' + yP.toFixed(1) + '" stroke="#2563eb" stroke-width="1.5"/>';
+  s += '<text x="' + (xQ+9) + '" y="' + (+yP.toFixed(1)+4) + '" font-size="10" font-weight="600" fill="#2563eb" font-family="system-ui,-apple-system,sans-serif" font-variant-numeric="tabular-nums">P* = ' + Pstar.toFixed(2) + '</text>';
+
+  // ATC* line
+  s += '<line x1="' + x0 + '" y1="' + yATC.toFixed(1) + '" x2="' + (xQ+3) + '" y2="' + yATC.toFixed(1) + '" stroke="#d97706" stroke-width="1.5"/>';
+  s += '<text x="' + (xQ+9) + '" y="' + (+yATC.toFixed(1)+4) + '" font-size="10" font-weight="600" fill="#d97706" font-family="system-ui,-apple-system,sans-serif" font-variant-numeric="tabular-nums">ATC*=' + ATCstar.toFixed(2) + '</text>';
+
+  // ── Q* vertical line ──
+  s += '<line x1="' + xQ.toFixed(1) + '" y1="' + mt + '" x2="' + xQ.toFixed(1) + '" y2="' + (mt+ph) + '" stroke="' + vLineClr + '" stroke-width="1.5" stroke-dasharray="5,4" clip-path="url(#cp2)"/>';
+  s += '<text x="' + xQ.toFixed(1) + '" y="' + (mt+ph+28) + '" text-anchor="middle" font-size="10" font-weight="600" fill="' + lblClr + '" font-family="system-ui,-apple-system,sans-serif" font-variant-numeric="tabular-nums">Q*=' + Qstar.toFixed(2) + '</text>';
+
+  // ── Profit/Loss label in shaded region ──
+  if (shadH_val > 18) {
+    var lx  = ((x0 + xQ) / 2).toFixed(1);
+    var lmy = ((shadTop + shadBot) / 2 + 4.5).toFixed(1);
+    var txt = (isProfit ? 'Profit' : 'Loss') + ' = $' + Math.abs(piVal).toFixed(2);
+    var bW  = 112, bH = 17;
+    s += '<rect x="' + (+lx - bW/2) + '" y="' + (+lmy - 13) + '" width="' + bW + '" height="' + bH + '" fill="' + lblBg + '" opacity="0.88" rx="3"/>';
+    s += '<text x="' + lx + '" y="' + lmy + '" text-anchor="middle" font-size="11" font-weight="700" fill="' + profColor + '" font-family="system-ui,-apple-system,sans-serif" font-variant-numeric="tabular-nums">' + txt + '</text>';
+  }
+
+  // ── TR label inside TR rectangle (below profit region) ──
+  var trMidY  = (shadBot + yBase) / 2;
+  var trMidX  = (x0 + xQ) / 2;
+  if ((yBase - shadBot) > 20) {
+    s += '<text x="' + trMidX.toFixed(1) + '" y="' + (trMidY + 4).toFixed(1) + '" text-anchor="middle" font-size="11" font-weight="600" fill="#2563eb" opacity="0.55" font-family="system-ui,-apple-system,sans-serif">TC</text>';
+  }
+
+  svg2.innerHTML = s;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Summary box
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function updateSummary(p, Qstar) {
+  function fmt(v, dec) {
+    dec = dec || 2;
+    return (isFinite(v) && !isNaN(v)) ? '$' + v.toFixed(dec) : '—';
+  }
+  function el(id) { return document.getElementById(id); }
+
+  if (!Qstar || Qstar <= 0 || !isFinite(Qstar)) {
+    ['s-q','s-p','s-tr','s-tc','s-atc'].forEach(function(id){ el(id).textContent = '—'; });
+    var sp = el('s-pi'); sp.textContent = '—'; sp.className = 'sum-v';
+    return;
+  }
+
+  var Pstar   = fDemand(Qstar, p);
+  var TRval   = fTR(Qstar, p);
+  var TCval   = fTC(Qstar, p);
+  var ATCval  = fATC(Qstar, p);
+  var piVal   = TRval - TCval;
+
+  el('s-q').textContent  = Qstar.toFixed(3);
+  el('s-p').textContent  = fmt(Pstar);
+  el('s-tr').textContent = fmt(TRval);
+  el('s-tc').textContent = fmt(TCval);
+  el('s-atc').textContent = fmt(ATCval);
+
+  var sp = el('s-pi');
+  sp.textContent = (piVal >= 0 ? 'Profit: ' : 'Loss: ') + fmt(Math.abs(piVal));
+  sp.className   = 'sum-v ' + (piVal >= 0 ? 'profit' : 'loss');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Main update — called on every input change
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function update() {
+  var p = getP();
+
+  // Update slider value displays
+  document.getElementById('v-A').textContent    = p.A;
+  document.getElementById('v-B').textContent    = p.B.toFixed(1);
+  document.getElementById('v-F').textContent    = p.F;
+  document.getElementById('v-Qmax').textContent = p.Qmax;
+  document.getElementById('v-Ymax').textContent = p.Ymax;
+
+  var Qstar = findQstar(p);
+
+  // Alert if no intersection
+  var al = document.getElementById('alert1');
+  if (Qstar === null) {
+    al.style.display = 'block';
+    al.textContent = 'No MR = MC intersection found in [0, ' + p.Qmax + ']. Try increasing Q max or adjusting MC coefficients.';
+  } else {
+    al.style.display = 'none';
+  }
+
+  drawChart1(p, Qstar);
+  drawChart2(p, Qstar);
+  updateSummary(p, Qstar);
+}
+
+// Initial render
+update();
+</script>
+</body>
+</html>

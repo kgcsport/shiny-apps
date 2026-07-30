@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Indifference Curves &amp; Demand Derivation</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f8f9fb;color:#1a1f2e;padding:1.1rem;font-size:14px}
+h1{font-size:1.1rem;font-weight:700;margin-bottom:.15rem}
+.subtitle{color:#6b7280;font-size:.79rem;margin-bottom:.9rem}
+.layout{display:flex;gap:1.1rem;flex-wrap:wrap;align-items:flex-start}
+.controls{flex-shrink:0;width:210px}
+.charts-col{flex:1;min-width:280px;display:flex;flex-direction:column;gap:.7rem}
+.fgroup{margin-bottom:.6rem}
+.fgroup label{display:block;font-size:.74rem;font-weight:600;color:#374151;margin-bottom:.2rem}
+.fgroup select,.fgroup input{width:100%;padding:.28rem .4rem;border:1px solid #e2e6ee;border-radius:5px;font-size:.82rem;background:#fff;color:#1a1f2e}
+.fgroup select:focus,.fgroup input:focus{outline:none;border-color:#2563eb}
+.fgroup .hint{font-size:.68rem;color:#9ca3af;margin-top:.12rem}
+.inline{display:flex;gap:.5rem}
+.inline .fgroup{flex:1}
+.slider-row{display:flex;align-items:center;gap:.35rem}
+.slider-row input[type=range]{flex:1}
+.sval{font-size:.8rem;font-weight:700;min-width:32px;color:#2563eb}
+.summary{background:#fff;border:1px solid #e2e6ee;border-radius:7px;padding:.55rem .65rem;margin-top:.5rem;font-size:.76rem}
+.summary .row{display:flex;justify-content:space-between;padding:.15rem 0;border-bottom:1px solid #f3f4f6}
+.summary .row:last-child{border-bottom:none}
+.summary .rv{font-weight:700;font-variant-numeric:tabular-nums;color:#2563eb}
+.chart-wrap{background:#fff;border:1px solid #e2e6ee;border-radius:8px;overflow:hidden}
+.chart-wrap .chart-title{font-size:.76rem;font-weight:700;color:#374151;padding:.45rem .7rem;border-bottom:1px solid #f3f4f6;background:#f8f9fb}
+svg{width:100%;display:block}
+@media(max-width:580px){.controls{width:100%}}
+</style>
+</head>
+<body>
+<h1>Indifference Curves &amp; Demand Derivation</h1>
+<p class="subtitle">Choose a utility type, adjust parameters, and see IC curves + the derived demand curve update live.</p>
+<div class="layout">
+
+  <div class="controls">
+    <div class="fgroup">
+      <label>Utility type</label>
+      <select id="utype" onchange="update()">
+        <option value="cd">Cobb-Douglas: x^α · y^(1-α)</option>
+        <option value="ps">Perfect Substitutes: αx + (1-α)y</option>
+        <option value="pc">Perfect Complements: min(αx, (1-α)y)</option>
+        <option value="ql">Quasilinear: α·ln(x) + y</option>
+      </select>
+    </div>
+    <div class="inline">
+      <div class="fgroup"><label id="lbl-gx">Good X name</label><input type="text" id="gx" value="X" oninput="update()"></div>
+      <div class="fgroup"><label id="lbl-gy">Good Y name</label><input type="text" id="gy" value="Y" oninput="update()"></div>
+    </div>
+    <div class="fgroup">
+      <label>Income (I)</label>
+      <input type="number" id="income" min="1" value="100" oninput="update()">
+    </div>
+    <div class="inline">
+      <div class="fgroup"><label id="lbl-px">P<sub>X</sub></label><input type="number" id="px" min="0.1" step="0.5" value="5" oninput="update()"></div>
+      <div class="fgroup"><label id="lbl-py">P<sub>Y</sub></label><input type="number" id="py" min="0.1" step="0.5" value="5" oninput="update()"></div>
+    </div>
+    <div class="fgroup">
+      <label id="lbl-alpha">α = <span id="alpha-val">0.50</span></label>
+      <div class="slider-row"><input type="range" id="alpha" min="0.05" max="0.95" step="0.05" value="0.5" oninput="update()"></div>
+      <div class="hint" id="alpha-hint">Preference for X over Y</div>
+    </div>
+    <div class="fgroup">
+      <label>P<sub>X</sub> demand range: <span id="pxr-val">1 – 20</span></label>
+      <div class="inline" style="gap:.35rem">
+        <input type="number" id="pxmin" min="0.1" step="0.5" value="1" oninput="update()" style="width:60px">
+        <span style="padding-top:.3rem;color:#9ca3af">to</span>
+        <input type="number" id="pxmax" min="0.5" step="1" value="20" oninput="update()" style="width:60px">
+      </div>
+    </div>
+    <div class="summary" id="summary"></div>
+  </div>
+
+  <div class="charts-col">
+    <div class="chart-wrap">
+      <div class="chart-title" id="ic-title">Indifference curves &amp; budget constraint</div>
+      <svg id="ic-chart" viewBox="0 0 430 320"></svg>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-title" id="d-title">Demand for X</div>
+      <svg id="d-chart" viewBox="0 0 430 200"></svg>
+    </div>
+  </div>
+
+</div>
+<script>
+// ── Math ──────────────────────────────────────────────────────────────────────
+function utilVal(type, x, y, a) {
+  if (type==='cd') return (x>0&&y>0) ? Math.pow(x,a)*Math.pow(y,1-a) : 0;
+  if (type==='ps') return a*x+(1-a)*y;
+  if (type==='pc') return Math.min(a*x,(1-a)*y);
+  if (type==='ql') return x>0 ? a*Math.log(x)+y : -Infinity;
+}
+
+function optBundle(type, I, px, py, a) {
+  if (type==='cd') return {x:a*I/px, y:(1-a)*I/py};
+  if (type==='ps') {
+    const lx=a/px, ly=(1-a)/py;
+    if (lx>ly) return {x:I/px, y:0};
+    if (lx<ly) return {x:0, y:I/py};
+    return {x:I/px, y:0};  // corner (indeterminate; show X-corner)
+  }
+  if (type==='pc') {
+    const r=a/(1-a);
+    const x=I/(px+r*py);
+    return {x, y:r*x};
+  }
+  if (type==='ql') {
+    const x=a*py/px;
+    const y=(I-px*x)/py;
+    return y>=0 ? {x,y} : {x:I/px,y:0};
+  }
+}
+
+function demandX(type, I, px, py, a) {
+  if (type==='cd') return a*I/px;
+  if (type==='ps') { const lx=a/px,ly=(1-a)/py; return lx>=ly ? I/px : 0; }
+  if (type==='pc') { const r=a/(1-a); return I/(px+r*py); }
+  if (type==='ql') { const x=a*py/px; return (I-px*x)/py>=0 ? x : I/px; }
+}
+
+// IC y-value for smooth types
+function icY(type, U, x, a) {
+  if (type==='cd') {
+    if (x<=0||U<=0) return null;
+    const v=Math.pow(U/Math.pow(x,a),1/(1-a));
+    return (isFinite(v)&&v>=0) ? v : null;
+  }
+  if (type==='ps') { const v=(U-a*x)/(1-a); return v; }
+  if (type==='ql') { if(x<=0) return null; return U-a*Math.log(x); }
+  return null;
+}
+
+// Build IC as polyline for smooth types; returns [{x,y}] segments
+function icSegments(type, U, a, xMin, xMax, yMax) {
+  const N=200;
+  const segs=[], curr=[];
+  for(let i=0;i<=N;i++){
+    const x=xMin+(xMax-xMin)*i/N;
+    const y=icY(type,U,x,a);
+    if(y!==null&&y>=0&&y<=yMax*1.05&&isFinite(y)) curr.push({x,y});
+    else { if(curr.length>=2) segs.push([...curr]); curr.length=0; }
+  }
+  if(curr.length>=2) segs.push(curr);
+  return segs;
+}
+
+// ── Charts ────────────────────────────────────────────────────────────────────
+const M={t:22,r:22,b:42,l:46};
+
+function mkFn(xMax,yMax,W,H){
+  const iW=W-M.l-M.r, iH=H-M.t-M.b;
+  return {
+    qx: x=>M.l+(x/xMax)*iW,
+    py: y=>M.t+iH-(y/yMax)*iH,
+    iW, iH, W, H
+  };
+}
+
+function segsToPath(segs,fn){
+  return segs.map(seg=>seg.map((p,i)=>`${i===0?'M':'L'}${fn.qx(p.x).toFixed(1)},${fn.py(p.y).toFixed(1)}`).join(' ')).join(' ');
+}
+
+function axes(fn, xMax, yMax, xLabel, yLabel, W, H){
+  let h='';
+  // Grid
+  for(let i=1;i<=4;i++){
+    h+=`<line x1="${M.l}" y1="${fn.py(yMax*i/4)}" x2="${M.l+fn.iW}" y2="${fn.py(yMax*i/4)}" stroke="#f0f2f6" stroke-width="1"/>`;
+    h+=`<line x1="${fn.qx(xMax*i/4)}" y1="${M.t}" x2="${fn.qx(xMax*i/4)}" y2="${M.t+fn.iH}" stroke="#f0f2f6" stroke-width="1"/>`;
+  }
+  // Axes
+  h+=`<line x1="${M.l}" y1="${M.t+fn.iH}" x2="${M.l+fn.iW}" y2="${M.t+fn.iH}" stroke="#9ca3af" stroke-width="1.5"/>`;
+  h+=`<line x1="${M.l}" y1="${M.t}" x2="${M.l}" y2="${M.t+fn.iH}" stroke="#9ca3af" stroke-width="1.5"/>`;
+  // Ticks
+  for(let i=0;i<=4;i++){
+    const xv=xMax*i/4, yv=yMax*i/4;
+    h+=`<line x1="${fn.qx(xv)}" y1="${M.t+fn.iH}" x2="${fn.qx(xv)}" y2="${M.t+fn.iH+4}" stroke="#9ca3af" stroke-width="1"/>`;
+    h+=`<text x="${fn.qx(xv)}" y="${M.t+fn.iH+15}" font-size="10" fill="#6b7280" text-anchor="middle">${Math.round(xv*10)/10}</text>`;
+    h+=`<line x1="${M.l-4}" y1="${fn.py(yv)}" x2="${M.l}" y2="${fn.py(yv)}" stroke="#9ca3af" stroke-width="1"/>`;
+    h+=`<text x="${M.l-6}" y="${fn.py(yv)+4}" font-size="10" fill="#6b7280" text-anchor="end">${Math.round(yv*10)/10}</text>`;
+  }
+  h+=`<text x="${M.l+fn.iW/2}" y="${H-2}" font-size="11" fill="#6b7280" text-anchor="middle">${xLabel}</text>`;
+  h+=`<text x="11" y="${M.t+fn.iH/2}" font-size="11" fill="#6b7280" text-anchor="middle" transform="rotate(-90 11 ${M.t+fn.iH/2})">${yLabel}</text>`;
+  return h;
+}
+
+// ── Main update ───────────────────────────────────────────────────────────────
+function update(){
+  const type  = document.getElementById('utype').value;
+  const I     = parseFloat(document.getElementById('income').value)||100;
+  const px    = Math.max(0.1,parseFloat(document.getElementById('px').value)||5);
+  const py    = Math.max(0.1,parseFloat(document.getElementById('py').value)||5);
+  const a     = parseFloat(document.getElementById('alpha').value)||0.5;
+  const pxMin = Math.max(0.1,parseFloat(document.getElementById('pxmin').value)||1);
+  const pxMax = Math.max(pxMin+0.5,parseFloat(document.getElementById('pxmax').value)||20);
+  const gx    = document.getElementById('gx').value||'X';
+  const gy    = document.getElementById('gy').value||'Y';
+
+  document.getElementById('alpha-val').textContent = a.toFixed(2);
+  document.getElementById('pxr-val').textContent = `${pxMin} – ${pxMax}`;
+
+  // Alpha label hint
+  const hints = {cd:'Share of spending on '+gx, ps:'Weight on '+gx+' in utility', pc:'Proportion in optimal ratio', ql:'Marginal utility of '+gx};
+  document.getElementById('alpha-hint').textContent = hints[type]||'';
+
+  // Optimal bundle & utility
+  const {x:xStar, y:yStar} = optBundle(type, I, px, py, a);
+  const U0 = utilVal(type, xStar, yStar, a);
+
+  // IC chart bounds
+  const xBud = I/px, yBud = I/py;
+  const xMax_ic = Math.max(xStar, xBud) * 1.35 || 30;
+  const yMax_ic = Math.max(yStar, yBud) * 1.35 || 30;
+
+  // Build IC utility levels (5 curves)
+  let delta;
+  if (type==='cd') delta = Math.max(0.05, U0*0.25);
+  else if (type==='ps') delta = Math.max(1, U0*0.25);
+  else if (type==='pc') delta = Math.max(0.5, U0*0.25);
+  else delta = Math.max(1, Math.abs(U0)*0.2+2); // ql
+
+  const levels = [-2,-1,0,1,2].map(i=>U0+i*delta).filter(U=>{
+    if (type==='cd'||type==='pc') return U>0.01;
+    return true;
+  });
+
+  drawICChart(type, I, px, py, a, xStar, yStar, U0, levels, xMax_ic, yMax_ic, gx, gy);
+  drawDemandChart(type, I, px, py, a, pxMin, pxMax, gx);
+  drawSummary(type, xStar, yStar, U0, I, px, py, a, gx, gy);
+
+  document.getElementById('ic-title').textContent = `${gx} vs ${gy} — indifference curves & budget`;
+  document.getElementById('d-title').textContent  = `Demand for ${gx} as P${gx} varies`;
+}
+
+function drawICChart(type, I, px, py, a, xStar, yStar, U0, levels, xMax, yMax, gx, gy){
+  const W=430, H=320;
+  const fn = mkFn(xMax, yMax, W, H);
+  let h = axes(fn, xMax, yMax, gx, gy, W, H);
+
+  // Draw ICs
+  const IC_COLOR_OPT = '#2563eb';
+  const IC_COLOR_ALT = '#93c5fd';
+
+  if (type==='pc') {
+    // L-shaped ICs
+    levels.forEach((U,i)=>{
+      if (U<=0) return;
+      const xK=U/a, yK=U/(1-a);
+      if (xK>xMax*1.1||yK>yMax*1.1) return;
+      const isOpt = Math.abs(U-U0)<0.001;
+      const c = isOpt ? IC_COLOR_OPT : IC_COLOR_ALT;
+      const sw = isOpt ? 2 : 1.2;
+      const xc=fn.qx(xK), yT=fn.py(Math.min(yMax*1.05,yK*3));
+      const yc=fn.py(yK), xR=fn.qx(Math.min(xMax*1.05,xK*3));
+      h+=`<polyline points="${xc},${yT} ${xc},${yc} ${xR},${yc}" fill="none" stroke="${c}" stroke-width="${sw}"/>`;
+      if (isOpt) h+=`<text x="${xc+4}" y="${yT+10}" font-size="10" fill="${c}" font-weight="700">U*</text>`;
+    });
+  } else {
+    // Smooth ICs
+    levels.forEach(U=>{
+      if (type==='cd'&&U<=0) return;
+      const isOpt = Math.abs(U-U0)<Math.abs(U0)*0.001+0.0001;
+      const c = isOpt ? IC_COLOR_OPT : IC_COLOR_ALT;
+      const sw = isOpt ? 2 : 1.2;
+      const segs = icSegments(type, U, a, 0.01, xMax*1.05, yMax);
+      const d = segsToPath(segs, fn);
+      if (d) {
+        h+=`<path d="${d}" fill="none" stroke="${c}" stroke-width="${sw}"/>`;
+        // Label optimal IC
+        if (isOpt && segs.length > 0) {
+          const seg0 = segs[0], last=seg0[Math.floor(seg0.length*0.15)];
+          if (last) h+=`<text x="${fn.qx(last.x)+4}" y="${fn.py(last.y)-4}" font-size="10" fill="${c}" font-weight="700">U*</text>`;
+        }
+      }
+    });
+  }
+
+  // Budget constraint
+  const bx1=fn.qx(0), by1=fn.py(I/py), bx2=fn.qx(I/px), by2=fn.py(0);
+  h+=`<line x1="${bx1}" y1="${by1}" x2="${bx2}" y2="${by2}" stroke="#374151" stroke-width="1.8"/>`;
+  h+=`<text x="${bx2-4}" y="${by2-8}" font-size="10" fill="#374151" font-weight="600" text-anchor="end">Budget</text>`;
+
+  // Optimal bundle
+  if (xStar>=0&&xStar<=xMax&&yStar>=0&&yStar<=yMax) {
+    const cx=fn.qx(xStar), cy=fn.py(yStar);
+    h+=`<line x1="${M.l}" y1="${cy}" x2="${cx}" y2="${cy}" stroke="#2563eb" stroke-width="1" stroke-dasharray="4,3"/>`;
+    h+=`<line x1="${cx}" y1="${cy}" x2="${cx}" y2="${M.t+fn.iH}" stroke="#2563eb" stroke-width="1" stroke-dasharray="4,3"/>`;
+    h+=`<circle cx="${cx}" cy="${cy}" r="5" fill="#2563eb" stroke="#fff" stroke-width="1.5"/>`;
+    // Labels
+    const lx = cx > M.l+fn.iW*0.7 ? cx-4 : cx+4;
+    const la = cx > M.l+fn.iW*0.7 ? 'end' : 'start';
+    h+=`<text x="${lx}" y="${cy-8}" font-size="10" fill="#2563eb" font-weight="700" text-anchor="${la}">(${fmt(xStar)}, ${fmt(yStar)})</text>`;
+    h+=`<text x="${fn.qx(xStar)}" y="${M.t+fn.iH+15}" font-size="10" fill="#2563eb" font-weight="700" text-anchor="middle">${fmt(xStar)}</text>`;
+    h+=`<text x="${M.l-6}" y="${fn.py(yStar)+4}" font-size="10" fill="#2563eb" font-weight="700" text-anchor="end">${fmt(yStar)}</text>`;
+  }
+
+  document.getElementById('ic-chart').innerHTML = h;
+}
+
+function drawDemandChart(type, I, px, py, a, pxMin, pxMax, gx){
+  const W=430, H=200;
+  const N=200;
+  const pts=[];
+
+  if (type==='ps') {
+    // Step function: discontinuity at px = a*py/(1-a)
+    const pxSwitch = a*py/(1-a);
+    for(let i=0;i<=N;i++){
+      const p=pxMin+(pxMax-pxMin)*i/N;
+      pts.push({px:p, xd:demandX(type,I,p,py,a)});
+    }
+  } else {
+    for(let i=0;i<=N;i++){
+      const p=pxMin+(pxMax-pxMin)*i/N;
+      const xd=demandX(type,I,p,py,a);
+      if(isFinite(xd)&&xd>=0) pts.push({px:p,xd});
+    }
+  }
+
+  const maxXd = Math.max(1,...pts.map(p=>p.xd).filter(isFinite))*1.2;
+  const fn = mkFn(pxMax, maxXd, W, H);
+
+  let h = axes(fn, pxMax, maxXd, `Price of ${gx}`, `Qty of ${gx}`, W, H);
+
+  // For PS, draw two segments separated by the step
+  if (type==='ps') {
+    const pxSwitch = a*py/(1-a);
+    const above = pts.filter(p=>p.px<=pxSwitch&&p.xd>0);
+    const below = pts.filter(p=>p.px>=pxSwitch&&p.xd===0);
+
+    if(above.length>=2){
+      const d=above.map((p,i)=>`${i===0?'M':'L'}${fn.qx(p.px).toFixed(1)},${fn.py(p.xd).toFixed(1)}`).join(' ');
+      h+=`<path d="${d}" fill="none" stroke="#dc2626" stroke-width="2"/>`;
+    }
+    // Zero segment (on x-axis)
+    if(pxSwitch<=pxMax){
+      h+=`<line x1="${fn.qx(Math.max(pxMin,pxSwitch))}" y1="${fn.py(0)}" x2="${fn.qx(pxMax)}" y2="${fn.py(0)}" stroke="#dc2626" stroke-width="2"/>`;
+    }
+    // Mark the switch price
+    if(pxSwitch>=pxMin&&pxSwitch<=pxMax){
+      h+=`<line x1="${fn.qx(pxSwitch)}" y1="${M.t}" x2="${fn.qx(pxSwitch)}" y2="${M.t+fn.iH}" stroke="#d97706" stroke-width="1.5" stroke-dasharray="4,3"/>`;
+      h+=`<text x="${fn.qx(pxSwitch)}" y="${M.t-6}" font-size="9" fill="#d97706" font-weight="700" text-anchor="middle">P*=${fmt(pxSwitch)}</text>`;
+    }
+  } else {
+    // Continuous demand curve
+    const d=pts.filter(p=>p.xd<=maxXd).map((p,i)=>`${i===0?'M':'L'}${fn.qx(p.px).toFixed(1)},${fn.py(p.xd).toFixed(1)}`).join(' ');
+    if(d) h+=`<path d="${d}" fill="none" stroke="#dc2626" stroke-width="2"/>`;
+    h+=`<text x="${fn.qx(pxMax)-2}" y="${fn.py(demandX(type,I,pxMax,py,a))+4}" font-size="11" fill="#dc2626" font-weight="700" text-anchor="end">D</text>`;
+  }
+
+  // Mark current px
+  const curXd=demandX(type,I,px,py,a);
+  if(px>=pxMin&&px<=pxMax&&isFinite(curXd)&&curXd>=0&&curXd<=maxXd){
+    h+=`<line x1="${fn.qx(px)}" y1="${M.t}" x2="${fn.qx(px)}" y2="${M.t+fn.iH}" stroke="#d97706" stroke-width="1.5" stroke-dasharray="4,3"/>`;
+    h+=`<circle cx="${fn.qx(px)}" cy="${fn.py(curXd)}" r="4" fill="#d97706" stroke="#fff" stroke-width="1.5"/>`;
+    h+=`<text x="${fn.qx(px)}" y="${M.t+fn.iH+15}" font-size="10" fill="#d97706" font-weight="700" text-anchor="middle">${fmt(px)}</text>`;
+  }
+
+  document.getElementById('d-chart').innerHTML = h;
+}
+
+function drawSummary(type, xStar, yStar, U0, I, px, py, a, gx, gy){
+  const type_labels = {cd:'Cobb-Douglas', ps:'Perf. Substitutes', pc:'Perf. Complements', ql:'Quasilinear'};
+  const rows = [
+    [`${gx}* (optimal qty)`, fmt(xStar)],
+    [`${gy}* (optimal qty)`, fmt(yStar)],
+    ['Utility at optimum', fmt(U0)],
+    ['Spending on '+gx, `$${fmt(px*xStar)}`],
+    ['Spending on '+gy, `$${fmt(py*yStar)}`],
+  ];
+  document.getElementById('summary').innerHTML =
+    `<div style="font-size:.73rem;font-weight:700;color:#374151;margin-bottom:.3rem">${type_labels[type]}</div>` +
+    rows.map(([l,v])=>`<div class="row"><span>${l}</span><span class="rv">${v}</span></div>`).join('');
+}
+
+function fmt(v) {
+  if(!isFinite(v)) return '—';
+  return Math.abs(v)<0.005 ? '0' : v.toFixed(Math.abs(v)<10?2:1);
+}
+
+update();
+</script>
+</body>
+</html>

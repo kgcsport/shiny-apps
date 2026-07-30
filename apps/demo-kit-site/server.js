@@ -4,7 +4,7 @@ import { WebSocketServer } from 'ws';
 import Database from 'better-sqlite3';
 import session from 'express-session';
 import crypto from 'crypto';
-import { mkdirSync } from 'fs';
+import { mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -28,6 +28,60 @@ const SHINY_DB_PATH   = process.env.SHINY_DB_PATH || join(DATA_DIR, 'data', 'cla
 const DEMO_OPENAI_KEY = process.env.DEMO_KIT_OPENAI_KEY || '';
 
 mkdirSync(DATA_DIR, { recursive: true });
+
+// ── Pre-built game templates ──────────────────────────────────────────────────
+const TEMPLATE_META = [
+  {
+    id:          'tax-incidence',
+    title:       'Tax Incidence Explorer',
+    description: 'Interactive supply & demand chart showing how a per-unit tax is split between buyers and sellers. Adjust demand and supply slope sliders — see consumer vs. producer burden shift in real time.',
+    is_multiplayer: 0,
+    source:      'tax-incidence',
+  },
+  {
+    id:          'airplanes-game',
+    title:       'Airplane Production Experiment',
+    description: 'Live data-entry tool for the in-class airplane-folding production experiment. Edit a table of firms, worker counts, and output during class — a scatter plot updates automatically.',
+    is_multiplayer: 0,
+    source:      'airplanes-game',
+  },
+  {
+    id:          'sloman-trading-game',
+    title:       'Sloman Trading Game',
+    description: 'Multi-round trading game for up to 8 teams producing three goods (Square, Triangle, Rectangle). Prices fall as total output rises. Includes a countdown timer, live leaderboard, and price-trend chart.',
+    is_multiplayer: 0,
+    source:      'sloman-trading-game',
+  },
+  {
+    id:          'theory-of-firm',
+    title:       'Theory of the Firm',
+    description: 'Interactive cost-curve diagram with adjustable demand (A, B) and cubic MC polynomial parameters. Finds the profit-maximizing Q*, shows MC/MR/ATC/AVC/AFC curves, and a TR vs. TC profit rectangle.',
+    is_multiplayer: 0,
+    source:      'theory-of-firm',
+  },
+  {
+    id:          'restricted-seller',
+    title:       'The Restricted Seller',
+    description: 'Phased classroom experiment contrasting competitive market (Round 1) with monopoly (Round 2). Configurable WTP list generates a step-function demand curve; shows CS, PS, and deadweight loss.',
+    is_multiplayer: 0,
+    source:      'restricted-seller',
+  },
+  {
+    id:          'indifference-to-demand',
+    title:       'Indifference Curves & Demand Derivation',
+    description: 'Plots indifference curves + budget constraint for four utility types (Cobb-Douglas, Perfect Substitutes, Perfect Complements, Quasilinear), then derives the demand curve by sweeping the price of good X.',
+    is_multiplayer: 0,
+    source:      'indifference-to-demand',
+  },
+];
+
+const TEMPLATES = TEMPLATE_META.map(t => {
+  try {
+    return { ...t, html: readFileSync(join(__dirname, 'templates', `${t.source}.html`), 'utf8') };
+  } catch {
+    return { ...t, html: '<p>Template file not found.</p>' };
+  }
+});
 
 // ── Database ──────────────────────────────────────────────────────────────────
 const db = new Database(DB_PATH);
@@ -513,6 +567,35 @@ app.post('/api/game', requireAuth, (req, res) => {
   `).run(code, html, title || 'Untitled Game', req.session.user.email, is_multiplayer ? 1 : 0);
 
   res.json({ room_code: code, url: `${BASE_URL}/play?room=${code}` });
+});
+
+// ── GET /api/games — list recent saved games (metadata only) ─────────────────
+app.get('/api/games', requireAuth, (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+  const rows = db.prepare(`
+    SELECT room_code, title, is_multiplayer, created_by, created_at
+    FROM games ORDER BY rowid DESC LIMIT ?
+  `).all(limit);
+  res.json(rows);
+});
+
+// ── GET /api/game/:code — fetch a saved game (full record) ────────────────────
+app.get('/api/game/:code', requireAuth, (req, res) => {
+  const game = db.prepare('SELECT * FROM games WHERE room_code=?').get(req.params.code);
+  if (!game) return res.status(404).json({ error: 'Game not found' });
+  res.json(game);
+});
+
+// ── GET /api/templates — list available pre-built templates ───────────────────
+app.get('/api/templates', requireAuth, (req, res) => {
+  res.json(TEMPLATES.map(({ html: _html, ...meta }) => meta));
+});
+
+// ── GET /api/template/:id — fetch a specific template (includes HTML) ─────────
+app.get('/api/template/:id', requireAuth, (req, res) => {
+  const t = TEMPLATES.find(x => x.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Template not found' });
+  res.json(t);
 });
 
 // ── GET /play — serve saved game (auth required) ─────────────────────────────

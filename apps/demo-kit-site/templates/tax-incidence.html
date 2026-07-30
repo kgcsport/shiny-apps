@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tax Incidence Explorer</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f8f9fb;color:#1a1f2e;padding:1.2rem;font-size:14px}
+h1{font-size:1.15rem;font-weight:700;margin-bottom:1rem}
+.layout{display:flex;gap:1.2rem;flex-wrap:wrap;align-items:flex-start}
+.controls{flex-shrink:0;width:220px;display:flex;flex-direction:column;gap:.9rem}
+.chart-area{flex:1;min-width:280px}
+label{font-size:.78rem;font-weight:600;display:block;margin-bottom:.25rem;color:#374151}
+.slider-row{display:flex;align-items:center;gap:.4rem}
+input[type="range"]{flex:1}
+.val{font-size:.78rem;font-weight:700;min-width:28px;color:#2563eb}
+.hint{font-size:.7rem;color:#9ca3af;margin-top:.15rem}
+.results{background:#fff;border:1px solid #e2e6ee;border-radius:8px;padding:.75rem;font-size:.78rem}
+.results h3{font-size:.8rem;font-weight:700;margin-bottom:.5rem;color:#374151}
+.result-row{display:flex;justify-content:space-between;align-items:center;padding:.22rem 0;border-bottom:1px solid #f3f4f6}
+.result-row:last-child{border-bottom:none;font-weight:700;margin-top:.2rem}
+.rl{color:#6b7280}
+svg{width:100%;background:#fff;border:1px solid #e2e6ee;border-radius:8px;display:block}
+@media(max-width:560px){.controls{width:100%}}
+</style>
+</head>
+<body>
+<h1>Tax Incidence Explorer</h1>
+<div class="layout">
+  <div class="controls">
+    <div>
+      <label>Demand slope (b): <span class="val" id="b-val">1.0</span></label>
+      <div class="slider-row"><input type="range" id="b" min="0.1" max="5" step="0.1" value="1"></div>
+      <div class="hint">Steeper → more inelastic demand</div>
+    </div>
+    <div>
+      <label>Supply slope (d): <span class="val" id="d-val">1.0</span></label>
+      <div class="slider-row"><input type="range" id="d" min="0.1" max="5" step="0.1" value="1"></div>
+      <div class="hint">Steeper → more inelastic supply</div>
+    </div>
+    <div>
+      <label>Tax per unit ($): <span class="val" id="t-val">4.0</span></label>
+      <div class="slider-row"><input type="range" id="t" min="0" max="10" step="0.5" value="4"></div>
+    </div>
+    <div class="results" id="results"></div>
+  </div>
+  <div class="chart-area">
+    <svg id="chart" viewBox="0 0 520 400"></svg>
+  </div>
+</div>
+<script>
+// Equilibrium fixed at Q*=6, P*=8 for any b,d
+// Demand: P = (8+6b) - b*Q
+// Supply: P = (8-6d) + d*Q
+// With tax t: Qt = 6 - t/(b+d), Pb = 8 + bt/(b+d), Ps = 8 - dt/(b+d)
+
+const M = {t:20,r:72,b:48,l:52};
+const W=520, H=400, iW=W-M.l-M.r, iH=H-M.t-M.b;
+const QX=13, PY=20;
+
+const qx = q => M.l + (q/QX)*iW;
+const py = p => M.t + iH - (p/PY)*iH;
+const D  = (b,q) => (8+6*b) - b*q;
+const S  = (d,q) => (8-6*d) + d*q;
+
+function calc(b,d,t){
+  const Qt = Math.max(0, 6 - t/(b+d));
+  const Pb = 8 + b*t/(b+d);
+  const Ps = 8 - d*t/(b+d);
+  return {Q0:6,P0:8,Qt,Pb,Ps,rev:t*Qt};
+}
+
+function svg(tag,attrs,content=''){
+  const a = Object.entries(attrs).map(([k,v])=>`${k}="${v}"`).join(' ');
+  return `<${tag} ${a}>${content}</${tag}>`;
+}
+function line(x1,y1,x2,y2,s,extra=''){
+  return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${s}" ${extra}/>`;
+}
+function circle(cx,cy,r,fill,stroke='#fff'){
+  return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
+}
+function text(x,y,t,opts={}){
+  const {fill='#6b7280',anchor='middle',fw='',fs='11',dy='4'}=opts;
+  return `<text x="${x}" y="${y}" dy="${dy}" font-size="${fs}" fill="${fill}" text-anchor="${anchor}" ${fw?`font-weight="${fw}"`:''}>${t}</text>`;
+}
+
+function draw(){
+  const b = +document.getElementById('b').value;
+  const d = +document.getElementById('d').value;
+  const t = +document.getElementById('t').value;
+  document.getElementById('b-val').textContent = b.toFixed(1);
+  document.getElementById('d-val').textContent = d.toFixed(1);
+  document.getElementById('t-val').textContent = t.toFixed(1);
+
+  const r = calc(b,d,t);
+  let h = '';
+
+  // Grid
+  for(let q=0;q<=QX;q+=2){
+    h+=line(qx(q),M.t,qx(q),M.t+iH,'#f3f4f6');
+    h+=line(qx(0),py(q),qx(QX),py(q),'#f3f4f6');
+  }
+
+  // Tax wedge shading
+  if(t>0 && r.Qt>0){
+    const x0=qx(0),xq=qx(r.Qt);
+    // consumer burden (red, P* to Pb)
+    h+=`<rect x="${x0}" y="${py(r.Pb)}" width="${xq-x0}" height="${py(r.P0)-py(r.Pb)}" fill="#fca5a5" opacity="0.5"/>`;
+    // producer burden (green, Ps to P*)
+    h+=`<rect x="${x0}" y="${py(r.P0)}" width="${xq-x0}" height="${py(r.Ps)-py(r.P0)}" fill="#86efac" opacity="0.5"/>`;
+  }
+
+  // Demand curve
+  let dp='';
+  for(let q=0;q<=QX;q+=0.25){const p=D(b,q);if(p>=0&&p<=PY)dp+=`${qx(q)},${py(p)} `;}
+  h+=`<polyline points="${dp}" fill="none" stroke="#2563eb" stroke-width="2.5"/>`;
+  // D label
+  const dq2=Math.min(QX-0.5,(8+6*b)/b-0.5);
+  if(dq2>0) h+=text(qx(dq2)+14,py(D(b,dq2)),'D',{fill:'#2563eb',anchor:'start',fw:'700',fs:'13'});
+
+  // Supply curve
+  let sp='';
+  for(let q=0;q<=QX;q+=0.25){const p=S(d,q);if(p>=0&&p<=PY)sp+=`${qx(q)},${py(p)} `;}
+  h+=`<polyline points="${sp}" fill="none" stroke="#16a34a" stroke-width="2.5"/>`;
+  // S label
+  const sq2=QX-0.5; const sp2=S(d,sq2);
+  if(sp2<=PY) h+=text(qx(sq2)+14,py(sp2),'S',{fill:'#16a34a',anchor:'start',fw:'700',fs:'13'});
+
+  // Dashed price reference lines
+  if(t>0 && r.Qt>0){
+    h+=line(qx(0),py(r.Pb),qx(r.Qt),py(r.Pb),'#dc2626','stroke-dasharray="4,3" stroke-width="1.5"');
+    h+=line(qx(0),py(r.Ps),qx(r.Qt),py(r.Ps),'#16a34a','stroke-dasharray="4,3" stroke-width="1.5"');
+    h+=line(qx(r.Qt),py(0),qx(r.Qt),py(r.Pb),'#d97706','stroke-dasharray="4,3" stroke-width="1.5"');
+    h+=line(qx(r.Qt),py(r.Pb),qx(r.Qt),py(r.Ps),'#d97706','stroke-width="2"');
+    // Qt tick
+    h+=text(qx(r.Qt),py(0)+20,`Q=${r.Qt.toFixed(1)}`,{fill:'#d97706',anchor:'middle',fw:'700',dy:'0'});
+  }
+
+  // No-tax equilibrium dashed lines
+  h+=line(qx(0),py(r.P0),qx(r.Q0),py(r.P0),'#6b7280','stroke-dasharray="3,3" stroke-width="1"');
+  h+=line(qx(r.Q0),py(r.P0),qx(r.Q0),py(0),'#6b7280','stroke-dasharray="3,3" stroke-width="1"');
+
+  // Axes
+  h+=line(qx(0),py(0),qx(QX),py(0),'#9ca3af','stroke-width="1.5"');
+  h+=line(qx(0),py(0),qx(0),py(PY),'#9ca3af','stroke-width="1.5"');
+
+  // Axis ticks & labels
+  for(let q=0;q<=QX;q+=2){
+    h+=line(qx(q),py(0),qx(q),py(0)+5,'#9ca3af','stroke-width="1"');
+    h+=text(qx(q),py(0)+18,q,{anchor:'middle',dy:'0'});
+  }
+  for(let p=0;p<=PY;p+=4){
+    h+=line(qx(0)-5,py(p),qx(0),py(p),'#9ca3af','stroke-width="1"');
+    h+=text(qx(0)-8,py(p),p,{anchor:'end',dy:'0'});
+  }
+
+  // Axis titles
+  h+=text(qx(QX/2),py(0)+38,'Quantity (Q)',{anchor:'middle',fs:'12',dy:'0'});
+  h+=`<text x="${qx(0)-38}" y="${py(PY/2)}" font-size="12" fill="#6b7280" text-anchor="middle" transform="rotate(-90 ${qx(0)-38} ${py(PY/2)})">Price ($)</text>`;
+
+  // Price labels on y-axis
+  h+=text(qx(0)-8,py(8),'P*=8',{anchor:'end',fill:'#374151',fw:'600',fs:'10',dy:'0'});
+  if(t>0 && r.Qt>0){
+    h+=text(qx(0)-8,py(r.Pb),`P_B=${r.Pb.toFixed(2)}`,{anchor:'end',fill:'#dc2626',fw:'700',fs:'10',dy:'0'});
+    h+=text(qx(0)-8,py(r.Ps),`P_S=${r.Ps.toFixed(2)}`,{anchor:'end',fill:'#16a34a',fw:'700',fs:'10',dy:'0'});
+  }
+
+  // Key points
+  h+=circle(qx(r.Q0),py(r.P0),5,'#1a1f2e');
+  if(t>0 && r.Qt>0){
+    h+=circle(qx(r.Qt),py(r.Pb),5,'#dc2626');
+    h+=circle(qx(r.Qt),py(r.Ps),5,'#16a34a');
+  }
+
+  // Legend
+  const lx=W-M.r+6, ly=M.t+8;
+  h+=`<rect x="${lx-4}" y="${ly-6}" width="66" height="54" rx="4" fill="white" stroke="#e2e6ee" stroke-width="1"/>`;
+  h+=`<rect x="${lx}" y="${ly}" width="12" height="10" rx="2" fill="#fca5a5" opacity="0.8"/>`;
+  h+=text(lx+16,ly+5,'Consumer',{anchor:'start',fill:'#dc2626',fs:'10',dy:'0'});
+  h+=`<rect x="${lx}" y="${ly+18}" width="12" height="10" rx="2" fill="#86efac" opacity="0.8"/>`;
+  h+=text(lx+16,ly+23,'Producer',{anchor:'start',fill:'#16a34a',fs:'10',dy:'0'});
+
+  document.getElementById('chart').innerHTML = h;
+
+  // Results
+  const cb = t>0 ? (r.Pb-8).toFixed(2) : '0.00';
+  const pb = t>0 ? (8-r.Ps).toFixed(2) : '0.00';
+  const cpct = t>0 ? Math.round((r.Pb-8)/t*100) : 50;
+  const ppct = t>0 ? 100-cpct : 50;
+  document.getElementById('results').innerHTML =
+    `<h3>Results</h3>`+
+    `<div class="result-row"><span class="rl">Equilibrium Q</span><span>6.0 → ${r.Qt.toFixed(1)}</span></div>`+
+    `<div class="result-row"><span class="rl">Buyer price</span><span style="color:#dc2626">$${r.Pb.toFixed(2)} (+$${cb})</span></div>`+
+    `<div class="result-row"><span class="rl">Seller receives</span><span style="color:#16a34a">$${r.Ps.toFixed(2)} (-$${pb})</span></div>`+
+    `<div class="result-row"><span class="rl">Tax revenue</span><span>$${r.rev.toFixed(2)}</span></div>`+
+    `<div class="result-row"><span class="rl">Consumer burden</span><span style="color:#dc2626">${cpct}%</span></div>`+
+    `<div class="result-row"><span class="rl">Producer burden</span><span style="color:#16a34a">${ppct}%</span></div>`;
+}
+
+['b','d','t'].forEach(id=>document.getElementById(id).addEventListener('input',draw));
+draw();
+</script>
+</body>
+</html>

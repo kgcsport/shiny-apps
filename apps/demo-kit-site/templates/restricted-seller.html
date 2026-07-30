@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Restricted Seller</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f8f9fb;color:#1a1f2e;font-size:14px;padding:1rem}
+h1{font-size:1.1rem;font-weight:700;margin-bottom:.15rem}
+.subtitle{color:#6b7280;font-size:.8rem;margin-bottom:.9rem}
+
+/* Phase stepper */
+.stepper{display:flex;gap:0;margin-bottom:1rem;border:1px solid #e2e6ee;border-radius:8px;overflow:hidden;background:#fff}
+.step{flex:1;padding:.4rem .3rem;text-align:center;font-size:.72rem;font-weight:600;color:#9ca3af;border-right:1px solid #e2e6ee;cursor:default;white-space:nowrap}
+.step:last-child{border-right:none}
+.step.done{color:#16a34a;background:#f0fdf4}
+.step.active{color:#2563eb;background:#eff6ff}
+
+/* Cards / panels */
+.card{background:#fff;border:1px solid #e2e6ee;border-radius:8px;padding:.75rem .85rem;margin-bottom:.7rem}
+.card h2{font-size:.88rem;font-weight:700;margin-bottom:.6rem}
+.row2{display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-start}
+.col{flex:1;min-width:220px}
+
+/* Forms */
+.fgroup{margin-bottom:.6rem}
+.fgroup label{display:block;font-size:.76rem;font-weight:600;color:#374151;margin-bottom:.22rem}
+.fgroup input,.fgroup textarea{width:100%;padding:.3rem .45rem;border:1px solid #e2e6ee;border-radius:5px;font-size:.82rem;font-family:inherit}
+.fgroup textarea{height:64px;resize:vertical}
+.fgroup input:focus,.fgroup textarea:focus{outline:none;border-color:#2563eb}
+.fgroup .hint{font-size:.7rem;color:#9ca3af;margin-top:.15rem}
+.inline-group{display:flex;gap:.6rem;flex-wrap:wrap}
+.inline-group .fgroup{flex:1;min-width:90px}
+
+/* Buttons */
+.btn{padding:.35rem .9rem;border:none;border-radius:5px;font-size:.82rem;font-weight:600;cursor:pointer;transition:background .15s}
+.btn-primary{background:#2563eb;color:#fff}.btn-primary:hover{background:#1d4ed8}
+.btn-ghost{background:#f3f4f6;color:#374151;border:1px solid #e2e6ee}.btn-ghost:hover{background:#e5e7eb}
+.btn-danger{background:#fff;color:#dc2626;border:1px solid #fecaca}.btn-danger:hover{background:#fef2f2}
+.btn-row{display:flex;gap:.5rem;margin-top:.6rem;flex-wrap:wrap;align-items:center}
+
+/* Stats grid */
+.stats{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem}
+.stat{flex:1;min-width:80px;background:#f8f9fb;border:1px solid #e2e6ee;border-radius:6px;padding:.45rem .55rem;text-align:center}
+.stat .sv{font-size:1.1rem;font-weight:700;font-variant-numeric:tabular-nums}
+.stat .sl{font-size:.68rem;color:#6b7280;margin-top:.1rem}
+
+/* Slider */
+.slider-row{display:flex;align-items:center;gap:.5rem}
+.slider-row input[type=range]{flex:1}
+.slider-val{font-size:.88rem;font-weight:700;min-width:36px;color:#2563eb;font-variant-numeric:tabular-nums}
+
+/* Comparison table */
+.comp-table{width:100%;border-collapse:collapse;font-size:.82rem}
+.comp-table th,.comp-table td{padding:.35rem .6rem;border-bottom:1px solid #f3f4f6;text-align:right}
+.comp-table th:first-child,.comp-table td:first-child{text-align:left;font-weight:600;color:#374151}
+.comp-table th{background:#f8f9fb;font-size:.73rem;text-transform:uppercase;letter-spacing:.03em;color:#6b7280}
+.comp-table tr:last-child td{border-bottom:none}
+.comp-better{color:#16a34a;font-weight:700}
+.comp-worse{color:#dc2626}
+
+/* SVG */
+svg{background:#fff;border:1px solid #e2e6ee;border-radius:8px;width:100%;display:block}
+
+/* WTP schedule table */
+.sched{font-size:.76rem;border-collapse:collapse;margin-top:.4rem;width:100%}
+.sched th,.sched td{padding:.25rem .45rem;border-bottom:1px solid #f3f4f6;text-align:center}
+.sched th{background:#f8f9fb;font-size:.7rem;text-transform:uppercase;color:#6b7280}
+.sched .trading{color:#16a34a;font-weight:700}
+.sched .notrade{color:#9ca3af}
+
+.hidden{display:none}
+.finding{background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:.6rem .8rem;font-size:.82rem;margin-top:.6rem;line-height:1.5}
+.finding strong{color:#92400e}
+</style>
+</head>
+<body>
+<h1>The Restricted Seller</h1>
+<p class="subtitle">Compare competitive market (Round 1) with monopoly (Round 2). Visualizes CS, PS, and deadweight loss.</p>
+
+<div class="stepper">
+  <div class="step active" id="step-0">1 · Setup</div>
+  <div class="step" id="step-1">2 · Competitive</div>
+  <div class="step" id="step-2">3 · Monopoly</div>
+  <div class="step" id="step-3">4 · Compare</div>
+</div>
+
+<!-- ── Phase 0: Setup ─────────────────────────────────────────────────────── -->
+<div id="phase-0">
+  <div class="card">
+    <h2>Market Setup</h2>
+    <div class="row2">
+      <div class="col">
+        <div class="fgroup">
+          <label>Buyer WTP values (comma-separated, highest to lowest)</label>
+          <textarea id="wtp-input">10, 9, 8, 7, 6, 5, 4, 3</textarea>
+          <div class="hint">Each value = one buyer type. Use "sets" to replicate.</div>
+        </div>
+        <div class="inline-group">
+          <div class="fgroup">
+            <label>Marginal cost (MC)</label>
+            <input type="number" id="mc-input" value="4" min="0" step="0.5">
+          </div>
+          <div class="fgroup">
+            <label>Sets (copies)</label>
+            <input type="number" id="sets-input" value="1" min="1" step="1">
+            <div class="hint">Multiplies each buyer count</div>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <div style="font-size:.75rem;font-weight:600;color:#374151;margin-bottom:.35rem">Demand schedule preview</div>
+        <table class="sched" id="sched-table"><tbody></tbody></table>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="startExperiment()">Start experiment →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Phase 1: Competitive ──────────────────────────────────────────────── -->
+<div id="phase-1" class="hidden">
+  <div class="card">
+    <h2>Round 1 — Competitive Market</h2>
+    <p style="font-size:.8rem;color:#6b7280;margin-bottom:.6rem">All buyers with WTP ≥ MC trade. Price = MC under competition.</p>
+    <div class="row2">
+      <div class="col">
+        <svg id="chart-comp" viewBox="0 0 400 300"></svg>
+      </div>
+      <div class="col">
+        <div style="font-size:.78rem;font-weight:600;color:#374151;margin-bottom:.4rem">Competitive outcome (theoretical)</div>
+        <div class="stats" id="stats-comp"></div>
+        <div class="finding" id="finding-comp"></div>
+        <div class="btn-row" style="margin-top:1rem">
+          <button class="btn btn-primary" onclick="goPhase(2)">Continue to Round 2 →</button>
+          <button class="btn btn-ghost" onclick="goPhase(0)">← Setup</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Phase 2: Monopoly ─────────────────────────────────────────────────── -->
+<div id="phase-2" class="hidden">
+  <div class="card">
+    <h2>Round 2 — Monopoly</h2>
+    <p style="font-size:.8rem;color:#6b7280;margin-bottom:.6rem">The seller commits to one price before buyers decide. Adjust to find the profit-maximizing price.</p>
+    <div class="row2">
+      <div class="col">
+        <div class="fgroup">
+          <label>Monopoly price: <span class="slider-val" id="pm-val">—</span></label>
+          <div class="slider-row">
+            <input type="range" id="pm-slider" min="0" step="0.5" value="0" oninput="onPmChange()">
+          </div>
+          <div class="hint">Slide to set price. Buyers with WTP ≥ price will accept.</div>
+        </div>
+        <div class="stats" id="stats-mono"></div>
+        <div class="finding" id="finding-mono"></div>
+        <div class="btn-row" style="margin-top:.8rem">
+          <button class="btn btn-primary" onclick="goPhase(3)">Compare results →</button>
+          <button class="btn btn-ghost" onclick="goPhase(1)">← Round 1</button>
+        </div>
+      </div>
+      <div class="col">
+        <svg id="chart-mono" viewBox="0 0 400 300"></svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Phase 3: Comparison ───────────────────────────────────────────────── -->
+<div id="phase-3" class="hidden">
+  <div class="card">
+    <h2>Comparison: Competitive vs. Monopoly</h2>
+    <div class="row2">
+      <div class="col">
+        <table class="comp-table" id="comp-table"></table>
+        <div class="finding" id="finding-compare" style="margin-top:.6rem"></div>
+        <div class="btn-row" style="margin-top:.8rem">
+          <button class="btn btn-ghost" onclick="goPhase(2)">← Monopoly</button>
+          <button class="btn btn-danger" onclick="resetAll()">Reset experiment</button>
+        </div>
+      </div>
+      <div class="col">
+        <svg id="chart-compare" viewBox="0 0 400 300"></svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+let wtpLevels = []; // [{wtp, count}] sorted desc
+let MC = 4, sets = 1;
+let Pm = 0;         // monopoly price (set by slider)
+
+// Derived (computed in startExperiment)
+let Qcomp = 0, CScomp = 0, PScomp = 0, TScomp = 0;
+let maxWTP = 0, totalBuyers = 0;
+
+// ── Phase navigation ──────────────────────────────────────────────────────────
+function goPhase(n) {
+  [0,1,2,3].forEach(i => {
+    document.getElementById(`phase-${i}`).classList.toggle('hidden', i !== n);
+    const step = document.getElementById(`step-${i}`);
+    step.classList.toggle('active', i === n);
+    step.classList.toggle('done', i < n);
+  });
+}
+
+// ── Parse & preview ───────────────────────────────────────────────────────────
+function parseWTP() {
+  const raw = document.getElementById('wtp-input').value;
+  const vals = raw.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v) && v > 0);
+  // Group by value, count occurrences
+  const counts = {};
+  vals.forEach(v => { counts[v] = (counts[v]||0) + 1; });
+  return Object.entries(counts)
+    .map(([wtp, count]) => ({wtp: +wtp, count}))
+    .sort((a,b) => b.wtp - a.wtp);
+}
+
+function updatePreview() {
+  const levels = parseWTP();
+  const mc  = parseFloat(document.getElementById('mc-input').value) || 0;
+  const s   = Math.max(1, parseInt(document.getElementById('sets-input').value)||1);
+  let cumQ  = 0, tbody = '';
+  levels.forEach(({wtp, count}) => {
+    const c = count * s;
+    const trades = wtp >= mc;
+    cumQ += c;
+    tbody += `<tr><td>$${wtp}</td><td>${count} × ${s} = ${c}</td><td>${cumQ}</td>` +
+             `<td class="${trades?'trading':'notrade'}">${trades?'✓ trades':'✗ no'}</td></tr>`;
+  });
+  document.getElementById('sched-table').innerHTML =
+    `<thead><tr><th>WTP</th><th>Buyers</th><th>Cum. Q</th><th>At P=MC?</th></tr></thead><tbody>${tbody}</tbody>`;
+}
+
+document.getElementById('wtp-input').addEventListener('input', updatePreview);
+document.getElementById('mc-input').addEventListener('input', updatePreview);
+document.getElementById('sets-input').addEventListener('input', updatePreview);
+updatePreview();
+
+// ── Start experiment ──────────────────────────────────────────────────────────
+function startExperiment() {
+  wtpLevels = parseWTP();
+  MC   = parseFloat(document.getElementById('mc-input').value) || 0;
+  sets = Math.max(1, parseInt(document.getElementById('sets-input').value)||1);
+
+  if (!wtpLevels.length) { alert('Enter at least one WTP value.'); return; }
+
+  // Scale by sets
+  const levels = wtpLevels.map(({wtp, count}) => ({wtp, count: count*sets}));
+  maxWTP = levels[0].wtp;
+  totalBuyers = levels.reduce((s,{count})=>s+count,0);
+
+  // Competitive equilibrium
+  let cumQ = 0;
+  CScomp = 0; Qcomp = 0;
+  levels.forEach(({wtp, count}) => {
+    if (wtp >= MC) { CScomp += (wtp - MC) * count; Qcomp += count; }
+    cumQ += count;
+  });
+  PScomp = 0; // P = MC → zero producer surplus
+  TScomp = CScomp;
+
+  // Init monopoly slider
+  const slider = document.getElementById('pm-slider');
+  slider.min = MC; slider.max = maxWTP; slider.step = 0.5;
+  slider.value = maxWTP; // start at top
+  Pm = +slider.value;
+
+  drawComp(levels);
+  renderStatsComp();
+  goPhase(1);
+}
+
+// ── Competitive chart ─────────────────────────────────────────────────────────
+const CM = {t:20,r:20,b:44,l:48};
+const CW=400, CH=300;
+const CiW = CW-CM.l-CM.r, CiH = CH-CM.t-CM.b;
+
+function chartFns(xMax, yMax) {
+  return {
+    qx: q => CM.l + (q/xMax)*CiW,
+    py: p => CM.t + CiH - (p/yMax)*CiH,
+  };
+}
+
+function demandPolyline(levels, fn) {
+  // Step function polyline points
+  let pts = '', cumQ = 0;
+  levels.forEach(({wtp, count}, i) => {
+    pts += `${fn.qx(cumQ)},${fn.py(wtp)} `;
+    cumQ += count;
+    pts += `${fn.qx(cumQ)},${fn.py(wtp)} `;
+    if (i < levels.length-1) pts += `${fn.qx(cumQ)},${fn.py(levels[i+1].wtp)} `;
+  });
+  pts += `${fn.qx(cumQ)},${fn.py(0)} `;
+  return pts;
+}
+
+function chartBase(levels, xMax, yMax, fn, id) {
+  let h = '';
+  // Grid
+  for (let i=1; i<=4; i++) {
+    h += `<line x1="${CM.l}" y1="${fn.py(yMax*i/4)}" x2="${CM.l+CiW}" y2="${fn.py(yMax*i/4)}" stroke="#f0f2f6" stroke-width="1"/>`;
+    h += `<line x1="${fn.qx(xMax*i/4)}" y1="${CM.t}" x2="${fn.qx(xMax*i/4)}" y2="${CM.t+CiH}" stroke="#f0f2f6" stroke-width="1"/>`;
+  }
+  // Axes
+  h += `<line x1="${CM.l}" y1="${CM.t+CiH}" x2="${CM.l+CiW}" y2="${CM.t+CiH}" stroke="#9ca3af" stroke-width="1.5"/>`;
+  h += `<line x1="${CM.l}" y1="${CM.t}" x2="${CM.l}" y2="${CM.t+CiH}" stroke="#9ca3af" stroke-width="1.5"/>`;
+  // Ticks
+  for (let i=0; i<=4; i++) {
+    const xv = xMax*i/4, yv = yMax*i/4;
+    h += `<line x1="${fn.qx(xv)}" y1="${CM.t+CiH}" x2="${fn.qx(xv)}" y2="${CM.t+CiH+5}" stroke="#9ca3af" stroke-width="1"/>`;
+    h += `<text x="${fn.qx(xv)}" y="${CM.t+CiH+17}" font-size="10" fill="#6b7280" text-anchor="middle">${Math.round(xv)}</text>`;
+    h += `<line x1="${CM.l-5}" y1="${fn.py(yv)}" x2="${CM.l}" y2="${fn.py(yv)}" stroke="#9ca3af" stroke-width="1"/>`;
+    h += `<text x="${CM.l-7}" y="${fn.py(yv)+4}" font-size="10" fill="#6b7280" text-anchor="end">$${Math.round(yv)}</text>`;
+  }
+  h += `<text x="${CM.l+CiW/2}" y="${CH-2}" font-size="11" fill="#6b7280" text-anchor="middle">Quantity</text>`;
+  h += `<text x="12" y="${CM.t+CiH/2}" font-size="11" fill="#6b7280" text-anchor="middle" transform="rotate(-90 12 ${CM.t+CiH/2})">Price</text>`;
+  return h;
+}
+
+function drawComp(levels) {
+  const xMax = totalBuyers * 1.1 || 10;
+  const yMax = Math.max(maxWTP, MC) * 1.15 || 15;
+  const fn   = chartFns(xMax, yMax);
+
+  let h = chartBase(levels, xMax, yMax, fn, 'chart-comp');
+
+  // CS shading: polygon above MC, below demand, left of Qcomp
+  // Trace demand steps up to Qcomp, then across at MC, back left
+  let csPath = `M ${fn.qx(0)} ${fn.py(MC)} `;
+  let cumQ = 0;
+  levels.forEach(({wtp, count}, i) => {
+    if (wtp < MC) return;
+    csPath += `L ${fn.qx(cumQ)} ${fn.py(wtp)} L ${fn.qx(Math.min(cumQ+count, Qcomp))} ${fn.py(wtp)} `;
+    if (cumQ + count < Qcomp && i < levels.length-1 && levels[i+1].wtp >= MC)
+      csPath += `L ${fn.qx(cumQ+count)} ${fn.py(levels[i+1].wtp)} `;
+    cumQ += count;
+  });
+  csPath += `L ${fn.qx(Qcomp)} ${fn.py(MC)} Z`;
+  h += `<path d="${csPath}" fill="#bfdbfe" opacity="0.7"/>`;
+
+  // Demand step function
+  h += `<polyline points="${demandPolyline(levels, fn)}" fill="none" stroke="#2563eb" stroke-width="2.5"/>`;
+  h += `<text x="${fn.qx(xMax)-2}" y="${fn.py(levels[levels.length-1].wtp)+4}" font-size="12" fill="#2563eb" font-weight="700" text-anchor="end">D</text>`;
+
+  // MC line
+  h += `<line x1="${CM.l}" y1="${fn.py(MC)}" x2="${CM.l+CiW}" y2="${fn.py(MC)}" stroke="#16a34a" stroke-width="2" stroke-dasharray="6,3"/>`;
+  h += `<text x="${CM.l+CiW-2}" y="${fn.py(MC)-5}" font-size="10" fill="#16a34a" font-weight="700" text-anchor="end">MC=$${MC}</text>`;
+
+  // Q* vertical line
+  if (Qcomp > 0) {
+    h += `<line x1="${fn.qx(Qcomp)}" y1="${CM.t}" x2="${fn.qx(Qcomp)}" y2="${CM.t+CiH}" stroke="#374151" stroke-width="1" stroke-dasharray="4,3"/>`;
+    h += `<text x="${fn.qx(Qcomp)}" y="${CM.t+CiH+17}" font-size="10" fill="#374151" font-weight="700" text-anchor="middle">Q*=${Qcomp}</text>`;
+  }
+
+  // Legend
+  h += `<rect x="${CM.l+4}" y="${CM.t+6}" width="10" height="10" fill="#bfdbfe" opacity="0.8"/>`;
+  h += `<text x="${CM.l+18}" y="${CM.t+15}" font-size="10" fill="#2563eb">CS = $${CScomp.toFixed(2)}</text>`;
+
+  document.getElementById('chart-comp').innerHTML = h;
+}
+
+function renderStatsComp() {
+  document.getElementById('stats-comp').innerHTML =
+    stat('Q traded', Qcomp, '') + stat('Price', MC, '$', '#16a34a') +
+    stat('CS', CScomp, '$', '#2563eb') + stat('PS', PScomp, '$', '#16a34a') +
+    stat('Total surplus', TScomp, '$', '#374151');
+  document.getElementById('finding-comp').innerHTML =
+    `<strong>Round 1 finding:</strong> Under competition, price = MC = $${MC}. ` +
+    `All ${Qcomp} buyers with WTP ≥ $${MC} trade. Consumer surplus = $${CScomp.toFixed(2)}, producer surplus = $0.`;
+}
+
+// ── Monopoly chart ────────────────────────────────────────────────────────────
+function onPmChange() {
+  Pm = parseFloat(document.getElementById('pm-slider').value);
+  document.getElementById('pm-val').textContent = `$${Pm.toFixed(2)}`;
+  const levels = wtpLevels.map(({wtp,count}) => ({wtp, count: count*sets}));
+  drawMono(levels);
+  renderStatsMono(levels);
+}
+
+function monoCalc(levels) {
+  let Qm = 0, CSm = 0;
+  levels.forEach(({wtp, count}) => {
+    if (wtp >= Pm) { Qm += count; CSm += (wtp - Pm) * count; }
+  });
+  const PSm = (Pm - MC) * Qm;
+  const TSm = CSm + PSm;
+  const DWL = TScomp - TSm;
+  return {Qm, CSm, PSm, TSm, DWL};
+}
+
+function drawMono(levels) {
+  const xMax = totalBuyers * 1.1 || 10;
+  const yMax = Math.max(maxWTP, MC) * 1.15 || 15;
+  const fn   = chartFns(xMax, yMax);
+  const {Qm, CSm, PSm, DWL} = monoCalc(levels);
+
+  let h = chartBase(levels, xMax, yMax, fn, 'chart-mono');
+
+  // CS_m shading (above Pm, below demand, left of Qm)
+  if (Qm > 0 && CSm > 0) {
+    let csPath = `M ${fn.qx(0)} ${fn.py(Pm)} `;
+    let cumQ = 0;
+    levels.forEach(({wtp, count}, i) => {
+      if (wtp < Pm) return;
+      csPath += `L ${fn.qx(cumQ)} ${fn.py(wtp)} L ${fn.qx(Math.min(cumQ+count, Qm))} ${fn.py(wtp)} `;
+      if (cumQ+count < Qm && i < levels.length-1 && levels[i+1].wtp >= Pm)
+        csPath += `L ${fn.qx(cumQ+count)} ${fn.py(levels[i+1].wtp)} `;
+      cumQ += count;
+    });
+    csPath += `L ${fn.qx(Qm)} ${fn.py(Pm)} Z`;
+    h += `<path d="${csPath}" fill="#bfdbfe" opacity="0.7"/>`;
+  }
+
+  // PS_m rectangle (above MC, below Pm, 0 to Qm)
+  if (Qm > 0 && PSm > 0) {
+    h += `<rect x="${fn.qx(0)}" y="${fn.py(Pm)}" width="${fn.qx(Qm)-fn.qx(0)}" height="${fn.py(MC)-fn.py(Pm)}" fill="#bbf7d0" opacity="0.7"/>`;
+  }
+
+  // DWL triangle (above MC, below demand, between Qm and Qcomp)
+  if (DWL > 0 && Qcomp > Qm) {
+    let dwlPath = `M ${fn.qx(Qm)} ${fn.py(Pm)} `;
+    let cumQ = 0, started = false;
+    levels.forEach(({wtp, count}, i) => {
+      const end = cumQ + count;
+      if (end > Qm && wtp >= MC) {
+        const qStart = Math.max(cumQ, Qm);
+        const qEnd   = Math.min(end, Qcomp);
+        if (!started) { dwlPath += `L ${fn.qx(qStart)} ${fn.py(wtp)} `; started = true; }
+        else if (i > 0 && levels[i-1].wtp > wtp) dwlPath += `L ${fn.qx(qStart)} ${fn.py(wtp)} `;
+        dwlPath += `L ${fn.qx(qEnd)} ${fn.py(wtp)} `;
+        if (i < levels.length-1 && levels[i+1].wtp >= MC && end < Qcomp)
+          dwlPath += `L ${fn.qx(end)} ${fn.py(levels[i+1].wtp)} `;
+      }
+      cumQ += count;
+    });
+    dwlPath += `L ${fn.qx(Qcomp)} ${fn.py(MC)} L ${fn.qx(Qm)} ${fn.py(MC)} Z`;
+    h += `<path d="${dwlPath}" fill="#fca5a5" opacity="0.7"/>`;
+  }
+
+  // Demand step
+  h += `<polyline points="${demandPolyline(levels, fn)}" fill="none" stroke="#2563eb" stroke-width="2.5"/>`;
+  h += `<text x="${fn.qx(xMax)-2}" y="${fn.py(levels[levels.length-1].wtp)+4}" font-size="12" fill="#2563eb" font-weight="700" text-anchor="end">D</text>`;
+
+  // MC line
+  h += `<line x1="${CM.l}" y1="${fn.py(MC)}" x2="${CM.l+CiW}" y2="${fn.py(MC)}" stroke="#16a34a" stroke-width="2" stroke-dasharray="6,3"/>`;
+  h += `<text x="${CM.l+CiW-2}" y="${fn.py(MC)-5}" font-size="10" fill="#16a34a" font-weight="700" text-anchor="end">MC=$${MC}</text>`;
+
+  // Pm line
+  if (Pm > MC && Pm <= maxWTP) {
+    h += `<line x1="${CM.l}" y1="${fn.py(Pm)}" x2="${Qm > 0 ? fn.qx(Qm) : CM.l+CiW}" y2="${fn.py(Pm)}" stroke="#d97706" stroke-width="2"/>`;
+    h += `<text x="${CM.l+6}" y="${fn.py(Pm)-5}" font-size="10" fill="#d97706" font-weight="700">P_m=$${Pm.toFixed(2)}</text>`;
+  }
+
+  // Qm line
+  if (Qm > 0) {
+    h += `<line x1="${fn.qx(Qm)}" y1="${CM.t}" x2="${fn.qx(Qm)}" y2="${CM.t+CiH}" stroke="#374151" stroke-width="1" stroke-dasharray="4,3"/>`;
+    h += `<text x="${fn.qx(Qm)}" y="${CM.t+CiH+17}" font-size="10" fill="#374151" font-weight="700" text-anchor="middle">Q_m=${Qm}</text>`;
+  }
+
+  // Legend
+  const lx = CM.l+4, ly = CM.t+4;
+  h += `<rect x="${lx}" y="${ly}" width="9" height="9" fill="#bfdbfe" opacity="0.8"/>`;
+  h += `<text x="${lx+13}" y="${ly+8}" font-size="10" fill="#2563eb">CS_m</text>`;
+  h += `<rect x="${lx+50}" y="${ly}" width="9" height="9" fill="#bbf7d0" opacity="0.8"/>`;
+  h += `<text x="${lx+63}" y="${ly+8}" font-size="10" fill="#16a34a">PS_m</text>`;
+  h += `<rect x="${lx+104}" y="${ly}" width="9" height="9" fill="#fca5a5" opacity="0.8"/>`;
+  h += `<text x="${lx+117}" y="${ly+8}" font-size="10" fill="#dc2626">DWL</text>`;
+
+  document.getElementById('chart-mono').innerHTML = h;
+}
+
+function renderStatsMono(levels) {
+  const {Qm, CSm, PSm, TSm, DWL} = monoCalc(levels);
+  document.getElementById('stats-mono').innerHTML =
+    stat('Q_m', Qm, '') + stat('P_m', Pm, '$', '#d97706') +
+    stat('CS_m', CSm, '$', '#2563eb') + stat('PS_m', PSm, '$', '#16a34a') +
+    stat('TS_m', TSm, '$') + stat('DWL', DWL, '$', '#dc2626');
+  const optim = findMonopolyPrice(levels);
+  document.getElementById('finding-mono').innerHTML =
+    `<strong>Profit-max price:</strong> $${optim.pm.toFixed(2)} (${optim.q} buyers, PS = $${optim.ps.toFixed(2)}). ` +
+    `At current P_m = $${Pm.toFixed(2)}: DWL = $${DWL.toFixed(2)}.`;
+}
+
+function findMonopolyPrice(levels) {
+  let best = {pm:0, q:0, ps:0};
+  levels.forEach(({wtp}) => {
+    let q=0;
+    levels.forEach(l => { if (l.wtp >= wtp) q += l.count; });
+    const ps = (wtp - MC) * q;
+    if (ps > best.ps) best = {pm: wtp, q, ps};
+  });
+  return best;
+}
+
+// ── Comparison ────────────────────────────────────────────────────────────────
+function drawComparison() {
+  const levels = wtpLevels.map(({wtp,count}) => ({wtp, count: count*sets}));
+  const {Qm, CSm, PSm, TSm, DWL} = monoCalc(levels);
+
+  // Table
+  const rows = [
+    ['Quantity',    `${Qcomp}`,              `${Qm}`,              Qm < Qcomp],
+    ['Price',       `$${MC.toFixed(2)}`,     `$${Pm.toFixed(2)}`,  Pm > MC],
+    ['Consumer surplus', `$${CScomp.toFixed(2)}`, `$${CSm.toFixed(2)}`, CSm < CScomp],
+    ['Producer surplus', `$${PScomp.toFixed(2)}`, `$${PSm.toFixed(2)}`, false],
+    ['Total surplus',   `$${TScomp.toFixed(2)}`, `$${TSm.toFixed(2)}`, TSm < TScomp],
+    ['Deadweight loss', '$0.00',               `$${DWL.toFixed(2)}`, DWL > 0],
+  ];
+  let tbl = `<thead><tr><th>Metric</th><th>Competitive</th><th>Monopoly</th></tr></thead><tbody>`;
+  rows.forEach(([label, c, m, monoWorse]) => {
+    tbl += `<tr><td>${label}</td><td class="comp-better">${c}</td>` +
+           `<td class="${monoWorse?'comp-worse':label==='Producer surplus'?'comp-better':''}">${m}</td></tr>`;
+  });
+  document.getElementById('comp-table').innerHTML = tbl + '</tbody>';
+
+  document.getElementById('finding-compare').innerHTML =
+    `<strong>Key finding:</strong> Monopoly reduces total surplus by $${DWL.toFixed(2)} — the deadweight loss. ` +
+    `The monopolist captures $${PSm.toFixed(2)} in profit but ${Qcomp - Qm} buyers who valued the good ` +
+    `above MC are priced out.`;
+
+  // Comparison chart: show both equilibria on one diagram
+  const xMax = totalBuyers * 1.1 || 10;
+  const yMax = Math.max(maxWTP, MC) * 1.15 || 15;
+  const fn   = chartFns(xMax, yMax);
+  let h = chartBase(levels, xMax, yMax, fn, 'chart-compare');
+
+  // DWL triangle
+  if (DWL > 0 && Qcomp > Qm) {
+    let dwlPath = `M ${fn.qx(Qm)} ${fn.py(Pm)} `;
+    let cumQ = 0;
+    levels.forEach(({wtp, count}, i) => {
+      const end = cumQ + count;
+      if (end > Qm && wtp >= MC) {
+        const qs = Math.max(cumQ, Qm), qe = Math.min(end, Qcomp);
+        if (qs === Qm) dwlPath += `L ${fn.qx(qs)} ${fn.py(wtp)} `;
+        else if (i > 0 && levels[i-1].wtp > wtp) dwlPath += `L ${fn.qx(qs)} ${fn.py(wtp)} `;
+        dwlPath += `L ${fn.qx(qe)} ${fn.py(wtp)} `;
+        if (i < levels.length-1 && levels[i+1].wtp >= MC && end < Qcomp)
+          dwlPath += `L ${fn.qx(end)} ${fn.py(levels[i+1].wtp)} `;
+      }
+      cumQ += count;
+    });
+    dwlPath += `L ${fn.qx(Qcomp)} ${fn.py(MC)} L ${fn.qx(Qm)} ${fn.py(MC)} Z`;
+    h += `<path d="${dwlPath}" fill="#fca5a5" opacity="0.8"/>`;
+  }
+
+  // Demand step
+  h += `<polyline points="${demandPolyline(levels, fn)}" fill="none" stroke="#2563eb" stroke-width="2.5"/>`;
+  // MC line
+  h += `<line x1="${CM.l}" y1="${fn.py(MC)}" x2="${CM.l+CiW}" y2="${fn.py(MC)}" stroke="#16a34a" stroke-width="2" stroke-dasharray="5,3"/>`;
+  h += `<text x="${CM.l+CiW-2}" y="${fn.py(MC)-5}" font-size="10" fill="#16a34a" font-weight="700" text-anchor="end">MC</text>`;
+  // Pm line
+  if (Pm > MC) {
+    h += `<line x1="${CM.l}" y1="${fn.py(Pm)}" x2="${fn.qx(Qm)}" y2="${fn.py(Pm)}" stroke="#d97706" stroke-width="2"/>`;
+    h += `<text x="${CM.l+4}" y="${fn.py(Pm)-5}" font-size="10" fill="#d97706" font-weight="700">P_m</text>`;
+  }
+  // Qcomp and Qm
+  if (Qcomp > 0) {
+    h += `<line x1="${fn.qx(Qcomp)}" y1="${CM.t}" x2="${fn.qx(Qcomp)}" y2="${CM.t+CiH}" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="4,3"/>`;
+    h += `<text x="${fn.qx(Qcomp)}" y="${CM.t+CiH+17}" font-size="10" fill="#16a34a" font-weight="700" text-anchor="middle">Q*=${Qcomp}</text>`;
+  }
+  if (Qm > 0 && Qm !== Qcomp) {
+    h += `<line x1="${fn.qx(Qm)}" y1="${CM.t}" x2="${fn.qx(Qm)}" y2="${CM.t+CiH}" stroke="#d97706" stroke-width="1.5" stroke-dasharray="4,3"/>`;
+    h += `<text x="${fn.qx(Qm)}" y="${CM.t+CiH+17}" font-size="10" fill="#d97706" font-weight="700" text-anchor="middle">Q_m=${Qm}</text>`;
+  }
+
+  // DWL label
+  if (DWL > 0) {
+    const midQ = (Qm + Qcomp) / 2;
+    h += `<text x="${fn.qx(midQ)}" y="${fn.py((Pm+MC)/2)+4}" font-size="10" fill="#dc2626" font-weight="700" text-anchor="middle">DWL</text>`;
+  }
+
+  document.getElementById('chart-compare').innerHTML = h;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function stat(label, val, prefix='', color='#1a1f2e') {
+  const disp = typeof val === 'number' ? val.toFixed(val%1===0?0:2) : val;
+  return `<div class="stat"><div class="sv" style="color:${color}">${prefix}${disp}</div><div class="sl">${label}</div></div>`;
+}
+
+function resetAll() {
+  goPhase(0);
+  wtpLevels=[]; Qcomp=0; CScomp=0; PScomp=0; TScomp=0; maxWTP=0; totalBuyers=0;
+}
+
+// Wire up comparison phase
+const origGoPhase = goPhase;
+function goPhase(n) {
+  [0,1,2,3].forEach(i => {
+    document.getElementById(`phase-${i}`).classList.toggle('hidden', i !== n);
+    const s = document.getElementById(`step-${i}`);
+    s.classList.toggle('active', i === n);
+    s.classList.toggle('done', i < n);
+  });
+  if (n === 2) {
+    const levels = wtpLevels.map(({wtp,count})=>({wtp,count:count*sets}));
+    onPmChange();
+  }
+  if (n === 3) drawComparison();
+}
+</script>
+</body>
+</html>

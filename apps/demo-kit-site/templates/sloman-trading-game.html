@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sloman Trading Game</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f8f9fb;color:#1a1f2e;font-size:14px;min-height:100vh}
+h1{font-size:1.15rem;font-weight:700}
+.subtitle{color:#6b7280;font-size:.8rem;margin:.1rem 0 .8rem}
+/* ── Header bar ── */
+.topbar{display:flex;align-items:center;gap:.8rem;padding:.7rem 1rem;background:#fff;border-bottom:1px solid #e2e6ee;flex-wrap:wrap}
+.topbar h1{margin:0}
+.spacer{flex:1}
+/* ── Timer ── */
+.timer-block{display:flex;align-items:center;gap:.4rem}
+.timer-display{font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums;min-width:4rem;text-align:center;color:#1a1f2e;letter-spacing:.03em}
+.timer-display.urgent{color:#dc2626}
+.timer-input{width:52px;padding:.25rem .35rem;border:1px solid #e2e6ee;border-radius:5px;font-size:.82rem;text-align:center}
+.tbtn{padding:.28rem .65rem;border:none;border-radius:5px;font-size:.8rem;font-weight:600;cursor:pointer;transition:background .15s}
+.tbtn-start{background:#16a34a;color:#fff}.tbtn-start:hover{background:#15803d}
+.tbtn-stop{background:#dc2626;color:#fff}.tbtn-stop:hover{background:#b91c1c}
+.tbtn-reset{background:#f3f4f6;color:#374151;border:1px solid #e2e6ee}.tbtn-reset:hover{background:#e5e7eb}
+/* ── Settings toggle ── */
+details{background:#fff;border:1px solid #e2e6ee;border-radius:8px;margin:.5rem 0}
+details summary{padding:.55rem .85rem;font-size:.82rem;font-weight:600;cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center}
+details summary::after{content:"▸";transition:transform .2s}
+details[open] summary::after{transform:rotate(90deg)}
+details .inner{padding:.6rem .85rem .85rem;display:flex;flex-wrap:wrap;gap:.8rem 1.2rem;border-top:1px solid #f3f4f6}
+.fgroup{display:flex;flex-direction:column;gap:.25rem}
+.fgroup label{font-size:.75rem;font-weight:600;color:#374151}
+.fgroup input[type=number],.fgroup input[type=text]{padding:.28rem .45rem;border:1px solid #e2e6ee;border-radius:5px;font-size:.82rem;width:80px}
+.fgroup input:focus{outline:none;border-color:#2563eb}
+.teams-row{display:flex;flex-wrap:wrap;gap:.4rem .8rem;align-items:flex-start}
+.teams-row .fgroup input{width:90px}
+/* ── Prices panel ── */
+.prices-row{display:flex;gap:.6rem;flex-wrap:wrap;margin:.5rem 0}
+.price-card{flex:1;min-width:100px;background:#fff;border:1px solid #e2e6ee;border-radius:8px;padding:.55rem .75rem;text-align:center}
+.price-card .good-name{font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#6b7280}
+.price-card .price-val{font-size:1.5rem;font-weight:700;font-variant-numeric:tabular-nums;margin:.1rem 0;color:#1a1f2e}
+.price-card .price-delta{font-size:.75rem;font-weight:600}
+.delta-up{color:#dc2626}.delta-down{color:#16a34a}.delta-flat{color:#9ca3af}
+/* ── Round input table ── */
+.round-section{background:#fff;border:1px solid #e2e6ee;border-radius:8px;overflow:hidden;margin:.5rem 0}
+.round-section h3{font-size:.8rem;font-weight:700;padding:.5rem .85rem;background:#f8f9fb;border-bottom:1px solid #e2e6ee;color:#374151}
+table{border-collapse:collapse;width:100%}
+th,td{padding:.4rem .65rem;font-size:.82rem;text-align:center;border-bottom:1px solid #f3f4f6}
+th{font-size:.74rem;font-weight:700;color:#374151;background:#f8f9fb;text-transform:uppercase;letter-spacing:.03em}
+td:first-child{text-align:left;font-weight:600}
+td input[type=number]{width:72px;padding:.22rem .35rem;border:1px solid #e2e6ee;border-radius:4px;font-size:.82rem;text-align:center}
+td input:focus{outline:none;border-color:#2563eb}
+td input[type=number]::-webkit-inner-spin-button{opacity:.4}
+.earnings-cell{font-weight:700;color:#16a34a;font-variant-numeric:tabular-nums}
+/* ── Actions ── */
+.actions{display:flex;gap:.5rem;align-items:center;margin:.5rem 0}
+.btn{padding:.35rem .9rem;border:none;border-radius:5px;font-size:.82rem;font-weight:600;cursor:pointer;transition:background .15s}
+.btn-record{background:#2563eb;color:#fff}.btn-record:hover{background:#1d4ed8}
+.btn-danger{background:#fff;color:#dc2626;border:1px solid #fecaca}.btn-danger:hover{background:#fef2f2}
+.round-num{font-size:.8rem;color:#6b7280;margin-left:auto}
+/* ── Bottom panels ── */
+.bottom{display:flex;gap:1rem;flex-wrap:wrap;margin-top:.5rem;align-items:flex-start}
+.leaderboard{flex-shrink:0;min-width:200px}
+.leaderboard h3,.chart-section h3{font-size:.82rem;font-weight:700;margin-bottom:.45rem;color:#374151}
+.lb-table{background:#fff;border:1px solid #e2e6ee;border-radius:8px;overflow:hidden}
+.lb-table td:first-child{width:28px;text-align:center;color:#6b7280;font-size:.78rem}
+.lb-table .leader-name{text-align:left;font-weight:600}
+.lb-table .leader-earn{font-variant-numeric:tabular-nums;font-weight:700;color:#16a34a}
+.chart-section{flex:1;min-width:280px}
+svg{background:#fff;border:1px solid #e2e6ee;border-radius:8px;width:100%;display:block}
+/* ── Round log ── */
+.round-log{margin-top:.5rem}
+.round-log h3{font-size:.82rem;font-weight:700;margin-bottom:.45rem;color:#374151}
+.log-table{background:#fff;border:1px solid #e2e6ee;border-radius:8px;overflow:hidden;max-height:180px;overflow-y:auto}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <h1>Sloman Trading Game</h1>
+    <div class="subtitle">Teams produce goods each round. More total output → lower prices.</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="timer-block">
+    <input type="number" class="timer-input" id="timer-mins" min="0" max="60" value="5" title="Round duration (minutes)">
+    <span style="font-size:.75rem;color:#6b7280">min</span>
+    <div class="timer-display" id="timer-display">5:00</div>
+    <button class="tbtn tbtn-start" id="tbtn-start" onclick="startTimer()">▶ Start</button>
+    <button class="tbtn tbtn-stop" id="tbtn-stop" onclick="stopTimer()" style="display:none">⏸ Stop</button>
+    <button class="tbtn tbtn-reset" onclick="resetTimer()">↺</button>
+  </div>
+</div>
+
+<div style="padding:.7rem 1rem">
+
+<details id="settings-details">
+  <summary>⚙ Settings <span style="font-size:.72rem;font-weight:400;color:#9ca3af">(teams, goods, prices)</span></summary>
+  <div class="inner">
+    <div class="fgroup">
+      <label>Number of teams</label>
+      <input type="number" id="num-teams" min="2" max="8" value="4" oninput="applySettings()">
+    </div>
+    <div>
+      <div style="font-size:.75rem;font-weight:600;color:#374151;margin-bottom:.35rem">Team names</div>
+      <div class="teams-row" id="team-names-row"></div>
+    </div>
+    <div>
+      <div style="font-size:.75rem;font-weight:600;color:#374151;margin-bottom:.35rem">Base prices ($)</div>
+      <div style="display:flex;gap:.7rem;flex-wrap:wrap">
+        <div class="fgroup"><label id="lbl-base-0" style="color:#2563eb">Square</label><input type="number" id="base-0" min="0" value="20" oninput="recalcPrices()"></div>
+        <div class="fgroup"><label id="lbl-base-1" style="color:#dc2626">Triangle</label><input type="number" id="base-1" min="0" value="25" oninput="recalcPrices()"></div>
+        <div class="fgroup"><label id="lbl-base-2" style="color:#16a34a">Rectangle</label><input type="number" id="base-2" min="0" value="15" oninput="recalcPrices()"></div>
+      </div>
+    </div>
+    <div>
+      <div style="font-size:.75rem;font-weight:600;color:#374151;margin-bottom:.35rem">Floor prices ($)</div>
+      <div style="display:flex;gap:.7rem;flex-wrap:wrap">
+        <div class="fgroup"><label>Square</label><input type="number" id="floor-0" min="0" value="2" oninput="recalcPrices()"></div>
+        <div class="fgroup"><label>Triangle</label><input type="number" id="floor-1" min="0" value="2" oninput="recalcPrices()"></div>
+        <div class="fgroup"><label>Rectangle</label><input type="number" id="floor-2" min="0" value="2" oninput="recalcPrices()"></div>
+      </div>
+    </div>
+    <div class="fgroup">
+      <label>Price slope ($/unit)</label>
+      <input type="number" id="slope" min="0" step="0.5" value="1" oninput="recalcPrices()">
+      <span style="font-size:.7rem;color:#9ca3af;margin-top:.1rem">Price drop per unit produced</span>
+    </div>
+  </div>
+</details>
+
+<div class="prices-row" id="prices-row"></div>
+
+<div class="round-section">
+  <h3 id="round-heading">Round 1 — Enter quantities produced</h3>
+  <table>
+    <thead><tr>
+      <th>Team</th>
+      <th id="th-0" style="color:#2563eb">Square</th>
+      <th id="th-1" style="color:#dc2626">Triangle</th>
+      <th id="th-2" style="color:#16a34a">Rectangle</th>
+      <th>This Round ($)</th>
+    </tr></thead>
+    <tbody id="round-tbody"></tbody>
+    <tfoot>
+      <tr style="background:#f8f9fb;font-size:.78rem">
+        <td style="text-align:left;color:#6b7280;font-style:italic">Totals</td>
+        <td id="total-0" style="font-variant-numeric:tabular-nums">0</td>
+        <td id="total-1" style="font-variant-numeric:tabular-nums">0</td>
+        <td id="total-2" style="font-variant-numeric:tabular-nums">0</td>
+        <td id="total-earn" style="font-weight:700;font-variant-numeric:tabular-nums"></td>
+      </tr>
+    </tfoot>
+  </table>
+</div>
+
+<div class="actions">
+  <button class="btn btn-record" onclick="recordRound()">Record Round</button>
+  <button class="btn btn-danger" onclick="confirmReset()">Reset All</button>
+  <span class="round-num" id="round-num">Round 1</span>
+</div>
+
+<div class="bottom">
+  <div class="leaderboard">
+    <h3>Leaderboard</h3>
+    <table class="lb-table" id="lb-table">
+      <tbody><tr><td colspan="3" style="padding:.6rem;color:#9ca3af;font-size:.8rem;text-align:center">No rounds recorded yet</td></tr></tbody>
+    </table>
+  </div>
+  <div class="chart-section">
+    <h3>Price History</h3>
+    <svg id="price-chart" viewBox="0 0 440 220"></svg>
+  </div>
+</div>
+
+<div class="round-log" id="round-log-section" style="display:none">
+  <h3>Round Summary</h3>
+  <div class="log-table">
+    <table id="log-table">
+      <thead><tr>
+        <th>Round</th>
+        <th id="lth-0" style="color:#2563eb">Sq Total</th>
+        <th id="lth-1" style="color:#dc2626">Tri Total</th>
+        <th id="lth-2" style="color:#16a34a">Rect Total</th>
+        <th style="color:#2563eb">Sq $</th>
+        <th style="color:#dc2626">Tri $</th>
+        <th style="color:#16a34a">Rect $</th>
+      </tr></thead>
+      <tbody id="log-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+</div><!-- padding wrapper -->
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+const GOOD_NAMES  = ['Square','Triangle','Rectangle'];
+const GOOD_COLORS = ['#2563eb','#dc2626','#16a34a'];
+const MEDALS = ['🥇','🥈','🥉'];
+
+let numTeams   = 4;
+let teamNames  = ['Team A','Team B','Team C','Team D','Team E','Team F','Team G','Team H'];
+let basePrices = [20, 25, 15];
+let floors     = [2, 2, 2];
+let slope      = 1;
+// currentPrices[g] = latest actual price for good g
+let currentPrices = [...basePrices];
+let prevPrices    = [...basePrices];
+// roundInputs[t][g] = quantity entered for team t, good g this round
+let roundInputs   = [];
+// cumulativeEarnings[t] = total earnings across all rounds
+let cumulativeEarnings = [];
+// history: [{round, totals:[q0,q1,q2], prices:[p0,p1,p2], teamEarnings:[...]}]
+let history = [];
+let currentRound = 1;
+
+// ── Timer ─────────────────────────────────────────────────────────────────────
+let timerInterval = null;
+let timerSeconds  = 0;
+
+function startTimer() {
+  if (timerInterval) return;
+  const mins = parseInt(document.getElementById('timer-mins').value) || 5;
+  if (timerSeconds === 0) timerSeconds = mins * 60;
+  timerInterval = setInterval(tickTimer, 1000);
+  document.getElementById('tbtn-start').style.display = 'none';
+  document.getElementById('tbtn-stop').style.display = '';
+}
+function stopTimer() {
+  clearInterval(timerInterval); timerInterval = null;
+  document.getElementById('tbtn-start').style.display = '';
+  document.getElementById('tbtn-stop').style.display = 'none';
+}
+function resetTimer() {
+  stopTimer();
+  const mins = parseInt(document.getElementById('timer-mins').value) || 5;
+  timerSeconds = mins * 60;
+  renderTimer();
+}
+function tickTimer() {
+  timerSeconds = Math.max(0, timerSeconds - 1);
+  renderTimer();
+  if (timerSeconds === 0) stopTimer();
+}
+function renderTimer() {
+  const m = Math.floor(timerSeconds/60), s = timerSeconds%60;
+  const el = document.getElementById('timer-display');
+  el.textContent = `${m}:${s.toString().padStart(2,'0')}`;
+  el.classList.toggle('urgent', timerSeconds <= 30 && timerSeconds > 0);
+}
+document.getElementById('timer-mins').addEventListener('input', resetTimer);
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+function applySettings() {
+  numTeams = Math.max(2, Math.min(8, parseInt(document.getElementById('num-teams').value) || 4));
+  renderTeamNameInputs();
+  initRoundInputs();
+  renderRoundTable();
+  renderLeaderboard();
+}
+
+function renderTeamNameInputs() {
+  const row = document.getElementById('team-names-row');
+  row.innerHTML = '';
+  for (let i=0; i<numTeams; i++) {
+    const fg = document.createElement('div');
+    fg.className = 'fgroup';
+    fg.innerHTML = `<label>Team ${i+1}</label><input type="text" value="${esc(teamNames[i]||`Team ${String.fromCharCode(65+i)}`)}" oninput="teamNames[${i}]=this.value;renderRoundTable();renderLeaderboard()">`;
+    row.appendChild(fg);
+  }
+}
+
+function readSettings() {
+  basePrices = [0,1,2].map(i => Math.max(0, parseFloat(document.getElementById(`base-${i}`).value)||0));
+  floors     = [0,1,2].map(i => Math.max(0, parseFloat(document.getElementById(`floor-${i}`).value)||0));
+  slope      = Math.max(0, parseFloat(document.getElementById('slope').value)||0);
+}
+
+// ── Prices ───────────────────────────────────────────────────────────────────
+function recalcPrices() {
+  readSettings();
+  // Recalc current prices based on last recorded round totals
+  if (history.length > 0) {
+    const lastTotals = history[history.length-1].totals;
+    currentPrices = basePrices.map((b,i) => Math.max(floors[i], b - slope*lastTotals[i]));
+  } else {
+    currentPrices = [...basePrices];
+  }
+  renderPriceCards();
+  updateRoundEarnings();
+}
+
+function computePricesForTotals(totals) {
+  return basePrices.map((b,i) => Math.max(floors[i], b - slope*totals[i]));
+}
+
+function renderPriceCards() {
+  const row = document.getElementById('prices-row');
+  row.innerHTML = '';
+  GOOD_NAMES.forEach((name, i) => {
+    const delta = currentPrices[i] - prevPrices[i];
+    const deltaClass = delta > 0 ? 'delta-up' : delta < 0 ? 'delta-down' : 'delta-flat';
+    const deltaText  = delta > 0 ? `▲ $${delta.toFixed(2)}` : delta < 0 ? `▼ $${Math.abs(delta).toFixed(2)}` : '— no change';
+    const card = document.createElement('div');
+    card.className = 'price-card';
+    card.innerHTML =
+      `<div class="good-name" style="color:${GOOD_COLORS[i]}">${name}</div>` +
+      `<div class="price-val">$${currentPrices[i].toFixed(2)}</div>` +
+      `<div class="price-delta ${deltaClass}">${deltaText}</div>`;
+    row.appendChild(card);
+  });
+}
+
+// ── Round table ───────────────────────────────────────────────────────────────
+function initRoundInputs() {
+  roundInputs = Array.from({length:8}, (_,t) => [0,0,0]);
+  cumulativeEarnings = Array(8).fill(0);
+  // Re-apply any existing history
+  for (const h of history) {
+    h.teamEarnings.forEach((e,t) => { cumulativeEarnings[t] = (cumulativeEarnings[t]||0) + e; });
+  }
+}
+
+function renderRoundTable() {
+  const tbody = document.getElementById('round-tbody');
+  tbody.innerHTML = '';
+  for (let t=0; t<numTeams; t++) {
+    const tr = document.createElement('tr');
+    const earn = roundEarnings(t);
+    tr.innerHTML =
+      `<td>${esc(teamNames[t]||`Team ${String.fromCharCode(65+t)}`)}</td>` +
+      [0,1,2].map(g =>
+        `<td><input type="number" min="0" step="1" value="${roundInputs[t][g]||0}" oninput="roundInputs[${t}][${g}]=Math.max(0,+this.value||0);onInputChange()"></td>`
+      ).join('') +
+      `<td class="earnings-cell" id="earn-${t}">$${earn.toFixed(2)}</td>`;
+    tbody.appendChild(tr);
+  }
+  updateTotals();
+}
+
+function onInputChange() {
+  updateTotals();
+  updateRoundEarnings();
+}
+
+function getTotals() { return [0,1,2].map(g => Array.from({length:numTeams},(_,t)=>roundInputs[t][g]).reduce((a,b)=>a+b,0)); }
+
+function updateTotals() {
+  const totals = getTotals();
+  [0,1,2].forEach(g => { document.getElementById(`total-${g}`).textContent = totals[g]; });
+  const allEarn = Array.from({length:numTeams},(_,t)=>roundEarnings(t)).reduce((a,b)=>a+b,0);
+  document.getElementById('total-earn').textContent = allEarn > 0 ? `$${allEarn.toFixed(0)}` : '';
+}
+
+function roundEarnings(t) {
+  // Prices are computed from TOTALS of this round (entered so far)
+  const totals = getTotals();
+  const prices = computePricesForTotals(totals);
+  return [0,1,2].reduce((sum,g) => sum + (roundInputs[t][g]||0)*prices[g], 0);
+}
+
+function updateRoundEarnings() {
+  for (let t=0; t<numTeams; t++) {
+    const el = document.getElementById(`earn-${t}`);
+    if (el) el.textContent = `$${roundEarnings(t).toFixed(2)}`;
+  }
+  const allEarn = Array.from({length:numTeams},(_,t)=>roundEarnings(t)).reduce((a,b)=>a+b,0);
+  document.getElementById('total-earn').textContent = allEarn > 0 ? `$${allEarn.toFixed(0)}` : '';
+}
+
+// ── Record round ──────────────────────────────────────────────────────────────
+function recordRound() {
+  readSettings();
+  const totals = getTotals();
+  const newPrices = computePricesForTotals(totals);
+  const teamEarns = Array.from({length:numTeams},(_,t)=>roundEarnings(t));
+
+  // Save prev for delta display
+  prevPrices = [...currentPrices];
+  currentPrices = newPrices;
+
+  // Update cumulative earnings
+  teamEarns.forEach((e,t) => { cumulativeEarnings[t] = (cumulativeEarnings[t]||0) + e; });
+
+  history.push({round: currentRound, totals:[...totals], prices:[...newPrices], teamEarnings:[...teamEarns]});
+
+  // Advance round
+  currentRound++;
+  document.getElementById('round-heading').textContent = `Round ${currentRound} — Enter quantities produced`;
+  document.getElementById('round-num').textContent = `Round ${currentRound}`;
+
+  // Reset inputs
+  roundInputs = Array.from({length:8}, () => [0,0,0]);
+  renderRoundTable();
+  renderPriceCards();
+  renderLeaderboard();
+  renderPriceChart();
+  renderRoundLog();
+}
+
+function confirmReset() {
+  if (!confirm('Reset all rounds and earnings?')) return;
+  history = [];
+  currentRound = 1;
+  cumulativeEarnings = Array(8).fill(0);
+  prevPrices = [...basePrices];
+  currentPrices = [...basePrices];
+  roundInputs = Array.from({length:8}, ()=>[0,0,0]);
+  document.getElementById('round-heading').textContent = 'Round 1 — Enter quantities produced';
+  document.getElementById('round-num').textContent = 'Round 1';
+  renderPriceCards();
+  renderRoundTable();
+  renderLeaderboard();
+  renderPriceChart();
+  renderRoundLog();
+}
+
+// ── Leaderboard ───────────────────────────────────────────────────────────────
+function renderLeaderboard() {
+  const tbody = document.querySelector('#lb-table tbody');
+  if (history.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="3" style="padding:.6rem;color:#9ca3af;font-size:.8rem;text-align:center">No rounds recorded yet</td></tr>`;
+    return;
+  }
+  // Sort teams by cumulative earnings
+  const ranked = Array.from({length:numTeams},(_,t)=>({
+    name: teamNames[t]||`Team ${String.fromCharCode(65+t)}`,
+    earn: cumulativeEarnings[t]||0,
+    t
+  })).sort((a,b)=>b.earn-a.earn);
+
+  tbody.innerHTML = '';
+  ranked.forEach((r, rank) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      `<td>${rank < 3 ? MEDALS[rank] : rank+1}</td>` +
+      `<td class="leader-name">${esc(r.name)}</td>` +
+      `<td class="leader-earn">$${r.earn.toFixed(0)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+// ── Price chart ────────────────────────────────────────────────────────────────
+function renderPriceChart() {
+  const svg = document.getElementById('price-chart');
+  if (history.length < 1) { svg.innerHTML = `<text x="220" y="110" font-size="12" fill="#9ca3af" text-anchor="middle">Record rounds to see price trends</text>`; return; }
+
+  const m = {t:20,r:20,b:36,l:44};
+  const W=440,H=220,iW=W-m.l-m.r,iH=H-m.t-m.b;
+
+  // Data: [basePrice, ...history prices per good]
+  const allPrices = [basePrices, ...history.map(h=>h.prices)];
+  const rounds    = allPrices.map((_,i)=>i);
+  const maxRound  = allPrices.length - 1;
+  const allVals   = allPrices.flat();
+  const minP = Math.max(0, Math.min(...allVals) - 2);
+  const maxP = Math.max(...allVals) + 2;
+
+  const qx = r => m.l + (r/maxRound)*iW;
+  const py = p => m.t + iH - ((p-minP)/(maxP-minP))*iH;
+
+  let h = '';
+
+  // Grid
+  for (let i=1; i<=4; i++) {
+    const y = m.t + iH*i/4;
+    h += `<line x1="${m.l}" y1="${y}" x2="${m.l+iW}" y2="${y}" stroke="#f0f2f6" stroke-width="1"/>`;
+  }
+
+  // Axes
+  h += `<line x1="${m.l}" y1="${m.t+iH}" x2="${m.l+iW}" y2="${m.t+iH}" stroke="#9ca3af" stroke-width="1.5"/>`;
+  h += `<line x1="${m.l}" y1="${m.t}" x2="${m.l}" y2="${m.t+iH}" stroke="#9ca3af" stroke-width="1.5"/>`;
+
+  // Y ticks
+  for (let i=0; i<=4; i++) {
+    const pv = minP + (maxP-minP)*i/4;
+    h += `<text x="${m.l-6}" y="${py(pv)+4}" font-size="10" fill="#6b7280" text-anchor="end">$${Math.round(pv)}</text>`;
+  }
+  // X ticks
+  for (let r=0; r<=maxRound; r++) {
+    h += `<text x="${qx(r)}" y="${m.t+iH+16}" font-size="10" fill="#6b7280" text-anchor="middle">${r===0?'Base':r}</text>`;
+  }
+  h += `<text x="${m.l+iW/2}" y="${H-2}" font-size="11" fill="#6b7280" text-anchor="middle">Round</text>`;
+
+  // Lines per good
+  [0,1,2].forEach(g => {
+    let path = '';
+    allPrices.forEach((pp, r) => {
+      const x = qx(r), y = py(pp[g]);
+      path += r===0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
+    });
+    h += `<path d="${path}" fill="none" stroke="${GOOD_COLORS[g]}" stroke-width="2"/>`;
+    // Dots
+    allPrices.forEach((pp, r) => {
+      h += `<circle cx="${qx(r)}" cy="${py(pp[g])}" r="3" fill="${GOOD_COLORS[g]}"/>`;
+    });
+    // Legend label at last point
+    const last = allPrices[allPrices.length-1];
+    h += `<text x="${qx(maxRound)+6}" y="${py(last[g])+4}" font-size="10" fill="${GOOD_COLORS[g]}" font-weight="700">${GOOD_NAMES[g].slice(0,4)}</text>`;
+  });
+
+  svg.innerHTML = h;
+}
+
+// ── Round log ─────────────────────────────────────────────────────────────────
+function renderRoundLog() {
+  const section = document.getElementById('round-log-section');
+  section.style.display = history.length > 0 ? '' : 'none';
+  const tbody = document.getElementById('log-tbody');
+  tbody.innerHTML = '';
+  history.forEach(h => {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      `<td>${h.round}</td>` +
+      [0,1,2].map(g=>`<td>${h.totals[g]}</td>`).join('') +
+      [0,1,2].map(g=>`<td style="color:${GOOD_COLORS[g]};font-variant-numeric:tabular-nums">$${h.prices[g].toFixed(2)}</td>`).join('');
+    tbody.appendChild(tr);
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+function init() {
+  readSettings();
+  renderTeamNameInputs();
+  initRoundInputs();
+  renderPriceCards();
+  renderRoundTable();
+  renderLeaderboard();
+  renderPriceChart();
+  resetTimer();
+}
+
+init();
+</script>
+</body>
+</html>
