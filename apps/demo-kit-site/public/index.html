@@ -264,12 +264,13 @@ header {
     </div>
     <div class="header-spacer"></div>
     <span class="header-user" id="user-label"></span>
+    <button class="header-btn" id="own-key-btn" style="display:none" onclick="showKeyBanner()">+ Use your own key</button>
     <a href="/auth/logout" class="header-btn">Sign out</a>
   </header>
 
   <!-- API key entry — visible until a valid key is saved to sessionStorage -->
   <div id="key-banner">
-    <label for="key-input">AI API Key</label>
+    <label for="key-input" id="key-label">AI API Key</label>
     <input id="key-input" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false">
     <button id="key-save-btn" onclick="saveKey()">Save</button>
     <span id="key-status"></span>
@@ -367,11 +368,23 @@ function saveKey() {
 }
 
 let demoSession = false;
+let hasServerKey = false;
+
+function showKeyBanner() {
+  document.getElementById('key-label').textContent = 'Your API Key (optional — unlocks Anthropic & full OpenAI models)';
+  document.getElementById('key-banner').classList.add('visible');
+  document.getElementById('key-input').focus();
+}
 
 function updateKeyBanner() {
   const banner = document.getElementById('key-banner');
-  if (demoSession) { banner.classList.remove('visible'); return; }
   const hasKey = !!getKey();
+  // If server provides a fallback key, the banner is always optional — only show after user saves their own key (brief confirm)
+  if (hasServerKey) {
+    if (hasKey) { banner.classList.add('visible'); setTimeout(() => banner.classList.remove('visible'), 2500); }
+    else banner.classList.remove('visible');
+    return;
+  }
   banner.classList.toggle('visible', !hasKey);
   if (hasKey) setTimeout(() => { banner.classList.remove('visible'); }, 2500);
 }
@@ -415,7 +428,9 @@ async function demoLogin() {
     const me = await r.json();
     document.getElementById('user-label').textContent = me.email;
     dailyRemaining = me.dailyLimit - me.usedToday;
-    demoSession = !!me.isDemo;
+    demoSession  = !!me.isDemo;
+    hasServerKey = !!me.hasServerKey;
+    if (hasServerKey) document.getElementById('own-key-btn').style.display = '';
     updateUsageLine();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('app').classList.add('visible');
@@ -446,7 +461,7 @@ async function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
 
-  if (!demoSession && !getKey()) {
+  if (!hasServerKey && !getKey()) {
     document.getElementById('key-banner').classList.add('visible');
     document.getElementById('key-input').focus();
     appendMsg('system', 'Paste an AI API key in the bar above first (Anthropic, OpenAI, or OpenRouter).');

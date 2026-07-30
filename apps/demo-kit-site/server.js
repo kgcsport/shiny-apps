@@ -137,7 +137,7 @@ app.get('/api/me', (req, res) => {
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
   const today = new Date().toISOString().slice(0, 10);
   const row = db.prepare('SELECT count FROM rate_limits WHERE email=? AND date=?').get(user.email, today);
-  res.json({ ...user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT, isDemo: isDemoUser(user.email) });
+  res.json({ ...user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT, isDemo: isDemoUser(user.email), hasServerKey: !!DEMO_OPENAI_KEY });
 });
 
 app.get('/auth/google', (req, res) => {
@@ -424,15 +424,15 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   if (!Array.isArray(messages) || !messages.length)
     return res.status(400).json({ error: 'messages array required' });
 
-  // Demo sessions use the server's OpenAI key — never exposed to client.
-  const isDemo = isDemoUser(req.session?.user?.email);
-  const clientKey = (req.headers['x-api-key'] || '').trim();
-  const apiKey = (isDemo && DEMO_OPENAI_KEY) ? DEMO_OPENAI_KEY : clientKey;
+  // Use the client's own key if provided; fall back to the server's key for everyone else.
+  const clientKey    = (req.headers['x-api-key'] || '').trim();
+  const usingOwnKey  = clientKey.startsWith('sk-');
+  const apiKey       = usingOwnKey ? clientKey : DEMO_OPENAI_KEY;
   if (!apiKey || !apiKey.startsWith('sk-'))
     return res.status(400).json({ error: 'Enter an API key (Anthropic, OpenAI, or OpenRouter) in the bar above.' });
 
   const provider = detectProvider(apiKey);
-  const model    = (isDemo && provider === 'openai') ? 'gpt-4o-mini' : DEFAULT_MODELS[provider];
+  const model    = (!usingOwnKey && provider === 'openai') ? 'gpt-4o-mini' : DEFAULT_MODELS[provider];
   const system   = multiplayer ? SYSTEM_MULTI : SYSTEM_SOLO;
 
   let remaining;
