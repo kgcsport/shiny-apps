@@ -659,9 +659,9 @@ function setGenerating(v) {
 
 function updateUsageLine() {
   const el = document.getElementById('usage-line');
-  if (dailyRemaining !== null) {
-    el.textContent = dailyRemaining + ' generations left today';
-  }
+  let text = dailyRemaining !== null ? dailyRemaining + ' generations left today' : '';
+  if (hasServerKey && !getKey()) text += (text ? ' · ' : '') + 'Using gpt-4o-mini — add your own key for more models';
+  el.textContent = text;
 }
 </script>
 </body>
