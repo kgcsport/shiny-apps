@@ -23,8 +23,9 @@ const EDU_ONLY      = (process.env.DEMO_KIT_EDU_ONLY || 'true') !== 'false';
 const AUTH_DISABLED = process.env.DEMO_KIT_AUTH_DISABLED === 'true';
 const DEMO_USER     = process.env.DEMO_KIT_DEMO_USER || '';
 const DEMO_PASS     = process.env.DEMO_KIT_DEMO_PASS || '';
-const SHINY_BASE_URL = (process.env.SHINY_BASE_URL || '').replace(/\/$/, '');
-const SHINY_DB_PATH  = process.env.SHINY_DB_PATH || join(DATA_DIR, 'data', 'class-job-market.sqlite');
+const SHINY_BASE_URL  = (process.env.SHINY_BASE_URL || '').replace(/\/$/, '');
+const SHINY_DB_PATH   = process.env.SHINY_DB_PATH || join(DATA_DIR, 'data', 'class-job-market.sqlite');
+const DEMO_OPENAI_KEY = process.env.DEMO_KIT_OPENAI_KEY || '';
 
 mkdirSync(DATA_DIR, { recursive: true });
 
@@ -125,6 +126,10 @@ function checkRateLimit(email) {
 }
 
 // ── Auth: /api/me, /auth/google, /auth/callback, /auth/logout ────────────────
+function isDemoUser(email) {
+  return email?.endsWith('@demo.local') || false;
+}
+
 app.get('/api/me', (req, res) => {
   const user = AUTH_DISABLED
     ? { email: 'dev@localhost', name: 'Dev (auth disabled)' }
@@ -132,7 +137,7 @@ app.get('/api/me', (req, res) => {
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
   const today = new Date().toISOString().slice(0, 10);
   const row = db.prepare('SELECT count FROM rate_limits WHERE email=? AND date=?').get(user.email, today);
-  res.json({ ...user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT });
+  res.json({ ...user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT, isDemo: isDemoUser(user.email) });
 });
 
 app.get('/auth/google', (req, res) => {
@@ -419,8 +424,10 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   if (!Array.isArray(messages) || !messages.length)
     return res.status(400).json({ error: 'messages array required' });
 
-  // Key supplied by client on every request — never stored server-side.
-  const apiKey = (req.headers['x-api-key'] || '').trim();
+  // Demo sessions use the server's OpenAI key — never exposed to client.
+  const isDemo = isDemoUser(req.session?.user?.email);
+  const clientKey = (req.headers['x-api-key'] || '').trim();
+  const apiKey = (isDemo && DEMO_OPENAI_KEY) ? DEMO_OPENAI_KEY : clientKey;
   if (!apiKey || !apiKey.startsWith('sk-'))
     return res.status(400).json({ error: 'Enter an API key (Anthropic, OpenAI, or OpenRouter) in the bar above.' });
 

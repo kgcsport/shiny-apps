@@ -366,11 +366,13 @@ function saveKey() {
   updateKeyBanner();
 }
 
+let demoSession = false;
+
 function updateKeyBanner() {
   const banner = document.getElementById('key-banner');
+  if (demoSession) { banner.classList.remove('visible'); return; }
   const hasKey = !!getKey();
   banner.classList.toggle('visible', !hasKey);
-  // If they just saved a key, show a brief confirmation then hide banner
   if (hasKey) setTimeout(() => { banner.classList.remove('visible'); }, 2500);
 }
 
@@ -413,10 +415,11 @@ async function demoLogin() {
     const me = await r.json();
     document.getElementById('user-label').textContent = me.email;
     dailyRemaining = me.dailyLimit - me.usedToday;
+    demoSession = !!me.isDemo;
     updateUsageLine();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('app').classList.add('visible');
-    updateKeyBanner();  // show key banner if no key yet
+    updateKeyBanner();  // show key banner if no key yet (hidden for demo sessions)
   } catch {}
 })();
 
@@ -443,7 +446,7 @@ async function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
 
-  if (!getKey()) {
+  if (!demoSession && !getKey()) {
     document.getElementById('key-banner').classList.add('visible');
     document.getElementById('key-input').focus();
     appendMsg('system', 'Paste an AI API key in the bar above first (Anthropic, OpenAI, or OpenRouter).');
