@@ -126,6 +126,8 @@ header {
 .msg.assistant { background: var(--bg); color: var(--text); align-self: flex-start; border-bottom-left-radius: 3px; border: 1px solid var(--border); }
 .msg.system  { background: transparent; color: var(--muted); align-self: center; font-size: .8rem; font-style: italic; text-align: center; }
 .msg.error   { background: #fef2f2; color: var(--danger); align-self: stretch; border: 1px solid #fecaca; }
+.render-btn { margin-top: .5rem; display: block; padding: .3rem .8rem; font-size: .78rem; background: var(--accent); color: #fff; border: none; border-radius: 5px; cursor: pointer; }
+.render-btn:hover { background: var(--accent-h); }
 .msg-dots { display: inline-flex; gap: 3px; padding: 2px 0; }
 .msg-dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: bounce .9s infinite; }
 .msg-dots span:nth-child(2) { animation-delay: .15s; }
@@ -529,8 +531,23 @@ async function sendMessage() {
         : '✓ Game generated — see preview. You can keep refining in conversation.';
       showPreview(html, isMulti);
     } else {
-      // Non-HTML response (clarifying question, explanation)
+      // Non-HTML response — show as text; add render button if HTML is detectable
       thinkingEl.innerHTML = escapeHtml(fullText);
+      if (fullText.includes('<!DOCTYPE') || fullText.includes('<html')) {
+        const btn = document.createElement('button');
+        btn.className = 'render-btn';
+        btn.textContent = '▶ Render game';
+        btn.onclick = () => {
+          const h = extractHtml(fullText);
+          if (!h) return;
+          currentHtml = h;
+          currentRoomCode = null;
+          messages[messages.length - 1].content = h;
+          showPreview(h, mode === 'multi');
+          btn.remove();
+        };
+        thinkingEl.appendChild(btn);
+      }
     }
 
   } catch (e) {
