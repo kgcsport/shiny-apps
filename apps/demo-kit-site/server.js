@@ -598,6 +598,103 @@ app.get('/api/template/:id', requireAuth, (req, res) => {
   res.json(t);
 });
 
+// ── POST /api/export — convert game HTML to R Shiny or Python Streamlit ───────
+app.post('/api/export', requireAuth, async (req, res) => {
+  const { html, language } = req.body;
+  if (!html) return res.status(400).json({ error: 'html required' });
+  if (!['r_shiny', 'python_streamlit', 'stata'].includes(language))
+    return res.status(400).json({ error: 'language must be r_shiny, python_streamlit, or stata' });
+
+  const clientKey   = (req.headers['x-api-key'] || '').trim();
+  const usingOwnKey = clientKey.startsWith('sk-');
+  const apiKey      = usingOwnKey ? clientKey : DEMO_OPENAI_KEY;
+  if (!apiKey || !apiKey.startsWith('sk-'))
+    return res.status(400).json({ error: 'API key required for export. Add your key via "+ Use your own key".' });
+
+  let remaining;
+  try { remaining = checkRateLimit(req.session.user.email); }
+  catch (e) { return res.status(e.code || 429).json({ error: e.message }); }
+
+  const provider = detectProvider(apiKey);
+  const model    = (!usingOwnKey && provider === 'openai') ? 'gpt-4o-mini' : DEFAULT_MODELS[provider];
+  const isR      = language === 'r_shiny';
+  const isStata  = language === 'stata';
+
+  const systemPrompt = isR
+    ? `You are an expert R programmer converting interactive HTML/JavaScript classroom economics tools to self-contained R Shiny apps.
+
+Convert the provided HTML to a single app.R file using shinyApp(ui, server). Rules:
+- Reproduce every interactive control: sliders → sliderInput, number inputs → numericInput, selects → selectInput, buttons → actionButton
+- Reproduce all charts using base R graphics (plot/lines/polygon/points/rect/mtext) inside renderPlot — no ggplot2, no plotly
+- Preserve all the mathematics and logic from the JavaScript exactly
+- Return ONLY valid R code starting with library(shiny). No markdown fences, no explanation.`
+    : isStata
+    ? `You are an expert Stata programmer converting interactive HTML/JavaScript classroom economics tools to self-contained Stata do-files.
+
+Convert the provided HTML to a single analysis.do file. Rules:
+- Put every tunable parameter (anything that was a slider or numeric input) as a named scalar or local macro at the top of the file, clearly commented, so the user can change values in one place
+- Reproduce all charts using Stata twoway graphics (twoway line, twoway area, twoway scatter, etc.); use graph twoway with appropriate options for axes, titles, and colors; export to analysis.png with "graph export analysis.png, replace"
+- Reproduce every calculation and table from the JavaScript using Stata commands (generate, replace, summarize, display, etc.)
+- Use "clear" at the start and build any needed datasets with "set obs N" + generate commands — no external data files required
+- Add a brief comment block at the top explaining what the tool does and how to change the parameters
+- Return ONLY valid Stata code starting with "* ". No markdown fences, no explanation.`
+    : `You are an expert Python programmer converting interactive HTML/JavaScript classroom economics tools to self-contained Python Streamlit apps.
+
+Convert the provided HTML to a single app.py file. Rules:
+- Reproduce every interactive control: sliders → st.slider, number inputs → st.number_input, selects → st.selectbox, buttons → st.button
+- Reproduce all charts using matplotlib (fig, ax = plt.subplots() then st.pyplot(fig)) — no plotly, no altair
+- Preserve all the mathematics and logic from the JavaScript exactly
+- Return ONLY valid Python code starting with import streamlit as st. No markdown fences, no explanation.`;
+
+  try {
+    let responseText;
+
+    if (provider === 'anthropic') {
+      const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model, max_tokens: 8192, stream: false,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: `Convert this to ${isR ? 'R Shiny' : isStata ? 'Stata' : 'Python Streamlit'}:\n\n${html}` }]
+        })
+      });
+      if (!upstream.ok) {
+        const err = await upstream.text();
+        return res.status(502).json({ error: `API error: ${err.slice(0, 300)}` });
+      }
+      const data = await upstream.json();
+      responseText = data.content?.[0]?.text || '';
+    } else {
+      const baseUrl = provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1';
+      const upstream = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model, max_tokens: 8192, stream: false,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: `Convert this to ${isR ? 'R Shiny' : isStata ? 'Stata' : 'Python Streamlit'}:\n\n${html}` }
+          ]
+        })
+      });
+      if (!upstream.ok) {
+        const err = await upstream.text();
+        return res.status(502).json({ error: `API error: ${err.slice(0, 300)}` });
+      }
+      const data = await upstream.json();
+      responseText = data.choices?.[0]?.message?.content || '';
+    }
+
+    // Strip any code fences the model adds despite instructions
+    const code = responseText.replace(/^```[a-z]*\r?\n?/i, '').replace(/\r?\n?```$/i, '').trim();
+    const filename = isR ? 'app.R' : isStata ? 'analysis.do' : 'app.py';
+    res.json({ code, filename, remaining });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /play — serve saved game (auth required) ─────────────────────────────
 app.get('/play', (req, res) => {
   const { room } = req.query;

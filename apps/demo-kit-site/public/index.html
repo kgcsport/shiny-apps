@@ -294,6 +294,47 @@ header {
 .card-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .card-btn.primary:hover { background: var(--accent-h); border-color: var(--accent-h); }
 @media (max-width: 680px) { #lib-drawer { width: 100%; } }
+
+/* ── Export dropdown & modal ── */
+#export-wrap { position: relative; display: none; }
+#export-menu {
+  display: none; position: absolute; right: 0; top: calc(100% + 4px);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,.15); z-index: 50; min-width: 180px;
+}
+#export-menu button {
+  display: block; width: 100%; text-align: left; padding: .45rem .75rem;
+  border: none; background: none; font-size: .82rem; color: var(--text); cursor: pointer;
+  transition: background .12s;
+}
+#export-menu button:first-child { border-radius: 6px 6px 0 0; }
+#export-menu button:last-child  { border-radius: 0 0 6px 6px; }
+#export-menu button:hover { background: var(--bg); }
+#export-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 400;
+  align-items: center; justify-content: center;
+}
+#export-overlay.on { display: flex; }
+#export-modal {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  width: min(700px, 92vw); max-height: 82vh; display: flex; flex-direction: column;
+  box-shadow: 0 8px 40px rgba(0,0,0,.25); overflow: hidden;
+}
+.export-modal-head {
+  display: flex; align-items: center; gap: .6rem; padding: .8rem 1rem;
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.export-modal-head h2 { font-size: .9rem; font-weight: 700; flex: 1; }
+#export-code {
+  flex: 1; overflow: auto; margin: 0; padding: .85rem 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem;
+  line-height: 1.6; background: var(--bg); color: var(--text); white-space: pre;
+  border: none; outline: none;
+}
+.export-modal-foot {
+  display: flex; gap: .5rem; padding: .7rem 1rem;
+  border-top: 1px solid var(--border); flex-shrink: 0;
+}
 </style>
 </head>
 <body>
@@ -381,6 +422,14 @@ header {
         <div id="solo-actions" style="display:none">
           <button class="icon-btn" onclick="openFullscreen()">Full screen ↗</button>
         </div>
+        <div id="export-wrap">
+          <button class="icon-btn" onclick="toggleExportMenu()">Export as…</button>
+          <div id="export-menu">
+            <button onclick="exportGame('r_shiny')">R Shiny (app.R)</button>
+            <button onclick="exportGame('python_streamlit')">Python Streamlit (app.py)</button>
+            <button onclick="exportGame('stata')" title="Stata has no interactive UI — sliders become scalar parameters you edit manually">Stata (analysis.do) ⚠</button>
+          </div>
+        </div>
         <button class="icon-btn primary" id="share-btn" onclick="shareGame()" style="display:none">Save &amp; share</button>
       </div>
       <div id="preview-wrap">
@@ -397,6 +446,22 @@ header {
 
   </div><!-- #workspace -->
 </div><!-- #app -->
+
+<!-- ── Export modal ───────────────────────────────────────────────────────── -->
+<div id="export-overlay" onclick="handleExportOverlayClick(event)">
+  <div id="export-modal">
+    <div class="export-modal-head">
+      <h2 id="export-modal-title">Exporting…</h2>
+      <button class="lib-close-btn" onclick="closeExportModal()">✕</button>
+    </div>
+    <pre id="export-code"></pre>
+    <div class="export-modal-foot">
+      <button id="export-download-btn" class="icon-btn primary" onclick="downloadExport()" style="display:none">Download file</button>
+      <button id="export-copy-btn" class="icon-btn" onclick="copyExportCode()" style="display:none">Copy code</button>
+      <button class="icon-btn" onclick="closeExportModal()">Close</button>
+    </div>
+  </div>
+</div>
 
 <!-- ── Library drawer ─────────────────────────────────────────────────────── -->
 <div id="lib-overlay" onclick="closeLibrary()"></div>
@@ -666,6 +731,7 @@ function showPreview(html, isMulti) {
 
   shareBtn.style.display = '';
   soloActions.style.display = isMulti ? 'none' : '';
+  document.getElementById('export-wrap').style.display = '';
 }
 
 async function shareGame() {
@@ -865,6 +931,98 @@ function _applyLoadedGame(html, title, isMulti) {
   document.getElementById('messages').innerHTML = '';
   appendMsg('system', `Loaded: "${escapeHtml(title)}" — describe changes to refine it.`);
   closeLibrary();
+}
+
+// ── Export ───────────────────────────────────────────────────────────────────
+let exportFilename = '';
+
+function toggleExportMenu() {
+  const menu = document.getElementById('export-menu');
+  const open = menu.style.display !== 'block';
+  menu.style.display = open ? 'block' : 'none';
+  if (open) {
+    const close = e => {
+      if (!document.getElementById('export-wrap').contains(e.target)) {
+        menu.style.display = 'none';
+        document.removeEventListener('click', close, true);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', close, true), 0);
+  }
+}
+
+async function exportGame(language) {
+  document.getElementById('export-menu').style.display = 'none';
+  if (!currentHtml) return;
+
+  if (!hasServerKey && !getKey()) {
+    document.getElementById('key-banner').classList.add('visible');
+    document.getElementById('key-input').focus();
+    appendMsg('system', 'Add an API key first to use the export feature.');
+    return;
+  }
+
+  const label = language === 'r_shiny' ? 'R Shiny' : language === 'stata' ? 'Stata' : 'Python Streamlit';
+  const titleEl   = document.getElementById('export-modal-title');
+  const codeEl    = document.getElementById('export-code');
+  const dlBtn     = document.getElementById('export-download-btn');
+  const copyBtn   = document.getElementById('export-copy-btn');
+
+  titleEl.textContent = `Exporting as ${label}…`;
+  codeEl.textContent  = 'Generating — this may take 15–30 seconds…';
+  dlBtn.style.display   = 'none';
+  copyBtn.style.display = 'none';
+  document.getElementById('export-overlay').classList.add('on');
+
+  try {
+    const res = await fetch('/api/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': getKey() },
+      body: JSON.stringify({ html: currentHtml, language })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+
+    exportFilename = data.filename;
+    titleEl.textContent = `Export: ${label} — ${data.filename}`;
+    const stataNote = language === 'stata'
+      ? '* NOTE: Stata has no interactive UI — sliders become scalar parameters\n* at the top. Edit them and re-run the do-file to update the output.\n\n'
+      : '';
+    codeEl.textContent = stataNote + data.code;
+    dlBtn.style.display   = '';
+    copyBtn.style.display = '';
+
+    if (data.remaining !== undefined) { dailyRemaining = data.remaining; updateUsageLine(); }
+  } catch (e) {
+    titleEl.textContent = 'Export failed';
+    codeEl.textContent  = 'Error: ' + e.message;
+  }
+}
+
+function closeExportModal() {
+  document.getElementById('export-overlay').classList.remove('on');
+}
+
+function handleExportOverlayClick(e) {
+  if (e.target === document.getElementById('export-overlay')) closeExportModal();
+}
+
+function downloadExport() {
+  const code = document.getElementById('export-code').textContent;
+  const blob = new Blob([code], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = exportFilename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function copyExportCode() {
+  const code = document.getElementById('export-code').textContent;
+  await navigator.clipboard.writeText(code);
+  const btn = document.getElementById('export-copy-btn');
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy code'; }, 2000);
 }
 </script>
 </body>
