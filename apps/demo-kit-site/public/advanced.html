@@ -161,10 +161,16 @@ details.note.gray>.note-body{background:var(--surface);color:var(--text);border:
 <div class="box green">
   <strong>The simplest possible setup — your laptop as the server:</strong> run <code>node server.js</code> on your laptop. Students on the same Wi-Fi connect to your local IP address. No VPS, no HTTPS, no OAuth, no Docker. Works great for a single class session.
   <ol style="margin:.6rem 0 0 1.2rem;font-size:.85rem;line-height:1.8">
-    <li>Start the server: <code>DEMO_KIT_AUTH_DISABLED=true node server.js</code></li>
+    <li>Start the server. Open Terminal (Mac) or Command Prompt (Windows), navigate to the <code>apps/demo-kit-site</code> folder, and run:<br><br>
+      <strong>Mac / Linux:</strong><br>
+      <code>DEMO_KIT_AUTH_DISABLED=true node server.js</code><br><br>
+      <strong>Windows (Command Prompt):</strong><br>
+      <code>set DEMO_KIT_AUTH_DISABLED=true &amp;&amp; node server.js</code><br><br>
+      <span style="font-size:.8rem;color:#374151"><strong>What is <code>DEMO_KIT_AUTH_DISABLED=true</code>?</strong> It's a setting you pass right at the start of the command — not something you edit in a file. It tells the server to skip the Google login screen entirely, so students can just open the URL and start playing. Without it, the server would require everyone to sign in with a .edu Google account (which you don't have set up yet). Type it exactly as shown, on the same line, before <code>node server.js</code>.</span>
+    </li>
     <li>Find your local IP:<br>
-      <strong>Mac:</strong> open Terminal, run <code>ipconfig getifaddr en0</code> — you'll get something like <code>192.168.1.42</code><br>
-      <strong>Windows:</strong> open Command Prompt, run <code>ipconfig</code> — look for "IPv4 Address" under your Wi-Fi adapter
+      <strong>Mac:</strong> open a new Terminal tab, run <code>ipconfig getifaddr en0</code> — you'll get something like <code>192.168.1.42</code><br>
+      <strong>Windows:</strong> open a new Command Prompt, run <code>ipconfig</code> — look for "IPv4 Address" under your Wi-Fi adapter
     </li>
     <li>Tell students to open <code>http://192.168.1.42:3000</code> (using your actual IP) in their browser</li>
     <li>Everyone must be on the <strong>same Wi-Fi network</strong> as your laptop</li>
