@@ -602,8 +602,8 @@ app.get('/api/template/:id', requireAuth, (req, res) => {
 app.post('/api/export', requireAuth, async (req, res) => {
   const { html, language } = req.body;
   if (!html) return res.status(400).json({ error: 'html required' });
-  if (!['r_shiny', 'python_streamlit'].includes(language))
-    return res.status(400).json({ error: 'language must be r_shiny or python_streamlit' });
+  if (!['r_shiny', 'python_streamlit', 'stata'].includes(language))
+    return res.status(400).json({ error: 'language must be r_shiny, python_streamlit, or stata' });
 
   const clientKey   = (req.headers['x-api-key'] || '').trim();
   const usingOwnKey = clientKey.startsWith('sk-');
@@ -618,6 +618,7 @@ app.post('/api/export', requireAuth, async (req, res) => {
   const provider = detectProvider(apiKey);
   const model    = (!usingOwnKey && provider === 'openai') ? 'gpt-4o-mini' : DEFAULT_MODELS[provider];
   const isR      = language === 'r_shiny';
+  const isStata  = language === 'stata';
 
   const systemPrompt = isR
     ? `You are an expert R programmer converting interactive HTML/JavaScript classroom economics tools to self-contained R Shiny apps.
@@ -627,6 +628,16 @@ Convert the provided HTML to a single app.R file using shinyApp(ui, server). Rul
 - Reproduce all charts using base R graphics (plot/lines/polygon/points/rect/mtext) inside renderPlot — no ggplot2, no plotly
 - Preserve all the mathematics and logic from the JavaScript exactly
 - Return ONLY valid R code starting with library(shiny). No markdown fences, no explanation.`
+    : isStata
+    ? `You are an expert Stata programmer converting interactive HTML/JavaScript classroom economics tools to self-contained Stata do-files.
+
+Convert the provided HTML to a single analysis.do file. Rules:
+- Put every tunable parameter (anything that was a slider or numeric input) as a named scalar or local macro at the top of the file, clearly commented, so the user can change values in one place
+- Reproduce all charts using Stata twoway graphics (twoway line, twoway area, twoway scatter, etc.); use graph twoway with appropriate options for axes, titles, and colors; export to analysis.png with "graph export analysis.png, replace"
+- Reproduce every calculation and table from the JavaScript using Stata commands (generate, replace, summarize, display, etc.)
+- Use "clear" at the start and build any needed datasets with "set obs N" + generate commands — no external data files required
+- Add a brief comment block at the top explaining what the tool does and how to change the parameters
+- Return ONLY valid Stata code starting with "* ". No markdown fences, no explanation.`
     : `You are an expert Python programmer converting interactive HTML/JavaScript classroom economics tools to self-contained Python Streamlit apps.
 
 Convert the provided HTML to a single app.py file. Rules:
@@ -645,7 +656,7 @@ Convert the provided HTML to a single app.py file. Rules:
         body: JSON.stringify({
           model, max_tokens: 8192, stream: false,
           system: systemPrompt,
-          messages: [{ role: 'user', content: `Convert this to ${isR ? 'R Shiny' : 'Python Streamlit'}:\n\n${html}` }]
+          messages: [{ role: 'user', content: `Convert this to ${isR ? 'R Shiny' : isStata ? 'Stata' : 'Python Streamlit'}:\n\n${html}` }]
         })
       });
       if (!upstream.ok) {
@@ -663,7 +674,7 @@ Convert the provided HTML to a single app.py file. Rules:
           model, max_tokens: 8192, stream: false,
           messages: [
             { role: 'system', content: systemPrompt },
-            { role: 'user', content: `Convert this to ${isR ? 'R Shiny' : 'Python Streamlit'}:\n\n${html}` }
+            { role: 'user', content: `Convert this to ${isR ? 'R Shiny' : isStata ? 'Stata' : 'Python Streamlit'}:\n\n${html}` }
           ]
         })
       });
@@ -677,7 +688,8 @@ Convert the provided HTML to a single app.py file. Rules:
 
     // Strip any code fences the model adds despite instructions
     const code = responseText.replace(/^```[a-z]*\r?\n?/i, '').replace(/\r?\n?```$/i, '').trim();
-    res.json({ code, filename: isR ? 'app.R' : 'app.py', remaining });
+    const filename = isR ? 'app.R' : isStata ? 'analysis.do' : 'app.py';
+    res.json({ code, filename, remaining });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

@@ -427,6 +427,7 @@ header {
           <div id="export-menu">
             <button onclick="exportGame('r_shiny')">R Shiny (app.R)</button>
             <button onclick="exportGame('python_streamlit')">Python Streamlit (app.py)</button>
+            <button onclick="exportGame('stata')">Stata (analysis.do)</button>
           </div>
         </div>
         <button class="icon-btn primary" id="share-btn" onclick="shareGame()" style="display:none">Save &amp; share</button>
@@ -961,7 +962,7 @@ async function exportGame(language) {
     return;
   }
 
-  const label = language === 'r_shiny' ? 'R Shiny' : 'Python Streamlit';
+  const label = language === 'r_shiny' ? 'R Shiny' : language === 'stata' ? 'Stata' : 'Python Streamlit';
   const titleEl   = document.getElementById('export-modal-title');
   const codeEl    = document.getElementById('export-code');
   const dlBtn     = document.getElementById('export-download-btn');
