@@ -11,6 +11,7 @@ WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
 COPY server.js ./
 COPY public/ ./public/
+COPY templates/ ./templates/
 RUN mkdir -p /app/data
 EXPOSE 3000
 CMD ["node", "server.js"]
