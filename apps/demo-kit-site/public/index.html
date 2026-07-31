@@ -295,6 +295,58 @@ header {
 .card-btn.primary:hover { background: var(--accent-h); border-color: var(--accent-h); }
 @media (max-width: 680px) { #lib-drawer { width: 100%; } }
 
+/* ── Help modal ── */
+#help-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 400;
+  align-items: center; justify-content: center;
+}
+#help-overlay.on { display: flex; }
+#help-modal {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  width: min(580px, 92vw); max-height: 86vh; display: flex; flex-direction: column;
+  box-shadow: 0 8px 40px rgba(0,0,0,.25); overflow: hidden;
+}
+.help-head {
+  display: flex; align-items: center; gap: .6rem; padding: .8rem 1rem;
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.help-head h2 { font-size: .9rem; font-weight: 700; flex: 1; }
+.help-body { flex: 1; overflow-y: auto; padding: 1rem 1.1rem; font-size: .86rem; line-height: 1.65; }
+.help-body h3 { font-size: .75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--accent); margin: 1rem 0 .3rem; }
+.help-body h3:first-child { margin-top: 0; }
+.help-body p { margin-bottom: .5rem; }
+.help-body ol, .help-body ul { padding-left: 1.25rem; margin-bottom: .5rem; }
+.help-body li { margin-bottom: .2rem; }
+.help-body code { background: var(--bg); border: 1px solid var(--border); border-radius: 3px;
+  padding: .08rem .28rem; font-size: .8rem; font-family: ui-monospace, monospace; }
+.help-foot { padding: .7rem 1rem; border-top: 1px solid var(--border); flex-shrink: 0; }
+
+/* ── Save-title modal ── */
+#save-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 400;
+  align-items: center; justify-content: center;
+}
+#save-overlay.on { display: flex; }
+#save-modal {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  width: min(380px, 92vw); box-shadow: 0 8px 40px rgba(0,0,0,.25); overflow: hidden;
+}
+.save-head { display: flex; align-items: center; padding: .8rem 1rem; border-bottom: 1px solid var(--border); }
+.save-head h2 { font-size: .9rem; font-weight: 700; flex: 1; }
+.save-body { padding: .9rem 1rem; }
+.save-body label { display: block; font-size: .78rem; font-weight: 600; color: var(--muted); margin-bottom: .3rem; }
+#save-title-input {
+  width: 100%; padding: .45rem .65rem; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text); font-size: .9rem; font-family: inherit; outline: none;
+}
+#save-title-input:focus { border-color: var(--accent); }
+.save-foot { display: flex; gap: .5rem; justify-content: flex-end; padding: .7rem 1rem; border-top: 1px solid var(--border); }
+
+/* ── Delete button ── */
+.card-btn.danger { color: var(--danger); border-color: var(--danger); }
+.card-btn.danger:hover { background: #fef2f2; }
+
 /* ── Export dropdown & modal ── */
 #export-wrap { position: relative; display: none; }
 #export-menu {
@@ -371,6 +423,7 @@ header {
     <span class="header-user" id="user-label"></span>
     <button class="header-btn" id="own-key-btn" style="display:none" onclick="showKeyBanner()">+ Use your own key</button>
     <button class="header-btn" onclick="openLibrary()">📚 Library</button>
+    <button class="header-btn" onclick="openHelp()">? Help</button>
     <a href="/auth/logout" class="header-btn">Sign out</a>
   </header>
 
@@ -401,6 +454,7 @@ header {
       <div id="input-area">
         <div id="multi-hint">
           ⚡ <strong>Multi-device mode:</strong> students each open the game on their own device and interact in real-time. All state is <em>public</em> — no hidden entries. Great for contribution games, polls, auctions, coordination problems.
+          <br><br><a href="/advanced.html" target="_blank" style="color:var(--multi-text);font-weight:600">Need private state, persistence, or admin controls? → Advanced guide</a>
         </div>
         <textarea id="user-input" rows="3" placeholder="e.g. A public goods game where each of 5 students contributes 0-10 tokens per round. Show a live bar chart of contributions."></textarea>
         <button id="send-btn" onclick="sendMessage()">Generate ↵</button>
@@ -426,6 +480,7 @@ header {
           <button class="icon-btn" onclick="toggleExportMenu()">Export as…</button>
           <div id="export-menu">
             <button onclick="downloadHtml()">HTML file (self-contained)</button>
+            <button onclick="downloadBundle()">Download bundle… (HTML + R + Python + Docker)</button>
             <button onclick="exportGame('r_shiny')">R Shiny (app.R)</button>
             <button onclick="exportGame('python_streamlit')">Python Streamlit (app.py)</button>
             <button onclick="exportGame('stata')" title="Stata has no interactive UI — sliders become scalar parameters you edit manually">Stata (analysis.do) ⚠</button>
@@ -447,6 +502,79 @@ header {
 
   </div><!-- #workspace -->
 </div><!-- #app -->
+
+<!-- ── Help modal ────────────────────────────────────────────────────────── -->
+<div id="help-overlay" onclick="handleHelpOverlayClick(event)">
+  <div id="help-modal">
+    <div class="help-head">
+      <h2>How to use the Game Builder</h2>
+      <button class="lib-close-btn" onclick="closeHelp()">✕</button>
+    </div>
+    <div class="help-body">
+      <h3>1 — Choose a mode</h3>
+      <p><strong>Single-screen</strong> — one display projected to the class. You control it; students watch and call out answers. Best for demonstrations, live polls, or instructor-led experiments.</p>
+      <p><strong>Multi-device ⚡</strong> — each student opens the game URL on their own device and interacts simultaneously. All state is public (everyone sees everyone's moves). Good for: contribution games, auctions, public-goods problems, coordination games.</p>
+
+      <h3>2 — Describe your game</h3>
+      <p>Type a plain-language description in the chat box. Be as specific or vague as you like — the AI picks sensible defaults and you can always iterate. Example prompts:</p>
+      <ul>
+        <li><em>"A supply and demand diagram where I can drag the curves."</em></li>
+        <li><em>"A 5-round public goods game. Each of 10 students contributes 0–20 tokens. Show running totals."</em></li>
+        <li><em>"Ultimatum game. One proposer splits $10. Responder accepts or rejects. Show outcome immediately."</em></li>
+      </ul>
+
+      <h3>3 — Iterate in conversation</h3>
+      <p>The AI generates a working game right away. Keep refining by replying naturally:</p>
+      <ul>
+        <li><em>"Make the timer 90 seconds instead of 60."</em></li>
+        <li><em>"Add a leaderboard sorted by total earnings."</em></li>
+        <li><em>"Switch to a dark color scheme."</em></li>
+        <li><em>"Add a teacher view that shows the class average."</em></li>
+      </ul>
+
+      <h3>4 — Save &amp; share</h3>
+      <p>Click <strong>Save &amp; share</strong> to store the game and get a permanent link. You'll be prompted to give it a title. For multi-device games the link is the room URL — every student who opens it joins the live session.</p>
+
+      <h3>5 — Reload from the Library</h3>
+      <p>Click <strong>📚 Library</strong> to browse saved games and built-in templates. Loading a game seeds the chat with its HTML so follow-up messages refine it further.</p>
+
+      <h3>Export options</h3>
+      <ul>
+        <li><strong>HTML file</strong> — self-contained, opens in any browser, no server needed.</li>
+        <li><strong>Download bundle</strong> — ZIP with HTML + R Shiny + Python Streamlit versions + Dockerfiles for each.</li>
+        <li><strong>R Shiny / Python Streamlit</strong> — AI-converted code you can run as a local app or deploy on your own server.</li>
+        <li><strong>Stata ⚠</strong> — do-file with parameters you edit manually; no interactive UI.</li>
+      </ul>
+
+      <h3>API key</h3>
+      <p>If the server provides a demo key you can use it immediately (limited to <code>gpt-4o-mini</code>). Add your own Anthropic, OpenAI, or OpenRouter key via <strong>+ Use your own key</strong> to unlock better models and higher limits.</p>
+
+      <h3>Multi-device limitations</h3>
+      <p>GameSync (the built-in sync layer) keeps all state fully public and in-memory — it resets if the server restarts. For games that need private per-student state, persistent data between sessions, or an instructor admin panel, see the <a href="/advanced.html" target="_blank">Advanced guide →</a></p>
+    </div>
+    <div class="help-foot">
+      <button class="icon-btn" onclick="closeHelp()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Save-title modal ───────────────────────────────────────────────────── -->
+<div id="save-overlay" onclick="handleSaveOverlayClick(event)">
+  <div id="save-modal">
+    <div class="save-head">
+      <h2>Name this game</h2>
+      <button class="lib-close-btn" onclick="closeSaveModal()">✕</button>
+    </div>
+    <div class="save-body">
+      <label for="save-title-input">Title</label>
+      <input id="save-title-input" type="text" maxlength="120" placeholder="Untitled Game">
+    </div>
+    <div class="save-foot">
+      <button class="icon-btn" onclick="closeSaveModal()">Cancel</button>
+      <button class="icon-btn primary" onclick="confirmSave()">Save &amp; get link</button>
+    </div>
+  </div>
+</div>
 
 <!-- ── Export modal ───────────────────────────────────────────────────────── -->
 <div id="export-overlay" onclick="handleExportOverlayClick(event)">
@@ -514,6 +642,7 @@ function saveKey() {
 
 let demoSession = false;
 let hasServerKey = false;
+let isAdmin = false;
 
 function showKeyBanner() {
   document.getElementById('key-label').textContent = 'Your API Key (optional — unlocks Anthropic & full OpenAI models)';
@@ -537,6 +666,11 @@ function updateKeyBanner() {
 // Allow Enter in key field
 document.getElementById('key-input')?.addEventListener('keydown', e => {
   if (e.key === 'Enter') saveKey();
+});
+
+// Allow Enter in save-title modal
+document.getElementById('save-title-input')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') confirmSave();
 });
 
 // ── Demo login ───────────────────────────────────────────────────────────────
@@ -575,6 +709,7 @@ async function demoLogin() {
     dailyRemaining = me.dailyLimit - me.usedToday;
     demoSession  = !!me.isDemo;
     hasServerKey = !!me.hasServerKey;
+    isAdmin      = !!me.isAdmin;
     if (hasServerKey) document.getElementById('own-key-btn').style.display = '';
     updateUsageLine();
     document.getElementById('login-screen').style.display = 'none';
@@ -735,8 +870,30 @@ function showPreview(html, isMulti) {
   document.getElementById('export-wrap').style.display = '';
 }
 
-async function shareGame() {
+function shareGame() {
   if (!currentHtml) return;
+  // Pre-fill title from the game's <title> tag
+  const titleMatch = currentHtml.match(/<title>([^<]*)<\/title>/i);
+  const guessedTitle = titleMatch ? titleMatch[1].trim() : 'Untitled Game';
+  document.getElementById('save-title-input').value = guessedTitle;
+  document.getElementById('save-overlay').classList.add('on');
+  setTimeout(() => {
+    const inp = document.getElementById('save-title-input');
+    inp.focus(); inp.select();
+  }, 50);
+}
+
+function closeSaveModal() {
+  document.getElementById('save-overlay').classList.remove('on');
+}
+
+function handleSaveOverlayClick(e) {
+  if (e.target === document.getElementById('save-overlay')) closeSaveModal();
+}
+
+async function confirmSave() {
+  const title = document.getElementById('save-title-input').value.trim() || 'Untitled Game';
+  closeSaveModal();
   document.getElementById('share-btn').disabled = true;
   document.getElementById('share-btn').textContent = 'Saving…';
 
@@ -744,11 +901,7 @@ async function shareGame() {
     const res = await fetch('/api/game', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        html: currentHtml,
-        is_multiplayer: mode === 'multi',
-        title: 'Game'
-      })
+      body: JSON.stringify({ html: currentHtml, is_multiplayer: mode === 'multi', title })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
@@ -758,7 +911,7 @@ async function shareGame() {
     document.getElementById('room-info').classList.add('visible');
     document.getElementById('solo-actions').style.display = 'none';
     document.getElementById('share-btn').textContent = 'Saved ✓';
-    appendMsg('system', `Game saved. Student URL: ${data.url}`);
+    appendMsg('system', `Game saved as "${title}". Student URL: ${data.url}`);
   } catch (e) {
     document.getElementById('share-btn').disabled = false;
     document.getElementById('share-btn').textContent = 'Save & share';
@@ -870,6 +1023,7 @@ async function renderLibTab(tab) {
           `<div class="game-card-actions">` +
             `<button class="card-btn primary" onclick="loadSavedGame('${g.room_code}',${g.is_multiplayer?'true':'false'})">Load &amp; edit</button>` +
             `<button class="card-btn" onclick="window.open('/play?room=${g.room_code}','_blank')">Open ↗</button>` +
+            (isAdmin ? `<button class="card-btn danger" onclick="deleteGame('${g.room_code}')">Delete</button>` : '') +
           `</div>`;
         list.appendChild(card);
       }
@@ -932,6 +1086,25 @@ function _applyLoadedGame(html, title, isMulti) {
   document.getElementById('messages').innerHTML = '';
   appendMsg('system', `Loaded: "${escapeHtml(title)}" — describe changes to refine it.`);
   closeLibrary();
+}
+
+// ── Help ─────────────────────────────────────────────────────────────────────
+function openHelp()  { document.getElementById('help-overlay').classList.add('on'); }
+function closeHelp() { document.getElementById('help-overlay').classList.remove('on'); }
+function handleHelpOverlayClick(e) {
+  if (e.target === document.getElementById('help-overlay')) closeHelp();
+}
+
+// ── Admin: delete game ───────────────────────────────────────────────────────
+async function deleteGame(code) {
+  if (!confirm('Delete this game permanently?')) return;
+  try {
+    const res = await fetch(`/api/game/${code}`, { method: 'DELETE' });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
+    renderLibTab('saved');
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
 }
 
 // ── Export ───────────────────────────────────────────────────────────────────
@@ -1027,6 +1200,165 @@ function downloadExport() {
   a.download = exportFilename;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+async function downloadBundle() {
+  document.getElementById('export-menu').style.display = 'none';
+  if (!currentHtml) return;
+  if (!hasServerKey && !getKey()) {
+    document.getElementById('key-banner').classList.add('visible');
+    document.getElementById('key-input').focus();
+    return;
+  }
+
+  const titleEl  = document.getElementById('export-modal-title');
+  const codeEl   = document.getElementById('export-code');
+  const dlBtn    = document.getElementById('export-download-btn');
+  const copyBtn  = document.getElementById('export-copy-btn');
+
+  titleEl.textContent = 'Generating bundle…';
+  codeEl.textContent  = '⏳ Generating R Shiny…\n⏳ Generating Python Streamlit…\n\nThis takes 30–60 seconds.';
+  dlBtn.style.display = copyBtn.style.display = 'none';
+  document.getElementById('export-overlay').classList.add('on');
+
+  try {
+    const headers = { 'Content-Type': 'application/json', 'X-Api-Key': getKey() };
+    const [rRes, pyRes] = await Promise.all([
+      fetch('/api/export', { method:'POST', headers, body: JSON.stringify({ html: currentHtml, language: 'r_shiny' }) }).then(r => r.json()),
+      fetch('/api/export', { method:'POST', headers, body: JSON.stringify({ html: currentHtml, language: 'python_streamlit' }) }).then(r => r.json()),
+    ]);
+    if (rRes.error)  throw new Error('R Shiny: '  + rRes.error);
+    if (pyRes.error) throw new Error('Python: ' + pyRes.error);
+
+    const rDockerfile = `FROM rocker/shiny:latest\nWORKDIR /srv/shiny-server/app\nCOPY app.R .\nEXPOSE 3838\n`;
+    const pyDockerfile = `FROM python:3.11-slim\nWORKDIR /app\nRUN pip install streamlit matplotlib\nCOPY app.py .\nEXPOSE 8501\nCMD ["streamlit","run","app.py","--server.port=8501","--server.address=0.0.0.0"]\n`;
+    const readme =
+`# Game Bundle
+
+## Files
+- \`game.html\` — self-contained, opens in any browser
+- \`r-shiny/app.R\` + \`Dockerfile\`
+- \`python-streamlit/app.py\` + \`Dockerfile\`
+
+## Run locally
+**HTML:** just open \`game.html\` in a browser.
+
+**R Shiny:**
+\`\`\`r
+install.packages("shiny")
+shiny::runApp("r-shiny/app.R")
+\`\`\`
+
+**Python Streamlit:**
+\`\`\`bash
+pip install streamlit matplotlib
+streamlit run python-streamlit/app.py
+\`\`\`
+
+## Docker
+\`\`\`bash
+cd r-shiny && docker build -t game . && docker run -p 3838:3838 game
+# open http://localhost:3838
+\`\`\`
+\`\`\`bash
+cd python-streamlit && docker build -t game . && docker run -p 8501:8501 game
+# open http://localhost:8501
+\`\`\`
+`;
+
+    const zip = buildZip([
+      { name: 'game.html',                      data: currentHtml },
+      { name: 'r-shiny/app.R',                  data: rRes.code },
+      { name: 'r-shiny/Dockerfile',             data: rDockerfile },
+      { name: 'python-streamlit/app.py',        data: pyRes.code },
+      { name: 'python-streamlit/Dockerfile',    data: pyDockerfile },
+      { name: 'README.md',                      data: readme },
+    ]);
+
+    const blob = new Blob([zip], { type: 'application/zip' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'game-bundle.zip';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    closeExportModal();
+
+    if (pyRes.remaining !== undefined) { dailyRemaining = pyRes.remaining; updateUsageLine(); }
+  } catch (e) {
+    titleEl.textContent = 'Bundle failed';
+    codeEl.textContent  = 'Error: ' + e.message;
+  }
+}
+
+// Pure-JS store-only ZIP builder (no compression, no external libraries)
+function buildZip(files) {
+  const enc = new TextEncoder();
+  const crcTable = (() => {
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let j = 0; j < 8; j++) c = (c & 1) ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+      t[i] = c;
+    }
+    return t;
+  })();
+  function crc32(data) {
+    let c = 0xFFFFFFFF;
+    for (const b of data) c = crcTable[(c ^ b) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function w16(v, a, o) { a[o]=v&255; a[o+1]=(v>>8)&255; }
+  function w32(v, a, o) { w16(v&0xFFFF,a,o); w16((v>>>16)&0xFFFF,a,o+2); }
+
+  const now = new Date();
+  const dosTime = ((now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1))&0xFFFF;
+  const dosDate = (((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate())&0xFFFF;
+
+  const parts = [], meta = [];
+  let lOff = 0;
+
+  for (const {name, data} of files) {
+    const nb = enc.encode(name);
+    const fb = typeof data === 'string' ? enc.encode(data) : data;
+    const crc = crc32(fb);
+    const lh = new Uint8Array(30 + nb.length);
+    lh[0]=0x50;lh[1]=0x4B;lh[2]=0x03;lh[3]=0x04;
+    w16(20,lh,4); w16(0,lh,6); w16(0,lh,8);
+    w16(dosTime,lh,10); w16(dosDate,lh,12);
+    w32(crc,lh,14); w32(fb.length,lh,18); w32(fb.length,lh,22);
+    w16(nb.length,lh,26); w16(0,lh,28);
+    lh.set(nb, 30);
+    parts.push(lh, fb);
+    meta.push({nb, crc, size:fb.length, off:lOff});
+    lOff += lh.length + fb.length;
+  }
+
+  const cdStart = lOff;
+  for (const {nb, crc, size, off} of meta) {
+    const ch = new Uint8Array(46 + nb.length);
+    ch[0]=0x50;ch[1]=0x4B;ch[2]=0x01;ch[3]=0x02;
+    w16(20,ch,4);w16(20,ch,6);w16(0,ch,8);w16(0,ch,10);
+    w16(dosTime,ch,12);w16(dosDate,ch,14);
+    w32(crc,ch,16);w32(size,ch,20);w32(size,ch,24);
+    w16(nb.length,ch,28);w16(0,ch,30);w16(0,ch,32);w16(0,ch,34);w16(0,ch,36);
+    w32(0,ch,38);w32(off,ch,42);
+    ch.set(nb,46);
+    parts.push(ch);
+    lOff += ch.length;
+  }
+
+  const eocd = new Uint8Array(22);
+  eocd[0]=0x50;eocd[1]=0x4B;eocd[2]=0x05;eocd[3]=0x06;
+  w16(0,eocd,4);w16(0,eocd,6);
+  w16(meta.length,eocd,8);w16(meta.length,eocd,10);
+  w32(lOff-cdStart,eocd,12);w32(cdStart,eocd,16);w16(0,eocd,20);
+  parts.push(eocd);
+
+  const total = parts.reduce((s,p)=>s+p.length,0);
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const p of parts) { out.set(p,pos); pos+=p.length; }
+  return out;
 }
 
 async function copyExportCode() {

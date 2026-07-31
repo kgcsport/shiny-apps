@@ -26,6 +26,7 @@ const DEMO_PASS     = process.env.DEMO_KIT_DEMO_PASS || '';
 const SHINY_BASE_URL  = (process.env.SHINY_BASE_URL || '').replace(/\/$/, '');
 const SHINY_DB_PATH   = process.env.SHINY_DB_PATH || join(DATA_DIR, 'data', 'class-job-market.sqlite');
 const DEMO_OPENAI_KEY = process.env.DEMO_KIT_OPENAI_KEY || '';
+const ADMIN_EMAIL     = process.env.DEMO_KIT_ADMIN_EMAIL || 'kcoombs@vassar.edu';
 
 mkdirSync(DATA_DIR, { recursive: true });
 
@@ -191,7 +192,7 @@ app.get('/api/me', (req, res) => {
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
   const today = new Date().toISOString().slice(0, 10);
   const row = db.prepare('SELECT count FROM rate_limits WHERE email=? AND date=?').get(user.email, today);
-  res.json({ ...user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT, isDemo: isDemoUser(user.email), hasServerKey: !!DEMO_OPENAI_KEY });
+  res.json({ ...user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT, isDemo: isDemoUser(user.email), hasServerKey: !!DEMO_OPENAI_KEY, isAdmin: AUTH_DISABLED || user.email === ADMIN_EMAIL });
 });
 
 app.get('/auth/google', (req, res) => {
@@ -584,6 +585,15 @@ app.get('/api/game/:code', requireAuth, (req, res) => {
   const game = db.prepare('SELECT * FROM games WHERE room_code=?').get(req.params.code);
   if (!game) return res.status(404).json({ error: 'Game not found' });
   res.json(game);
+});
+
+// ── DELETE /api/game/:code — admin-only game removal ─────────────────────────
+app.delete('/api/game/:code', requireAuth, (req, res) => {
+  if (!AUTH_DISABLED && req.session.user.email !== ADMIN_EMAIL)
+    return res.status(403).json({ error: 'Admin only' });
+  const result = db.prepare('DELETE FROM games WHERE room_code=?').run(req.params.code);
+  if (!result.changes) return res.status(404).json({ error: 'Not found' });
+  res.json({ ok: true });
 });
 
 // ── GET /api/templates — list available pre-built templates ───────────────────

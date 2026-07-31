@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Advanced: Building Real Multiplayer Classroom Games</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f0f2f6;--surface:#fff;--border:#e2e6ee;--text:#1a1f2e;
+  --muted:#6b7280;--accent:#2563eb;--accent-h:#1d4ed8;
+  --green:#16a34a;--warn:#d97706;--danger:#dc2626;
+  --code-bg:#1e2233;--code-text:#e8eaf0;
+}
+@media(prefers-color-scheme:dark){
+  :root{--bg:#0f1117;--surface:#1a1f2e;--border:#2a3045;--text:#e8eaf0;--muted:#9ca3af;--code-bg:#0a0d14;--code-text:#e8eaf0}
+}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);font-size:15px;line-height:1.7}
+a{color:var(--accent)}a:hover{color:var(--accent-h)}
+.page{max-width:760px;margin:0 auto;padding:2.5rem 1.25rem 4rem}
+.back{display:inline-flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--muted);text-decoration:none;margin-bottom:1.75rem}
+.back:hover{color:var(--text)}
+h1{font-size:1.55rem;font-weight:800;margin-bottom:.4rem;line-height:1.25}
+.lead{color:var(--muted);font-size:.95rem;margin-bottom:2rem;line-height:1.65}
+h2{font-size:1.05rem;font-weight:700;margin:2.25rem 0 .55rem;padding-bottom:.3rem;border-bottom:1px solid var(--border)}
+h3{font-size:.88rem;font-weight:700;margin:1.25rem 0 .35rem;color:var(--accent)}
+p{margin-bottom:.75rem}
+ul,ol{padding-left:1.4rem;margin-bottom:.75rem}
+li{margin-bottom:.25rem}
+code{background:var(--code-bg);color:var(--code-text);border-radius:4px;padding:.1rem .35rem;font-size:.82rem;font-family:ui-monospace,SFMono-Regular,monospace}
+pre{background:var(--code-bg);color:var(--code-text);border-radius:8px;padding:1rem 1.1rem;overflow-x:auto;margin:.6rem 0 1rem;font-size:.82rem;line-height:1.6;font-family:ui-monospace,SFMono-Regular,monospace}
+pre code{background:none;padding:0;font-size:inherit}
+.callout{border-left:3px solid var(--accent);background:var(--surface);border-radius:0 6px 6px 0;padding:.65rem 1rem;margin:.75rem 0;font-size:.88rem}
+.callout.warn{border-color:var(--warn)}
+.callout.green{border-color:var(--green)}
+.stack{display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0}
+.chip{padding:.2rem .6rem;border-radius:4px;font-size:.75rem;font-weight:600;background:var(--border);color:var(--text)}
+.chip.blue{background:#dbeafe;color:#1e40af}
+.chip.green{background:#dcfce7;color:#15803d}
+.chip.amber{background:#fef3c7;color:#92400e}
+table{width:100%;border-collapse:collapse;margin:.75rem 0 1rem;font-size:.85rem}
+th,td{padding:.5rem .65rem;text-align:left;border-bottom:1px solid var(--border)}
+th{font-weight:600;color:var(--muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;background:var(--bg)}
+</style>
+</head>
+<body>
+<div class="page">
+
+<a href="/" class="back">← Back to Game Builder</a>
+
+<h1>Building Real Multiplayer Classroom Games</h1>
+<p class="lead">The Game Builder's built-in multi-device mode (GameSync) handles simple public-state games in minutes. This guide is for the next step: games that need per-student private state, persistent data between sessions, admin controls, and full server logic — like the <strong>Classroom Economy</strong> app.</p>
+
+<h2>When GameSync is enough</h2>
+
+<p>GameSync (used by the Game Builder's <strong>Multi-device ⚡</strong> mode) is a thin WebSocket layer that syncs a single shared object across all connected browsers. It's ideal when:</p>
+
+<ul>
+  <li>All players see all of each other's moves in real time</li>
+  <li>State can reset between class sessions without loss</li>
+  <li>The game logic lives entirely in the browser</li>
+  <li>No player needs to keep information secret from others</li>
+</ul>
+
+<p>Examples that fit well: contribution games, live polls, public auctions, coordination problems, simple round-based games with a leaderboard.</p>
+
+<div class="callout warn">
+  <strong>GameSync limitations:</strong> state is fully public, in-memory only (lost on server restart), and the room can only hold as many concurrent WebSocket connections as the server allows. There's no database, no per-user identity, no admin panel.
+</div>
+
+<h2>When you need a real server app</h2>
+
+<p>Move beyond GameSync when your game requires any of:</p>
+
+<table>
+  <thead><tr><th>Feature</th><th>Why it matters</th></tr></thead>
+  <tbody>
+    <tr><td>Private per-student state</td><td>Sealed bids, hidden hands, private budgets</td></tr>
+    <tr><td>Persistent data</td><td>Token balances, grades, multi-session markets</td></tr>
+    <tr><td>Instructor admin panel</td><td>Reveal results, advance rounds, adjust parameters</td></tr>
+    <tr><td>Student authentication</td><td>Link responses to grade book entries</td></tr>
+    <tr><td>Complex game logic</td><td>Market clearing, multi-round auctions, clearing houses</td></tr>
+    <tr><td>File/data export</td><td>Download session data as CSV for analysis</td></tr>
+  </tbody>
+</table>
+
+<h2>The architecture that works</h2>
+
+<p>The <strong>Classroom Economy</strong> (and this Game Builder itself) use the same stack:</p>
+
+<div class="stack">
+  <span class="chip blue">Node.js + Express</span>
+  <span class="chip blue">better-sqlite3</span>
+  <span class="chip blue">WebSockets (ws)</span>
+  <span class="chip green">Google OAuth</span>
+  <span class="chip amber">Docker + nginx</span>
+</div>
+
+<ul>
+  <li><strong>Express</strong> handles HTTP routes for the instructor admin API and student-facing pages</li>
+  <li><strong>SQLite</strong> (via <code>better-sqlite3</code>) stores all persistent state: students, balances, rounds, jobs, bids</li>
+  <li><strong>WebSockets</strong> push state updates to all connected browsers in real time</li>
+  <li><strong>Google OAuth</strong> ties each browser session to a verified .edu email</li>
+  <li><strong>nginx</strong> sits in front, handles HTTPS, and routes subdomains</li>
+</ul>
+
+<p>The full stack runs in Docker Compose, which means you can develop locally and deploy on any Linux VPS with a single command.</p>
+
+<h2>How to build one</h2>
+
+<h3>Step 1 — Clone the demo-kit and gut it</h3>
+
+<p>The Game Builder (<code>apps/demo-kit-site/</code>) is a working example of the full stack. The fastest path is to copy it and replace the HTML/JS frontend with your game, keeping the Express + SQLite + WebSocket skeleton.</p>
+
+<pre><code>cp -r apps/demo-kit-site apps/my-game
+cd apps/my-game
+# edit server.js, public/index.html</code></pre>
+
+<h3>Step 2 — Design your database schema</h3>
+
+<p>Think about what needs to persist. A typical classroom game needs:</p>
+
+<pre><code>CREATE TABLE students (email TEXT PRIMARY KEY, name TEXT, section TEXT);
+CREATE TABLE rounds (id INTEGER PRIMARY KEY, opened_at TEXT, closed_at TEXT);
+CREATE TABLE submissions (email TEXT, round_id INTEGER, value REAL,
+  PRIMARY KEY(email, round_id));
+CREATE TABLE balances (email TEXT PRIMARY KEY, tokens REAL DEFAULT 0);</code></pre>
+
+<p>SQLite is fast enough for a class of 200 concurrent students and adds zero ops overhead — no separate database server to manage.</p>
+
+<h3>Step 3 — Build the API in Express</h3>
+
+<p>Each student action becomes a <code>POST</code> route. Each instructor action becomes a protected route (check <code>req.session.user.email === ADMIN_EMAIL</code>).</p>
+
+<pre><code>// Student submits a bid
+app.post('/api/submit', requireAuth, (req, res) => {
+  const { value } = req.body;
+  const round = db.prepare('SELECT id FROM rounds WHERE closed_at IS NULL').get();
+  if (!round) return res.status(400).json({ error: 'No open round' });
+  db.prepare('INSERT OR REPLACE INTO submissions(email,round_id,value) VALUES(?,?,?)')
+    .run(req.session.user.email, round.id, value);
+  broadcast(); // push updated state to all WebSocket clients
+  res.json({ ok: true });
+});</code></pre>
+
+<h3>Step 4 — Push state via WebSocket</h3>
+
+<p>Keep a <code>broadcast()</code> function that serializes the current game state and sends it to every connected client. Each client re-renders on every broadcast.</p>
+
+<pre><code>function broadcast() {
+  const students = db.prepare('SELECT * FROM students').all();
+  const subs = db.prepare('SELECT * FROM submissions WHERE round_id=?')
+    .all(currentRoundId);
+  const msg = JSON.stringify({ students, subs, round: currentRoundId });
+  for (const [, ws] of clients) {
+    if (ws.readyState === 1) ws.send(msg);
+  }
+}</code></pre>
+
+<h3>Step 5 — Work with AI to write the hard parts</h3>
+
+<p>Describe what you want clearly and let Claude or ChatGPT write the routes, queries, and front-end rendering. The key is to describe the <em>data model</em> first:</p>
+
+<div class="callout green">
+  <strong>Prompt that works well:</strong> "I'm building a classroom double-auction market in Node.js + Express + SQLite + WebSockets. Students post bids (buy) and asks (sell) for a single good. The instructor can open and close trading. At close, clear the market using the highest-price-first rule. Write the Express routes and SQLite schema for this."
+</div>
+
+<p>Then iterate: "Now add a leaderboard endpoint", "Add a CSV download of all trades", "Add an instructor panel that shows bids and asks in real time."</p>
+
+<h3>Step 6 — Add authentication</h3>
+
+<p>Copy the Google OAuth flow from <code>server.js</code> in the Game Builder. It's ~80 lines that handles the OAuth redirect, email verification, session cookie, and optional .edu-only restriction.</p>
+
+<h3>Step 7 — Deploy with Docker Compose</h3>
+
+<p>The repo's <code>docker-compose.yml</code> already shows the pattern: a Node.js service, an nginx reverse proxy, and a shared <code>data/</code> volume for the SQLite file. Add your new service alongside the existing ones.</p>
+
+<pre><code>my-game:
+  build: ./apps/my-game
+  environment:
+    - BASE_URL=https://mygame.yourdomain.edu
+    - SESSION_SECRET=${SESSION_SECRET}
+    - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+    - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+  volumes:
+    - ./data/my-game:/app/data</code></pre>
+
+<h2>The Classroom Economy as a worked example</h2>
+
+<p>The app at <code>apps/class-job-market/</code> is the most complete example in this repo. It includes:</p>
+
+<ul>
+  <li>Google OAuth login tied to a student roster</li>
+  <li>Token economy with a ledger of debits and credits</li>
+  <li>Job postings, bids, a weighted lottery draw, and automated wage payments</li>
+  <li>Flex-pass questions (students spend tokens to unlock bonus credit)</li>
+  <li>Instructor admin panel with round control, bulk grants, and CSV exports</li>
+  <li>A WebSocket-driven "Live Tracker" showing all student activity in real time</li>
+  <li>Unit tests in R (it's a Shiny app — the Node.js path above is the newer approach)</li>
+</ul>
+
+<p>Read through <code>apps/class-job-market/app.R</code> to see how complex game logic can be organized. The newer Node.js approach (used by the Game Builder) is faster to iterate on and easier to deploy.</p>
+
+<h2>Tips from experience</h2>
+
+<ul>
+  <li><strong>Start with the data model.</strong> Get the SQLite schema right before writing a single route. Everything else flows from it.</li>
+  <li><strong>One broadcast, one truth.</strong> Keep a single <code>broadcast()</code> function and call it after every write. Don't try to send partial updates — just send the whole state every time. SQLite reads are fast enough.</li>
+  <li><strong>Instructor admin = query param or separate route.</strong> <code>?admin=1</code> checked against the session email is the simplest gate. No separate login needed.</li>
+  <li><strong>Test with two browser tabs before involving students.</strong> Open the same URL in two tabs (one as student, one as instructor) to verify the WebSocket sync works.</li>
+  <li><strong>Persist to SQLite early.</strong> In-memory state is fine for GameSync demos; the moment you care about losing data, write to SQLite. It's one line per query with <code>better-sqlite3</code>.</li>
+  <li><strong>Let AI write the boilerplate, not the game design.</strong> Spend your time on the economics — what choices do students make, what information do they see, what are the incentives. The code to implement it is the easy part once you know what you're building.</li>
+</ul>
+
+<div class="callout">
+  <strong>Questions?</strong> The best way to get unstuck is to paste the relevant section of <code>server.js</code> into Claude and describe what you want to add. It can read the existing code and extend it in the same style.
+</div>
+
+</div>
+</body>
+</html>
