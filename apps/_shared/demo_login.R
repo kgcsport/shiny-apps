@@ -27,8 +27,8 @@ demo_login_ui <- tagList(
       tags$span(" — separate database, nothing here is real"),
       style = "margin:0 0 8px;font-size:13px;"
     ),
-    tags$button("Demo (Admin)",   onclick = "demoLogin('instructor','admin123')", class = "btn btn-sm btn-warning", style = "margin:2px;"),
-    tags$button("Demo (Student)", onclick = "demoLogin('alice','test123')",       class = "btn btn-sm btn-default", style = "margin:2px;")
+    tags$button("Demo (Admin)",   onclick = "window.location.href='?demo_db=1&demo_as=teacher'", class = "btn btn-sm btn-warning", style = "margin:2px;"),
+    tags$button("Demo (Student)", onclick = "window.location.href='?demo_db=1&demo_as=student'", class = "btn btn-sm btn-default", style = "margin:2px;")
   ),
   tags$script(HTML('
     (function () {
