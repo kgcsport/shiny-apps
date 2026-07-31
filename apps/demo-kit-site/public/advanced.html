@@ -168,11 +168,8 @@ details.note.gray>.note-body{background:var(--surface);color:var(--text);border:
       <code>set DEMO_KIT_AUTH_DISABLED=true &amp;&amp; node server.js</code><br><br>
       <span style="font-size:.8rem"><strong>What is <code>DEMO_KIT_AUTH_DISABLED=true</code>?</strong> It's a setting you pass right at the start of the command — not something you edit in a file. It tells the server to skip the Google login screen entirely, so students can just open the URL and start playing. Without it, the server would require everyone to sign in with a .edu Google account (which you don't have set up yet). Type it exactly as shown, on the same line, before <code>node server.js</code>.</span>
     </li>
-    <li>Find your local IP:<br>
-      <strong>Mac:</strong> open a new Terminal tab, run <code>ipconfig getifaddr en0</code> — you'll get something like <code>192.168.1.42</code><br>
-      <strong>Windows:</strong> open a new Command Prompt, run <code>ipconfig</code> — look for "IPv4 Address" under your Wi-Fi adapter
-    </li>
-    <li>Tell students to open <code>http://192.168.1.42:3000</code> (using your actual IP) in their browser</li>
+    <li>Open <code>http://localhost:3000</code> in your browser. A green banner at the top will show the student URL — something like <code>http://192.168.1.42:3000</code> — with a <strong>Copy URL</strong> button. That's the address to share with students. No need to look up your IP manually.</li>
+    <li>Tell students to open that URL in their browser</li>
     <li>Everyone must be on the <strong>same Wi-Fi network</strong> as your laptop</li>
   </ol>
   <p style="margin:.5rem 0 0;font-size:.83rem">Upgrade piece by piece as you need more. Add a VPS when you need data to persist across sessions, or students to connect from home.</p>

@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import os from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -215,6 +216,16 @@ function isDemoUser(email) {
   return email?.endsWith('@demo.local') || false;
 }
 
+function getLocalIps() {
+  const ips = [];
+  for (const ifaces of Object.values(os.networkInterfaces())) {
+    for (const iface of ifaces) {
+      if (iface.family === 'IPv4' && !iface.internal) ips.push(iface.address);
+    }
+  }
+  return ips;
+}
+
 app.get('/api/me', (req, res) => {
   const user = AUTH_DISABLED
     ? { email: 'dev@localhost', name: 'Dev (auth disabled)' }
@@ -222,7 +233,8 @@ app.get('/api/me', (req, res) => {
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
   const today = new Date().toISOString().slice(0, 10);
   const row = db.prepare('SELECT count FROM rate_limits WHERE email=? AND date=?').get(user.email, today);
-  res.json({ ...user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT, isDemo: isDemoUser(user.email), hasServerKey: !!DEMO_OPENAI_KEY, isAdmin: AUTH_DISABLED || user.email === ADMIN_EMAIL });
+  const localIps = AUTH_DISABLED ? getLocalIps() : [];
+  res.json({ ...user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT, isDemo: isDemoUser(user.email), hasServerKey: !!DEMO_OPENAI_KEY, isAdmin: AUTH_DISABLED || user.email === ADMIN_EMAIL, localIps });
 });
 
 app.get('/auth/google', (req, res) => {
