@@ -73,6 +73,7 @@ svg{width:100%;display:block}
       </div>
     </div>
     <div class="summary" id="summary"></div>
+    <button onclick="exportCSV()" style="margin-top:.5rem;padding:.28rem .75rem;font-size:.78rem;border:1px solid #e2e6ee;border-radius:5px;background:#fff;cursor:pointer;width:100%;color:#374151">⬇ Download CSV</button>
   </div>
 
   <div class="charts-col">
@@ -383,6 +384,42 @@ function fmt(v) {
 }
 
 update();
+
+function downloadCSV(rows,filename){
+  const csv=rows.map(r=>r.map(v=>{const s=String(v??'');return/[,"\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\n');
+  const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=filename;a.click();
+}
+function exportCSV(){
+  const type=document.getElementById('utype').value;
+  const I=parseFloat(document.getElementById('income').value)||100;
+  const px=parseFloat(document.getElementById('px').value)||5;
+  const py=parseFloat(document.getElementById('py').value)||5;
+  const a=parseFloat(document.getElementById('alpha').value)||0.5;
+  const pxMin=Math.max(0.1,parseFloat(document.getElementById('pxmin').value)||1);
+  const pxMax=Math.max(pxMin+0.5,parseFloat(document.getElementById('pxmax').value)||20);
+  const gx=document.getElementById('gx').value||'X';
+  const gy=document.getElementById('gy').value||'Y';
+  const {x:xStar,y:yStar}=optBundle(type,I,px,py,a);
+  // Demand curve sweep
+  const rows=[['Price_'+gx,'Demand_'+gx]];
+  const N=50;
+  for(let i=0;i<=N;i++){
+    const p=pxMin+(pxMax-pxMin)*i/N;
+    const xd=demandX(type,I,p,py,a);
+    if(isFinite(xd)&&xd>=0) rows.push([p.toFixed(3),xd.toFixed(4)]);
+  }
+  // Current optimum
+  rows.push([]);
+  rows.push(['Parameter','Value']);
+  rows.push(['Utility_type',type]);
+  rows.push(['Alpha',a]);
+  rows.push(['Income',I]);
+  rows.push(['Price_'+gx,px]);
+  rows.push(['Price_'+gy,py]);
+  rows.push(['Optimal_'+gx,isFinite(xStar)?xStar.toFixed(4):'N/A']);
+  rows.push(['Optimal_'+gy,isFinite(yStar)?yStar.toFixed(4):'N/A']);
+  downloadCSV(rows,'indifference-demand.csv');
+}
 </script>
 </body>
 </html>

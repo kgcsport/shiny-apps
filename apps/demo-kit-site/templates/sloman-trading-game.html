@@ -157,6 +157,7 @@ svg{background:#fff;border:1px solid #e2e6ee;border-radius:8px;width:100%;displa
 <div class="actions">
   <button class="btn btn-record" onclick="recordRound()">Record Round</button>
   <button class="btn btn-danger" onclick="confirmReset()">Reset All</button>
+  <button class="btn btn-ghost" onclick="exportCSV()">⬇ CSV</button>
   <span class="round-num" id="round-num">Round 1</span>
 </div>
 
@@ -535,6 +536,23 @@ function init() {
 }
 
 init();
+
+function downloadCSV(rows,filename){
+  const csv=rows.map(r=>r.map(v=>{const s=String(v??'');return/[,"\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\n');
+  const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=filename;a.click();
+}
+function exportCSV(){
+  if(!history.length){alert('No rounds recorded yet.');return;}
+  const rows=[['Round','Square_total','Triangle_total','Rectangle_total','Square_price','Triangle_price','Rectangle_price','Total_round_earnings']];
+  for(const h of history){
+    const tot=h.teamEarnings.slice(0,numTeams).reduce((a,b)=>a+b,0);
+    rows.push([h.round,h.totals[0],h.totals[1],h.totals[2],h.prices[0].toFixed(2),h.prices[1].toFixed(2),h.prices[2].toFixed(2),tot.toFixed(2)]);
+  }
+  rows.push([]);
+  rows.push(['Team','Cumulative_earnings']);
+  for(let t=0;t<numTeams;t++) rows.push([teamNames[t],(cumulativeEarnings[t]||0).toFixed(2)]);
+  downloadCSV(rows,'sloman-trading.csv');
+}
 </script>
 </body>
 </html>

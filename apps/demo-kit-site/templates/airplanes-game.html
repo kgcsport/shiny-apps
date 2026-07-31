@@ -42,6 +42,7 @@ svg{background:#fff;border:1px solid #e2e6ee;border-radius:8px;width:100%;displa
     <div class="actions">
       <button class="btn btn-add" onclick="addRow()">+ Add row</button>
       <button class="btn btn-reset" onclick="resetData()">Reset</button>
+      <button class="btn btn-reset" onclick="exportCSV()">⬇ CSV</button>
     </div>
   </div>
   <div class="chart-side">
@@ -151,6 +152,16 @@ function draw() {
 }
 
 render();
+
+function downloadCSV(rows,filename){
+  const csv=rows.map(r=>r.map(v=>{const s=String(v??'');return/[,"\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\n');
+  const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=filename;a.click();
+}
+function exportCSV(){
+  const csvRows=[['Firm','Workers','Planes_produced']];
+  for(const r of rows) csvRows.push([r.firm,r.workers,r.output===''?'':r.output]);
+  downloadCSV(csvRows,'airplanes-production.csv');
+}
 </script>
 </body>
 </html>

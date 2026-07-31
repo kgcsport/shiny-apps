@@ -180,6 +180,7 @@ svg{background:#fff;border:1px solid #e2e6ee;border-radius:8px;width:100%;displa
         <div class="finding" id="finding-compare" style="margin-top:.6rem"></div>
         <div class="btn-row" style="margin-top:.8rem">
           <button class="btn btn-ghost" onclick="goPhase(2)">← Monopoly</button>
+          <button class="btn btn-ghost" onclick="exportCSV()">⬇ Download CSV</button>
           <button class="btn btn-danger" onclick="resetAll()">Reset experiment</button>
         </div>
       </div>
@@ -607,6 +608,35 @@ function goPhase(n) {
     onPmChange();
   }
   if (n === 3) drawComparison();
+}
+
+function downloadCSV(rows,filename){
+  const csv=rows.map(r=>r.map(v=>{const s=String(v??'');return/[,"\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\n');
+  const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=filename;a.click();
+}
+function exportCSV(){
+  if(!wtpLevels.length){alert('Run the experiment first.');return;}
+  const levels=wtpLevels.map(({wtp,count})=>({wtp,count:count*sets}));
+  const {Qm,CSm,PSm,TSm,DWL}=monoCalc(levels);
+  // Demand schedule
+  const rows=[['WTP','Buyers','Trades_competitive','Trades_monopoly']];
+  let monoLeft=Qm;
+  for(const {wtp,count} of levels){
+    const comp=wtp>=MC?count:0;
+    const mono=Math.min(count,Math.max(0,monoLeft));
+    monoLeft-=mono;
+    rows.push([wtp,count,comp,mono]);
+  }
+  // Comparison summary
+  rows.push([]);
+  rows.push(['Metric','Competitive','Monopoly']);
+  rows.push(['Quantity',Qcomp,Qm]);
+  rows.push(['Price',MC,Pm.toFixed(2)]);
+  rows.push(['Consumer_surplus',CScomp.toFixed(2),CSm.toFixed(2)]);
+  rows.push(['Producer_surplus',PScomp.toFixed(2),PSm.toFixed(2)]);
+  rows.push(['Total_surplus',TScomp.toFixed(2),TSm.toFixed(2)]);
+  rows.push(['Deadweight_loss','0.00',DWL.toFixed(2)]);
+  downloadCSV(rows,'restricted-seller.csv');
 }
 </script>
 </body>
