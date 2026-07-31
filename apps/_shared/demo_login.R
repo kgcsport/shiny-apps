@@ -47,11 +47,22 @@ demo_login_ui <- tagList(
       }
       window.demoLogin = demoLogin;
 
+      var _autoLoginDone = false;
       function revealIfDemo() {
         var params = new URLSearchParams(window.location.search);
         if (params.get("demo") === "1" || params.get("demo_db") === "1") {
           var panel = document.getElementById("demo-login-panel");
           if (panel) panel.style.display = "block";
+        }
+        if (!_autoLoginDone) {
+          var demoAs = params.get("demo_as");
+          if (demoAs === "student") {
+            _autoLoginDone = true;
+            demoLogin("alice", "test123");
+          } else if (demoAs === "teacher" || demoAs === "admin") {
+            _autoLoginDone = true;
+            demoLogin("instructor", "admin123");
+          }
         }
       }
       if (document.readyState === "loading") {
