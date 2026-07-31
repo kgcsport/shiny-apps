@@ -242,6 +242,8 @@ input[type=checkbox]{accent-color:#2563eb;width:13px;height:13px;cursor:pointer;
       <div class="sum-row"><span class="sum-k">Profit / Loss</span><span class="sum-v" id="s-pi">—</span></div>
     </div>
 
+    <button onclick="exportCSV()" style="margin-top:.5rem;padding:.28rem .75rem;font-size:.78rem;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer;width:100%">⬇ Download CSV</button>
+
   </aside>
 
   <!-- ── Main charts ── -->
@@ -709,6 +711,38 @@ function update() {
 
 // Initial render
 update();
+
+function downloadCSV(rows,filename){
+  const csv=rows.map(r=>r.map(v=>{const s=String(v??'');return/[,"\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\n');
+  const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=filename;a.click();
+}
+function exportCSV(){
+  const p=getP();
+  const Qs=findQstar(p);
+  const rows=[['Q','Demand_P','MR','MC','ATC','AVC','AFC','TC','TR','Profit']];
+  const N=100;
+  for(let i=0;i<=N;i++){
+    const Q=p.Qmax*i/N;
+    if(Q<0.0001){
+      rows.push(['0',fDemand(0,p).toFixed(3),fMR(0,p).toFixed(3),fMC(0,p).toFixed(3),'',fAVC(0,p).toFixed(3),'',fTC(0,p).toFixed(3),'0',(-fTC(0,p)).toFixed(3)]);
+      continue;
+    }
+    rows.push([Q.toFixed(3),fDemand(Q,p).toFixed(3),fMR(Q,p).toFixed(3),fMC(Q,p).toFixed(3),
+               fATC(Q,p).toFixed(3),fAVC(Q,p).toFixed(3),(p.F/Q).toFixed(3),
+               fTC(Q,p).toFixed(3),fTR(Q,p).toFixed(3),(fTR(Q,p)-fTC(Q,p)).toFixed(3)]);
+  }
+  rows.push([]);
+  rows.push(['Equilibrium']);
+  if(Qs>0){
+    rows.push(['Q_star',Qs.toFixed(3)]);
+    rows.push(['P_star',fDemand(Qs,p).toFixed(3)]);
+    rows.push(['TR',fTR(Qs,p).toFixed(3)]);
+    rows.push(['TC',fTC(Qs,p).toFixed(3)]);
+    rows.push(['ATC_star',fATC(Qs,p).toFixed(3)]);
+    rows.push(['Profit_Loss',(fTR(Qs,p)-fTC(Qs,p)).toFixed(3)]);
+  }
+  downloadCSV(rows,'theory-of-firm.csv');
+}
 </script>
 </body>
 </html>

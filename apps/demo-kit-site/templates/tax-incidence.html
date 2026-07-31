@@ -44,6 +44,7 @@ svg{width:100%;background:#fff;border:1px solid #e2e6ee;border-radius:8px;displa
       <div class="slider-row"><input type="range" id="t" min="0" max="10" step="0.5" value="4"></div>
     </div>
     <div class="results" id="results"></div>
+    <button onclick="exportCSV()" style="margin-top:.5rem;padding:.28rem .75rem;font-size:.78rem;border:1px solid #e2e6ee;border-radius:5px;background:#fff;cursor:pointer;width:100%;color:#374151">⬇ Download CSV</button>
   </div>
   <div class="chart-area">
     <svg id="chart" viewBox="0 0 520 400"></svg>
@@ -201,6 +202,22 @@ function draw(){
 
 ['b','d','t'].forEach(id=>document.getElementById(id).addEventListener('input',draw));
 draw();
+
+function downloadCSV(rows,filename){
+  const csv=rows.map(r=>r.map(v=>{const s=String(v??'');return/[,"\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\n');
+  const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=filename;a.click();
+}
+function exportCSV(){
+  const b=+document.getElementById('b').value;
+  const d=+document.getElementById('d').value;
+  const rows=[['b_demand_slope','d_supply_slope','tax_per_unit','pre_tax_Q','post_tax_Q','buyer_price','seller_price','tax_revenue','consumer_burden_pct','producer_burden_pct']];
+  for(let t=0;t<=10;t+=0.5){
+    const r=calc(b,d,t);
+    const cpct=t>0?+((r.Pb-8)/t*100).toFixed(1):50;
+    rows.push([b,d,t.toFixed(1),r.Q0,r.Qt.toFixed(3),r.Pb.toFixed(3),r.Ps.toFixed(3),r.rev.toFixed(3),cpct,100-cpct]);
+  }
+  downloadCSV(rows,'tax-incidence.csv');
+}
 </script>
 </body>
 </html>
