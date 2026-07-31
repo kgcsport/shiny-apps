@@ -78,13 +78,7 @@ const TEMPLATE_META = [
   },
 ];
 
-const TEMPLATES = TEMPLATE_META.map(t => {
-  try {
-    return { ...t, html: readFileSync(join(__dirname, 'templates', `${t.source}.html`), 'utf8') };
-  } catch {
-    return { ...t, html: '<p>Template file not found.</p>' };
-  }
-});
+const TEMPLATES = TEMPLATE_META; // HTML loaded on demand — see /api/template/:id
 
 // ── Database ──────────────────────────────────────────────────────────────────
 const db = new Database(DB_PATH);
@@ -669,14 +663,19 @@ app.delete('/api/game/:code', requireAuth, (req, res) => {
 
 // ── GET /api/templates — list available pre-built templates ───────────────────
 app.get('/api/templates', requireAuth, (req, res) => {
-  res.json(TEMPLATES.map(({ html: _html, ...meta }) => meta));
+  res.json(TEMPLATES.map(({ source: _src, ...meta }) => meta));
 });
 
 // ── GET /api/template/:id — fetch a specific template (includes HTML) ─────────
 app.get('/api/template/:id', requireAuth, (req, res) => {
   const t = TEMPLATES.find(x => x.id === req.params.id);
   if (!t) return res.status(404).json({ error: 'Template not found' });
-  res.json(t);
+  try {
+    const html = readFileSync(join(__dirname, 'templates', `${t.source}.html`), 'utf8');
+    res.json({ ...t, html });
+  } catch {
+    res.status(404).json({ error: `Template file "${t.source}.html" not found on server.` });
+  }
 });
 
 // ── POST /api/export — convert game HTML to R Shiny or Python Streamlit ───────
