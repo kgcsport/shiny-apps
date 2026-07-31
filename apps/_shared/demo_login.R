@@ -54,16 +54,6 @@ demo_login_ui <- tagList(
           var panel = document.getElementById("demo-login-panel");
           if (panel) panel.style.display = "block";
         }
-        if (!_autoLoginDone) {
-          var demoAs = params.get("demo_as");
-          if (demoAs === "student") {
-            _autoLoginDone = true;
-            demoLogin("alice", "test123");
-          } else if (demoAs === "teacher" || demoAs === "admin") {
-            _autoLoginDone = true;
-            demoLogin("instructor", "admin123");
-          }
-        }
       }
       if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", revealIfDemo);
@@ -71,6 +61,29 @@ demo_login_ui <- tagList(
         revealIfDemo();
       }
       document.addEventListener("shiny:value", revealIfDemo);
+
+      // Auto-login via ?demo_as=student|teacher — poll until form is in DOM
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var demoAs = params.get("demo_as");
+        if (!demoAs) return;
+        var user = demoAs === "student" ? "alice" : "instructor";
+        var pass = demoAs === "student" ? "test123" : "admin123";
+        var attempts = 0;
+        function tryLogin() {
+          if (_autoLoginDone) return;
+          var u = document.getElementById("login_user");
+          var p = document.getElementById("login_pw");
+          if (u && p) {
+            _autoLoginDone = true;
+            demoLogin(user, pass);
+          } else if (attempts < 40) {
+            attempts++;
+            setTimeout(tryLogin, 250);
+          }
+        }
+        tryLogin();
+      })();
     })();
   '))
 )

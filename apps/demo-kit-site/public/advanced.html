@@ -124,7 +124,7 @@ th{font-weight:600;color:var(--muted);font-size:.75rem;text-transform:uppercase;
     <tr><td><strong>Node.js</strong></td><td><span class="tag req">Required</span></td><td>Runs your game server. Free, installs in 2 minutes.</td></tr>
     <tr><td><strong>SQLite database</strong></td><td><span class="tag req">Required</span></td><td>Stores student data, balances, submissions. Comes bundled with the repo — no separate install.</td></tr>
     <tr><td><strong>WebSockets</strong></td><td><span class="tag req">Required for live sync</span></td><td>Pushes updates to all students' browsers in real time. Already wired up in the template.</td></tr>
-    <tr><td><strong>A server / VPS</strong></td><td><span class="tag req">Required for class use</span></td><td>Students need a URL to connect to. A $6/mo VPS (DigitalOcean, Hetzner) works fine. You can develop locally first.</td></tr>
+    <tr><td><strong>A server / VPS</strong></td><td><span class="tag opt">Optional</span></td><td>Required only if students need to connect from outside your classroom network, or if data must persist across multiple sessions. For a single class session on the same Wi-Fi, your laptop is the server.</td></tr>
     <tr><td><strong>HTTPS / nginx</strong></td><td><span class="tag opt">Optional</span></td><td>Needed if students will connect over the public internet (browsers block mixed content). Not needed for local development or a private campus network.</td></tr>
     <tr><td><strong>Google OAuth</strong></td><td><span class="tag opt">Optional</span></td><td>Lets students log in with their .edu Google account. Convenient but requires a Google Cloud project. Alternatives: username/password, no login at all (just a name entry), or a shared class code.</td></tr>
     <tr><td><strong>Docker</strong></td><td><span class="tag opt">Optional</span></td><td>Makes deployment reproducible. Useful if you're sharing the app with someone else or running multiple apps on one server. Skip it when you're just getting started.</td></tr>
@@ -132,7 +132,17 @@ th{font-weight:600;color:var(--muted);font-size:.75rem;text-transform:uppercase;
 </table>
 
 <div class="box green">
-  <strong>The simplest possible setup:</strong> run <code>node server.js</code> on your laptop, have students connect to your local IP on the campus network. No HTTPS, no OAuth, no Docker. Works fine for a single class session. Upgrade piece by piece as you need more.
+  <strong>The simplest possible setup — your laptop as the server:</strong> run <code>node server.js</code> on your laptop. Students on the same Wi-Fi connect to your local IP address. No VPS, no HTTPS, no OAuth, no Docker. Works great for a single class session.
+  <ol style="margin:.6rem 0 0 1.2rem;font-size:.85rem;line-height:1.8">
+    <li>Start the server: <code>DEMO_KIT_AUTH_DISABLED=true node server.js</code></li>
+    <li>Find your local IP:<br>
+      <strong>Mac:</strong> open Terminal, run <code>ipconfig getifaddr en0</code> — you'll get something like <code>192.168.1.42</code><br>
+      <strong>Windows:</strong> open Command Prompt, run <code>ipconfig</code> — look for "IPv4 Address" under your Wi-Fi adapter
+    </li>
+    <li>Tell students to open <code>http://192.168.1.42:3000</code> (using your actual IP) in their browser</li>
+    <li>Everyone must be on the <strong>same Wi-Fi network</strong> as your laptop</li>
+  </ol>
+  <p style="margin:.5rem 0 0;font-size:.83rem">Upgrade piece by piece as you need more. Add a VPS when you need data to persist across sessions, or students to connect from home.</p>
 </div>
 
 <!-- ── Get the code ──────────────────────────────────────────────────────── -->
@@ -246,14 +256,15 @@ $env:DEMO_KIT_AUTH_DISABLED="true"; node server.js</code></pre>
 <p>Students log in with their .edu Google account. Requires setting up a free Google Cloud project and getting a client ID and secret (takes about 15 minutes, fully documented at <a href="https://developers.google.com/identity/protocols/oauth2" target="_blank">developers.google.com</a>). Provides real identity without managing passwords. The full implementation is already in <code>apps/demo-kit-site/server.js</code> — copy it.</p>
 
 <!-- ── Deploy ──────────────────────────────────────────────────────────────── -->
-<div class="step-header"><div class="step-num">6</div><h2>Deploy so students can reach it (optional for now)</h2></div>
+<div class="step-header"><div class="step-num">6</div><h2>Deploy for persistent or remote access (optional)</h2></div>
 
-<p>For a game that students access on their own devices from anywhere, you need a server with a public URL. The cheapest practical option is a VPS (virtual private server):</p>
+<p>For a game that students access on their own devices from anywhere — or that needs to persist data across multiple class sessions — you need a server with a public URL. Your options:</p>
 
 <ul>
+  <li><strong>Reclaim Cloud</strong> — popular with academics, easy Java/Node.js hosting, often free through campus IT. Ask your department if you have access.</li>
   <li><strong>DigitalOcean Droplet</strong> — $6/mo, 1GB RAM, runs everything in this repo easily</li>
   <li><strong>Hetzner Cloud</strong> — €4/mo, slightly cheaper, European data centers</li>
-  <li><strong>Render.com</strong> — free tier available, simpler than a raw VPS, but cold-start delays</li>
+  <li><strong>Render.com</strong> — free tier available, simpler than a raw VPS, but cold-start delays on the free plan</li>
 </ul>
 
 <p>Once you have a server, the basic deployment is:</p>

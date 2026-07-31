@@ -272,6 +272,8 @@ header {
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
   padding: .65rem .8rem; display: flex; flex-direction: column; gap: .3rem;
 }
+.game-card.clickable { cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+.game-card.clickable:hover { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent); }
 .game-card-title {
   font-size: .85rem; font-weight: 600; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
@@ -1016,12 +1018,13 @@ async function renderLibTab(tab) {
         const dateStr = (g.created_at || '').slice(0, 10) || '—';
         const typeLabel = g.is_multiplayer ? '⚡ Multi-device' : '🖥 Single-screen';
         const card = document.createElement('div');
-        card.className = 'game-card';
+        card.className = 'game-card clickable';
+        card.title = 'Click to load and edit';
+        card.onclick = (e) => { if (!e.target.closest('button')) loadSavedGame(g.room_code, !!g.is_multiplayer); };
         card.innerHTML =
           `<div class="game-card-title" title="${escapeHtml(g.title)}">${escapeHtml(g.title)}</div>` +
           `<div class="game-card-meta">${typeLabel} · ${escapeHtml(g.created_by)} · ${dateStr}</div>` +
           `<div class="game-card-actions">` +
-            `<button class="card-btn primary" onclick="loadSavedGame('${g.room_code}',${g.is_multiplayer?'true':'false'})">Load &amp; edit</button>` +
             `<button class="card-btn" onclick="window.open('/play?room=${g.room_code}','_blank')">Open ↗</button>` +
             (isAdmin ? `<button class="card-btn danger" onclick="deleteGame('${g.room_code}')">Delete</button>` : '') +
           `</div>`;
@@ -1038,14 +1041,13 @@ async function renderLibTab(tab) {
       list.innerHTML = '';
       for (const t of templates) {
         const card = document.createElement('div');
-        card.className = 'game-card';
+        card.className = 'game-card clickable';
+        card.title = 'Click to load and edit';
+        card.onclick = () => loadTemplate(t.id, !!t.is_multiplayer);
         card.innerHTML =
           `<div class="game-card-title">${escapeHtml(t.title)}</div>` +
           `<div class="game-card-desc">${escapeHtml(t.description)}</div>` +
-          `<div class="game-card-meta">${t.is_multiplayer ? '⚡ Multi-device' : '🖥 Single-screen'} · Built-in template</div>` +
-          `<div class="game-card-actions">` +
-            `<button class="card-btn primary" onclick="loadTemplate('${t.id}',${t.is_multiplayer?'true':'false'})">Load &amp; edit</button>` +
-          `</div>`;
+          `<div class="game-card-meta">${t.is_multiplayer ? '⚡ Multi-device' : '🖥 Single-screen'} · Built-in template · Click to load</div>`;
         list.appendChild(card);
       }
     }
