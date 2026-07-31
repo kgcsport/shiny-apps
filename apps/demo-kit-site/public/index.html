@@ -110,6 +110,8 @@ header {
 }
 .mode-btn.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.1); }
 .mode-btn.active.multi { background: var(--multi-bg); color: var(--multi-text); border: 1px solid var(--multi-border); }
+.mode-btn.adv-link { text-decoration: none; color: var(--accent); border-left: 1px solid var(--border); padding-left: .7rem; margin-left: .1rem; }
+.mode-btn.adv-link:hover { color: var(--accent-h); background: transparent; }
 
 /* ── Main workspace ── */
 #workspace { display: flex; flex: 1; overflow: hidden; }
@@ -420,6 +422,7 @@ header {
     <div class="mode-toggle">
       <button class="mode-btn active" id="btn-solo" onclick="setMode('solo')">Single-screen</button>
       <button class="mode-btn" id="btn-multi" onclick="setMode('multi')">Multi-device ⚡</button>
+      <a href="/advanced.html" target="_blank" class="mode-btn adv-link" title="Self-hosting, persistence, admin controls">Advanced Setup ↗</a>
     </div>
     <div class="header-spacer"></div>
     <span class="header-user" id="user-label"></span>
@@ -455,8 +458,8 @@ header {
       </div>
       <div id="input-area">
         <div id="multi-hint">
-          ⚡ <strong>Multi-device mode:</strong> students each open the game on their own device and interact in real-time. All state is <em>public</em> — no hidden entries. Great for contribution games, polls, auctions, coordination problems.
-          <br><br><a href="/advanced.html" target="_blank" style="color:var(--multi-text);font-weight:600">Need private state, persistence, or admin controls? → Advanced guide</a>
+          ⚡ <strong>Multi-device mode:</strong> students each open the room URL on their own device and interact in real-time. All state is <em>public</em> — no hidden entries. Good for contribution games, polls, auctions, coordination problems.
+          <br><br>Need private per-student state, persistent data, or an instructor admin panel? See <a href="/advanced.html" target="_blank" style="color:var(--multi-text);font-weight:600">Advanced Setup ↗</a>
         </div>
         <textarea id="user-input" rows="3" placeholder="e.g. A public goods game where each of 5 students contributes 0-10 tokens per round. Show a live bar chart of contributions."></textarea>
         <button id="send-btn" onclick="sendMessage()">Generate ↵</button>

@@ -18,7 +18,7 @@ demo_login_ui <- tagList(
   tags$div(
     id    = "demo-login-panel",
     style = paste0(
-      "display:", if (demo_mode) "block" else "none", ";",
+      "display:block;",
       "margin-top:14px;padding:10px 12px;",
       "background:#fff8e1;border:1px solid #ffe082;border-radius:4px;"
     ),

@@ -1172,8 +1172,12 @@ server <- function(input, output, session) {
   }
 
   # ── Cookie auto-login ─────────────────────────────────────────────────────────
+  # Skipped in sandbox mode: the global lookup_token uses the production DB, so a
+  # stale cookie would log in a non-admin user and dismiss the login form before
+  # ?demo_as= JS can fill it. Demo mode always requires an explicit login.
   observeEvent(input$auth_cookie, {
     if (rv$authed) return()
+    if (.sandbox) return()
     tok <- input$auth_cookie %||% ""
     if (!nzchar(tok)) return()
     row <- lookup_token(tok)
@@ -1202,7 +1206,7 @@ server <- function(input, output, session) {
       return()
     }
     do_login(row)
-    if (!isTRUE(as.integer(row$is_demo[1] %||% 0L) == 1L))
+    if (!isTRUE(as.integer(row$is_demo[1] %||% 0L) == 1L) && !.sandbox)
       issue_cookie(row$user_id[1])
   })
 
