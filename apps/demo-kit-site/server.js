@@ -163,6 +163,40 @@ app.use(session({
   cookie: { maxAge: 7 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: BASE_URL.startsWith('https') }
 }));
 
+// ── Overnight maintenance window (10 PM – 8 AM ET) ───────────────────────────
+const MAINTENANCE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Site offline overnight</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#f0f2f6;color:#1a1f2e;
+  display:flex;align-items:center;justify-content:center;min-height:100vh;padding:2rem}
+.card{background:#fff;border:1px solid #e2e6ee;border-radius:12px;
+  padding:2.5rem 2rem;max-width:420px;width:100%;text-align:center;
+  box-shadow:0 1px 3px rgba(0,0,0,.08)}
+h1{font-size:1.2rem;font-weight:700;margin-bottom:.75rem}
+p{color:#6b7280;font-size:.92rem;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🌙 Site offline overnight</h1>
+  <p>This site is offline between <strong>10 PM and 8 AM ET</strong> to refresh and save on server costs.<br><br>
+     Come back in the morning — everything will be ready to go.</p>
+</div>
+</body>
+</html>`;
+
+app.use((req, res, next) => {
+  if (req.path === '/health') return next(); // let monitors through
+  const h = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }));
+  if (h >= 22 || h < 8) return res.status(503).send(MAINTENANCE_HTML);
+  next();
+});
+
 // ── Middleware helpers ────────────────────────────────────────────────────────
 function requireAuth(req, res, next) {
   if (AUTH_DISABLED || req.session?.user) return next();
