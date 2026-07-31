@@ -427,7 +427,7 @@ header {
           <div id="export-menu">
             <button onclick="exportGame('r_shiny')">R Shiny (app.R)</button>
             <button onclick="exportGame('python_streamlit')">Python Streamlit (app.py)</button>
-            <button onclick="exportGame('stata')">Stata (analysis.do)</button>
+            <button onclick="exportGame('stata')" title="Stata has no interactive UI — sliders become scalar parameters you edit manually">Stata (analysis.do) ⚠</button>
           </div>
         </div>
         <button class="icon-btn primary" id="share-btn" onclick="shareGame()" style="display:none">Save &amp; share</button>
@@ -984,8 +984,11 @@ async function exportGame(language) {
     if (!res.ok) throw new Error(data.error || res.statusText);
 
     exportFilename = data.filename;
-    titleEl.textContent   = `Export: ${label} — ${data.filename}`;
-    codeEl.textContent    = data.code;
+    titleEl.textContent = `Export: ${label} — ${data.filename}`;
+    const stataNote = language === 'stata'
+      ? '* NOTE: Stata has no interactive UI — sliders become scalar parameters\n* at the top. Edit them and re-run the do-file to update the output.\n\n'
+      : '';
+    codeEl.textContent = stataNote + data.code;
     dlBtn.style.display   = '';
     copyBtn.style.display = '';
 
