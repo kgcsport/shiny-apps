@@ -379,7 +379,7 @@ header {
 .card-btn.danger:hover { background: #fef2f2; }
 
 /* ── Export dropdown & modal ── */
-#export-wrap { position: relative; display: none; }
+#export-wrap { position: relative; }
 #export-menu {
   display: none; position: absolute; right: 0; top: calc(100% + 4px);
   background: var(--surface); border: 1px solid var(--border);
@@ -927,7 +927,6 @@ function showPreview(html, isMulti) {
 
   shareBtn.style.display = '';
   soloActions.style.display = isMulti ? 'none' : '';
-  document.getElementById('export-wrap').style.display = '';
 }
 
 function shareGame() {
@@ -1182,6 +1181,7 @@ function downloadHtml() {
 }
 
 function toggleExportMenu() {
+  if (!currentHtml) { alert('Generate or load a game first, then export.'); return; }
   const menu = document.getElementById('export-menu');
   const open = menu.style.display !== 'block';
   menu.style.display = open ? 'block' : 'none';
