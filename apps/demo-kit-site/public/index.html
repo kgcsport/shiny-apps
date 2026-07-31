@@ -205,6 +205,33 @@ header {
 }
 #preview-frame.visible { display: block; }
 
+/* ── Local-mode banner ── */
+#local-banner {
+  display: none; align-items: center; gap: .6rem; padding: .45rem .85rem;
+  background: #f0fdf4; border-bottom: 1px solid #bbf7d0; flex-shrink: 0; flex-wrap: wrap;
+}
+#local-banner.visible { display: flex; }
+#local-banner .local-label { font-size: .8rem; color: #14532d; font-weight: 600; white-space: nowrap; }
+#local-banner .local-url {
+  font-family: monospace; font-size: .88rem; font-weight: 700;
+  color: #166534; background: #dcfce7; border: 1px solid #bbf7d0;
+  padding: .1rem .45rem; border-radius: 4px;
+}
+#local-banner .local-hint { font-size: .75rem; color: #166534; }
+#local-copy-btn {
+  padding: .22rem .6rem; border-radius: 5px; border: 1px solid #bbf7d0;
+  background: #fff; color: #166534; font-size: .78rem; font-weight: 600; cursor: pointer;
+  white-space: nowrap; transition: background .15s;
+}
+#local-copy-btn:hover { background: #dcfce7; }
+@media (prefers-color-scheme: dark) {
+  #local-banner { background: #052e16; border-bottom-color: #166534; }
+  #local-banner .local-label, #local-banner .local-hint { color: #86efac; }
+  #local-banner .local-url { color: #4ade80; background: #14532d; border-color: #166534; }
+  #local-copy-btn { background: #0f2d1a; border-color: #166534; color: #86efac; }
+  #local-copy-btn:hover { background: #14532d; }
+}
+
 /* ── API key banner ── */
 #key-banner {
   display: none; align-items: center; gap: .6rem; padding: .45rem .85rem;
@@ -431,6 +458,15 @@ header {
     <button class="header-btn" onclick="openHelp()">? Help</button>
     <a href="/auth/logout" class="header-btn">Sign out</a>
   </header>
+
+  <!-- Local-mode banner — shown when AUTH_DISABLED=true so instructor can copy student URL -->
+  <div id="local-banner">
+    <span class="local-label">Local mode —</span>
+    <span class="local-hint">Share with students:</span>
+    <span class="local-url" id="local-url-val"></span>
+    <button id="local-copy-btn" onclick="copyLocalUrl()">Copy URL</button>
+    <span id="local-copy-status" style="font-size:.75rem;color:#16a34a;display:none">Copied!</span>
+  </div>
 
   <!-- API key entry — visible until a valid key is saved to sessionStorage -->
   <div id="key-banner">
@@ -704,6 +740,17 @@ async function demoLogin() {
   btn.disabled = false; btn.textContent = 'Sign in';
 }
 
+let localStudentUrl = '';
+
+function copyLocalUrl() {
+  if (!localStudentUrl) return;
+  navigator.clipboard.writeText(localStudentUrl).then(() => {
+    const status = document.getElementById('local-copy-status');
+    status.style.display = '';
+    setTimeout(() => { status.style.display = 'none'; }, 2000);
+  });
+}
+
 // ── Boot ────────────────────────────────────────────────────────────────────
 (async function boot() {
   try {
@@ -716,6 +763,14 @@ async function demoLogin() {
     hasServerKey = !!me.hasServerKey;
     isAdmin      = !!me.isAdmin;
     if (hasServerKey) document.getElementById('own-key-btn').style.display = '';
+    // Local-mode banner: show student URL when running with AUTH_DISABLED=true
+    if (me.localIps && me.localIps.length) {
+      const ip = me.localIps[0];
+      const port = location.port || '3000';
+      localStudentUrl = `http://${ip}:${port}`;
+      document.getElementById('local-url-val').textContent = localStudentUrl;
+      document.getElementById('local-banner').classList.add('visible');
+    }
     updateUsageLine();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('app').classList.add('visible');
