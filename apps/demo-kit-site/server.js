@@ -25,10 +25,10 @@ const DEMO_USER     = process.env.DEMO_KIT_DEMO_USER || '';
 const DEMO_PASS     = process.env.DEMO_KIT_DEMO_PASS || '';
 const SHINY_BASE_URL  = (process.env.SHINY_BASE_URL || '').replace(/\/$/, '');
 const SHINY_DB_PATH   = process.env.SHINY_DB_PATH || join(DATA_DIR, 'data', 'class-job-market.sqlite');
-const DEMO_OPENAI_KEY    = process.env.DEMO_KIT_OPENAI_KEY    || '';
-const ADMIN_EMAIL        = process.env.DEMO_KIT_ADMIN_EMAIL   || 'kcoombs@vassar.edu';
-const SHINY_DEMO_STUDENT = process.env.SHINY_DEMO_STUDENT     || '';
-const SHINY_DEMO_TEACHER = process.env.SHINY_DEMO_TEACHER     || '';
+const DEMO_OPENAI_KEY    = process.env.DEMO_KIT_OPENAI_KEY  || '';
+const ADMIN_EMAIL        = process.env.DEMO_KIT_ADMIN_EMAIL || 'kcoombs@vassar.edu';
+const SHINY_DEMO_STUDENT = 'demo-student@classroom.demo';
+const SHINY_DEMO_TEACHER = 'demo-teacher@classroom.demo';
 
 mkdirSync(DATA_DIR, { recursive: true });
 
@@ -412,33 +412,7 @@ app.get('/shiny-auth/demo-login', (req, res) => {
   const email = role === 'teacher' ? SHINY_DEMO_TEACHER
               : role === 'student' ? SHINY_DEMO_STUDENT
               : '';
-  if (!email) {
-    return res.status(400).send(`
-      <html><body style="font-family:system-ui;max-width:480px;margin:80px auto;padding:0 1rem">
-        <h2>Demo not configured</h2>
-        <p>No demo account is set up for role <strong>${String(role||'').slice(0,20)}</strong>.</p>
-        <p style="color:#6b7280;font-size:.9rem">The site administrator needs to set
-           <code>SHINY_DEMO_STUDENT</code> / <code>SHINY_DEMO_TEACHER</code> environment variables.</p>
-        <a href="${SHINY_BASE_URL}/auth/login" style="display:inline-block;margin-top:1rem;
-           padding:.5rem 1.2rem;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none">
-          Sign in with Google instead</a>
-      </body></html>`);
-  }
-
-  let shinyDb;
-  try { shinyDb = new Database(SHINY_DB_PATH, { readonly: true }); }
-  catch (e) { return res.status(500).send('Cannot open course database.'); }
-  const enrolled = shinyDb.prepare('SELECT user_id FROM users WHERE user_id=?').get(email);
-  shinyDb.close();
-  if (!enrolled) {
-    return res.status(403).send(`
-      <html><body style="font-family:system-ui;max-width:480px;margin:80px auto;padding:0 1rem">
-        <h2>Demo account not enrolled</h2>
-        <p>The demo account (<strong>${email}</strong>) is not in the course roster.</p>
-        <p style="color:#6b7280;font-size:.9rem">Ask the course administrator to add this email
-           to the students table in the Shiny database.</p>
-      </body></html>`);
-  }
+  if (!email) return res.status(400).send('Invalid role. Use ?role=student or ?role=teacher.');
 
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   const token = Array.from(crypto.randomBytes(48), b => chars[b % chars.length]).join('');
@@ -447,12 +421,14 @@ app.get('/shiny-auth/demo-login', (req, res) => {
   let writeDb;
   try {
     writeDb = new Database(SHINY_DB_PATH);
+    // Auto-create the demo user if not already in the roster
+    writeDb.prepare('INSERT OR IGNORE INTO users(user_id) VALUES(?)').run(email);
     writeDb.prepare('INSERT OR REPLACE INTO arcade_sessions(token, user_id, expires_at) VALUES (?, ?, ?)')
       .run(token, email, expiresAt);
     writeDb.close();
   } catch (e) {
     console.error('Demo login session write error:', e);
-    return res.status(500).send('Session creation failed.');
+    return res.status(500).send('Session creation failed — the Shiny database may not be reachable.');
   }
 
   const cookieExpires = new Date(Date.now() + 4 * 60 * 60 * 1000).toUTCString();
