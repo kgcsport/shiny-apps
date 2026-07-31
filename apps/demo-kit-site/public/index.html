@@ -425,6 +425,7 @@ header {
         <div id="export-wrap">
           <button class="icon-btn" onclick="toggleExportMenu()">Export as…</button>
           <div id="export-menu">
+            <button onclick="downloadHtml()">HTML file (self-contained)</button>
             <button onclick="exportGame('r_shiny')">R Shiny (app.R)</button>
             <button onclick="exportGame('python_streamlit')">Python Streamlit (app.py)</button>
             <button onclick="exportGame('stata')" title="Stata has no interactive UI — sliders become scalar parameters you edit manually">Stata (analysis.do) ⚠</button>
@@ -935,6 +936,17 @@ function _applyLoadedGame(html, title, isMulti) {
 
 // ── Export ───────────────────────────────────────────────────────────────────
 let exportFilename = '';
+
+function downloadHtml() {
+  document.getElementById('export-menu').style.display = 'none';
+  if (!currentHtml) return;
+  const blob = new Blob([currentHtml], { type: 'text/html' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'game.html';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
 function toggleExportMenu() {
   const menu = document.getElementById('export-menu');
