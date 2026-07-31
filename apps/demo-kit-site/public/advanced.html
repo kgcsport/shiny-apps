@@ -73,6 +73,32 @@ pre code{background:none;padding:0;font-size:inherit}
 table{width:100%;border-collapse:collapse;margin:.75rem 0 1rem;font-size:.85rem}
 th,td{padding:.5rem .65rem;text-align:left;border-bottom:1px solid var(--border)}
 th{font-weight:600;color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.04em;background:var(--bg)}
+
+/* ── accordions ── */
+details.accord{border:1px solid var(--border);border-radius:8px;margin:2rem 0 .5rem;background:var(--surface);overflow:hidden}
+details.accord>summary{display:flex;align-items:center;gap:.7rem;padding:.85rem 1rem;cursor:pointer;list-style:none;font-weight:700;font-size:.98rem;color:var(--text)}
+details.accord>summary::-webkit-details-marker{display:none}
+details.accord>summary::after{content:'▾';margin-left:auto;font-size:1rem;color:var(--muted);transition:transform .2s;flex-shrink:0}
+details.accord[open]>summary::after{transform:rotate(-180deg)}
+details.accord>summary:hover{background:var(--bg)}
+details.accord[open]>summary{border-bottom:1px solid var(--border)}
+.accord-body{padding:1rem 1rem 1.25rem}
+/* small note accordions */
+details.note{border-radius:6px;margin:.75rem 0;font-size:.88rem;line-height:1.65}
+details.note>summary{display:flex;align-items:center;gap:.5rem;padding:.6rem .9rem;cursor:pointer;list-style:none;font-weight:600;border-radius:6px;border:1px solid transparent}
+details.note>summary::-webkit-details-marker{display:none}
+details.note>summary::after{content:'▾';margin-left:auto;opacity:.55;transition:transform .2s}
+details.note[open]>summary::after{transform:rotate(-180deg)}
+details.note[open]>summary{border-radius:6px 6px 0 0}
+.note-body{padding:.5rem .9rem .8rem;border-radius:0 0 6px 6px}
+details.note.amber>summary{background:#fffbeb;border-color:#fde68a;color:#78350f}
+details.note.amber>.note-body{background:#fffbeb;color:#78350f;border:1px solid #fde68a;border-top:none}
+details.note.gray>summary{background:var(--surface);border-color:var(--border);color:var(--text)}
+details.note.gray>.note-body{background:var(--surface);color:var(--text);border:1px solid var(--border);border-top:none}
+@media(prefers-color-scheme:dark){
+  details.note.amber>summary{background:#2d1f00;border-color:#92400e;color:#fde68a}
+  details.note.amber>.note-body{background:#2d1f00;color:#fde68a;border-color:#92400e}
+}
 </style>
 </head>
 <body>
@@ -109,9 +135,10 @@ th{font-weight:600;color:var(--muted);font-size:.75rem;text-transform:uppercase;
   </div>
 </div>
 
-<div class="box amber">
-  <strong>If the demo buttons show an error:</strong> the Classroom Economy database may not be reachable from this server. Try the Google OAuth login with a .edu email, or contact the course administrator.
-</div>
+<details class="note amber">
+  <summary>⚠ If the demo buttons show an error</summary>
+  <div class="note-body">The Classroom Economy database may not be reachable from this server. Try the Google OAuth login with a .edu email, or contact the course administrator.</div>
+</details>
 
 <!-- ── What you need ─────────────────────────────────────────────────────── -->
 <h2>What you actually need</h2>
@@ -158,9 +185,10 @@ cd shiny-apps</code></pre>
 
 <p>The Game Builder server is in <code>apps/demo-kit-site/</code>. The Classroom Economy is in <code>apps/class-job-market/</code>. When you build your own game, you'll copy the Game Builder folder and modify it.</p>
 
-<div class="box gray">
-  <strong>Don't have git?</strong> You can also download the repo as a ZIP from the GitHub page (green "Code" button → "Download ZIP"). Extract it and you have the same files.
-</div>
+<details class="note gray">
+  <summary>Don't have git? Download as a ZIP instead</summary>
+  <div class="note-body">On the GitHub page, click the green "Code" button → "Download ZIP". Extract it and you have the same files — no git required.</div>
+</details>
 
 <!-- ── Run locally ───────────────────────────────────────────────────────── -->
 <div class="step-header"><div class="step-num">2</div><h2>Run it on your computer first</h2></div>
@@ -235,13 +263,17 @@ $env:DEMO_KIT_AUTH_DISABLED="true"; node server.js</code></pre>
 <h3>Test with two browser tabs</h3>
 <p>Before involving students, open the game in two tabs — one as a student, one as the instructor — and walk through the full flow. Bugs in the game logic are much easier to fix before class than during it.</p>
 
-<!-- ── Authentication options ────────────────────────────────────────────── -->
-<div class="step-header"><div class="step-num">5</div><h2>Choose how students log in (or don't)</h2></div>
+<!-- ── Authentication ────────────────────────────────────────────────────── -->
+<details class="accord">
+  <summary>
+    <div class="step-num">5</div>
+    Choose how students log in (or don't)
+  </summary>
+  <div class="accord-body">
+    <p>You have several options, in order of complexity:</p>
 
-<p>You have several options, in order of complexity:</p>
-
-<h3>No login — just a name</h3>
-<p>Students type their name when they arrive. The server stores a session cookie. Works great for single-session games where you don't need to link data to a grade book.</p>
+    <h3>No login — just a name</h3>
+    <p>Students type their name when they arrive. The server stores a session cookie. Works great for single-session games where you don't need to link data to a grade book.</p>
 
 <pre><code>app.post('/api/join', (req, res) => {
   const { name } = req.body;
@@ -249,25 +281,31 @@ $env:DEMO_KIT_AUTH_DISABLED="true"; node server.js</code></pre>
   req.session.save(() => res.json({ ok: true }));
 });</code></pre>
 
-<h3>Username + password you hand out</h3>
-<p>Give each student a username and password (or one shared class code). No Google project needed. You maintain a list of valid credentials in the database or a config file. Ask AI to write the login route.</p>
+    <h3>Username + password you hand out</h3>
+    <p>Give each student a username and password (or one shared class code). No Google project needed. You maintain a list of valid credentials in the database or a config file. Ask AI to write the login route.</p>
 
-<h3>Google OAuth (what the Classroom Economy uses)</h3>
-<p>Students log in with their .edu Google account. Requires setting up a free Google Cloud project and getting a client ID and secret (takes about 15 minutes, fully documented at <a href="https://developers.google.com/identity/protocols/oauth2" target="_blank">developers.google.com</a>). Provides real identity without managing passwords. The full implementation is already in <code>apps/demo-kit-site/server.js</code> — copy it.</p>
+    <h3>Google OAuth (what the Classroom Economy uses)</h3>
+    <p>Students log in with their .edu Google account. Requires setting up a free Google Cloud project and getting a client ID and secret (takes about 15 minutes, fully documented at <a href="https://developers.google.com/identity/protocols/oauth2" target="_blank">developers.google.com</a>). Provides real identity without managing passwords. The full implementation is already in <code>apps/demo-kit-site/server.js</code> — copy it.</p>
+  </div>
+</details>
 
 <!-- ── Deploy ──────────────────────────────────────────────────────────────── -->
-<div class="step-header"><div class="step-num">6</div><h2>Deploy for persistent or remote access (optional)</h2></div>
+<details class="accord">
+  <summary>
+    <div class="step-num">6</div>
+    Deploy for persistent or remote access (optional)
+  </summary>
+  <div class="accord-body">
+    <p>For a game that students access on their own devices from anywhere — or that needs to persist data across multiple class sessions — you need a server with a public URL. Your options:</p>
 
-<p>For a game that students access on their own devices from anywhere — or that needs to persist data across multiple class sessions — you need a server with a public URL. Your options:</p>
+    <ul>
+      <li><strong>Reclaim Cloud</strong> — popular with academics, easy Java/Node.js hosting, often free through campus IT. Ask your department if you have access.</li>
+      <li><strong>DigitalOcean Droplet</strong> — $6/mo, 1GB RAM, runs everything in this repo easily</li>
+      <li><strong>Hetzner Cloud</strong> — €4/mo, slightly cheaper, European data centers</li>
+      <li><strong>Render.com</strong> — free tier available, simpler than a raw VPS, but cold-start delays on the free plan</li>
+    </ul>
 
-<ul>
-  <li><strong>Reclaim Cloud</strong> — popular with academics, easy Java/Node.js hosting, often free through campus IT. Ask your department if you have access.</li>
-  <li><strong>DigitalOcean Droplet</strong> — $6/mo, 1GB RAM, runs everything in this repo easily</li>
-  <li><strong>Hetzner Cloud</strong> — €4/mo, slightly cheaper, European data centers</li>
-  <li><strong>Render.com</strong> — free tier available, simpler than a raw VPS, but cold-start delays on the free plan</li>
-</ul>
-
-<p>Once you have a server, the basic deployment is:</p>
+    <p>Once you have a server, the basic deployment is:</p>
 
 <pre><code># On your VPS
 git clone https://github.com/kgcsport/shiny-apps.git
@@ -276,46 +314,54 @@ npm install
 # Set your environment variables, then:
 node server.js</code></pre>
 
-<p>For a permanent setup you'd use a process manager (<code>pm2</code>) so the server restarts automatically if the VPS reboots. Ask AI to write the pm2 config.</p>
+    <p>For a permanent setup you'd use a process manager (<code>pm2</code>) so the server restarts automatically if the VPS reboots. Ask AI to write the pm2 config.</p>
 
-<h3>HTTPS (optional but recommended for production)</h3>
-<p>Browsers enforce HTTPS for pages that use certain APIs (camera, clipboard) and show a "not secure" warning on plain HTTP. If students will connect over the public internet, add HTTPS. The standard approach is nginx as a reverse proxy with a free Let's Encrypt certificate. Ask AI: <em>"How do I set up nginx with a Let's Encrypt certificate to proxy to a Node.js app on port 3000?"</em> It's about a dozen config lines.</p>
+    <h3>HTTPS (optional but recommended for production)</h3>
+    <p>Browsers enforce HTTPS for pages that use certain APIs (camera, clipboard) and show a "not secure" warning on plain HTTP. If students will connect over the public internet, add HTTPS. The standard approach is nginx as a reverse proxy with a free Let's Encrypt certificate. Ask AI: <em>"How do I set up nginx with a Let's Encrypt certificate to proxy to a Node.js app on port 3000?"</em> It's about a dozen config lines.</p>
+  </div>
+</details>
 
 <!-- ── Architecture reference ───────────────────────────────────────────── -->
-<h2>What each piece does</h2>
-
-<p>Here's the quick reference for the stack used in this repo:</p>
-
-<table>
-  <thead><tr><th>Piece</th><th>Role</th><th>File(s)</th></tr></thead>
-  <tbody>
-    <tr><td><strong>Express</strong></td><td>HTTP server — handles routes, sessions, API endpoints</td><td><code>server.js</code></td></tr>
-    <tr><td><strong>better-sqlite3</strong></td><td>Reads and writes the SQLite database synchronously — one line per query</td><td><code>server.js</code> (db.prepare(…))</td></tr>
-    <tr><td><strong>ws (WebSockets)</strong></td><td>Keeps all students' browsers updated in real time without polling</td><td><code>server.js</code> (wss section)</td></tr>
-    <tr><td><strong>express-session</strong></td><td>Stores who is logged in across HTTP requests</td><td><code>server.js</code></td></tr>
-    <tr><td><strong>public/index.html</strong></td><td>The student/instructor front-end — HTML, CSS, and vanilla JS</td><td><code>public/</code></td></tr>
-    <tr><td><strong>SQLite .sqlite file</strong></td><td>The database — a single file, no server process, backed up with <code>cp</code></td><td><code>data/</code></td></tr>
-    <tr><td><strong>nginx</strong> (optional)</td><td>HTTPS termination, subdomain routing, static file caching</td><td><code>nginx.conf</code></td></tr>
-    <tr><td><strong>Docker Compose</strong> (optional)</td><td>Runs all services together reproducibly</td><td><code>docker-compose.yml</code></td></tr>
-  </tbody>
-</table>
+<details class="accord">
+  <summary>What each piece does — architecture reference</summary>
+  <div class="accord-body">
+    <table>
+      <thead><tr><th>Piece</th><th>Role</th><th>File(s)</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Express</strong></td><td>HTTP server — handles routes, sessions, API endpoints</td><td><code>server.js</code></td></tr>
+        <tr><td><strong>better-sqlite3</strong></td><td>Reads and writes the SQLite database synchronously — one line per query</td><td><code>server.js</code> (db.prepare(…))</td></tr>
+        <tr><td><strong>ws (WebSockets)</strong></td><td>Keeps all students' browsers updated in real time without polling</td><td><code>server.js</code> (wss section)</td></tr>
+        <tr><td><strong>express-session</strong></td><td>Stores who is logged in across HTTP requests</td><td><code>server.js</code></td></tr>
+        <tr><td><strong>public/index.html</strong></td><td>The student/instructor front-end — HTML, CSS, and vanilla JS</td><td><code>public/</code></td></tr>
+        <tr><td><strong>SQLite .sqlite file</strong></td><td>The database — a single file, no server process, backed up with <code>cp</code></td><td><code>data/</code></td></tr>
+        <tr><td><strong>nginx</strong> (optional)</td><td>HTTPS termination, subdomain routing, static file caching</td><td><code>nginx.conf</code></td></tr>
+        <tr><td><strong>Docker Compose</strong> (optional)</td><td>Runs all services together reproducibly</td><td><code>docker-compose.yml</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</details>
 
 <!-- ── Practical tips ───────────────────────────────────────────────────── -->
-<h2>Practical tips</h2>
+<details class="accord">
+  <summary>Practical tips</summary>
+  <div class="accord-body">
+    <ul>
+      <li><strong>Get the database schema right first.</strong> Once students have submitted data you don't want to throw it away. Think through what columns you need before the first class session that uses it.</li>
+      <li><strong>One broadcast, one source of truth.</strong> Write a single <code>broadcast()</code> function that reads the current state from SQLite and sends it to every WebSocket client. Call it after every write. Don't try to send partial updates — just send everything every time. SQLite reads are fast enough for a class of 200.</li>
+      <li><strong>Instructor view = query string check.</strong> <code>?admin=1</code> checked against a hardcoded admin email is enough. You don't need a separate login or role system to start.</li>
+      <li><strong>SQLite is your friend.</strong> It's a single file. You can open it with <a href="https://sqlitebrowser.org" target="_blank">DB Browser for SQLite</a> to inspect or edit data directly, export to CSV, or fix a bug mid-semester. No database server to manage.</li>
+      <li><strong>AI is better at code than at game design.</strong> Spend your time on the economics — what information, what choices, what incentives. The code is the easy part once you know what you're building.</li>
+      <li><strong>Describe the existing code when asking for changes.</strong> Paste the relevant section of server.js into Claude and say exactly what you want to add. "Add a route that does X" works much better than "make the game have X."</li>
+    </ul>
+  </div>
+</details>
 
-<ul>
-  <li><strong>Get the database schema right first.</strong> Once students have submitted data you don't want to throw it away. Think through what columns you need before the first class session that uses it.</li>
-  <li><strong>One broadcast, one source of truth.</strong> Write a single <code>broadcast()</code> function that reads the current state from SQLite and sends it to every WebSocket client. Call it after every write. Don't try to send partial updates — just send everything every time. SQLite reads are fast enough for a class of 200.</li>
-  <li><strong>Instructor view = query string check.</strong> <code>?admin=1</code> checked against a hardcoded admin email is enough. You don't need a separate login or role system to start.</li>
-  <li><strong>SQLite is your friend.</strong> It's a single file. You can open it with <a href="https://sqlitebrowser.org" target="_blank">DB Browser for SQLite</a> to inspect or edit data directly, export to CSV, or fix a bug mid-semester. No database server to manage.</li>
-  <li><strong>AI is better at code than at game design.</strong> Spend your time on the economics — what information, what choices, what incentives. The code is the easy part once you know what you're building.</li>
-  <li><strong>Describe the existing code when asking for changes.</strong> Paste the relevant section of server.js into Claude and say exactly what you want to add. "Add a route that does X" works much better than "make the game have X."</li>
-</ul>
-
-<div class="box green">
+<div class="box green" style="margin-top:2.5rem">
   <strong>Ready to start?</strong> Clone the repo, run the Game Builder locally, and ask Claude: <em>"I want to build [describe your game]. Here's the existing server.js structure [paste it]. Design the SQLite schema and the first two API routes."</em>
   <br><br>
   <a href="https://github.com/kgcsport/shiny-apps" target="_blank" style="font-weight:700">→ github.com/kgcsport/shiny-apps</a>
+  <br><br>
+  <span style="font-size:.85rem">Questions or want help setting something up? Get in touch — <a href="mailto:kcoombs@vassar.edu" style="color:inherit;font-weight:600">kcoombs@vassar.edu</a></span>
 </div>
 
 </div>
