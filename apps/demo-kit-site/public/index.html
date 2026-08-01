@@ -395,46 +395,8 @@ header {
 .card-btn.danger { color: var(--danger); border-color: var(--danger); }
 .card-btn.danger:hover { background: #fef2f2; }
 
-/* ── Export dropdown & modal ── */
+/* ── Export wrap ── */
 #export-wrap { position: relative; }
-#export-menu {
-  display: none; position: absolute; right: 0; top: calc(100% + 4px);
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,.15); z-index: 50; min-width: 180px;
-}
-#export-menu button {
-  display: block; width: 100%; text-align: left; padding: .45rem .75rem;
-  border: none; background: none; font-size: .82rem; color: var(--text); cursor: pointer;
-  transition: background .12s;
-}
-#export-menu button:first-child { border-radius: 6px 6px 0 0; }
-#export-menu button:last-child  { border-radius: 0 0 6px 6px; }
-#export-menu button:hover { background: var(--bg); }
-#export-overlay {
-  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 400;
-  align-items: center; justify-content: center;
-}
-#export-overlay.on { display: flex; }
-#export-modal {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-  width: min(700px, 92vw); max-height: 82vh; display: flex; flex-direction: column;
-  box-shadow: 0 8px 40px rgba(0,0,0,.25); overflow: hidden;
-}
-.export-modal-head {
-  display: flex; align-items: center; gap: .6rem; padding: .8rem 1rem;
-  border-bottom: 1px solid var(--border); flex-shrink: 0;
-}
-.export-modal-head h2 { font-size: .9rem; font-weight: 700; flex: 1; }
-#export-code {
-  flex: 1; overflow: auto; margin: 0; padding: .85rem 1rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem;
-  line-height: 1.6; background: var(--bg); color: var(--text); white-space: pre;
-  border: none; outline: none;
-}
-.export-modal-foot {
-  display: flex; gap: .5rem; padding: .7rem 1rem;
-  border-top: 1px solid var(--border); flex-shrink: 0;
-}
 </style>
 </head>
 <body>
@@ -535,14 +497,7 @@ header {
           <button class="icon-btn" onclick="openFullscreen()">Full screen ↗</button>
         </div>
         <div id="export-wrap">
-          <button class="icon-btn" onclick="toggleExportMenu()">Export as…</button>
-          <div id="export-menu">
-            <button onclick="downloadHtml()">HTML file (self-contained)</button>
-            <button onclick="downloadBundle()">Download bundle… (HTML + R + Python + Docker)</button>
-            <button onclick="exportGame('r_shiny')">R Shiny (app.R)</button>
-            <button onclick="exportGame('python_streamlit')">Python Streamlit (app.py)</button>
-            <button onclick="exportGame('stata')" title="Stata has no interactive UI — sliders become scalar parameters you edit manually">Stata (analysis.do) ⚠</button>
-          </div>
+          <button class="icon-btn" onclick="downloadHtml()" title="Download the game as a self-contained HTML file you can re-upload later">Download HTML ↓</button>
         </div>
         <button class="icon-btn primary" id="share-btn" onclick="shareGame()" style="display:none">Save &amp; share</button>
       </div>
@@ -596,13 +551,10 @@ header {
       <h3>5 — Reload from the Library</h3>
       <p>Click <strong>📚 Library</strong> to browse saved games and built-in templates. Loading a game seeds the chat with its HTML so follow-up messages refine it further.</p>
 
-      <h3>Export options</h3>
-      <ul>
-        <li><strong>HTML file</strong> — self-contained, opens in any browser, no server needed.</li>
-        <li><strong>Download bundle</strong> — ZIP with HTML + R Shiny + Python Streamlit versions + Dockerfiles for each.</li>
-        <li><strong>R Shiny / Python Streamlit</strong> — AI-converted code you can run as a local app or deploy on your own server.</li>
-        <li><strong>Stata ⚠</strong> — do-file with parameters you edit manually; no interactive UI.</li>
-      </ul>
+      <h3>Saving &amp; reloading games</h3>
+      <p>Click <strong>Download HTML ↓</strong> in the preview header to save the game as a self-contained HTML file. It opens in any browser without a server.</p>
+      <p>To continue working on a saved game: open the Library (📚), click <strong>↑ Upload HTML</strong>, and select the file you downloaded. The builder reloads it exactly as you left it.</p>
+      <p>Your last session is also restored automatically when you return to this page.</p>
 
       <h3>API key</h3>
       <p>If the server provides a demo key you can use it immediately (limited to <code>gpt-4o-mini</code>). Add your own Anthropic, OpenAI, or OpenRouter key via <strong>+ Use your own key</strong> to unlock better models and higher limits.</p>
@@ -634,21 +586,6 @@ header {
   </div>
 </div>
 
-<!-- ── Export modal ───────────────────────────────────────────────────────── -->
-<div id="export-overlay" onclick="handleExportOverlayClick(event)">
-  <div id="export-modal">
-    <div class="export-modal-head">
-      <h2 id="export-modal-title">Exporting…</h2>
-      <button class="lib-close-btn" onclick="closeExportModal()">✕</button>
-    </div>
-    <pre id="export-code"></pre>
-    <div class="export-modal-foot">
-      <button id="export-download-btn" class="icon-btn primary" onclick="downloadExport()" style="display:none">Download file</button>
-      <button id="export-copy-btn" class="icon-btn" onclick="copyExportCode()" style="display:none">Copy code</button>
-      <button class="icon-btn" onclick="closeExportModal()">Close</button>
-    </div>
-  </div>
-</div>
 
 <!-- ── Library drawer ─────────────────────────────────────────────────────── -->
 <input type="file" id="html-upload-input" accept=".html,.htm" style="display:none">
@@ -1285,11 +1222,8 @@ document.getElementById('html-upload-input').addEventListener('change', function
 });
 
 // ── Export ───────────────────────────────────────────────────────────────────
-let exportFilename = '';
-
 function downloadHtml() {
-  document.getElementById('export-menu').style.display = 'none';
-  if (!currentHtml) return;
+  if (!currentHtml) { alert('Generate or load a game first, then download.'); return; }
   const blob = new Blob([currentHtml], { type: 'text/html' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -1298,254 +1232,6 @@ function downloadHtml() {
   URL.revokeObjectURL(a.href);
 }
 
-function toggleExportMenu() {
-  if (!currentHtml) { alert('Generate or load a game first, then export.'); return; }
-  const menu = document.getElementById('export-menu');
-  const open = menu.style.display !== 'block';
-  menu.style.display = open ? 'block' : 'none';
-  if (open) {
-    const close = e => {
-      if (!document.getElementById('export-wrap').contains(e.target)) {
-        menu.style.display = 'none';
-        document.removeEventListener('click', close, true);
-      }
-    };
-    setTimeout(() => document.addEventListener('click', close, true), 0);
-  }
-}
-
-async function exportGame(language) {
-  document.getElementById('export-menu').style.display = 'none';
-  if (!currentHtml) return;
-
-  if (!hasServerKey && !getKey()) {
-    document.getElementById('key-banner').classList.add('visible');
-    document.getElementById('key-input').focus();
-    appendMsg('system', 'Add an API key first to use the export feature.');
-    return;
-  }
-
-  const label = language === 'r_shiny' ? 'R Shiny' : language === 'stata' ? 'Stata' : 'Python Streamlit';
-  const titleEl   = document.getElementById('export-modal-title');
-  const codeEl    = document.getElementById('export-code');
-  const dlBtn     = document.getElementById('export-download-btn');
-  const copyBtn   = document.getElementById('export-copy-btn');
-
-  titleEl.textContent = `Exporting as ${label}…`;
-  codeEl.textContent  = 'Generating — this may take 15–30 seconds…';
-  dlBtn.style.display   = 'none';
-  copyBtn.style.display = 'none';
-  document.getElementById('export-overlay').classList.add('on');
-
-  try {
-    const res = await fetch('/api/export', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Api-Key': getKey() },
-      body: JSON.stringify({ html: currentHtml, language })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || res.statusText);
-
-    exportFilename = data.filename;
-    titleEl.textContent = `Export: ${label} — ${data.filename}`;
-    const stataNote = language === 'stata'
-      ? '* NOTE: Stata has no interactive UI — sliders become scalar parameters\n* at the top. Edit them and re-run the do-file to update the output.\n\n'
-      : '';
-    codeEl.textContent = stataNote + data.code;
-    dlBtn.style.display   = '';
-    copyBtn.style.display = '';
-
-    if (data.remaining !== undefined) { dailyRemaining = data.remaining; updateUsageLine(); }
-  } catch (e) {
-    titleEl.textContent = 'Export failed';
-    codeEl.textContent  = 'Error: ' + e.message;
-  }
-}
-
-function closeExportModal() {
-  document.getElementById('export-overlay').classList.remove('on');
-}
-
-function handleExportOverlayClick(e) {
-  if (e.target === document.getElementById('export-overlay')) closeExportModal();
-}
-
-function downloadExport() {
-  const code = document.getElementById('export-code').textContent;
-  const blob = new Blob([code], { type: 'text/plain' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = exportFilename;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-async function downloadBundle() {
-  document.getElementById('export-menu').style.display = 'none';
-  if (!currentHtml) return;
-  if (!hasServerKey && !getKey()) {
-    document.getElementById('key-banner').classList.add('visible');
-    document.getElementById('key-input').focus();
-    return;
-  }
-
-  const titleEl  = document.getElementById('export-modal-title');
-  const codeEl   = document.getElementById('export-code');
-  const dlBtn    = document.getElementById('export-download-btn');
-  const copyBtn  = document.getElementById('export-copy-btn');
-
-  titleEl.textContent = 'Generating bundle…';
-  codeEl.textContent  = '⏳ Generating R Shiny…\n⏳ Generating Python Streamlit…\n\nThis takes 30–60 seconds.';
-  dlBtn.style.display = copyBtn.style.display = 'none';
-  document.getElementById('export-overlay').classList.add('on');
-
-  try {
-    const headers = { 'Content-Type': 'application/json', 'X-Api-Key': getKey() };
-    const [rRes, pyRes] = await Promise.all([
-      fetch('/api/export', { method:'POST', headers, body: JSON.stringify({ html: currentHtml, language: 'r_shiny' }) }).then(r => r.json()),
-      fetch('/api/export', { method:'POST', headers, body: JSON.stringify({ html: currentHtml, language: 'python_streamlit' }) }).then(r => r.json()),
-    ]);
-    if (rRes.error)  throw new Error('R Shiny: '  + rRes.error);
-    if (pyRes.error) throw new Error('Python: ' + pyRes.error);
-
-    const rDockerfile = `FROM rocker/shiny:latest\nWORKDIR /srv/shiny-server/app\nCOPY app.R .\nEXPOSE 3838\n`;
-    const pyDockerfile = `FROM python:3.11-slim\nWORKDIR /app\nRUN pip install streamlit matplotlib\nCOPY app.py .\nEXPOSE 8501\nCMD ["streamlit","run","app.py","--server.port=8501","--server.address=0.0.0.0"]\n`;
-    const readme =
-`# Game Bundle
-
-## Files
-- \`game.html\` — self-contained, opens in any browser
-- \`r-shiny/app.R\` + \`Dockerfile\`
-- \`python-streamlit/app.py\` + \`Dockerfile\`
-
-## Run locally
-**HTML:** just open \`game.html\` in a browser.
-
-**R Shiny:**
-\`\`\`r
-install.packages("shiny")
-shiny::runApp("r-shiny/app.R")
-\`\`\`
-
-**Python Streamlit:**
-\`\`\`bash
-pip install streamlit matplotlib
-streamlit run python-streamlit/app.py
-\`\`\`
-
-## Docker
-\`\`\`bash
-cd r-shiny && docker build -t game . && docker run -p 3838:3838 game
-# open http://localhost:3838
-\`\`\`
-\`\`\`bash
-cd python-streamlit && docker build -t game . && docker run -p 8501:8501 game
-# open http://localhost:8501
-\`\`\`
-`;
-
-    const zip = buildZip([
-      { name: 'game.html',                      data: currentHtml },
-      { name: 'r-shiny/app.R',                  data: rRes.code },
-      { name: 'r-shiny/Dockerfile',             data: rDockerfile },
-      { name: 'python-streamlit/app.py',        data: pyRes.code },
-      { name: 'python-streamlit/Dockerfile',    data: pyDockerfile },
-      { name: 'README.md',                      data: readme },
-    ]);
-
-    const blob = new Blob([zip], { type: 'application/zip' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'game-bundle.zip';
-    a.click();
-    URL.revokeObjectURL(a.href);
-    closeExportModal();
-
-    if (pyRes.remaining !== undefined) { dailyRemaining = pyRes.remaining; updateUsageLine(); }
-  } catch (e) {
-    titleEl.textContent = 'Bundle failed';
-    codeEl.textContent  = 'Error: ' + e.message;
-  }
-}
-
-// Pure-JS store-only ZIP builder (no compression, no external libraries)
-function buildZip(files) {
-  const enc = new TextEncoder();
-  const crcTable = (() => {
-    const t = new Uint32Array(256);
-    for (let i = 0; i < 256; i++) {
-      let c = i;
-      for (let j = 0; j < 8; j++) c = (c & 1) ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
-      t[i] = c;
-    }
-    return t;
-  })();
-  function crc32(data) {
-    let c = 0xFFFFFFFF;
-    for (const b of data) c = crcTable[(c ^ b) & 0xFF] ^ (c >>> 8);
-    return (c ^ 0xFFFFFFFF) >>> 0;
-  }
-  function w16(v, a, o) { a[o]=v&255; a[o+1]=(v>>8)&255; }
-  function w32(v, a, o) { w16(v&0xFFFF,a,o); w16((v>>>16)&0xFFFF,a,o+2); }
-
-  const now = new Date();
-  const dosTime = ((now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1))&0xFFFF;
-  const dosDate = (((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate())&0xFFFF;
-
-  const parts = [], meta = [];
-  let lOff = 0;
-
-  for (const {name, data} of files) {
-    const nb = enc.encode(name);
-    const fb = typeof data === 'string' ? enc.encode(data) : data;
-    const crc = crc32(fb);
-    const lh = new Uint8Array(30 + nb.length);
-    lh[0]=0x50;lh[1]=0x4B;lh[2]=0x03;lh[3]=0x04;
-    w16(20,lh,4); w16(0,lh,6); w16(0,lh,8);
-    w16(dosTime,lh,10); w16(dosDate,lh,12);
-    w32(crc,lh,14); w32(fb.length,lh,18); w32(fb.length,lh,22);
-    w16(nb.length,lh,26); w16(0,lh,28);
-    lh.set(nb, 30);
-    parts.push(lh, fb);
-    meta.push({nb, crc, size:fb.length, off:lOff});
-    lOff += lh.length + fb.length;
-  }
-
-  const cdStart = lOff;
-  for (const {nb, crc, size, off} of meta) {
-    const ch = new Uint8Array(46 + nb.length);
-    ch[0]=0x50;ch[1]=0x4B;ch[2]=0x01;ch[3]=0x02;
-    w16(20,ch,4);w16(20,ch,6);w16(0,ch,8);w16(0,ch,10);
-    w16(dosTime,ch,12);w16(dosDate,ch,14);
-    w32(crc,ch,16);w32(size,ch,20);w32(size,ch,24);
-    w16(nb.length,ch,28);w16(0,ch,30);w16(0,ch,32);w16(0,ch,34);w16(0,ch,36);
-    w32(0,ch,38);w32(off,ch,42);
-    ch.set(nb,46);
-    parts.push(ch);
-    lOff += ch.length;
-  }
-
-  const eocd = new Uint8Array(22);
-  eocd[0]=0x50;eocd[1]=0x4B;eocd[2]=0x05;eocd[3]=0x06;
-  w16(0,eocd,4);w16(0,eocd,6);
-  w16(meta.length,eocd,8);w16(meta.length,eocd,10);
-  w32(lOff-cdStart,eocd,12);w32(cdStart,eocd,16);w16(0,eocd,20);
-  parts.push(eocd);
-
-  const total = parts.reduce((s,p)=>s+p.length,0);
-  const out = new Uint8Array(total);
-  let pos = 0;
-  for (const p of parts) { out.set(p,pos); pos+=p.length; }
-  return out;
-}
-
-async function copyExportCode() {
-  const code = document.getElementById('export-code').textContent;
-  await navigator.clipboard.writeText(code);
-  const btn = document.getElementById('export-copy-btn');
-  btn.textContent = 'Copied!';
-  setTimeout(() => { btn.textContent = 'Copy code'; }, 2000);
-}
 </script>
 </body>
 </html>
