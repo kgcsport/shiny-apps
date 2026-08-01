@@ -497,7 +497,8 @@ header {
           <button class="icon-btn" onclick="openFullscreen()">Full screen ↗</button>
         </div>
         <div id="export-wrap">
-          <button class="icon-btn" onclick="downloadHtml()" title="Download the game as a self-contained HTML file you can re-upload later">Download HTML ↓</button>
+          <button class="icon-btn" onclick="downloadHtml()" title="Download self-contained HTML file — instant, re-uploadable">Download HTML ↓</button>
+          <button class="icon-btn" id="bundle-btn" onclick="downloadBundle()" title="Download ZIP with HTML + R Shiny + Python Streamlit + Dockerfiles (30–60s)">Download Bundle ↓</button>
         </div>
         <button class="icon-btn primary" id="share-btn" onclick="shareGame()" style="display:none">Save &amp; share</button>
       </div>
@@ -552,9 +553,9 @@ header {
       <p>Click <strong>📚 Library</strong> to browse saved games and built-in templates. Loading a game seeds the chat with its HTML so follow-up messages refine it further.</p>
 
       <h3>Saving &amp; reloading games</h3>
-      <p>Click <strong>Download HTML ↓</strong> in the preview header to save the game as a self-contained HTML file. It opens in any browser without a server.</p>
-      <p>To continue working on a saved game: open the Library (📚), click <strong>↑ Upload HTML</strong>, and select the file you downloaded. The builder reloads it exactly as you left it.</p>
-      <p>Your last session is also restored automatically when you return to this page.</p>
+      <p><strong>Download HTML ↓</strong> — instant. Saves a self-contained file that opens in any browser. Use this to back up your game.</p>
+      <p><strong>Download Bundle ↓</strong> — takes 30–60 seconds. Downloads a ZIP with the HTML file plus R Shiny and Python Streamlit versions and Dockerfiles for each.</p>
+      <p>To reload a downloaded game: open the Library (📚), click <strong>↑ Upload HTML</strong>, and pick the <code>.html</code> file. Your last session is also restored automatically on return.</p>
 
       <h3>API key</h3>
       <p>If the server provides a demo key you can use it immediately (limited to <code>gpt-4o-mini</code>). Add your own Anthropic, OpenAI, or OpenRouter key via <strong>+ Use your own key</strong> to unlock better models and higher limits.</p>
@@ -1230,6 +1231,117 @@ function downloadHtml() {
   a.download = 'game.html';
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+async function downloadBundle() {
+  if (!currentHtml) { alert('Generate or load a game first, then download.'); return; }
+  if (!hasServerKey && !getKey()) {
+    document.getElementById('key-banner').classList.add('visible');
+    document.getElementById('key-input').focus();
+    appendMsg('system', 'Add an API key to use the bundle export.');
+    return;
+  }
+  const btn = document.getElementById('bundle-btn');
+  btn.disabled = true;
+  btn.textContent = 'Generating… (30–60s)';
+  try {
+    const headers = { 'Content-Type': 'application/json', 'X-Api-Key': getKey() };
+    const [rRes, pyRes] = await Promise.all([
+      fetch('/api/export', { method: 'POST', headers, body: JSON.stringify({ html: currentHtml, language: 'r_shiny' }) }).then(r => r.json()),
+      fetch('/api/export', { method: 'POST', headers, body: JSON.stringify({ html: currentHtml, language: 'python_streamlit' }) }).then(r => r.json()),
+    ]);
+    if (rRes.error)  throw new Error('R Shiny: '  + rRes.error);
+    if (pyRes.error) throw new Error('Python: ' + pyRes.error);
+
+    const rDockerfile  = `FROM rocker/shiny:latest\nWORKDIR /srv/shiny-server/app\nCOPY app.R .\nEXPOSE 3838\n`;
+    const pyDockerfile = `FROM python:3.11-slim\nWORKDIR /app\nRUN pip install streamlit matplotlib\nCOPY app.py .\nEXPOSE 8501\nCMD ["streamlit","run","app.py","--server.port=8501","--server.address=0.0.0.0"]\n`;
+    const readme = `# Game Bundle\n\n## Files\n- \`game.html\` — self-contained, opens in any browser\n- \`r-shiny/app.R\` + \`Dockerfile\`\n- \`python-streamlit/app.py\` + \`Dockerfile\`\n\n## Run locally\n**HTML:** open \`game.html\` in a browser.\n\n**R Shiny:**\n\`\`\`r\ninstall.packages("shiny")\nshiny::runApp("r-shiny/app.R")\n\`\`\`\n\n**Python:**\n\`\`\`bash\npip install streamlit matplotlib\nstreamlit run python-streamlit/app.py\n\`\`\`\n`;
+
+    const zip = buildZip([
+      { name: 'game.html',                   data: currentHtml },
+      { name: 'r-shiny/app.R',               data: rRes.code },
+      { name: 'r-shiny/Dockerfile',          data: rDockerfile },
+      { name: 'python-streamlit/app.py',     data: pyRes.code },
+      { name: 'python-streamlit/Dockerfile', data: pyDockerfile },
+      { name: 'README.md',                   data: readme },
+    ]);
+    const blob = new Blob([zip], { type: 'application/zip' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'game-bundle.zip';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    if (pyRes.remaining !== undefined) { dailyRemaining = pyRes.remaining; updateUsageLine(); }
+  } catch (e) {
+    alert('Bundle failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Download Bundle ↓';
+  }
+}
+
+// Pure-JS store-only ZIP builder (no compression, no external libraries)
+function buildZip(files) {
+  const enc = new TextEncoder();
+  const crcTable = (() => {
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let j = 0; j < 8; j++) c = (c & 1) ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+      t[i] = c;
+    }
+    return t;
+  })();
+  function crc32(data) {
+    let c = 0xFFFFFFFF;
+    for (const b of data) c = crcTable[(c ^ b) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function w16(v, a, o) { a[o]=v&255; a[o+1]=(v>>8)&255; }
+  function w32(v, a, o) { w16(v&0xFFFF,a,o); w16((v>>>16)&0xFFFF,a,o+2); }
+  const now = new Date();
+  const dosTime = ((now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1))&0xFFFF;
+  const dosDate = (((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate())&0xFFFF;
+  const parts = [], meta = [];
+  let lOff = 0;
+  for (const {name, data} of files) {
+    const nb = enc.encode(name);
+    const fb = typeof data === 'string' ? enc.encode(data) : data;
+    const crc = crc32(fb);
+    const lh = new Uint8Array(30 + nb.length);
+    lh[0]=0x50;lh[1]=0x4B;lh[2]=0x03;lh[3]=0x04;
+    w16(20,lh,4);w16(0,lh,6);w16(0,lh,8);
+    w16(dosTime,lh,10);w16(dosDate,lh,12);
+    w32(crc,lh,14);w32(fb.length,lh,18);w32(fb.length,lh,22);
+    w16(nb.length,lh,26);w16(0,lh,28);
+    lh.set(nb,30);
+    parts.push(lh,fb);
+    meta.push({nb,crc,size:fb.length,off:lOff});
+    lOff += lh.length + fb.length;
+  }
+  const cdStart = lOff;
+  for (const {nb,crc,size,off} of meta) {
+    const ch = new Uint8Array(46+nb.length);
+    ch[0]=0x50;ch[1]=0x4B;ch[2]=0x01;ch[3]=0x02;
+    w16(20,ch,4);w16(20,ch,6);w16(0,ch,8);w16(0,ch,10);
+    w16(dosTime,ch,12);w16(dosDate,ch,14);
+    w32(crc,ch,16);w32(size,ch,20);w32(size,ch,24);
+    w16(nb.length,ch,28);w16(0,ch,30);w16(0,ch,32);w16(0,ch,34);w16(0,ch,36);
+    w32(0,ch,38);w32(off,ch,42);
+    ch.set(nb,46);
+    parts.push(ch);
+    lOff += ch.length;
+  }
+  const eocd = new Uint8Array(22);
+  eocd[0]=0x50;eocd[1]=0x4B;eocd[2]=0x05;eocd[3]=0x06;
+  w16(0,eocd,4);w16(0,eocd,6);
+  w16(meta.length,eocd,8);w16(meta.length,eocd,10);
+  w32(lOff-cdStart,eocd,12);w32(cdStart,eocd,16);w16(0,eocd,20);
+  parts.push(eocd);
+  const total = parts.reduce((s,p)=>s+p.length,0);
+  const out = new Uint8Array(total);
+  let pos=0; for (const p of parts){out.set(p,pos);pos+=p.length;}
+  return out;
 }
 
 </script>
