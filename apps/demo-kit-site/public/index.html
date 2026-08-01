@@ -651,10 +651,12 @@ header {
 </div>
 
 <!-- ── Library drawer ─────────────────────────────────────────────────────── -->
+<input type="file" id="html-upload-input" accept=".html,.htm" style="display:none">
 <div id="lib-overlay" onclick="closeLibrary()"></div>
 <div id="lib-drawer">
   <div class="lib-head">
     <h2>📚 Game Library</h2>
+    <button class="lib-close-btn" onclick="triggerHtmlUpload()" title="Load a previously downloaded HTML game file">↑ Upload HTML</button>
     <button class="lib-close-btn" onclick="closeLibrary()">✕ Close</button>
   </div>
   <div class="lib-tabs">
@@ -1260,6 +1262,27 @@ async function deleteTemplate(id) {
     alert('Delete failed: ' + e.message);
   }
 }
+
+// ── Upload HTML game ─────────────────────────────────────────────────────────
+function triggerHtmlUpload() {
+  document.getElementById('html-upload-input').click();
+}
+
+document.getElementById('html-upload-input').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = ''; // allow re-uploading the same file
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const html = extractHtml(ev.target.result);
+    if (!html) { alert('No valid HTML game found in that file.'); return; }
+    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].trim() : file.name.replace(/\.html?$/i, '');
+    const isMulti = html.includes('/gamesync.js');
+    _applyLoadedGame(html, title, isMulti);
+  };
+  reader.readAsText(file);
+});
 
 // ── Export ───────────────────────────────────────────────────────────────────
 let exportFilename = '';
