@@ -260,6 +260,12 @@ header {
   #chat-panel { width: 100%; border-right: none; border-bottom: 1px solid var(--border); height: 50%; min-width: unset; }
   #preview-panel { height: 50%; }
   .header-user { display: none; }
+  /* Two-row header: logo+actions top, mode toggle full-width bottom */
+  header { flex-wrap: wrap; padding: .5rem .75rem .35rem; gap: .4rem .5rem; }
+  .header-logo { flex: 1; }
+  .header-spacer { display: none; }
+  .mode-toggle { order: 10; flex: 1 1 100%; }
+  .mode-toggle .mode-btn { flex: 1; text-align: center; justify-content: center; }
 }
 
 /* ── Library drawer ── */
