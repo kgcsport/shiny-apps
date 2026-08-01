@@ -297,6 +297,23 @@ header {
 .lib-tab:hover:not(.active) { background: var(--bg); }
 #lib-list { flex: 1; overflow-y: auto; padding: .6rem; display: flex; flex-direction: column; gap: .5rem; }
 .lib-empty { text-align: center; color: var(--muted); font-size: .83rem; padding: 2rem 1rem; line-height: 1.6; }
+.lib-search-row {
+  display: flex; flex-direction: column; gap: .4rem;
+  padding: .5rem .6rem; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+#lib-search {
+  width: 100%; padding: .35rem .6rem; font-size: .82rem;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--bg); color: var(--text); outline: none; box-sizing: border-box;
+}
+#lib-search:focus { border-color: var(--accent); }
+.lib-mode-btns { display: flex; gap: .3rem; flex-wrap: wrap; }
+.lib-mode-btn {
+  padding: .22rem .55rem; border-radius: 5px; font-size: .74rem; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--muted);
+  transition: background .12s, color .12s;
+}
+.lib-mode-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .game-card {
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
   padding: .65rem .8rem; display: flex; flex-direction: column; gap: .3rem;
@@ -644,6 +661,14 @@ header {
     <button class="lib-tab active" id="tab-saved" onclick="switchTab('saved')">Saved Games</button>
     <button class="lib-tab" id="tab-templates" onclick="switchTab('templates')">Templates</button>
   </div>
+  <div class="lib-search-row">
+    <input type="search" id="lib-search" placeholder="Search…" oninput="filterLib()">
+    <div class="lib-mode-btns">
+      <button class="lib-mode-btn active" id="lf-all"   onclick="setLibFilter('all')">All</button>
+      <button class="lib-mode-btn"        id="lf-solo"  onclick="setLibFilter('solo')">Single-screen</button>
+      <button class="lib-mode-btn"        id="lf-multi" onclick="setLibFilter('multi')">Multi-device</button>
+    </div>
+  </div>
   <div id="lib-list"></div>
 </div>
 
@@ -684,6 +709,10 @@ function saveKey() {
 let demoSession = false;
 let hasServerKey = false;
 let isAdmin = false;
+let isStrictAdmin = false;   // true only for ADMIN_EMAIL, not AUTH_DISABLED local users
+let _libGames = [];
+let _libTemplates = [];
+let libModeFilter = 'all';
 
 function showKeyBanner() {
   document.getElementById('key-label').textContent = 'Your API Key (optional — unlocks Anthropic & full OpenAI models)';
@@ -759,9 +788,10 @@ function copyLocalUrl() {
     const me = await r.json();
     document.getElementById('user-label').textContent = me.email;
     dailyRemaining = me.dailyLimit - me.usedToday;
-    demoSession  = !!me.isDemo;
-    hasServerKey = !!me.hasServerKey;
-    isAdmin      = !!me.isAdmin;
+    demoSession    = !!me.isDemo;
+    hasServerKey   = !!me.hasServerKey;
+    isAdmin        = !!me.isAdmin;
+    isStrictAdmin  = !!me.isStrictAdmin;
     if (hasServerKey) document.getElementById('own-key-btn').style.display = '';
     // Local-mode banner: show student URL when running with AUTH_DISABLED=true
     if (me.localIps && me.localIps.length) {
@@ -775,6 +805,7 @@ function copyLocalUrl() {
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('app').classList.add('visible');
     updateKeyBanner();  // show key banner if no key yet (hidden for demo sessions)
+    restoreSession();
   } catch {}
 })();
 
@@ -792,7 +823,8 @@ function setMode(m) {
 
 // ── Send message ─────────────────────────────────────────────────────────────
 document.getElementById('user-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); sendMessage(); }
+  else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 
 async function sendMessage() {
@@ -920,7 +952,11 @@ function showPreview(html, isMulti) {
   badge.className = 'badge ' + (isMulti ? 'multi' : 'solo');
   badge.style.display = '';
 
-  previewTitle.textContent = isMulti ? 'Multiplayer preview (you only)' : 'Preview';
+  const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+  previewTitle.textContent = titleMatch ? titleMatch[1].trim()
+    : (isMulti ? 'Multiplayer preview' : 'Preview');
+
+  saveSession();
 
   roomInfo.classList.toggle('visible', false);
   document.getElementById('room-code-val').textContent = '—';
@@ -1037,6 +1073,31 @@ function updateUsageLine() {
   el.textContent = text;
 }
 
+// ── Session persistence (localStorage) ───────────────────────────────────────
+const SESSION_KEY = 'gbs_v1';
+
+function saveSession() {
+  if (!currentHtml) return;
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ html: currentHtml, isMulti: mode === 'multi', ts: Date.now() }));
+  } catch {}
+}
+
+function restoreSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (!s.html) return;
+    if (Date.now() - (s.ts || 0) > 7 * 86400 * 1000) { localStorage.removeItem(SESSION_KEY); return; }
+    currentHtml = s.html;
+    if (s.isMulti) setMode('multi'); else setMode('solo');
+    showPreview(s.html, !!s.isMulti);
+    messages = [{ role: 'assistant', content: s.html }];
+    appendMsg('system', 'Previous session restored. Keep describing changes to refine it, or clear with Reset.');
+  } catch {}
+}
+
 // ── Game Library ─────────────────────────────────────────────────────────────
 let libTab = 'saved'; // 'saved' | 'templates'
 
@@ -1058,6 +1119,61 @@ function switchTab(tab) {
   renderLibTab(tab);
 }
 
+function setLibFilter(f) {
+  libModeFilter = f;
+  ['all','solo','multi'].forEach(id => {
+    document.getElementById('lf-' + id).classList.toggle('active', id === f);
+  });
+  _renderLibCards();
+}
+
+function filterLib() { _renderLibCards(); }
+
+function _renderLibCards() {
+  const q = (document.getElementById('lib-search')?.value || '').toLowerCase();
+  const list = document.getElementById('lib-list');
+  list.innerHTML = '';
+  const data = libTab === 'saved' ? _libGames : _libTemplates;
+  const filtered = data.filter(item => {
+    const title = (item.title || '').toLowerCase();
+    const desc  = (item.description || '').toLowerCase();
+    const matchQ = !q || title.includes(q) || desc.includes(q);
+    const multi  = !!item.is_multiplayer;
+    const matchMode = libModeFilter === 'all' || (libModeFilter === 'multi' && multi) || (libModeFilter === 'solo' && !multi);
+    return matchQ && matchMode;
+  });
+  if (!filtered.length) {
+    list.innerHTML = '<div class="lib-empty">No matches.</div>';
+    return;
+  }
+  for (const item of filtered) {
+    const card = document.createElement('div');
+    card.className = 'game-card clickable';
+    if (libTab === 'saved') {
+      const dateStr = (item.created_at || '').slice(0, 10) || '—';
+      const typeLabel = item.is_multiplayer ? '⚡ Multi-device' : '🖥 Single-screen';
+      card.title = 'Click to load and edit';
+      card.onclick = (e) => { if (!e.target.closest('button')) loadSavedGame(item.room_code, !!item.is_multiplayer); };
+      card.innerHTML =
+        `<div class="game-card-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>` +
+        `<div class="game-card-meta">${typeLabel} · ${escapeHtml(item.created_by)} · ${dateStr}</div>` +
+        `<div class="game-card-actions">` +
+          `<button class="card-btn" onclick="window.open('/play?room=${item.room_code}','_blank')">Open ↗</button>` +
+          (isAdmin ? `<button class="card-btn danger" onclick="deleteGame('${item.room_code}')">Delete</button>` : '') +
+        `</div>`;
+    } else {
+      card.title = 'Click to load and edit';
+      card.onclick = () => loadTemplate(item.id, !!item.is_multiplayer);
+      card.innerHTML =
+        `<div class="game-card-title">${escapeHtml(item.title)}</div>` +
+        `<div class="game-card-desc">${escapeHtml(item.description || '')}</div>` +
+        `<div class="game-card-meta">${item.is_multiplayer ? '⚡ Multi-device' : '🖥 Single-screen'} · Built-in template · Click to load</div>` +
+        (isStrictAdmin ? `<div class="game-card-actions"><button class="card-btn danger" onclick="deleteTemplate('${item.id}')">Delete</button></div>` : '');
+    }
+    list.appendChild(card);
+  }
+}
+
 async function renderLibTab(tab) {
   const list = document.getElementById('lib-list');
   list.innerHTML = '<div class="lib-empty">Loading…</div>';
@@ -1065,49 +1181,17 @@ async function renderLibTab(tab) {
     if (tab === 'saved') {
       const r = await fetch('/api/games');
       if (!r.ok) throw new Error('Failed to load');
-      const games = await r.json();
-      if (!games.length) {
+      _libGames = await r.json();
+      if (!_libGames.length) {
         list.innerHTML = '<div class="lib-empty">No saved games yet.<br>Generate a game and click <strong>Save &amp; share</strong> — it will appear here.</div>';
         return;
-      }
-      list.innerHTML = '';
-      for (const g of games) {
-        const dateStr = (g.created_at || '').slice(0, 10) || '—';
-        const typeLabel = g.is_multiplayer ? '⚡ Multi-device' : '🖥 Single-screen';
-        const card = document.createElement('div');
-        card.className = 'game-card clickable';
-        card.title = 'Click to load and edit';
-        card.onclick = (e) => { if (!e.target.closest('button')) loadSavedGame(g.room_code, !!g.is_multiplayer); };
-        card.innerHTML =
-          `<div class="game-card-title" title="${escapeHtml(g.title)}">${escapeHtml(g.title)}</div>` +
-          `<div class="game-card-meta">${typeLabel} · ${escapeHtml(g.created_by)} · ${dateStr}</div>` +
-          `<div class="game-card-actions">` +
-            `<button class="card-btn" onclick="window.open('/play?room=${g.room_code}','_blank')">Open ↗</button>` +
-            (isAdmin ? `<button class="card-btn danger" onclick="deleteGame('${g.room_code}')">Delete</button>` : '') +
-          `</div>`;
-        list.appendChild(card);
       }
     } else {
       const r = await fetch('/api/templates');
       if (!r.ok) throw new Error('Failed to load');
-      const templates = await r.json();
-      if (!templates.length) {
-        list.innerHTML = '<div class="lib-empty">No templates available.</div>';
-        return;
-      }
-      list.innerHTML = '';
-      for (const t of templates) {
-        const card = document.createElement('div');
-        card.className = 'game-card clickable';
-        card.title = 'Click to load and edit';
-        card.onclick = () => loadTemplate(t.id, !!t.is_multiplayer);
-        card.innerHTML =
-          `<div class="game-card-title">${escapeHtml(t.title)}</div>` +
-          `<div class="game-card-desc">${escapeHtml(t.description)}</div>` +
-          `<div class="game-card-meta">${t.is_multiplayer ? '⚡ Multi-device' : '🖥 Single-screen'} · Built-in template · Click to load</div>`;
-        list.appendChild(card);
-      }
+      _libTemplates = await r.json();
     }
+    _renderLibCards();
   } catch (e) {
     list.innerHTML = `<div class="lib-empty">Error: ${escapeHtml(e.message)}</div>`;
   }
@@ -1161,6 +1245,17 @@ async function deleteGame(code) {
     const res = await fetch(`/api/game/${code}`, { method: 'DELETE' });
     if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
     renderLibTab('saved');
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+async function deleteTemplate(id) {
+  if (!confirm('Hide this template from all users?')) return;
+  try {
+    const res = await fetch(`/api/template/${id}`, { method: 'DELETE' });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
+    renderLibTab('templates');
   } catch (e) {
     alert('Delete failed: ' + e.message);
   }

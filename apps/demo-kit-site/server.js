@@ -113,6 +113,10 @@ db.exec(`
     sess    TEXT NOT NULL,
     expired TEXT
   );
+  CREATE TABLE IF NOT EXISTS hidden_templates (
+    template_id TEXT PRIMARY KEY,
+    hidden_at   TEXT DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // ── Inline SQLite session store (uses the same better-sqlite3 db) ─────────────
@@ -234,7 +238,8 @@ app.get('/api/me', (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const row = db.prepare('SELECT count FROM rate_limits WHERE email=? AND date=?').get(user.email, today);
   const localIps = AUTH_DISABLED ? getLocalIps() : [];
-  res.json({ ...user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT, isDemo: isDemoUser(user.email), hasServerKey: !!DEMO_OPENAI_KEY, isAdmin: AUTH_DISABLED || user.email === ADMIN_EMAIL, localIps });
+  const isStrictAdmin = user.email === ADMIN_EMAIL;
+  res.json({ ...user, usedToday: row?.count || 0, dailyLimit: DAILY_LIMIT, isDemo: isDemoUser(user.email), hasServerKey: !!DEMO_OPENAI_KEY, isAdmin: AUTH_DISABLED || isStrictAdmin, isStrictAdmin, localIps });
 });
 
 app.get('/auth/google', (req, res) => {
@@ -447,13 +452,20 @@ const SYSTEM_SOLO = `You are an expert educational game designer who builds inte
 
 When given a concept, scenario, or request, always generate a complete, working HTML game or demo immediately — never ask clarifying questions or describe what you are about to build. If the request is ambiguous, make a reasonable choice and build it.
 
-The game or demo should:
+Required structure — every output must include ALL of these:
+1. <title> tag: a concise 2-5 word game name (used in the browser tab and UI)
+2. A visible title or header at the top of the page showing the game name
+3. A concept box or brief paragraph (1-3 sentences) explaining what economic principle this demonstrates — pitched at undergraduates, not experts
+4. Clear on-screen instructions explaining what to do
+5. The interactive game area
+6. A Reset button, always visible (never buried in a menu)
+
+Quality criteria:
 - Directly illustrate or teach the requested concept through hands-on interaction
 - Be suitable for projecting in a classroom or sharing a link with students
-- Include a brief in-game explanation of the concept or scenario
-- Have clear, simple instructions visible to students
-- Include a Reset button
-- Use a clean, engaging visual design
+- Use a clean, engaging visual design with good color contrast
+- Show real-time feedback after each interaction (what changed, what it means)
+- If the concept has a theoretical prediction (Nash equilibrium, competitive equilibrium, etc.), show it alongside actual results
 
 Technical rules:
 - No external dependencies whatsoever (no CDN links, no remote scripts or fonts)
@@ -497,14 +509,21 @@ const SYSTEM_MULTI = `You are an expert educational game designer who builds int
 
 When given a concept, scenario, or request, always generate a complete, working HTML multiplayer game immediately — never ask clarifying questions or describe what you are about to build. If the request is ambiguous, make a reasonable choice and build it.
 
-The game should:
+Required structure — every output must include ALL of these:
+1. <title> tag: a concise 2-5 word game name
+2. A visible title or header at the top of the page showing the game name
+3. A concept box or brief paragraph (1-3 sentences) explaining what economic principle this demonstrates — pitched at undergraduates
+4. Clear on-screen instructions explaining what students should do
+5. The interactive game area with real-time state visible to all players
+6. A live list of connected players
+7. A Reset button (can be hidden behind ?admin=1 in URL if appropriate)
+
+Quality criteria:
 - Directly illustrate or teach the requested concept through real-time interaction between students
 - Be suitable for students joining on their own devices via a shared link
-- Include a brief in-game explanation of the concept or scenario
-- Have clear, simple instructions visible to students
-- Show a live list of connected players
-- Include a Reset button (optionally hidden behind ?admin=1 in URL)
 - State is PUBLIC — all players see everything; do not use this for private bids or hidden hands
+- Show aggregate results clearly (totals, averages, distributions) as players submit
+- If the concept has a theoretical prediction, display it alongside live results
 
 Technical rules:
 - Include <script src="/gamesync.js"></script> in your <head> — this is the ONLY external script allowed
@@ -675,7 +694,10 @@ app.delete('/api/game/:code', requireAuth, (req, res) => {
 
 // ── GET /api/templates — list available pre-built templates ───────────────────
 app.get('/api/templates', requireAuth, (req, res) => {
-  res.json(TEMPLATES.map(({ source: _src, ...meta }) => meta));
+  const hidden = new Set(
+    db.prepare('SELECT template_id FROM hidden_templates').all().map(r => r.template_id)
+  );
+  res.json(TEMPLATES.filter(t => !hidden.has(t.id)).map(({ source: _src, ...meta }) => meta));
 });
 
 // ── GET /api/template/:id — fetch a specific template (includes HTML) ─────────
@@ -688,6 +710,16 @@ app.get('/api/template/:id', requireAuth, (req, res) => {
   } catch {
     res.status(404).json({ error: `Template file "${t.source}.html" not found on server.` });
   }
+});
+
+// ── DELETE /api/template/:id — admin-only template hide ───────────────────────
+app.delete('/api/template/:id', requireAuth, (req, res) => {
+  if (req.session.user?.email !== ADMIN_EMAIL)
+    return res.status(403).json({ error: 'Admin only' });
+  const t = TEMPLATES.find(x => x.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Template not found' });
+  db.prepare('INSERT OR IGNORE INTO hidden_templates(template_id) VALUES(?)').run(req.params.id);
+  res.json({ ok: true });
 });
 
 // ── POST /api/export — convert game HTML to R Shiny or Python Streamlit ───────
