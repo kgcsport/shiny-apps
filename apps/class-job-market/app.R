@@ -3670,6 +3670,112 @@ server <- function(input, output, session) {
         }
       ),
 
+      # Panel 3: Coordination Game — per-section breakdown
+      local({
+        op     <- olig_poll()
+        arc    <- arcade_poll()
+        s      <- op$settings
+        active <- arc$active_game[1] %||% ""
+        if (!nrow(s) || !nzchar(active)) return(NULL)
+
+        cur_round  <- as.integer(s$current_round[1] %||% 1L)
+        cur_status <- s$round_status[1] %||% "pending"
+        cur_game   <- s$current_game[1] %||% active
+
+        # Per-section submission counts + totals
+        subs <- tryCatch(
+          db_query(
+            "SELECT COALESCE(section,'') AS section,
+                    COUNT(*) AS n_sub,
+                    SUM(CASE WHEN contribute IS NOT NULL THEN contribute ELSE 0 END) AS total_contrib,
+                    SUM(CASE WHEN choice='cooperate' THEN 1 ELSE 0 END) AS n_coop,
+                    SUM(CASE WHEN choice='defect'    THEN 1 ELSE 0 END) AS n_defect
+             FROM olig_submissions
+             WHERE round=?
+             GROUP BY COALESCE(section,'')
+             ORDER BY COALESCE(section,'');",
+            list(cur_round)),
+          error = function(e) data.frame())
+
+        totals <- tryCatch(
+          db_query(
+            "SELECT COALESCE(section,'') AS section, COUNT(*) AS n_total
+             FROM users
+             WHERE COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
+             GROUP BY COALESCE(section,'')
+             ORDER BY COALESCE(section,'');"),
+          error = function(e) data.frame())
+
+        if (!nrow(subs) && !nrow(totals)) return(NULL)
+
+        is_bp <- identical(cur_game, "bonus_pot")
+        is_pd <- cur_game %in% c("prisoners_dilemma", "price_war")
+
+        wellPanel(
+          tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
+                  "\U0001f3ae Coordination Game — by Section"),
+          tags$p(style = "color:#555;font-size:.85em;margin-bottom:.5rem;",
+            tags$strong("Game: "), toupper(cur_game), "  ",
+            tags$strong("Round: "), cur_round, "  ",
+            tags$strong("Status: "),
+            span(style = if (cur_status == "open") "color:#1a6e3c;font-weight:600;"
+                         else "color:#b00020;font-weight:600;",
+                 toupper(cur_status))
+          ),
+          if (!nrow(subs)) {
+            tags$p(style = "color:#999;margin:0;", "No submissions yet.")
+          } else {
+            # Merge subs with totals
+            merged <- merge(
+              subs, totals, by = "section", all = TRUE)
+            merged$n_sub     <- as.integer(merged$n_sub %||% 0)
+            merged$n_total   <- as.integer(merged$n_total %||% merged$n_sub)
+            merged$n_missing <- pmax(0L, merged$n_total - merged$n_sub)
+
+            div(class = "tracker-wrap",
+              tags$table(class = "table table-sm table-hover", style = "margin-bottom:0;",
+                tags$thead(tags$tr(
+                  tags$th("Section"),
+                  tags$th(style = "text-align:right;", "Submitted"),
+                  tags$th(style = "text-align:right;", "Remaining"),
+                  if (is_bp) tags$th(style = "text-align:right;", "Total Contrib."),
+                  if (is_bp) tags$th(style = "text-align:right;", "Avg Contrib."),
+                  if (is_pd) tags$th(style = "text-align:right;", "Cooperate"),
+                  if (is_pd) tags$th(style = "text-align:right;", "Defect")
+                )),
+                tags$tbody(lapply(seq_len(nrow(merged)), function(i) {
+                  row <- merged[i, ]
+                  sec_label <- if (nzchar(row$section)) row$section else "(no section)"
+                  n_sub   <- as.integer(row$n_sub   %||% 0)
+                  n_total <- as.integer(row$n_total %||% n_sub)
+                  n_miss  <- as.integer(row$n_missing %||% 0)
+                  t_contrib <- as.numeric(row$total_contrib %||% 0)
+                  a_contrib <- if (n_sub > 0) round(t_contrib / n_sub, 1) else 0
+
+                  tags$tr(
+                    tags$td(sec_label),
+                    tags$td(style = "text-align:right;",
+                            sprintf("%d / %d", n_sub, n_total)),
+                    tags$td(style = paste0(
+                      "text-align:right;",
+                      if (n_miss > 0) "color:#b00020;font-weight:600;" else "color:#1a6e3c;"),
+                            if (n_miss > 0) as.character(n_miss) else "—"),
+                    if (is_bp) tags$td(style = "text-align:right;",
+                                       sprintf("%.1f", t_contrib)),
+                    if (is_bp) tags$td(style = "text-align:right;",
+                                       sprintf("%.1f", a_contrib)),
+                    if (is_pd) tags$td(style = "text-align:right;",
+                                       as.integer(row$n_coop %||% 0)),
+                    if (is_pd) tags$td(style = "text-align:right;",
+                                       as.integer(row$n_defect %||% 0))
+                  )
+                }))
+              )
+            )
+          }
+        )
+      }),
+
     )
   })
 
