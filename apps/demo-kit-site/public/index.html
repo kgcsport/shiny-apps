@@ -193,6 +193,27 @@ header {
 .icon-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .icon-btn.primary:hover { background: var(--accent-h); }
 
+/* ── Structure mode selector ── */
+#structure-row {
+  display: flex; align-items: center; gap: .45rem; font-size: .78rem; color: var(--muted);
+}
+#structure-sel {
+  flex: 1; font-size: .78rem; padding: .28rem .5rem; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--bg); color: var(--text); cursor: pointer; outline: none;
+}
+#structure-sel:focus { border-color: var(--accent); }
+
+/* ── Game meta bar (concept + theory, shown when GAME_META present) ── */
+#game-meta-bar {
+  padding: .45rem .85rem; background: var(--surface); border-bottom: 1px solid var(--border);
+  font-size: .8rem; display: flex; flex-direction: column; gap: .28rem; flex-shrink: 0;
+}
+#meta-concept { color: var(--text); line-height: 1.45; }
+#meta-theory {
+  color: var(--muted); font-style: italic; padding-top: .22rem;
+  border-top: 1px solid var(--border);
+}
+
 #preview-wrap { flex: 1; overflow: hidden; position: relative; background: var(--bg); }
 #preview-placeholder {
   position: absolute; inset: 0; display: flex; flex-direction: column;
@@ -483,6 +504,15 @@ header {
           <br><br>Need private per-student state, persistent data, or an instructor admin panel? See <a href="/advanced.html" target="_blank" style="color:var(--multi-text);font-weight:600">Advanced Setup ↗</a>
         </div>
         <textarea id="user-input" rows="3" placeholder="e.g. A public goods game where each of 5 students contributes 0-10 tokens per round. Show a live bar chart of contributions."></textarea>
+        <div id="structure-row">
+          <label for="structure-sel">Structure:</label>
+          <select id="structure-sel" onchange="setStructureMode(this.value)" title="Choose how the AI structures its output">
+            <option value="freeform">🎨 Open canvas — AI designs the full layout</option>
+            <option value="metadata">🏷️ Tagged — AI designs freely + embeds extractable metadata</option>
+            <option value="json">📦 Framed — AI fills a consistent layout skeleton</option>
+            <option value="slots">🔲 Structured — server builds fixed layout, AI fills each section</option>
+          </select>
+        </div>
         <button id="send-btn" onclick="sendMessage()">Generate ↵</button>
         <div class="usage-line" id="usage-line"></div>
       </div>
@@ -507,6 +537,10 @@ header {
           <button class="icon-btn" id="bundle-btn" onclick="downloadBundle()" title="Download ZIP with HTML + R Shiny + Python Streamlit + Dockerfiles (30–60s)">Download Bundle ↓</button>
         </div>
         <button class="icon-btn primary" id="share-btn" onclick="shareGame()" style="display:none">Save &amp; share</button>
+      </div>
+      <div id="game-meta-bar" style="display:none">
+        <div id="meta-concept"></div>
+        <div id="meta-theory"></div>
       </div>
       <div id="preview-wrap">
         <div id="preview-placeholder">
@@ -659,6 +693,7 @@ let isStrictAdmin = false;   // true only for ADMIN_EMAIL, not AUTH_DISABLED loc
 let _libGames = [];
 let _libTemplates = [];
 let libModeFilter = 'all';
+let structureMode = 'freeform';
 
 function showKeyBanner() {
   document.getElementById('key-label').textContent = 'Your API Key (optional — unlocks Anthropic & full OpenAI models)';
@@ -762,9 +797,15 @@ function setMode(m) {
   document.getElementById('btn-multi').classList.toggle('active', m === 'multi');
   document.getElementById('btn-multi').classList.toggle('multi', m === 'multi');
   document.getElementById('multi-hint').classList.toggle('visible', m === 'multi');
+  // Structure modes only apply to single-screen games
+  document.getElementById('structure-row').style.display = m === 'multi' ? 'none' : '';
   document.getElementById('user-input').placeholder = m === 'multi'
     ? 'e.g. Public goods game: each student contributes 0-10 tokens. Show a live bar chart. 5 rounds.'
     : 'e.g. A single-screen auction where the instructor controls price and students raise hands to bid.';
+}
+
+function setStructureMode(m) {
+  structureMode = m;
 }
 
 // ── Send message ─────────────────────────────────────────────────────────────
@@ -797,7 +838,7 @@ async function sendMessage() {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': getKey() },
-      body: JSON.stringify({ messages, multiplayer: mode === 'multi' })
+      body: JSON.stringify({ messages, multiplayer: mode === 'multi', structureMode })
     });
 
     if (!res.ok) {
@@ -901,6 +942,20 @@ function showPreview(html, isMulti) {
   const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
   previewTitle.textContent = titleMatch ? titleMatch[1].trim()
     : (isMulti ? 'Multiplayer preview' : 'Preview');
+
+  // Parse GAME_META comment and populate the meta bar
+  const metaBar = document.getElementById('game-meta-bar');
+  const metaMatch = html.match(/<!--\s*GAME_META\s+([\s\S]*?)\s*-->/);
+  if (metaMatch) {
+    try {
+      const meta = JSON.parse(metaMatch[1]);
+      document.getElementById('meta-concept').textContent = meta.concept || '';
+      document.getElementById('meta-theory').textContent = meta.theory ? '📐 ' + meta.theory : '';
+      metaBar.style.display = (meta.concept || meta.theory) ? '' : 'none';
+    } catch(e) { metaBar.style.display = 'none'; }
+  } else {
+    metaBar.style.display = 'none';
+  }
 
   saveSession();
 
