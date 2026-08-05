@@ -854,6 +854,24 @@ app.get('/api/game/:code', requireAuth, (req, res) => {
   res.json(game);
 });
 
+// ── PATCH /api/game/:code — update HTML (and optionally title) of a saved game ─
+app.patch('/api/game/:code', requireAuth, (req, res) => {
+  const { html, title } = req.body;
+  if (!html) return res.status(400).json({ error: 'html required' });
+
+  const game = db.prepare('SELECT * FROM games WHERE room_code=?').get(req.params.code);
+  if (!game) return res.status(404).json({ error: 'Game not found' });
+
+  const email = req.session.user.email;
+  if (!AUTH_DISABLED && email !== game.created_by && email !== ADMIN_EMAIL)
+    return res.status(403).json({ error: 'Only the game creator can update this game' });
+
+  db.prepare('UPDATE games SET html=?, title=? WHERE room_code=?')
+    .run(html, title || game.title, req.params.code);
+
+  res.json({ ok: true, room_code: req.params.code });
+});
+
 // ── DELETE /api/game/:code — admin-only game removal ─────────────────────────
 app.delete('/api/game/:code', requireAuth, (req, res) => {
   if (!AUTH_DISABLED && req.session.user.email !== ADMIN_EMAIL)
