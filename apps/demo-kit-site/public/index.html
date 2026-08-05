@@ -193,6 +193,27 @@ header {
 .icon-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .icon-btn.primary:hover { background: var(--accent-h); }
 
+/* ── Structure mode selector ── */
+#structure-row {
+  display: flex; align-items: center; gap: .45rem; font-size: .78rem; color: var(--muted);
+}
+#structure-sel {
+  flex: 1; font-size: .78rem; padding: .28rem .5rem; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--bg); color: var(--text); cursor: pointer; outline: none;
+}
+#structure-sel:focus { border-color: var(--accent); }
+
+/* ── Game meta bar (concept + theory, shown when GAME_META present) ── */
+#game-meta-bar {
+  padding: .45rem .85rem; background: var(--surface); border-bottom: 1px solid var(--border);
+  font-size: .8rem; display: flex; flex-direction: column; gap: .28rem; flex-shrink: 0;
+}
+#meta-concept { color: var(--text); line-height: 1.45; }
+#meta-theory {
+  color: var(--muted); font-style: italic; padding-top: .22rem;
+  border-top: 1px solid var(--border);
+}
+
 #preview-wrap { flex: 1; overflow: hidden; position: relative; background: var(--bg); }
 #preview-placeholder {
   position: absolute; inset: 0; display: flex; flex-direction: column;
@@ -483,6 +504,15 @@ header {
           <br><br>Need private per-student state, persistent data, or an instructor admin panel? See <a href="/advanced.html" target="_blank" style="color:var(--multi-text);font-weight:600">Advanced Setup ↗</a>
         </div>
         <textarea id="user-input" rows="3" placeholder="e.g. A public goods game where each of 5 students contributes 0-10 tokens per round. Show a live bar chart of contributions."></textarea>
+        <div id="structure-row">
+          <label for="structure-sel">Structure:</label>
+          <select id="structure-sel" onchange="setStructureMode(this.value)" title="Choose how the AI structures its output">
+            <option value="freeform">🎨 Open canvas — AI designs the full layout</option>
+            <option value="metadata">🏷️ Tagged — AI designs freely + embeds extractable metadata</option>
+            <option value="json">📦 Framed — AI fills a consistent layout skeleton</option>
+            <option value="slots">🔲 Structured — server builds fixed layout, AI fills each section</option>
+          </select>
+        </div>
         <button id="send-btn" onclick="sendMessage()">Generate ↵</button>
         <div class="usage-line" id="usage-line"></div>
       </div>
@@ -507,6 +537,11 @@ header {
           <button class="icon-btn" id="bundle-btn" onclick="downloadBundle()" title="Download ZIP with HTML + R Shiny + Python Streamlit + Dockerfiles (30–60s)">Download Bundle ↓</button>
         </div>
         <button class="icon-btn primary" id="share-btn" onclick="shareGame()" style="display:none">Save &amp; share</button>
+        <button class="icon-btn" id="save-new-btn" onclick="saveAsNew()" style="display:none" title="Create a new saved entry (keeps the old link working)">Save as new</button>
+      </div>
+      <div id="game-meta-bar" style="display:none">
+        <div id="meta-concept"></div>
+        <div id="meta-theory"></div>
       </div>
       <div id="preview-wrap">
         <div id="preview-placeholder">
@@ -659,6 +694,7 @@ let isStrictAdmin = false;   // true only for ADMIN_EMAIL, not AUTH_DISABLED loc
 let _libGames = [];
 let _libTemplates = [];
 let libModeFilter = 'all';
+let structureMode = 'freeform';
 
 function showKeyBanner() {
   document.getElementById('key-label').textContent = 'Your API Key (optional — unlocks Anthropic & full OpenAI models)';
@@ -762,9 +798,15 @@ function setMode(m) {
   document.getElementById('btn-multi').classList.toggle('active', m === 'multi');
   document.getElementById('btn-multi').classList.toggle('multi', m === 'multi');
   document.getElementById('multi-hint').classList.toggle('visible', m === 'multi');
+  // Structure modes only apply to single-screen games
+  document.getElementById('structure-row').style.display = m === 'multi' ? 'none' : '';
   document.getElementById('user-input').placeholder = m === 'multi'
     ? 'e.g. Public goods game: each student contributes 0-10 tokens. Show a live bar chart. 5 rounds.'
     : 'e.g. A single-screen auction where the instructor controls price and students raise hands to bid.';
+}
+
+function setStructureMode(m) {
+  structureMode = m;
 }
 
 // ── Send message ─────────────────────────────────────────────────────────────
@@ -797,7 +839,7 @@ async function sendMessage() {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': getKey() },
-      body: JSON.stringify({ messages, multiplayer: mode === 'multi' })
+      body: JSON.stringify({ messages, multiplayer: mode === 'multi', structureMode })
     });
 
     if (!res.ok) {
@@ -840,11 +882,13 @@ async function sendMessage() {
 
     if (html) {
       currentHtml = html;
-      currentRoomCode = null;
       const isMulti = mode === 'multi';
+      const wasUpdating = !!currentRoomCode;
       thinkingEl.innerHTML = isMulti
         ? '⚡ Multiplayer game generated — preview in the panel. Click <strong>Save &amp; share</strong> to get a URL for students.'
-        : '✓ Game generated — see preview. You can keep refining in conversation.';
+        : wasUpdating
+          ? '✓ Refined — click <strong>Update ↑</strong> to save the new version.'
+          : '✓ Game generated — see preview. You can keep refining in conversation.';
       showPreview(html, isMulti);
     } else {
       // Non-HTML response — show as text; add render button if HTML is detectable
@@ -857,7 +901,6 @@ async function sendMessage() {
           const h = extractHtml(fullText);
           if (!h) return;
           currentHtml = h;
-          currentRoomCode = null;
           messages[messages.length - 1].content = h;
           showPreview(h, mode === 'multi');
           btn.remove();
@@ -902,21 +945,91 @@ function showPreview(html, isMulti) {
   previewTitle.textContent = titleMatch ? titleMatch[1].trim()
     : (isMulti ? 'Multiplayer preview' : 'Preview');
 
+  // Parse GAME_META comment and populate the meta bar
+  const metaBar = document.getElementById('game-meta-bar');
+  const metaMatch = html.match(/<!--\s*GAME_META\s+([\s\S]*?)\s*-->/);
+  if (metaMatch) {
+    try {
+      const meta = JSON.parse(metaMatch[1]);
+      document.getElementById('meta-concept').textContent = meta.concept || '';
+      document.getElementById('meta-theory').textContent = meta.theory ? '📐 ' + meta.theory : '';
+      metaBar.style.display = (meta.concept || meta.theory) ? '' : 'none';
+    } catch(e) { metaBar.style.display = 'none'; }
+  } else {
+    metaBar.style.display = 'none';
+  }
+
   saveSession();
 
-  roomInfo.classList.toggle('visible', false);
-  document.getElementById('room-code-val').textContent = '—';
-
   shareBtn.style.display = '';
-  soloActions.style.display = isMulti ? 'none' : '';
+  updateSaveBtn();
+  // If no saved room, sync solo-actions visibility with the mode
+  if (!currentRoomCode) soloActions.style.display = isMulti ? 'none' : '';
+}
+
+// ── Save-button state sync ────────────────────────────────────────────────────
+function updateSaveBtn() {
+  const btn    = document.getElementById('share-btn');
+  const newBtn = document.getElementById('save-new-btn');
+  const roomInfo    = document.getElementById('room-info');
+  const soloActions = document.getElementById('solo-actions');
+  if (!btn) return;
+  btn.disabled = false;
+  if (currentRoomCode) {
+    btn.textContent = 'Update ↑';
+    if (newBtn) newBtn.style.display = '';
+    document.getElementById('room-code-val').textContent = currentRoomCode;
+    roomInfo.classList.add('visible');
+    soloActions.style.display = 'none';
+  } else {
+    btn.textContent = 'Save & share';
+    if (newBtn) newBtn.style.display = 'none';
+    roomInfo.classList.remove('visible');
+    document.getElementById('room-code-val').textContent = '—';
+  }
 }
 
 function shareGame() {
   if (!currentHtml) return;
-  // Pre-fill title from the game's <title> tag
+
+  // If we already have a room code: update the saved game in-place
+  if (currentRoomCode) {
+    const btn = document.getElementById('share-btn');
+    btn.disabled = true;
+    btn.textContent = 'Updating…';
+    const titleMatch = currentHtml.match(/<title>([^<]*)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].trim() : undefined;
+    fetch(`/api/game/${currentRoomCode}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html: currentHtml, ...(title && { title }) })
+    })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) throw new Error(d.error);
+        btn.textContent = 'Updated ✓';
+        appendMsg('system', `Saved game updated. Room: ${currentRoomCode}`);
+        setTimeout(() => updateSaveBtn(), 2500);
+      })
+      .catch(e => {
+        appendMsg('system', 'Update failed: ' + e.message);
+        updateSaveBtn();
+      });
+    return;
+  }
+
+  // No room code yet — open the save modal
+  _openSaveModal();
+}
+
+function saveAsNew() {
+  if (!currentHtml) return;
+  _openSaveModal();
+}
+
+function _openSaveModal() {
   const titleMatch = currentHtml.match(/<title>([^<]*)<\/title>/i);
-  const guessedTitle = titleMatch ? titleMatch[1].trim() : 'Untitled Game';
-  document.getElementById('save-title-input').value = guessedTitle;
+  document.getElementById('save-title-input').value = titleMatch ? titleMatch[1].trim() : 'Untitled Game';
   document.getElementById('save-overlay').classList.add('on');
   setTimeout(() => {
     const inp = document.getElementById('save-title-input');
@@ -935,8 +1048,9 @@ function handleSaveOverlayClick(e) {
 async function confirmSave() {
   const title = document.getElementById('save-title-input').value.trim() || 'Untitled Game';
   closeSaveModal();
-  document.getElementById('share-btn').disabled = true;
-  document.getElementById('share-btn').textContent = 'Saving…';
+  const btn = document.getElementById('share-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
 
   try {
     const res = await fetch('/api/game', {
@@ -948,14 +1062,10 @@ async function confirmSave() {
     if (!res.ok) throw new Error(data.error);
 
     currentRoomCode = data.room_code;
-    document.getElementById('room-code-val').textContent = data.room_code;
-    document.getElementById('room-info').classList.add('visible');
-    document.getElementById('solo-actions').style.display = 'none';
-    document.getElementById('share-btn').textContent = 'Saved ✓';
-    appendMsg('system', `Game saved as "${title}". Student URL: ${data.url}`);
+    updateSaveBtn();  // switches button to "Update ↑", shows room-info
+    appendMsg('system', `Game saved as "${title}". Room: ${data.room_code}  Student URL: ${data.url}`);
   } catch (e) {
-    document.getElementById('share-btn').disabled = false;
-    document.getElementById('share-btn').textContent = 'Save & share';
+    updateSaveBtn();
     appendMsg('system', 'Save failed: ' + e.message);
   }
 }
@@ -1148,7 +1258,7 @@ async function loadSavedGame(code, isMulti) {
     const r = await fetch(`/api/game/${code}`);
     if (!r.ok) throw new Error('Failed to load game');
     const game = await r.json();
-    _applyLoadedGame(game.html, game.title, isMulti);
+    _applyLoadedGame(game.html, game.title, isMulti, game.room_code);
   } catch (e) {
     alert('Could not load game: ' + e.message);
   }
@@ -1165,15 +1275,17 @@ async function loadTemplate(id, isMulti) {
   }
 }
 
-function _applyLoadedGame(html, title, isMulti) {
+function _applyLoadedGame(html, title, isMulti, roomCode = null) {
   currentHtml = html;
-  currentRoomCode = null;
+  currentRoomCode = roomCode;   // null for templates; code for saved games (enables Update ↑)
   if (isMulti) setMode('multi'); else setMode('solo');
   showPreview(html, isMulti);
   // Seed chat with the loaded game so follow-up messages refine it
   messages = [{ role: 'assistant', content: html }];
   document.getElementById('messages').innerHTML = '';
-  appendMsg('system', `Loaded: "${escapeHtml(title)}" — describe changes to refine it.`);
+  appendMsg('system', roomCode
+    ? `Loaded: "${escapeHtml(title)}" — refine it in conversation, then click <strong>Update ↑</strong> to save.`
+    : `Loaded: "${escapeHtml(title)}" — describe changes to refine it.`);
   closeLibrary();
 }
 

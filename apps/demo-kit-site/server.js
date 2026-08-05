@@ -474,6 +474,61 @@ Technical rules:
 - Return ONLY the HTML content, starting with <!DOCTYPE html> and ending with </html>
 - No explanation, preamble, or commentary before or after the HTML`;
 
+// ── Structured-output system prompt variants ──────────────────────────────────
+
+// Option 1 — "Tagged": same as SOLO but AI embeds a GAME_META comment in <head>
+const SYSTEM_SOLO_METADATA = SYSTEM_SOLO
+  + `\n\nMETADATA COMMENT — place this as the very first line inside <head>, with real values, JSON on a single line (escape inner quotes as \\\\"):
+<!-- GAME_META {"title":"YOUR_TITLE","concept":"YOUR_CONCEPT_1_TO_2_SENTENCES","theory":"THEORETICAL_PREDICTION_OR_BENCHMARK"} -->`;
+
+// Option 2 — "Framed": AI returns JSON {title, concept, theory, html}; server injects GAME_META and emits assembled HTML
+const SYSTEM_SOLO_JSON = `You are an expert educational game designer for economics classrooms.
+
+Return a SINGLE valid JSON object — NO markdown, NO code fences, NO other text. Exactly these keys:
+
+{
+  "title":   "2-5 word game name",
+  "concept": "1-3 sentences explaining the economic principle for undergraduates",
+  "theory":  "The theoretical prediction, Nash equilibrium, or competitive benchmark",
+  "html":    "COMPLETE self-contained HTML game (<!DOCTYPE html>...</html>), fully JSON-escaped"
+}
+
+Requirements for the "html" field:
+- All CSS and JS inline, zero external dependencies
+- Mobile-friendly: 44px+ tap targets, 16px+ body text
+- Always-visible Reset button
+- Show theoretical prediction alongside actual results
+- Clean visual design with good color contrast
+
+JSON escaping inside "html": newlines → \\n   double-quotes → \\"   backslashes → \\\\.
+Return ONLY the JSON object. Invalid JSON will cause a visible error.`;
+
+// Option 3 — "Template fill": AI fills slots; server assembles a fixed layout skeleton
+const SYSTEM_SOLO_SLOTS = `You are an expert educational game designer for economics classrooms.
+
+Return a SINGLE valid JSON object — NO markdown, NO code fences, NO other text. Exactly these keys:
+
+{
+  "title":         "2-5 word game name",
+  "concept":       "1-3 sentences explaining the economic principle for undergraduates",
+  "theory":        "Theoretical prediction or benchmark (shown in a collapsible footer note)",
+  "instructions":  "1-3 sentence student-facing instructions",
+  "css":           "Additional CSS rules only — no <style> tags. May be empty string.",
+  "controls_html": "HTML for student input: buttons, sliders, forms. No <script> tags.",
+  "display_html":  "HTML for results/charts/output. No <script> tags.",
+  "js":            "JavaScript only — no <script> tags. MUST define: function resetGame() {}"
+}
+
+Slot rules:
+- Use unique element IDs in controls_html and display_html; reference them in js
+- js runs at end of <body>; DOM is ready. Use document.getElementById() for access.
+- css may also target #controls-section, #display-section, #app, header
+- No external dependencies — use Canvas API, SVG, vanilla JS for charts
+- resetGame() must clear all state and reset display to initial condition
+- Show theoretical prediction in display_html alongside actual results
+
+Return ONLY the JSON object. Invalid JSON causes a visible error.`;
+
 const GAMESYNC_API_DOC = `MULTIPLAYER STATE SYNC API (GameSync library — pre-injected, do not redefine):
 
 \`\`\`javascript
@@ -579,9 +634,83 @@ async function* normalizeStream(provider, response) {
   }
 }
 
+// ── Slots-mode HTML assembly ──────────────────────────────────────────────────
+function escXml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function assembleFromSlots(s) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escXml(s.title)}</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:16px}
+body{font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;background:#f8fafc;color:#0f172a;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:1rem 1rem 2rem}
+#app{width:100%;max-width:740px;display:flex;flex-direction:column;gap:.9rem}
+header{background:#fff;border:1px solid #e2e8f0;border-radius:.75rem;padding:1rem 1.25rem;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+h1{font-size:1.3rem;font-weight:700;margin-bottom:.35rem;line-height:1.2}
+#concept-box{font-size:.875rem;color:#475569;line-height:1.55}
+#instructions-section{background:#eff6ff;border:1px solid #bfdbfe;border-radius:.6rem;padding:.7rem 1rem}
+#instructions-section h2{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#1d4ed8;margin-bottom:.25rem}
+#instructions-section p{font-size:.875rem;color:#1e40af;line-height:1.5}
+#controls-section,#display-section{background:#fff;border:1px solid #e2e8f0;border-radius:.75rem;padding:1rem 1.25rem;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+footer{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;padding:.25rem 0}
+#reset-btn{padding:.42rem .9rem;background:#6366f1;color:#fff;border:none;border-radius:.5rem;font-size:.85rem;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0}
+#reset-btn:hover{background:#4f46e5}
+details#theory-note{font-size:.8rem;color:#64748b;flex:1;min-width:160px}
+details#theory-note summary{cursor:pointer;color:#6366f1;font-weight:500;user-select:none}
+details#theory-note[open] summary{margin-bottom:.3rem}
+details#theory-note p{line-height:1.5;color:#475569}
+@media(prefers-color-scheme:dark){
+  body{background:#0f172a;color:#e2e8f0}
+  header,#controls-section,#display-section{background:#1e293b;border-color:#334155}
+  #concept-box,details#theory-note p{color:#94a3b8}
+  #instructions-section{background:#1e3a5f;border-color:#2563eb}
+  #instructions-section h2{color:#60a5fa}
+  #instructions-section p{color:#93c5fd}
+  details#theory-note{color:#94a3b8}
+}
+${s.css || ''}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>${escXml(s.title)}</h1>
+    <div id="concept-box">${escXml(s.concept)}</div>
+  </header>
+  <div id="instructions-section">
+    <h2>How to Play</h2>
+    <p>${escXml(s.instructions)}</p>
+  </div>
+  <div id="controls-section">
+    ${s.controls_html || ''}
+  </div>
+  <div id="display-section">
+    ${s.display_html || ''}
+  </div>
+  <footer>
+    <button id="reset-btn" onclick="resetGame()">&#x21BA; Reset</button>
+    <details id="theory-note">
+      <summary>Theory &amp; prediction</summary>
+      <p>${escXml(s.theory)}</p>
+    </details>
+  </footer>
+</div>
+<script>
+${s.js || ''}
+</script>
+</body>
+</html>`;
+}
+
 // ── POST /api/chat — multi-provider streaming proxy ───────────────────────────
 app.post('/api/chat', requireAuth, async (req, res) => {
-  const { messages, multiplayer } = req.body;
+  const { messages, multiplayer, structureMode = 'freeform' } = req.body;
   if (!Array.isArray(messages) || !messages.length)
     return res.status(400).json({ error: 'messages array required' });
 
@@ -594,7 +723,17 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 
   const provider = detectProvider(apiKey);
   const model    = (!usingOwnKey && provider === 'openai') ? 'gpt-4o-mini' : DEFAULT_MODELS[provider];
-  const system   = multiplayer ? SYSTEM_MULTI : SYSTEM_SOLO;
+
+  // Select system prompt: multiplayer always uses SYSTEM_MULTI; solo uses variant by structureMode
+  const system = multiplayer ? SYSTEM_MULTI : ({
+    freeform: SYSTEM_SOLO,
+    metadata: SYSTEM_SOLO_METADATA,
+    json:     SYSTEM_SOLO_JSON,
+    slots:    SYSTEM_SOLO_SLOTS,
+  }[structureMode] || SYSTEM_SOLO);
+
+  // json/slots modes buffer the full response, parse JSON, then emit assembled HTML
+  const needsBuffer = !multiplayer && (structureMode === 'json' || structureMode === 'slots');
 
   let remaining;
   try {
@@ -639,9 +778,41 @@ app.post('/api/chat', requireAuth, async (req, res) => {
       return res.end();
     }
 
-    for await (const text of normalizeStream(provider, upstream)) {
-      if (res.writableEnded) break;
-      emit(text);
+    if (needsBuffer) {
+      // Buffer full response, parse JSON, assemble HTML, emit as one chunk
+      let raw = '';
+      for await (const text of normalizeStream(provider, upstream)) raw += text;
+
+      // Strip markdown code fences if the model adds them
+      const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+      let parsed;
+      try {
+        parsed = JSON.parse(cleaned);
+      } catch (e) {
+        res.write(`data: ${JSON.stringify({ type: 'error', error:
+          'AI returned invalid JSON — try again or switch to "Open canvas" mode. ' + e.message })}\n\n`);
+        return res.end();
+      }
+
+      let html;
+      if (structureMode === 'slots') {
+        html = assembleFromSlots(parsed);
+      } else {
+        // json mode: use the html field directly
+        html = parsed.html || '';
+      }
+
+      // Inject GAME_META comment into <head> for downstream parsing
+      const meta = { title: parsed.title || '', concept: parsed.concept || '', theory: parsed.theory || '' };
+      const metaComment = `<!-- GAME_META ${JSON.stringify(meta)} -->`;
+      html = html.replace(/(<head[^>]*>)/i, `$1\n${metaComment}`);
+
+      emit(html);
+    } else {
+      for await (const text of normalizeStream(provider, upstream)) {
+        if (res.writableEnded) break;
+        emit(text);
+      }
     }
   } catch (e) {
     if (!res.writableEnded)
@@ -681,6 +852,24 @@ app.get('/api/game/:code', requireAuth, (req, res) => {
   const game = db.prepare('SELECT * FROM games WHERE room_code=?').get(req.params.code);
   if (!game) return res.status(404).json({ error: 'Game not found' });
   res.json(game);
+});
+
+// ── PATCH /api/game/:code — update HTML (and optionally title) of a saved game ─
+app.patch('/api/game/:code', requireAuth, (req, res) => {
+  const { html, title } = req.body;
+  if (!html) return res.status(400).json({ error: 'html required' });
+
+  const game = db.prepare('SELECT * FROM games WHERE room_code=?').get(req.params.code);
+  if (!game) return res.status(404).json({ error: 'Game not found' });
+
+  const email = req.session.user.email;
+  if (!AUTH_DISABLED && email !== game.created_by && email !== ADMIN_EMAIL)
+    return res.status(403).json({ error: 'Only the game creator can update this game' });
+
+  db.prepare('UPDATE games SET html=?, title=? WHERE room_code=?')
+    .run(html, title || game.title, req.params.code);
+
+  res.json({ ok: true, room_code: req.params.code });
 });
 
 // ── DELETE /api/game/:code — admin-only game removal ─────────────────────────
