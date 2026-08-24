@@ -920,6 +920,21 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
 .jm-bid-label { flex: 1; font-size: .9rem; }
 .jm-bid-input { width: 100px; flex-shrink: 0; }
 .jm-history { font-size: .84rem; color: #555; }
+.live-toolbar { position: sticky; top: 0; z-index: 10; background: #fff;
+                border: 1px solid #e8e8e8; border-radius: 10px; padding: .75rem;
+                margin-bottom: .8rem; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+.live-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .65rem; }
+.live-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px;
+             padding: .75rem .85rem; }
+.live-card-name { font-size: 1.05rem; font-weight: 700; line-height: 1.2; }
+.live-card-section { color: #888; font-size: .78rem; margin: .12rem 0 .55rem; }
+.live-card-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .35rem; }
+.live-card-actions .btn { min-height: 42px; white-space: normal; font-weight: 600; }
+@media (max-width: 600px) {
+  .arc-body { padding-left: .6rem; padding-right: .6rem; }
+  .live-grid { grid-template-columns: 1fr; }
+  .live-card-name { font-size: 1.15rem; }
+}
 
 /* ── Admin ──────────────────────────────────────────────────────────────── */
 
@@ -3641,28 +3656,71 @@ server <- function(input, output, session) {
           et_choices <- setNames(vol_cats$id,
                                  paste0(vol_cats$name, " (+", as.integer(vol_cats$tokens), ")"))
           tagList(
-            tags$p(style = "color:#555;font-size:.85em;margin-bottom:.4rem;",
-              "Select an event type and student, then click an outcome button. ",
-              "Hover each button to see what it awards."),
-            fluidRow(
-              column(4,
-                selectInput("part_event_type", "Event type:", choices = et_choices)),
-              column(5,
-                selectInput("part_student_sel", "Student:",
-                            choices = if (length(stu_choices)) stu_choices
-                                      else c("(no students)" = ""))),
-              column(3,
-                tags$label("Outcome:"),
-                div(style = "display:flex;gap:.35rem;",
-                  actionButton("log_succeed_btn", "Succeed",
-                               class = "btn btn-success btn-sm",
-                               title = "Full credit: student earns the posted token amount"),
-                  actionButton("log_try_btn", "Try",
-                               class = "btn btn-warning btn-sm",
-                               title = "Partial credit: half tokens awarded"),
-                  actionButton("log_miss_btn", "Miss",
-                               class = "btn btn-danger btn-sm",
-                               title = "No credit: no tokens awarded")
+            div(class = "live-toolbar",
+              selectInput("part_event_type", "Job:", choices = et_choices, width = "100%")
+            ),
+            div(class = "live-grid",
+              lapply(seq_len(nrow(students_sec)), function(i) {
+                r <- students_sec[i, ]
+                uid <- r$user_id %||% ""
+                div(class = "live-card",
+                  div(class = "live-card-name", r$display_name %||% uid),
+                  div(class = "live-card-section", r$section %||% ""),
+                  div(class = "live-card-actions",
+                    tags$button(
+                      type = "button",
+                      class = "btn btn-success btn-sm",
+                      title = "Full credit",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('part_card_click',{user_id:%s,outcome:'succeed',nonce:Math.random()},{priority:'event'});",
+                        jsonlite::toJSON(uid, auto_unbox = TRUE)
+                      ),
+                      "Succeed"
+                    ),
+                    tags$button(
+                      type = "button",
+                      class = "btn btn-warning btn-sm",
+                      title = "Partial credit",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('part_card_click',{user_id:%s,outcome:'try',nonce:Math.random()},{priority:'event'});",
+                        jsonlite::toJSON(uid, auto_unbox = TRUE)
+                      ),
+                      "Try"
+                    ),
+                    tags$button(
+                      type = "button",
+                      class = "btn btn-danger btn-sm",
+                      title = "No credit",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('part_card_click',{user_id:%s,outcome:'miss',nonce:Math.random()},{priority:'event'});",
+                        jsonlite::toJSON(uid, auto_unbox = TRUE)
+                      ),
+                      "Miss"
+                    )
+                  )
+                )
+              })
+            ),
+            tags$details(style = "margin-top:.75rem;",
+              tags$summary("Manual picker"),
+              fluidRow(
+                column(6,
+                  selectInput("part_student_sel", "Student:",
+                              choices = if (length(stu_choices)) stu_choices
+                                        else c("(no students)" = ""))),
+                column(6,
+                  tags$label("Outcome:"),
+                  div(style = "display:flex;gap:.35rem;flex-wrap:wrap;",
+                    actionButton("log_succeed_btn", "Succeed",
+                                 class = "btn btn-success btn-sm",
+                                 title = "Full credit: student earns the posted token amount"),
+                    actionButton("log_try_btn", "Try",
+                                 class = "btn btn-warning btn-sm",
+                                 title = "Partial credit: half tokens awarded"),
+                    actionButton("log_miss_btn", "Miss",
+                                 class = "btn btn-danger btn-sm",
+                                 title = "No credit: no tokens awarded")
+                  )
                 )
               )
             )
@@ -5557,10 +5615,10 @@ server <- function(input, output, session) {
   }, ignoreNULL = TRUE)
 
   # ── Voluntary Participation logging ───────────────────────────────────────────
-  .log_participation <- function(outcome_type) {
+  .log_participation <- function(outcome_type, uid_override = NULL, post_id_override = NULL) {
     req(rv$is_admin, !rv$impersonating)
-    uid     <- trimws(input$part_student_sel %||% "")
-    post_id <- suppressWarnings(as.integer(input$part_event_type %||% 0))
+    uid     <- trimws(uid_override %||% input$part_student_sel %||% "")
+    post_id <- suppressWarnings(as.integer(post_id_override %||% input$part_event_type %||% 0))
     if (!nzchar(uid) || is.na(post_id) || post_id <= 0) {
       showNotification("Select a student and event type.", type = "error"); return()
     }
@@ -5577,7 +5635,8 @@ server <- function(input, output, session) {
       "SELECT jp.id, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
        FROM job_posts jp
        LEFT JOIN job_categories jc ON jc.id = jp.category_id
-       WHERE jp.id=? AND jp.round_id=? AND COALESCE(jp.voluntary,0)=1
+       WHERE jp.id=? AND jp.round_id=?
+         AND (COALESCE(jc.voluntary,0)=1 OR COALESCE(jp.voluntary,0)=1)
        LIMIT 1;", list(post_id, rid)),
       error = function(e) data.frame())
     if (!nrow(post_row)) {
@@ -5628,6 +5687,11 @@ server <- function(input, output, session) {
   observeEvent(input$log_succeed_btn, .log_participation("succeed"), ignoreNULL = TRUE)
   observeEvent(input$log_try_btn,     .log_participation("try"),     ignoreNULL = TRUE)
   observeEvent(input$log_miss_btn,    .log_participation("miss"),    ignoreNULL = TRUE)
+  observeEvent(input$part_card_click, {
+    click <- input$part_card_click
+    req(click$user_id, click$outcome, input$part_event_type)
+    .log_participation(click$outcome, click$user_id, input$part_event_type)
+  }, ignoreNULL = TRUE)
 
   # ── Release tokens (delayed reward) ──────────────────────────────────────────
   observeEvent(input$release_tokens_btn, {
