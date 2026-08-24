@@ -22,3 +22,22 @@
 
 ## Longer-Term Infrastructure
 - Trigger to auto-build SQL DB (seed users table) when a new class roster CSV is uploaded
+
+## Class-Job Market Enhancements
+
+### Record job characteristics
+
+Add native fields to the class-job-market app for:
+
+- `selection_time`: before class, start of class, during class, after class
+- `contribution_type`: remember, understand, apply, analyze, evaluate, synthesize
+
+Use case: ECON 342 class jobs are organized by when the student is selected and
+what kind of contribution the job asks for. These fields should be attached to
+job categories or job posts, visible in job setup, included in assignment/job
+exports, and usable later for balancing students across types of participation.
+
+Volunteer jobs should remain separate from selection-time jobs. They are useful
+unsolicited contributions, often posted to a forum, such as typo reports,
+recommended slide/material changes, alternative explanations, source checks, or
+relevant policy examples.
