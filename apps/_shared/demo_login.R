@@ -15,20 +15,27 @@
 demo_mode <- identical(Sys.getenv("DEMO_MODE"), "1")
 
 demo_login_ui <- tagList(
-  tags$div(
+  tags$details(
     id    = "demo-login-panel",
+    class = "login-howto",
     style = paste0(
       "display:block;",
-      "margin-top:14px;padding:10px 12px;",
-      "background:#fff8e1;border:1px solid #ffe082;border-radius:4px;"
+      "margin-top:10px;"
     ),
-    tags$p(
-      tags$strong("Sandbox demo"),
-      tags$span(" — separate database, nothing here is real"),
-      style = "margin:0 0 8px;font-size:13px;"
+    tags$summary("Sandbox Demo"),
+    tags$div(
+      style = paste0(
+        "margin-top:8px;padding:10px 12px;",
+        "background:#fff8e1;border:1px solid #ffe082;border-radius:4px;"
+      ),
+      tags$p(
+        tags$strong("Separate sandbox database."),
+        tags$span(" Nothing here is real."),
+        style = "margin:0 0 8px;font-size:13px;"
+      ),
+      tags$button("Demo (Admin)",   onclick = "window.location.href='?demo_db=1&demo_as=teacher'", class = "btn btn-sm btn-warning", style = "margin:2px;"),
+      tags$button("Demo (Student)", onclick = "window.location.href='?demo_db=1&demo_as=student'", class = "btn btn-sm btn-default", style = "margin:2px;")
     ),
-    tags$button("Demo (Admin)",   onclick = "window.location.href='?demo_db=1&demo_as=teacher'", class = "btn btn-sm btn-warning", style = "margin:2px;"),
-    tags$button("Demo (Student)", onclick = "window.location.href='?demo_db=1&demo_as=student'", class = "btn btn-sm btn-default", style = "margin:2px;")
   ),
   tags$script(HTML('
     (function () {

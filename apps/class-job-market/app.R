@@ -393,7 +393,10 @@ db_exec("CREATE TABLE IF NOT EXISTS job_templates(
   created_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );")
 
-seed_class_job_defaults <- function() {
+seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensure_round = FALSE) {
+  db_exec <- exec_fn
+  db_query <- query_fn
+
   assigned <- data.frame(
     name = c(
       "Previous-class recap", "Reading analyst", "Policy example scout",
@@ -555,6 +558,13 @@ seed_class_job_defaults <- function() {
   }
 
   latest_round <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"), error = function(e) data.frame())
+  if (isTRUE(ensure_round) && !nrow(latest_round)) {
+    db_exec(
+      "INSERT INTO weekly_rounds(label, assignment_mode, tiebreak_method, tokens_revealed, tickets_per_student)
+       VALUES('Demo Week 1', 'random', 'weighted_lottery', 1, 10);"
+    )
+    latest_round <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"), error = function(e) data.frame())
+  }
   if (nrow(latest_round) && length(seeded_posts)) {
     rid <- latest_round$id[1]
     for (p in seeded_posts) {
@@ -1200,6 +1210,7 @@ server <- function(input, output, session) {
   .sandbox <- dm$is_demo
   db_exec  <- dm$db_exec
   db_query <- dm$db_query
+  if (.sandbox) seed_class_job_defaults(db_exec, db_query, ensure_round = TRUE)
 
   rv <- reactiveValues(
     authed         = FALSE,
@@ -1256,12 +1267,6 @@ server <- function(input, output, session) {
               passwordInput("login_pw", NULL, placeholder = "Password"),
               actionButton("login_btn", "Sign In →", class = "btn btn-primary btn-block")
             ),
-          demo_login_ui,
-          tags$button(
-            type = "button", class = "btn-demo",
-            onclick = "Shiny.setInputValue('demo_btn', +new Date(), {priority:'event'});",
-            "\U0001f50d Explore without an account — Demo Mode"
-          ),
           tags$hr(style = "margin: .9rem 0 .5rem;"),
           tags$p(style = "font-size:.75rem;color:#aaa;text-align:center;margin-bottom:.4rem;",
                  "What's here"),
@@ -1288,7 +1293,8 @@ server <- function(input, output, session) {
               tags$li(tags$strong("Games & Demos"), " shows the active game, the full game catalog, and interactive economic demos — always available."),
               tags$li(tags$strong("Account"), " tracks your Flex Pass balance, Participation Tokens, and transaction history.")
             )
-          )
+          ),
+          demo_login_ui
         )
       )
     } else {
