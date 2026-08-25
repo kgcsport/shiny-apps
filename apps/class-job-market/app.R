@@ -365,10 +365,12 @@ db_exec("CREATE TABLE IF NOT EXISTS job_posts(
   wage_override REAL,
   active        INTEGER DEFAULT 1,
   display_order INTEGER DEFAULT 99,
+  selection_time TEXT,
   created_at    TEXT DEFAULT CURRENT_TIMESTAMP
 );")
 try(db_exec("ALTER TABLE job_posts ADD COLUMN voluntary INTEGER DEFAULT 0;"), silent = TRUE)
 try(db_exec("ALTER TABLE job_posts ADD COLUMN in_draw INTEGER DEFAULT 1;"), silent = TRUE)
+try(db_exec("ALTER TABLE job_posts ADD COLUMN selection_time TEXT;"), silent = TRUE)
 try(db_exec("ALTER TABLE job_categories ADD COLUMN description TEXT;"), silent = TRUE)
 try(db_exec("ALTER TABLE job_categories ADD COLUMN selection_time TEXT;"), silent = TRUE)
 try(db_exec("ALTER TABLE job_categories ADD COLUMN contribution_type TEXT;"), silent = TRUE)
@@ -420,80 +422,70 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
 
   assigned <- data.frame(
     name = c(
-      "Previous-class recap", "Reading analyst", "Policy example scout",
-      "Problem/graph explainer", "Forum steward", "Class note taker",
-      "Skeptic/discussant", "Discussion leader"
+      "Opening recap", "Reading analyst", "Policy/example scout",
+      "Concept explainer", "Class record keeper", "Discussion lead"
     ),
     selection_time = c(
       "Start of class", "Start of class", "After class for the next class",
-      "During class", "Start of class or during class", "After class",
-      "End of class or after class", "During class"
+      "During class", "End of class or after class", "During class"
     ),
     contribution_type = c(
       "Remember / understand", "Understand / analyze", "Apply / analyze",
-      "Apply / understand", "Synthesize", "Remember / synthesize",
-      "Evaluate", "Analyze / synthesize"
+      "Apply / understand", "Remember / synthesize", "Analyze / evaluate"
     ),
     purpose = c(
       "Preserve continuity across meetings",
       "Make readings usable for discussion",
-      "Tie concepts to current policy",
+      "Tie concepts to current policy or examples",
       "Help classmates with technical material",
-      "Turn individual questions into public goods",
-      "Create usable shared notes",
-      "Improve the class's understanding of the material",
-      "Help classmates describe and sustain a discussion, especially during student presentations"
+      "Create usable shared notes and collect unresolved questions",
+      "Help classmates sustain discussion and sharpen points of disagreement"
     ),
     expected_output = c(
       "Short off-the-dome recap at the start of class",
       "Short off-the-dome opening comment on the reading",
       "One policy example with a source link and 3-5 sentence explanation",
       "Live walkthrough of one problem, graph, or equation",
-      "Create and monitor a class-session forum post",
-      "Notes from the class session posted after class",
-      "Posted thoughts, critiques, or thoughtful questions about the material",
-      "Briefly frames the discussion and helps name emerging themes or points of disagreement"
+      "Shared notes or forum post with key definitions, examples, and open questions",
+      "Briefly frames discussion, asks follow-ups, or plays skeptic/discussant"
     ),
     completion_criterion = c(
       "Names the main concepts and at least one remaining question",
       "Identifies the question, evidence, main finding, limitation, or connection to class",
       "Clearly identifies the course concept the example illustrates",
       "Explains setup, intuition, and one common mistake",
-      "Posts the thread, watches for questions, and flags useful unresolved issues",
-      "Posted promptly, organized by topic, with definitions and examples",
-      "Questions use course concepts rather than generic opinions",
+      "Posted promptly and organized enough to help classmates review",
       "Keeps discussion tied to course concepts and classmates' contributions"
     ),
     stringsAsFactors = FALSE
   )
   volunteers <- data.frame(
     name = c(
-      "Typo, ambiguity, or broken-link report",
-      "Recommended slide or material change",
-      "Alternative presentation of a concept, graph, or example",
-      "Data/source verifier for a policy example",
-      "Graph redrawer or figure caption improver",
-      "Exam-review question submitter",
-      "Useful forum answer, clarification, or synthesis",
-      "Relevant policy example outside an assigned scout job",
-      "Muddiest-point post"
+      "Course-material fix or suggestion",
+      "Concept explanation or graph improvement",
+      "Forum answer or muddiest-point post",
+      "Policy/data example or source check"
     ),
     selection_time = "Volunteer",
     contribution_type = "Volunteer",
     purpose = "Volunteer contribution that creates something useful for the class",
     expected_output = c(
-      "Report a typo, ambiguity, or broken link in assignments or slides",
-      "Suggest a concrete improvement to slides or course materials",
-      "Post an alternative explanation, graph, concept presentation, or example",
-      "Verify the data source or factual basis for a policy example",
-      "Improve a graph redraw or figure caption",
-      "Submit a useful exam-review question",
-      "Answer, clarify, or synthesize a useful forum thread",
-      "Post a relevant policy example outside an assigned scout job",
-      "Post a short 'what I still do not understand' note that improves class discussion"
+      "Report a typo, ambiguity, broken link, or concrete slide/material improvement",
+      "Post a clearer explanation, graph redraw, figure caption, or review question",
+      "Answer, clarify, synthesize, or name a useful point of confusion",
+      "Post a relevant example, source link, or fact/data check"
     ),
     completion_criterion = "Creates something useful for the class.",
     stringsAsFactors = FALSE
+  )
+  retired_default_jobs <- c(
+    "Previous-class recap", "Policy example scout", "Problem/graph explainer",
+    "Forum steward", "Class note taker", "Skeptic/discussant", "Discussion leader",
+    "Typo, ambiguity, or broken-link report", "Recommended slide or material change",
+    "Alternative presentation of a concept, graph, or example",
+    "Data/source verifier for a policy example", "Graph redrawer or figure caption improver",
+    "Exam-review question submitter", "Useful forum answer, clarification, or synthesis",
+    "Relevant policy example outside an assigned scout job", "Muddiest-point post"
   )
 
   upsert_category <- function(row, voluntary = 0L, in_draw = 1L) {
@@ -560,22 +552,35 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
   }
 
   seeded_posts <- list()
-  remember_post <- function(name, category_id, wage, slots, in_draw, voluntary) {
+  post_timing_code <- function(x) {
+    lx <- tolower(trimws(x %||% ""))
+    if (!nzchar(lx)) return("any")
+    if (grepl("volunteer", lx)) return("volunteer")
+    if (grepl("start", lx)) return("start")
+    if (grepl("end|after|post", lx)) return("end")
+    "any"
+  }
+  remember_post <- function(name, category_id, wage, slots, in_draw, voluntary, selection_time) {
     seeded_posts[[length(seeded_posts) + 1L]] <<- list(
       name = name, category_id = category_id, wage = wage, slots = slots,
-      in_draw = in_draw, voluntary = voluntary
+      in_draw = in_draw, voluntary = voluntary,
+      selection_time = post_timing_code(selection_time)
     )
   }
 
   for (i in seq_len(nrow(assigned))) {
     cid <- upsert_category(assigned[i, ], voluntary = 0L, in_draw = 1L)
     upsert_template(assigned$name[i], cid, wage = 2, slots = 1L)
-    remember_post(assigned$name[i], cid, 2, 1L, 1L, 0L)
+    remember_post(assigned$name[i], cid, 2, 1L, 1L, 0L, assigned$selection_time[i])
   }
   for (i in seq_len(nrow(volunteers))) {
     cid <- upsert_category(volunteers[i, ], voluntary = 1L, in_draw = 0L)
     upsert_template(volunteers$name[i], cid, wage = 2, slots = 99L)
-    remember_post(volunteers$name[i], cid, 2, 99L, 0L, 1L)
+    remember_post(volunteers$name[i], cid, 2, 99L, 0L, 1L, volunteers$selection_time[i])
+  }
+  for (old_name in retired_default_jobs) {
+    db_exec("UPDATE job_templates SET active=0 WHERE lower(name)=lower(?);", list(old_name))
+    db_exec("UPDATE job_posts SET active=0 WHERE lower(job_name)=lower(?);", list(old_name))
   }
 
   latest_round <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"), error = function(e) data.frame())
@@ -595,9 +600,9 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
       )
       if (!nrow(existing)) {
         db_exec(
-          "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw, voluntary)
-           VALUES(?,?,?,?,?,?,?);",
-          list(rid, p$name, p$category_id, p$slots, p$wage, p$in_draw, p$voluntary)
+          "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw, voluntary, selection_time)
+           VALUES(?,?,?,?,?,?,?,?);",
+          list(rid, p$name, p$category_id, p$slots, p$wage, p$in_draw, p$voluntary, p$selection_time)
         )
       }
     }
@@ -1605,7 +1610,7 @@ server <- function(input, output, session) {
                GROUP BY job_assignment_id
              ) latest ON latest.id=lse.id
            ) pse ON pse.job_assignment_id=ja.id
-            WHERE ja.round_id=?
+            WHERE ja.round_id=? AND COALESCE(ja.status,'assigned')='assigned'
             ORDER BY u.section, u.display_name;", list(rid)),
           error = function(e) data.frame())
       } else data.frame()
@@ -1662,8 +1667,8 @@ server <- function(input, output, session) {
          FROM job_assignments ja
          JOIN job_posts jp ON jp.id=ja.job_post_id
          JOIN weekly_rounds wr ON wr.id=ja.round_id
-         WHERE ja.user_id=? AND ja.round_id=?
-         ORDER BY ja.created_at DESC LIMIT 1;",
+          WHERE ja.user_id=? AND ja.round_id=? AND COALESCE(ja.status,'assigned')='assigned'
+          ORDER BY ja.created_at DESC LIMIT 1;",
         list(uid, rid)), error = function(e) data.frame())
 
       categories <- tryCatch(db_query(
@@ -3295,19 +3300,20 @@ server <- function(input, output, session) {
     slots   <- max(1L, as.integer(input$new_post_slots %||% 1L))
     wage    <- suppressWarnings(as.numeric(input$new_post_wage))
     in_draw <- as.integer(isTRUE(input$new_post_in_draw))
+    timing  <- input$new_post_timing %||% "any"
     rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
                         error = function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("Create a round first.", type = "error"); return() }
     if (!nzchar(nm)) { showNotification("Post name required.", type = "error"); return() }
     rid <- rid_row$id[1]
     db_exec(
-      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw)
-       VALUES(?,?,?,?,?,?);",
+      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw, selection_time)
+       VALUES(?,?,?,?,?,?,?);",
       list(rid, nm,
            if (!is.na(cat_id) && cat_id > 0) cat_id else NA_integer_,
            slots,
            if (!is.null(wage) && !is.na(wage) && wage > 0) wage else NA_real_,
-           in_draw))
+           in_draw, timing))
     showNotification("Job post added.", type = "message")
   })
 
@@ -3323,8 +3329,8 @@ server <- function(input, output, session) {
     if (!nzchar(nm)) { showNotification("Name required.", type = "error"); return() }
     rid <- rid_row$id[1]
     db_exec(
-      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, voluntary)
-       VALUES(?,?,?,?,?,1);",
+      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, voluntary, selection_time)
+       VALUES(?,?,?,?,?,1,'volunteer');",
       list(rid, nm,
            if (!is.na(cat_id) && cat_id > 0) cat_id else NA_integer_,
            slots,
@@ -3520,6 +3526,18 @@ server <- function(input, output, session) {
     rv$jobs_ver <- rv$jobs_ver + 1L
   }, ignoreNULL = TRUE)
 
+  observeEvent(input$cycle_post_timing_btn, {
+    req(rv$is_admin)
+    pid <- suppressWarnings(as.integer(input$cycle_post_timing_btn %||% 0))
+    if (is.na(pid) || pid <= 0) return()
+    cur <- db_query("SELECT COALESCE(NULLIF(selection_time,''),'any') v FROM job_posts WHERE id=?;", list(pid))
+    if (!nrow(cur)) return()
+    new_v <- switch(as.character(cur$v[1] %||% "any"),
+                    any = "start", start = "end", end = "any", volunteer = "any", "any")
+    db_exec("UPDATE job_posts SET selection_time=? WHERE id=?;", list(new_v, pid))
+    rv$jobs_ver <- rv$jobs_ver + 1L
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$delete_job_post_btn, {
     req(rv$is_admin)
     pid <- suppressWarnings(as.integer(input$delete_job_post_btn %||% 0))
@@ -3558,6 +3576,76 @@ server <- function(input, output, session) {
     if (is.na(aid) || aid <= 0) return()
     db_exec("DELETE FROM job_assignments WHERE id=?;", list(aid))
     showNotification("Assignment removed.", type = "message")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$redraw_absent_btn, {
+    req(rv$is_admin)
+    aid <- suppressWarnings(as.integer(input$redraw_absent_btn %||% 0))
+    if (is.na(aid) || aid <= 0) return()
+    old <- tryCatch(db_query(
+      "SELECT ja.round_id, ja.user_id, ja.job_post_id, ja.assigned_wage,
+              ja.assignment_mode, u.display_name, COALESCE(u.section,'') AS section
+       FROM job_assignments ja
+       JOIN users u ON u.user_id=ja.user_id
+       WHERE ja.id=?;", list(aid)),
+      error = function(e) data.frame())
+    if (!nrow(old)) { showNotification("Assignment not found.", type = "error"); return() }
+    if (!is.na(old$assigned_wage[1] %||% NA) && as.numeric(old$assigned_wage[1]) < 0) {
+      showNotification("Cannot redraw an already marked absent assignment.", type = "warning")
+      return()
+    }
+    sec <- trimws(old$section[1] %||% "")
+    candidates <- tryCatch(
+      if (nzchar(sec)) {
+        db_query(
+          "SELECT u.user_id, u.display_name
+           FROM users u
+           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
+             AND COALESCE(u.is_demo,0)=0 AND u.section=?
+             AND u.user_id<>?
+             AND NOT EXISTS (
+               SELECT 1 FROM job_assignments ja
+               WHERE ja.round_id=? AND ja.user_id=u.user_id
+             )
+           ORDER BY RANDOM() LIMIT 1;",
+          list(sec, old$user_id[1], old$round_id[1]))
+      } else {
+        db_query(
+          "SELECT u.user_id, u.display_name
+           FROM users u
+           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
+             AND COALESCE(u.is_demo,0)=0
+             AND u.user_id<>?
+             AND NOT EXISTS (
+               SELECT 1 FROM job_assignments ja
+               WHERE ja.round_id=? AND ja.user_id=u.user_id
+             )
+           ORDER BY RANDOM() LIMIT 1;",
+          list(old$user_id[1], old$round_id[1]))
+      },
+      error = function(e) data.frame())
+    if (!nrow(candidates)) {
+      showNotification("No unassigned replacement student found.", type = "warning")
+      return()
+    }
+    db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;", list(aid))
+    db_exec(
+      "UPDATE job_assignments
+       SET status='absent_redrawn', assigned_wage=-ABS(COALESCE(assigned_wage,0)),
+           updated_at=datetime('now')
+       WHERE id=?;",
+      list(aid))
+    db_exec(
+      "INSERT OR IGNORE INTO job_assignments(round_id, user_id, job_post_id, assigned_wage, assignment_mode)
+       VALUES(?,?,?,?,?);",
+      list(old$round_id[1], candidates$user_id[1], old$job_post_id[1],
+           if (is.na(old$assigned_wage[1] %||% NA)) NA_real_ else abs(as.numeric(old$assigned_wage[1])),
+           old$assignment_mode[1] %||% "redraw"))
+    showNotification(
+      sprintf("Redrew %s's job to %s.",
+              old$display_name[1] %||% old$user_id[1],
+              candidates$display_name[1] %||% candidates$user_id[1]),
+      type = "message")
   }, ignoreNULL = TRUE)
 
   observeEvent(input$clear_assignments_btn, {
@@ -3908,7 +3996,12 @@ server <- function(input, output, session) {
       fluidRow(
         column(4,
           selectInput("active_section_sel", "Active section:",
-                      choices = sec_choices, selected = cur_sec, width = "100%"))
+                      choices = sec_choices, selected = cur_sec, width = "100%")),
+        column(4,
+          selectInput("draw_timing_filter", "Draw jobs:",
+                      choices = c("All timings" = "all", "Start of class" = "start",
+                                  "End/post class" = "end"),
+                      selected = "all", width = "100%"))
       ),
 
       # Panel 1: Job Assignments
@@ -4061,6 +4154,13 @@ server <- function(input, output, session) {
                     }
                   ),
                   tags$td(
+                    tags$button(
+                      class = "btn btn-xs btn-outline-warning",
+                      style = "padding:.1rem .3rem;font-size:.7rem;margin-right:.1rem;",
+                      title = "Mark absent and redraw this job",
+                      onclick = sprintf(
+                        "if(confirm('Mark this student absent and redraw this job?')){Shiny.setInputValue('redraw_absent_btn',%d,{priority:'event'})}",
+                        as.integer(r$id)), "Redraw"),
                     tags$button(
                       class = "btn btn-xs btn-outline-secondary",
                       style = "padding:.1rem .3rem;font-size:.7rem;",
@@ -4434,7 +4534,8 @@ server <- function(input, output, session) {
                   COALESCE(jp.active,1) AS active,
                   COALESCE(jp.in_draw,1) AS in_draw,
                   COALESCE(jp.voluntary,0) AS voluntary,
-                  COALESCE(jc.voluntary,0) AS cat_voluntary
+                  COALESCE(jc.voluntary,0) AS cat_voluntary,
+                  COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time
            FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
            WHERE jp.round_id=?
            ORDER BY jp.display_order, jp.job_name;", list(rid)),
@@ -4475,7 +4576,7 @@ server <- function(input, output, session) {
             tags$table(class = "table table-sm",
               tags$thead(tags$tr(
                 tags$th("Post"), tags$th("Cat"), tags$th("Slots"),
-                tags$th("Wage"), tags$th("Clearing Wage"),
+                tags$th("Wage"), tags$th("Timing"), tags$th("Clearing Wage"),
                 tags$th("In Draw"), tags$th("Voluntary"), tags$th("Active"), tags$th("")
               )),
               tags$tbody(lapply(seq_len(nrow(all_posts)), function(i) {
@@ -4489,6 +4590,17 @@ server <- function(input, output, session) {
                   tags$td(style = "color:#888;font-size:.82em;", r$cat_name %||% "—"),
                   tags$td(r$slots %||% 1),
                   tags$td(sprintf("%g", as.numeric(r$eff_wage %||% 0))),
+                  tags$td(
+                    tags$button(
+                      class = "btn btn-xs btn-outline-info",
+                      style = "padding:.1rem .35rem;font-size:.7rem;",
+                      title = "Cycle timing: anytime, start, end",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('cycle_post_timing_btn',%d,{priority:'event'});",
+                        as.integer(r$id)),
+                      switch(as.character(r$selection_time %||% "any"),
+                             start = "Start", end = "End", volunteer = "Volunteer", "Any"))
+                  ),
                   tags$td(
                     if (!is.na(clr_wage)) {
                       tags$button(
@@ -4535,8 +4647,11 @@ server <- function(input, output, session) {
                 column(3, textInput("new_post_name", "Post name:")),
                 column(2, selectInput("new_post_cat", "Category:", choices = all_cat_choices)),
                 column(1, numericInput("new_post_slots", "Slots:", value = 1L, min = 1L, step = 1L)),
-                column(2, numericInput("new_post_wage", "Wage:", value = NA, min = 0, step = 1)),
-                column(2, tags$br(),
+                column(2, selectInput("new_post_timing", "Timing:",
+                                      choices = c("Any" = "any", "Start" = "start", "End" = "end"),
+                                      selected = "any")),
+                column(1, numericInput("new_post_wage", "Wage:", value = NA, min = 0, step = 1)),
+                column(1, tags$br(),
                        checkboxInput("new_post_in_draw", "In draw", value = TRUE)),
                 column(2, tags$br(),
                        actionButton("add_job_post_btn", "Add", class = "btn btn-sm btn-primary"))
@@ -6559,6 +6674,17 @@ server <- function(input, output, session) {
     }, error = function(e) { message("draw error: ", e$message); list() })
   }
 
+  filter_posts_for_draw_timing <- function(posts, timing_filter) {
+    if (!nrow(posts) || identical(timing_filter %||% "all", "all")) return(posts)
+    timing <- tolower(trimws(as.character(posts$selection_time %||% "")))
+    if (identical(timing_filter, "start")) {
+      keep <- timing %in% c("start", "start of class")
+    } else {
+      keep <- timing %in% c("end", "post", "post class", "after class", "end of class or after class")
+    }
+    posts[keep, , drop = FALSE]
+  }
+
   observeEvent(input$run_draw_btn, {
     req(rv$is_admin)
     round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
@@ -6570,12 +6696,15 @@ server <- function(input, output, session) {
 
     posts <- tryCatch(db_query(
       "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
-              COALESCE(jp.wage_override, jc.default_wage) AS wage
+              COALESCE(jp.wage_override, jc.default_wage) AS wage,
+              COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time
        FROM job_posts jp
        LEFT JOIN job_categories jc ON jc.id=jp.category_id
        WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1;",
       list(rid)),
       error = function(e) data.frame())
+    timing_filter <- input$draw_timing_filter %||% "all"
+    posts <- filter_posts_for_draw_timing(posts, timing_filter)
     if (!nrow(posts)) { showNotification("No active job posts marked 'In Draw' for this round.", type = "error"); return() }
 
     sec_filter <- rv$active_section %||% ""
@@ -6593,8 +6722,18 @@ server <- function(input, output, session) {
            ORDER BY RANDOM();"),
       error = function(e) data.frame())
     if (!nrow(students)) { showNotification("No eligible students found.", type = "error"); return() }
+    if (!identical(timing_filter, "all")) {
+      already <- tryCatch(db_query(
+        "SELECT user_id FROM job_assignments
+         WHERE round_id=? AND COALESCE(status,'assigned')='assigned';",
+        list(rid))$user_id, error = function(e) character(0))
+      students <- students[!(students$user_id %in% already), , drop = FALSE]
+      if (!nrow(students)) { showNotification("No unassigned students available for this timed draw.", type = "warning"); return() }
+    }
 
-    db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(rid))
+    if (identical(timing_filter, "all")) {
+      db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(rid))
+    }
 
     pairs <- compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
     if (!length(pairs)) { showNotification("Draw produced no assignments.", type = "error"); return() }
@@ -6622,12 +6761,15 @@ server <- function(input, output, session) {
     tbrk <- round$tiebreak_method[1] %||% "weighted_lottery"
     posts <- tryCatch(db_query(
       "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
-              COALESCE(jp.wage_override, jc.default_wage) AS wage
+              COALESCE(jp.wage_override, jc.default_wage) AS wage,
+              COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time
        FROM job_posts jp
        LEFT JOIN job_categories jc ON jc.id=jp.category_id
        WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1;",
       list(rid)),
       error = function(e) data.frame())
+    timing_filter2 <- input$draw_timing_filter %||% "all"
+    posts <- filter_posts_for_draw_timing(posts, timing_filter2)
     if (!nrow(posts)) {
       showNotification("No active job posts marked 'In Draw' for this round.", type = "error"); return()
     }
@@ -6647,6 +6789,14 @@ server <- function(input, output, session) {
       error = function(e) data.frame())
     if (!nrow(students)) {
       showNotification("No eligible students found.", type = "error"); return()
+    }
+    if (!identical(timing_filter2, "all")) {
+      already <- tryCatch(db_query(
+        "SELECT user_id FROM job_assignments
+         WHERE round_id=? AND COALESCE(status,'assigned')='assigned';",
+        list(rid))$user_id, error = function(e) character(0))
+      students <- students[!(students$user_id %in% already), , drop = FALSE]
+      if (!nrow(students)) { showNotification("No unassigned students available for this timed draw.", type = "warning"); return() }
     }
     pairs <- compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
     if (!length(pairs)) {
