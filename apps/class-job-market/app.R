@@ -349,6 +349,11 @@ db_exec("CREATE TABLE IF NOT EXISTS job_posts(
 try(db_exec("ALTER TABLE job_posts ADD COLUMN voluntary INTEGER DEFAULT 0;"), silent = TRUE)
 try(db_exec("ALTER TABLE job_posts ADD COLUMN in_draw INTEGER DEFAULT 1;"), silent = TRUE)
 try(db_exec("ALTER TABLE job_categories ADD COLUMN description TEXT;"), silent = TRUE)
+try(db_exec("ALTER TABLE job_categories ADD COLUMN selection_time TEXT;"), silent = TRUE)
+try(db_exec("ALTER TABLE job_categories ADD COLUMN contribution_type TEXT;"), silent = TRUE)
+try(db_exec("ALTER TABLE job_categories ADD COLUMN purpose TEXT;"), silent = TRUE)
+try(db_exec("ALTER TABLE job_categories ADD COLUMN expected_output TEXT;"), silent = TRUE)
+try(db_exec("ALTER TABLE job_categories ADD COLUMN completion_criterion TEXT;"), silent = TRUE)
 db_exec("CREATE TABLE IF NOT EXISTS job_assignments(
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id        INTEGER,
@@ -387,6 +392,187 @@ db_exec("CREATE TABLE IF NOT EXISTS job_templates(
   active         INTEGER DEFAULT 1,
   created_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+
+seed_class_job_defaults <- function() {
+  assigned <- data.frame(
+    name = c(
+      "Previous-class recap", "Reading analyst", "Policy example scout",
+      "Problem/graph explainer", "Forum steward", "Class note taker",
+      "Skeptic/discussant", "Discussion leader"
+    ),
+    selection_time = c(
+      "Start of class", "Start of class", "After class for the next class",
+      "During class", "Start of class or during class", "After class",
+      "End of class or after class", "During class"
+    ),
+    contribution_type = c(
+      "Remember / understand", "Understand / analyze", "Apply / analyze",
+      "Apply / understand", "Synthesize", "Remember / synthesize",
+      "Evaluate", "Analyze / synthesize"
+    ),
+    purpose = c(
+      "Preserve continuity across meetings",
+      "Make readings usable for discussion",
+      "Tie concepts to current policy",
+      "Help classmates with technical material",
+      "Turn individual questions into public goods",
+      "Create usable shared notes",
+      "Improve the class's understanding of the material",
+      "Help classmates describe and sustain a discussion, especially during student presentations"
+    ),
+    expected_output = c(
+      "Short off-the-dome recap at the start of class",
+      "Short off-the-dome opening comment on the reading",
+      "One policy example with a source link and 3-5 sentence explanation",
+      "Live walkthrough of one problem, graph, or equation",
+      "Create and monitor a class-session forum post",
+      "Notes from the class session posted after class",
+      "Posted thoughts, critiques, or thoughtful questions about the material",
+      "Briefly frames the discussion and helps name emerging themes or points of disagreement"
+    ),
+    completion_criterion = c(
+      "Names the main concepts and at least one remaining question",
+      "Identifies the question, evidence, main finding, limitation, or connection to class",
+      "Clearly identifies the course concept the example illustrates",
+      "Explains setup, intuition, and one common mistake",
+      "Posts the thread, watches for questions, and flags useful unresolved issues",
+      "Posted promptly, organized by topic, with definitions and examples",
+      "Questions use course concepts rather than generic opinions",
+      "Keeps discussion tied to course concepts and classmates' contributions"
+    ),
+    stringsAsFactors = FALSE
+  )
+  volunteers <- data.frame(
+    name = c(
+      "Typo, ambiguity, or broken-link report",
+      "Recommended slide or material change",
+      "Alternative presentation of a concept, graph, or example",
+      "Data/source verifier for a policy example",
+      "Graph redrawer or figure caption improver",
+      "Exam-review question submitter",
+      "Useful forum answer, clarification, or synthesis",
+      "Relevant policy example outside an assigned scout job",
+      "Muddiest-point post"
+    ),
+    selection_time = "Volunteer",
+    contribution_type = "Volunteer",
+    purpose = "Volunteer contribution that creates something useful for the class",
+    expected_output = c(
+      "Report a typo, ambiguity, or broken link in assignments or slides",
+      "Suggest a concrete improvement to slides or course materials",
+      "Post an alternative explanation, graph, concept presentation, or example",
+      "Verify the data source or factual basis for a policy example",
+      "Improve a graph redraw or figure caption",
+      "Submit a useful exam-review question",
+      "Answer, clarify, or synthesize a useful forum thread",
+      "Post a relevant policy example outside an assigned scout job",
+      "Post a short 'what I still do not understand' note that improves class discussion"
+    ),
+    completion_criterion = "Creates something useful for the class.",
+    stringsAsFactors = FALSE
+  )
+
+  upsert_category <- function(row, voluntary = 0L, in_draw = 1L) {
+    existing <- db_query("SELECT id FROM job_categories WHERE lower(name)=lower(?) ORDER BY id LIMIT 1;", list(row$name))
+    desc <- paste(
+      sprintf("Selection time: %s", row$selection_time %||% if (voluntary) "Volunteer" else ""),
+      sprintf("Contribution type: %s", row$contribution_type %||% if (voluntary) "Volunteer" else ""),
+      sprintf("Purpose: %s", row$purpose %||% ""),
+      sprintf("Expected output: %s", row$expected_output %||% ""),
+      sprintf("Completion criterion: %s", row$completion_criterion %||% "Creates something useful for the class."),
+      sep = "\n"
+    )
+    if (nrow(existing)) {
+      cid <- existing$id[1]
+      db_exec(
+        "UPDATE job_categories
+         SET description=COALESCE(NULLIF(description,''), ?),
+             selection_time=COALESCE(NULLIF(selection_time,''), ?),
+             contribution_type=COALESCE(NULLIF(contribution_type,''), ?),
+             purpose=COALESCE(NULLIF(purpose,''), ?),
+             expected_output=COALESCE(NULLIF(expected_output,''), ?),
+             completion_criterion=COALESCE(NULLIF(completion_criterion,''), ?)
+         WHERE id=?;",
+        list(desc, row$selection_time %||% if (voluntary) "Volunteer" else "",
+             row$contribution_type %||% if (voluntary) "Volunteer" else "",
+             row$purpose %||% "", row$expected_output %||% "",
+             row$completion_criterion %||% "Creates something useful for the class.",
+             cid)
+      )
+      return(cid)
+    }
+    db_exec(
+      "INSERT INTO job_categories(name, default_wage, description, voluntary, in_draw,
+                                  selection_time, contribution_type, purpose,
+                                  expected_output, completion_criterion)
+       VALUES(?,?,?,?,?,?,?,?,?,?);",
+      list(row$name, 2, desc, voluntary, in_draw,
+           row$selection_time %||% if (voluntary) "Volunteer" else "",
+           row$contribution_type %||% if (voluntary) "Volunteer" else "",
+           row$purpose %||% "", row$expected_output %||% "",
+           row$completion_criterion %||% "Creates something useful for the class.")
+    )
+    db_query("SELECT last_insert_rowid() AS id;")$id[1]
+  }
+
+  upsert_template <- function(name, category_id, wage = 2, slots = 1L) {
+    existing <- db_query("SELECT id FROM job_templates WHERE lower(name)=lower(?) ORDER BY id LIMIT 1;", list(name))
+    if (nrow(existing)) {
+      db_exec(
+        "UPDATE job_templates
+         SET category_id=COALESCE(category_id, ?),
+             slots=COALESCE(slots, ?),
+             suggested_wage=COALESCE(suggested_wage, ?)
+         WHERE id=?;",
+        list(category_id, slots, wage, existing$id[1])
+      )
+    } else {
+      db_exec(
+        "INSERT INTO job_templates(name, category_id, slots, suggested_wage, active)
+         VALUES(?,?,?,?,1);",
+        list(name, category_id, slots, wage)
+      )
+    }
+  }
+
+  seeded_posts <- list()
+  remember_post <- function(name, category_id, wage, slots, in_draw, voluntary) {
+    seeded_posts[[length(seeded_posts) + 1L]] <<- list(
+      name = name, category_id = category_id, wage = wage, slots = slots,
+      in_draw = in_draw, voluntary = voluntary
+    )
+  }
+
+  for (i in seq_len(nrow(assigned))) {
+    cid <- upsert_category(assigned[i, ], voluntary = 0L, in_draw = 1L)
+    upsert_template(assigned$name[i], cid, wage = 2, slots = 1L)
+    remember_post(assigned$name[i], cid, 2, 1L, 1L, 0L)
+  }
+  for (i in seq_len(nrow(volunteers))) {
+    cid <- upsert_category(volunteers[i, ], voluntary = 1L, in_draw = 0L)
+    upsert_template(volunteers$name[i], cid, wage = 2, slots = 99L)
+    remember_post(volunteers$name[i], cid, 2, 99L, 0L, 1L)
+  }
+
+  latest_round <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"), error = function(e) data.frame())
+  if (nrow(latest_round) && length(seeded_posts)) {
+    rid <- latest_round$id[1]
+    for (p in seeded_posts) {
+      existing <- db_query(
+        "SELECT id FROM job_posts WHERE round_id=? AND lower(job_name)=lower(?) ORDER BY id LIMIT 1;",
+        list(rid, p$name)
+      )
+      if (!nrow(existing)) {
+        db_exec(
+          "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw, voluntary)
+           VALUES(?,?,?,?,?,?,?);",
+          list(rid, p$name, p$category_id, p$slots, p$wage, p$in_draw, p$voluntary)
+        )
+      }
+    }
+  }
+}
+seed_class_job_defaults()
 
 SESSION_DAYS <- 14L
 
@@ -3254,18 +3440,24 @@ server <- function(input, output, session) {
       showNotification("Round created but could not retrieve ID.", type = "warning"); return()
     }
     templates <- tryCatch(db_query(
-      "SELECT * FROM job_templates WHERE COALESCE(active,1)=1 ORDER BY id;"),
+      "SELECT jt.*, COALESCE(jc.in_draw,1) AS cat_in_draw, COALESCE(jc.voluntary,0) AS cat_voluntary
+       FROM job_templates jt
+       LEFT JOIN job_categories jc ON jc.id=jt.category_id
+       WHERE COALESCE(jt.active,1)=1
+       ORDER BY jt.id;"),
       error = function(e) data.frame())
     if (nrow(templates)) {
       for (i in seq_len(nrow(templates))) {
         t <- templates[i, ]
         db_exec(
           "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw, voluntary)
-           VALUES(?,?,?,?,?,1,0);",
+           VALUES(?,?,?,?,?,?,?);",
           list(new_rid, t$name,
                if (!is.na(t$category_id %||% NA)) as.integer(t$category_id) else NA_integer_,
                as.integer(t$slots %||% 1L),
-               if (!is.na(t$suggested_wage %||% NA)) as.numeric(t$suggested_wage) else NA_real_))
+               if (!is.na(t$suggested_wage %||% NA)) as.numeric(t$suggested_wage) else NA_real_,
+               as.integer(t$cat_in_draw %||% 1L),
+               as.integer(t$cat_voluntary %||% 0L)))
       }
       showNotification(
         sprintf("Created round '%s' with %d post%s from templates.",
