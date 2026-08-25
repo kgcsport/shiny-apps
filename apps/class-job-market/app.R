@@ -279,6 +279,19 @@ db_exec("CREATE TABLE IF NOT EXISTS participation_events(
   logged_by  TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+db_exec("CREATE TABLE IF NOT EXISTS live_score_events(
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id          INTEGER,
+  user_id           TEXT,
+  job_assignment_id INTEGER,
+  job_post_id       INTEGER,
+  event_kind        TEXT,
+  outcome           TEXT,
+  tokens            REAL,
+  logged_by         TEXT,
+  committed_at      TEXT,
+  created_at        TEXT DEFAULT CURRENT_TIMESTAMP
+);")
 
 # Job assignment outcome tracking (safe on re-run via try)
 try(db_exec("ALTER TABLE job_assignments ADD COLUMN outcome TEXT;"), silent = TRUE)
@@ -287,6 +300,14 @@ try(db_exec("ALTER TABLE job_assignments ADD COLUMN updated_at TEXT;"), silent =
 try(db_exec("ALTER TABLE job_assignments ADD COLUMN tokens_credited INTEGER DEFAULT 1;"), silent = TRUE)
 try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN tokens_revealed INTEGER DEFAULT 1;"), silent = TRUE)
 try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN tiebreak_method TEXT DEFAULT 'weighted_lottery';"), silent = TRUE)
+db_exec("CREATE TABLE IF NOT EXISTS assignment_reveals(
+  round_id   INTEGER,
+  section    TEXT,
+  revealed   INTEGER DEFAULT 0,
+  timing     TEXT DEFAULT 'start',
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (round_id, section)
+);")
 try(db_exec("ALTER TABLE flex_questions ADD COLUMN exam_tag TEXT;"), silent = TRUE)
 db_exec("CREATE TABLE IF NOT EXISTS gradebook_categories(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1515,12 +1536,15 @@ server <- function(input, output, session) {
       t1 <- tryCatch(db_query("SELECT MAX(created_at) ts FROM token_ledger;")$ts[1] %||% "", error=function(e)"")
       t2 <- tryCatch(db_query("SELECT MAX(COALESCE(updated_at,created_at)) ts FROM job_assignments;")$ts[1] %||% "", error=function(e)"")
       t3 <- tryCatch(db_query("SELECT assignments_revealed FROM arcade_state WHERE id=1;")$assignments_revealed[1] %||% "0", error=function(e)"")
-      paste(t1, t2, t3)
+      t4 <- tryCatch(db_query("SELECT MAX(created_at || COALESCE(committed_at,'')) ts FROM live_score_events;")$ts[1] %||% "", error=function(e)"")
+      t5 <- tryCatch(db_query("SELECT MAX(updated_at) ts FROM assignment_reveals;")$ts[1] %||% "", error=function(e)"")
+      paste(t1, t2, t3, t4, t5)
     },
     valueFunc = function() {
       if (!isTRUE(rv$is_admin)) return(list(
         students=data.frame(), subs=data.frame(), assignments=data.frame(),
-        round=data.frame(), revealed=FALSE))
+        round=data.frame(), revealed=FALSE, section_reveals=data.frame(),
+        pending_scores=data.frame()))
       students <- tryCatch(db_query(
         "SELECT u.user_id, u.display_name, u.section,
                 COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned,
@@ -1552,21 +1576,57 @@ server <- function(input, output, session) {
       round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
                         error = function(e) data.frame())
       rid <- if (nrow(round)) round$id[1] else NA_integer_
+      section_reveals <- if (!is.na(rid)) {
+        tryCatch(db_query(
+          "SELECT round_id, section, COALESCE(revealed,0) AS revealed,
+                  COALESCE(timing,'start') AS timing, updated_at
+           FROM assignment_reveals WHERE round_id=?
+           ORDER BY section;", list(rid)),
+          error = function(e) data.frame())
+      } else data.frame()
       assignments <- if (!is.na(rid)) {
         tryCatch(db_query(
           "SELECT ja.id, ja.user_id, u.display_name, u.section, jp.job_name,
                   ja.assigned_wage,
                   COALESCE(ja.outcome,'') AS outcome,
-                  COALESCE(ja.tokens_awarded,0) AS tokens_awarded
+                  COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
+                  COALESCE(pse.outcome,'') AS pending_outcome,
+                  pse.tokens AS pending_tokens
            FROM job_assignments ja
            JOIN users u ON u.user_id=ja.user_id
            JOIN job_posts jp ON jp.id=ja.job_post_id
-           WHERE ja.round_id=?
-           ORDER BY u.section, u.display_name;", list(rid)),
+           LEFT JOIN (
+             SELECT lse.job_assignment_id, lse.outcome, lse.tokens
+             FROM live_score_events lse
+             JOIN (
+               SELECT job_assignment_id, MAX(id) AS id
+               FROM live_score_events
+               WHERE event_kind='assignment' AND committed_at IS NULL
+               GROUP BY job_assignment_id
+             ) latest ON latest.id=lse.id
+           ) pse ON pse.job_assignment_id=ja.id
+            WHERE ja.round_id=?
+            ORDER BY u.section, u.display_name;", list(rid)),
+          error = function(e) data.frame())
+      } else data.frame()
+      pending_scores <- if (!is.na(rid)) {
+        tryCatch(db_query(
+          "SELECT lse.id, lse.round_id, lse.user_id, u.display_name, u.section,
+                  lse.job_assignment_id, lse.job_post_id, lse.event_kind,
+                  lse.outcome, lse.tokens, lse.created_at,
+                  COALESCE(jp.job_name, ap.job_name, '') AS job_name
+           FROM live_score_events lse
+           JOIN users u ON u.user_id=lse.user_id
+           LEFT JOIN job_posts jp ON jp.id=lse.job_post_id
+           LEFT JOIN job_assignments ja ON ja.id=lse.job_assignment_id
+           LEFT JOIN job_posts ap ON ap.id=ja.job_post_id
+           WHERE lse.round_id=? AND lse.committed_at IS NULL
+           ORDER BY u.section, u.display_name, lse.created_at;", list(rid)),
           error = function(e) data.frame())
       } else data.frame()
       list(students=students, subs=subs, assignments=assignments,
-           round=round, revealed=revealed)
+           round=round, revealed=revealed, section_reveals=section_reveals,
+           pending_scores=pending_scores)
     }
   )
 
@@ -1715,10 +1775,23 @@ server <- function(input, output, session) {
     req(rv$authed)
     arc    <- arcade_poll()
     active <- arc$active_game[1] %||% ""
-    revealed <- isTRUE(as.integer(arc$assignments_revealed[1] %||% 0L) == 1L)
+    global_revealed <- isTRUE(as.integer(arc$assignments_revealed[1] %||% 0L) == 1L)
     jp     <- jobs_poll()
     mode   <- if (nrow(jp$round)) jp$round$assignment_mode[1] %||% "random" else "random"
     wage_mode <- identical(mode, "wage_bidding")
+    section_revealed <- FALSE
+    if (nrow(jp$round)) {
+      sec <- trimws(rv$section %||% "")
+      if (nzchar(sec)) {
+        section_revealed <- tryCatch(
+          isTRUE(as.integer(db_query(
+            "SELECT COALESCE(revealed,0) v FROM assignment_reveals
+             WHERE round_id=? AND section=?;",
+            list(jp$round$id[1], sec))$v[1] %||% 0L) == 1L),
+          error = function(e) FALSE)
+      }
+    }
+    revealed <- isTRUE(global_revealed || section_revealed)
 
     tagList(
       div(class = "tab-howto",
@@ -3316,6 +3389,126 @@ server <- function(input, output, session) {
     rv$jobs_ver <- rv$jobs_ver + 1L
   }, ignoreNULL = TRUE)
 
+  .commit_live_score_event <- function(ev) {
+    tokens_to_award <- as.numeric(ev$tokens %||% 0)
+    outcome <- as.character(ev$outcome %||% "")
+    rid <- as.integer(ev$round_id[1])
+    uid <- as.character(ev$user_id[1])
+    dname <- ev$display_name[1] %||% uid
+    rnd_row <- tryCatch(db_query(
+      "SELECT COALESCE(tokens_revealed,1) v FROM weekly_rounds WHERE id=?;",
+      list(rid)), error=function(e) data.frame())
+    tokens_revealed <- if (nrow(rnd_row)) isTRUE(as.integer(rnd_row$v[1]) == 1L) else TRUE
+
+    if (identical(as.character(ev$event_kind[1]), "assignment")) {
+      assign_id <- as.integer(ev$job_assignment_id[1])
+      cur <- tryCatch(db_query(
+        "SELECT COALESCE(tokens_awarded,0) AS tokens_awarded FROM job_assignments WHERE id=?;",
+        list(assign_id)), error=function(e) data.frame())
+      if (!nrow(cur) || as.integer(cur$tokens_awarded[1] %||% 0L) == 1L) {
+        db_exec("UPDATE live_score_events SET committed_at=datetime('now') WHERE id=?;",
+                list(as.integer(ev$id[1])))
+        return(FALSE)
+      }
+      db_exec(
+        "UPDATE job_assignments SET outcome=?, tokens_awarded=?, tokens_credited=?,
+                updated_at=datetime('now') WHERE id=?;",
+        list(outcome, tokens_to_award, if (tokens_revealed) 1L else 0L, assign_id))
+      if (tokens_to_award > 0 && tokens_revealed) {
+        token_credit(uid, dname, tokens_to_award, 1L, "job", assign_id,
+                     note = sprintf("Job wage (%s)", outcome))
+      }
+    } else {
+      post_id <- as.integer(ev$job_post_id[1])
+      wage_val <- tokens_to_award
+      if (outcome %in% c("try", "miss")) {
+        post_row <- tryCatch(db_query(
+          "SELECT COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
+           FROM job_posts jp LEFT JOIN job_categories jc ON jc.id = jp.category_id
+           WHERE jp.id=? LIMIT 1;", list(post_id)),
+          error=function(e) data.frame())
+        if (nrow(post_row)) wage_val <- as.numeric(post_row$tokens[1] %||% tokens_to_award)
+      }
+      db_exec(
+        "INSERT INTO job_assignments(round_id, user_id, job_post_id, assigned_wage,
+                assignment_mode, outcome, tokens_awarded, tokens_credited, updated_at)
+         VALUES(?,?,?,?,'voluntary',?,?,?,datetime('now'))
+         ON CONFLICT(round_id, user_id)
+         DO UPDATE SET job_post_id=excluded.job_post_id,
+                       assigned_wage=excluded.assigned_wage,
+                       outcome=excluded.outcome,
+                       tokens_awarded=excluded.tokens_awarded,
+                       tokens_credited=excluded.tokens_credited,
+                       updated_at=excluded.updated_at;",
+        list(rid, uid, post_id, wage_val, outcome,
+             tokens_to_award, if (tokens_revealed) 1L else 0L))
+      if (tokens_to_award > 0 && tokens_revealed) {
+        token_credit(uid, dname, tokens_to_award, 1L, "participation", post_id,
+                     note = sprintf("Participation (%s)", outcome))
+      }
+    }
+    db_exec("UPDATE live_score_events SET committed_at=datetime('now') WHERE id=?;",
+            list(as.integer(ev$id[1])))
+    TRUE
+  }
+
+  observeEvent(input$drop_live_score_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    eid <- suppressWarnings(as.integer(input$drop_live_score_btn %||% 0))
+    if (is.na(eid) || eid <= 0) return()
+    db_exec("DELETE FROM live_score_events WHERE id=? AND committed_at IS NULL;", list(eid))
+    showNotification("Pending score removed.", type = "message")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$clear_live_scores_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                        error=function(e) data.frame())
+    if (!nrow(rid_row)) return()
+    cur_sec <- trimws(rv$active_section %||% "")
+    if (nzchar(cur_sec)) {
+      db_exec(
+        "DELETE FROM live_score_events
+         WHERE round_id=? AND committed_at IS NULL
+           AND user_id IN (SELECT user_id FROM users WHERE section=?);",
+        list(rid_row$id[1], cur_sec))
+    } else {
+      db_exec("DELETE FROM live_score_events WHERE round_id=? AND committed_at IS NULL;",
+              list(rid_row$id[1]))
+    }
+    showNotification("Pending scores cleared.", type = "message")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$commit_live_scores_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                        error=function(e) data.frame())
+    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    cur_sec <- trimws(rv$active_section %||% "")
+    pending <- if (nzchar(cur_sec)) {
+      tryCatch(db_query(
+        "SELECT lse.*, u.display_name
+         FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
+         WHERE lse.round_id=? AND lse.committed_at IS NULL AND u.section=?
+         ORDER BY lse.id;", list(rid_row$id[1], cur_sec)),
+        error=function(e) data.frame())
+    } else {
+      tryCatch(db_query(
+        "SELECT lse.*, u.display_name
+         FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
+         WHERE lse.round_id=? AND lse.committed_at IS NULL
+         ORDER BY lse.id;", list(rid_row$id[1])),
+        error=function(e) data.frame())
+    }
+    if (!nrow(pending)) { showNotification("No pending live scores.", type = "message"); return() }
+    applied <- 0L
+    for (i in seq_len(nrow(pending))) {
+      if (isTRUE(.commit_live_score_event(pending[i, ]))) applied <- applied + 1L
+    }
+    showNotification(sprintf("Committed %d live score%s.", applied, if (applied == 1L) "" else "s"),
+                     type = "message")
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$toggle_post_voluntary, {
     req(rv$is_admin)
     pid <- suppressWarnings(as.integer(input$toggle_post_voluntary %||% 0))
@@ -3671,9 +3864,17 @@ server <- function(input, output, session) {
     students_sec <- if (nrow(td$students) && nzchar(cur_sec))
       td$students[td$students$section == cur_sec, , drop = FALSE]
     else td$students
+    pending_show <- if (nzchar(cur_sec) && nrow(td$pending_scores))
+      td$pending_scores[td$pending_scores$section == cur_sec, , drop = FALSE]
+    else td$pending_scores
 
     # Round ID
     rid <- if (nrow(round)) round$id[1] else NA_integer_
+    section_revealed <- FALSE
+    if (!is.na(rid) && nzchar(cur_sec) && nrow(td$section_reveals)) {
+      sr <- td$section_reveals[td$section_reveals$section == cur_sec, , drop = FALSE]
+      section_revealed <- isTRUE(nrow(sr) && as.integer(sr$revealed[1] %||% 0L) == 1L)
+    }
 
     # Voluntary job posts for participation panel (Panel 2)
     vol_cats <- if (!is.na(rid)) {
@@ -3738,32 +3939,49 @@ server <- function(input, output, session) {
                            if (nzchar(cur_sec)) paste0("  ·  Section: ", cur_sec) else "",
                            if (tok_rev) "released" else sprintf("%d pending", as.integer(n_pending)))),
             fluidRow(
-              column(3,
+              column(2,
                 actionButton("run_draw_btn", "\U0001f3b2 Draw Jobs",
                              class = "btn btn-primary btn-sm",
                              title = if (mode == "random") "Draw per-section (select section above first)" else "Assign from this week\'s bids")),
-              column(3,
+              column(2,
                 actionButton("preview_draw_btn", "\U0001f441 Preview Draw",
                              class = "btn btn-outline-secondary btn-sm")),
               column(3,
+                selectInput("section_reveal_timing", "Reveal group:",
+                            choices = c("Start of class" = "start", "Post class" = "post"),
+                            selected = "start", width = "100%")),
+              column(2,
+                if (nzchar(cur_sec)) {
+                  if (section_revealed)
+                    actionButton("toggle_section_reveal_btn", "Hide Group",
+                                 class = "btn btn-outline-secondary btn-sm",
+                                 title = "Hide assignments from the selected section")
+                  else
+                    actionButton("toggle_section_reveal_btn", "Reveal Group",
+                                 class = "btn btn-success btn-sm",
+                                 title = "Reveal assignments to the selected section")
+                } else {
+                  tags$span(style = "color:#999;font-size:.8rem;", "Pick section")
+                }),
+              column(2,
                 if (revealed)
-                  actionButton("toggle_reveal_btn", "Hide Assignments",
+                  actionButton("toggle_reveal_btn", "Hide All",
                                class = "btn btn-outline-secondary btn-sm",
                                title = "Hide job assignments from student view")
                 else
-                  actionButton("toggle_reveal_btn", "Reveal Assignments",
+                  actionButton("toggle_reveal_btn", "Reveal All",
                                class = "btn btn-success btn-sm",
-                               title = "Make job assignments visible to students")
+                               title = "Override groups and reveal every assignment")
               ),
-              column(3,
+              column(1,
                 if (!tok_rev && n_pending > 0)
                   actionButton("release_tokens_btn",
-                               sprintf("\U0001f4b0 Release %d tokens", as.integer(n_pending)),
+                               "Release",
                                class = "btn btn-warning btn-sm",
                                title = "Credit pending token earnings to students",
                                onclick = "if(!confirm('Release tokens to all students? This cannot be undone.')) return false;")
                 else if (n_show > 0)
-                  actionButton("clear_assignments_btn", "\U274c Clear All",
+                  actionButton("clear_assignments_btn", "Clear",
                                class = "btn btn-outline-danger btn-sm",
                                title = "Delete all assignments for current round",
                                onclick = "if(!confirm('Delete all job assignments for this round?')) return false;")
@@ -3794,6 +4012,7 @@ server <- function(input, output, session) {
               tags$tbody(lapply(seq_len(n_show), function(i) {
                 r  <- assignments_show[i, ]
                 oc <- as.character(r$outcome %||% "")
+                poc <- as.character(r$pending_outcome %||% "")
                 ta <- as.integer(r$tokens_awarded %||% 0L)
                 wage <- if (!is.na(r$assigned_wage %||% NA)) as.numeric(r$assigned_wage) else 0
                 tags$tr(
@@ -3804,7 +4023,10 @@ server <- function(input, output, session) {
                     tags$td(style = "text-align:right;font-size:.85em;color:#888;",
                             if (wage > 0) sprintf("%g", wage) else "—"),
                   tags$td(
-                    if (ta == 1L) {
+                    if (nzchar(poc)) {
+                      span(class = "badge badge-warning",
+                           sprintf("Pending: %s", switch(poc, complete = "complete", tried = "tried", missed = "missed", poc)))
+                    } else if (ta == 1L) {
                       awarded_amt <- switch(oc,
                         complete = wage, tried = round(wage * half_mult), missed = 0, 0)
                       span(style = "color:#888;font-size:.82rem;",
@@ -3853,6 +4075,52 @@ server <- function(input, output, session) {
           )
         )
       },
+
+      wellPanel(
+        tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
+                "Live Score Audit"),
+        if (!nrow(pending_show)) {
+          tags$p(style = "color:#999;margin:0;",
+                 "No pending live scores. Taps during class will queue here for review.")
+        } else {
+          tagList(
+            div(style = "display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.6rem;",
+              actionButton("commit_live_scores_btn",
+                           sprintf("Commit %d", nrow(pending_show)),
+                           class = "btn btn-primary btn-sm",
+                           onclick = "if(!confirm('Commit these pending live scores?')) return false;"),
+              actionButton("clear_live_scores_btn", "Clear Pending",
+                           class = "btn btn-outline-danger btn-sm",
+                           onclick = "if(!confirm('Delete pending live scores for this view?')) return false;")
+            ),
+            div(class = "tracker-wrap",
+              tags$table(class = "table table-sm",
+                tags$thead(tags$tr(
+                  tags$th("Student"), tags$th("Job"), tags$th("Type"),
+                  tags$th("Outcome"), tags$th(style = "text-align:right;", "Tokens"), tags$th("")
+                )),
+                tags$tbody(lapply(seq_len(nrow(pending_show)), function(i) {
+                  r <- pending_show[i, ]
+                  tags$tr(
+                    tags$td(r$display_name %||% r$user_id),
+                    tags$td(r$job_name %||% ""),
+                    tags$td(if (identical(r$event_kind, "assignment")) "assigned" else "voluntary"),
+                    tags$td(r$outcome %||% ""),
+                    tags$td(style = "text-align:right;", as.integer(r$tokens %||% 0)),
+                    tags$td(tags$button(
+                      class = "btn btn-xs btn-outline-secondary",
+                      style = "padding:.1rem .3rem;font-size:.7rem;",
+                      title = "Remove pending score",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('drop_live_score_btn',%d,{priority:'event'});",
+                        as.integer(r$id)), "\U2715"))
+                  )
+                }))
+              )
+            )
+          )
+        }
+      ),
 
       # Panel 2: Voluntary Participation
       wellPanel(
@@ -5804,6 +6072,16 @@ server <- function(input, output, session) {
       tried    = round(wage * half_mult),
       missed   = 0,
       0)
+    db_exec(
+      "INSERT INTO live_score_events(round_id, user_id, job_assignment_id, event_kind,
+              outcome, tokens, logged_by)
+       VALUES(?,?,?,'assignment',?,?,?);",
+      list(as.integer(row$round_id[1]), uid, assign_id, outcome, tokens_to_award, rv$user_id %||% "admin"))
+    showNotification(
+      sprintf("%s queued for audit (%d token%s).", dname, as.integer(tokens_to_award),
+              if (tokens_to_award == 1) "" else "s"),
+      type = "message")
+    return()
     # Check whether tokens should be credited now or held until instructor releases
     rnd_row <- tryCatch(db_query("SELECT COALESCE(tokens_revealed,1) v FROM weekly_rounds WHERE id=?;",
                                   list(as.integer(row$round_id[1]))), error=function(e) data.frame())
@@ -5866,6 +6144,16 @@ server <- function(input, output, session) {
       succeed = wage_val,
       try     = round(wage_val * half_mult),
       miss    = 0, 0)
+    db_exec(
+      "INSERT INTO live_score_events(round_id, user_id, job_post_id, event_kind,
+              outcome, tokens, logged_by)
+       VALUES(?,?,?,'participation',?,?,?);",
+      list(rid, uid, post_id, outcome_type, tokens_to_award, rv$user_id %||% "admin"))
+    showNotification(
+      sprintf("%s queued for audit (%d token%s).", dname, as.integer(tokens_to_award),
+              if (tokens_to_award == 1) "" else "s"),
+      type = "message")
+    return()
     rnd_row2 <- tryCatch(db_query("SELECT COALESCE(tokens_revealed,1) v FROM weekly_rounds WHERE id=?;",
                                    list(rid)), error=function(e) data.frame())
     tokens_revealed2 <- if (nrow(rnd_row2)) isTRUE(as.integer(rnd_row2$v[1]) == 1L) else TRUE
@@ -6373,6 +6661,33 @@ server <- function(input, output, session) {
   })
 
   # ── Reveal toggle ─────────────────────────────────────────────────────────────
+  observeEvent(input$toggle_section_reveal_btn, {
+    req(rv$is_admin)
+    sec <- trimws(rv$active_section %||% "")
+    if (!nzchar(sec)) { showNotification("Pick a section first.", type = "warning"); return() }
+    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                        error=function(e) data.frame())
+    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    cur <- tryCatch(db_query(
+      "SELECT COALESCE(revealed,0) v FROM assignment_reveals
+       WHERE round_id=? AND section=?;", list(rid_row$id[1], sec)),
+      error=function(e) data.frame())
+    new_val <- if (nrow(cur) && isTRUE(as.integer(cur$v[1] %||% 0L) == 1L)) 0L else 1L
+    timing <- input$section_reveal_timing %||% "start"
+    db_exec(
+      "INSERT INTO assignment_reveals(round_id, section, revealed, timing, updated_at)
+       VALUES(?,?,?,?,CURRENT_TIMESTAMP)
+       ON CONFLICT(round_id, section)
+       DO UPDATE SET revealed=excluded.revealed,
+                     timing=excluded.timing,
+                     updated_at=CURRENT_TIMESTAMP;",
+      list(rid_row$id[1], sec, new_val, timing))
+    showNotification(
+      sprintf("%s assignments %s (%s).", sec, if (new_val == 1L) "revealed" else "hidden",
+              if (identical(timing, "post")) "post class" else "start of class"),
+      type = "message")
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$toggle_reveal_btn, {
     req(rv$is_admin)
     cur <- tryCatch(
