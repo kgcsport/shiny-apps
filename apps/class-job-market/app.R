@@ -1236,7 +1236,6 @@ server <- function(input, output, session) {
   .sandbox <- dm$is_demo
   db_exec  <- dm$db_exec
   db_query <- dm$db_query
-  if (.sandbox) seed_class_job_defaults(db_exec, db_query, ensure_round = TRUE)
 
   rv <- reactiveValues(
     authed         = FALSE,

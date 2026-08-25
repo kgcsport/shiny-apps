@@ -203,6 +203,21 @@ demo_db_bootstrap <- function(demo_con, prod_path) {
           "INSERT OR IGNORE INTO arcade_state(id, active_game, assignments_revealed) VALUES(1,NULL,0);")
     }, error = function(e) NULL)
 
+    copy_table <- function(tbl) {
+      rows <- tryCatch(DBI::dbGetQuery(prod_con, sprintf("SELECT * FROM %s;", tbl)),
+                       error = function(e) data.frame())
+      if (!length(names(rows))) return(invisible(FALSE))
+      try(DBI::dbExecute(demo_con, sprintf("DELETE FROM %s;", tbl)), silent = TRUE)
+      if (nrow(rows))
+        try(DBI::dbWriteTable(demo_con, tbl, rows, append = TRUE, row.names = FALSE), silent = TRUE)
+      invisible(TRUE)
+    }
+
+    # Mirror the live course job market into sandbox on each demo startup.
+    # Demo users and scoring remain separate; jobs/round setup match production.
+    for (tbl in c("job_categories", "job_templates", "weekly_rounds", "job_posts"))
+      copy_table(tbl)
+
     # Seed test users (INSERT OR IGNORE so re-runs are safe)
     hash_pw <- if (requireNamespace("bcrypt", quietly = TRUE)) bcrypt::hashpw
                else function(p) p
