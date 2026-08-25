@@ -1611,6 +1611,7 @@ server <- function(input, output, session) {
          FROM job_categories jc
          JOIN job_posts jp ON jp.category_id=jc.id
          WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+           AND COALESCE(jp.in_draw, COALESCE(jc.in_draw,1), 1)=1
          ORDER BY jc.display_order, jc.name;",
         list(rid)), error = function(e) data.frame())
 
@@ -1625,7 +1626,8 @@ server <- function(input, output, session) {
            SELECT job_post_id, COUNT(*) n FROM job_assignments
            WHERE status='assigned' GROUP BY job_post_id
          ) fill ON fill.job_post_id=jp.id
-         WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+        WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+          AND COALESCE(jp.in_draw, COALESCE(jc.in_draw,1), 1)=1
          ORDER BY jp.display_order, jp.job_name;",
         list(rid)), error = function(e) data.frame())
 
@@ -3314,6 +3316,17 @@ server <- function(input, output, session) {
     rv$jobs_ver <- rv$jobs_ver + 1L
   }, ignoreNULL = TRUE)
 
+  observeEvent(input$toggle_post_voluntary, {
+    req(rv$is_admin)
+    pid <- suppressWarnings(as.integer(input$toggle_post_voluntary %||% 0))
+    if (is.na(pid) || pid <= 0) return()
+    cur <- db_query("SELECT COALESCE(voluntary,0) v FROM job_posts WHERE id=?;", list(pid))
+    if (!nrow(cur)) return()
+    new_v <- if (isTRUE(as.integer(cur$v[1]) == 1L)) 0L else 1L
+    db_exec("UPDATE job_posts SET voluntary=? WHERE id=?;", list(new_v, pid))
+    rv$jobs_ver <- rv$jobs_ver + 1L
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$delete_job_post_btn, {
     req(rv$is_admin)
     pid <- suppressWarnings(as.integer(input$delete_job_post_btn %||% 0))
@@ -3663,12 +3676,12 @@ server <- function(input, output, session) {
     rid <- if (nrow(round)) round$id[1] else NA_integer_
 
     # Voluntary job posts for participation panel (Panel 2)
-    # voluntary is now a category-level attribute (jc.voluntary)
     vol_cats <- if (!is.na(rid)) {
       tryCatch(db_query(
         "SELECT jp.id, jp.job_name AS name, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
          FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
-         WHERE jp.round_id=? AND COALESCE(jc.voluntary,0)=1 AND COALESCE(jp.active,1)=1
+         WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+           AND (COALESCE(jc.voluntary,0)=1 OR COALESCE(jp.voluntary,0)=1)
          ORDER BY jp.job_name;", list(rid)),
         error = function(e) data.frame())
     } else data.frame()
@@ -4152,7 +4165,8 @@ server <- function(input, output, session) {
                   COALESCE(jp.wage_override, jc.default_wage) AS eff_wage,
                   COALESCE(jp.active,1) AS active,
                   COALESCE(jp.in_draw,1) AS in_draw,
-                  COALESCE(jp.voluntary,0) AS voluntary
+                  COALESCE(jp.voluntary,0) AS voluntary,
+                  COALESCE(jc.voluntary,0) AS cat_voluntary
            FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
            WHERE jp.round_id=?
            ORDER BY jp.display_order, jp.job_name;", list(rid)),
@@ -4183,7 +4197,7 @@ server <- function(input, output, session) {
                            "border-radius:0 4px 4px 0;margin-bottom:.6rem;font-size:.85rem;color:#333;"),
           tags$strong("How flags work:"), " ",
           tags$b("\U0001f3b2 In Draw"), " — included when you run the job draw (Panel 1 of Live Tracker). ",
-          tags$b("\U0001f64b Voluntary"), " — set at the ", tags$em("category"), " level (see the category list below); all posts in a voluntary category appear in Panel 2 for attendance logging. ",
+          tags$b("\U0001f64b Voluntary"), " — set at the post or category level; voluntary posts appear in Panel 2 for attendance logging. ",
           "A category can be both in-draw and voluntary."
         ),
         if (is.na(rid)) {
@@ -4194,12 +4208,13 @@ server <- function(input, output, session) {
               tags$thead(tags$tr(
                 tags$th("Post"), tags$th("Cat"), tags$th("Slots"),
                 tags$th("Wage"), tags$th("Clearing Wage"),
-                tags$th("In Draw"), tags$th("Active"), tags$th("")
+                tags$th("In Draw"), tags$th("Voluntary"), tags$th("Active"), tags$th("")
               )),
               tags$tbody(lapply(seq_len(nrow(all_posts)), function(i) {
                 r        <- all_posts[i, ]
                 is_act   <- isTRUE(as.integer(r$active)  == 1L)
                 in_draw  <- isTRUE(as.integer(r$in_draw) == 1L)
+                is_vol   <- isTRUE(as.integer(r$voluntary) == 1L) || isTRUE(as.integer(r$cat_voluntary) == 1L)
                 clr_wage <- compute_clearing_wage(r$category_id, rid, as.integer(r$slots %||% 1L))
                 tags$tr(
                   tags$td(r$job_name %||% ""),
@@ -4219,6 +4234,8 @@ server <- function(input, output, session) {
                   ),
                   tags$td(make_flag_btn("\U2713 In Draw", "\U2715 Skip Draw", "toggle_post_in_draw",
                                         r$id, in_draw, "btn-success", "btn-outline-secondary")),
+                  tags$td(make_flag_btn("\U2713 Voluntary", "\U2715 Required", "toggle_post_voluntary",
+                                        r$id, is_vol, "btn-warning", "btn-outline-secondary")),
                   tags$td(make_flag_btn("\U2713 Active", "\U2715 Inactive", "toggle_post_active",
                                         r$id, is_act, "btn-success", "btn-outline-secondary")),
                   tags$td(
