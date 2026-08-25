@@ -1705,12 +1705,14 @@ server <- function(input, output, session) {
           ORDER BY ja.created_at DESC LIMIT 1;",
         list(uid, rid)), error = function(e) data.frame())
 
+      # Every category with an active post is biddable — including volunteer
+      # and cold-call categories, so wage bidding can cover them when it goes
+      # into effect later in the semester.
       categories <- tryCatch(db_query(
         "SELECT DISTINCT jc.id, jc.name, jc.default_wage, jc.description
          FROM job_categories jc
          JOIN job_posts jp ON jp.category_id=jc.id
          WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
-           AND COALESCE(jp.in_draw, COALESCE(jc.in_draw,1), 1)=1
          ORDER BY jc.display_order, jc.name;",
         list(rid)), error = function(e) data.frame())
 
@@ -6458,7 +6460,7 @@ server <- function(input, output, session) {
     if (!nzchar(uid) || is.na(post_id) || post_id <= 0) {
       showNotification("Select a student and event type.", type = "error"); return()
     }
-    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(db_query("SELECT id, assignment_mode FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
                         error = function(e) data.frame())
     if (!nrow(rid_row)) {
       showNotification("No active round.", type = "error"); return()
@@ -6468,7 +6470,7 @@ server <- function(input, output, session) {
                       error = function(e) data.frame())
     dname <- if (nrow(u_row)) u_row$display_name[1] %||% uid else uid
     post_row <- tryCatch(db_query(
-      "SELECT jp.id, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
+      "SELECT jp.id, jp.category_id, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
        FROM job_posts jp
        LEFT JOIN job_categories jc ON jc.id = jp.category_id
        WHERE jp.id=? AND jp.round_id=?
@@ -6481,6 +6483,17 @@ server <- function(input, output, session) {
     }
     post_id   <- as.integer(post_row$id[1])
     wage_val  <- as.numeric(post_row$tokens[1] %||% 0)
+    # In wage-bidding rounds a volunteer is paid the wage they bid for that
+    # category, when they have one; the audit queue is the review step.
+    if (identical(rid_row$assignment_mode[1] %||% "random", "wage_bidding") &&
+        !is.na(post_row$category_id[1] %||% NA)) {
+      bid_row <- tryCatch(db_query(
+        "SELECT min_wage FROM wage_bids WHERE round_id=? AND category_id=? AND user_id=?;",
+        list(rid, as.integer(post_row$category_id[1]), uid)),
+        error = function(e) data.frame())
+      if (nrow(bid_row) && !is.na(bid_row$min_wage[1] %||% NA))
+        wage_val <- as.numeric(bid_row$min_wage[1])
+    }
     half_mult <- tryCatch(as.numeric(get_setting("half_wage_multiplier","0.5")),
                           error=function(e) 0.5)
     tokens_to_award <- switch(outcome_type,
