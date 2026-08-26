@@ -408,6 +408,15 @@ db_exec("CREATE TABLE IF NOT EXISTS job_templates(
   active         INTEGER DEFAULT 1,
   created_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+# Expected demand for volunteer jobs, posted per round (e.g. at the start of
+# class). Used by the 'posted' volunteer clearing rule.
+db_exec("CREATE TABLE IF NOT EXISTS volunteer_demand(
+  round_id    INTEGER,
+  category_id INTEGER,
+  demand      INTEGER DEFAULT 1,
+  updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (round_id, category_id)
+);")
 # Job assignment outcome tracking (safe on re-run via try; must come AFTER the
 # CREATE TABLE statements above so a fresh database gets the columns too)
 try(db_exec("ALTER TABLE job_assignments ADD COLUMN outcome TEXT;"), silent = TRUE)
@@ -878,10 +887,16 @@ compute_student_grade <- function(uid) {
 }
 
 # Uniform wage paid to every volunteer in a category for a round, derived from
-# that round's wage bids. Rule "lowest": the lowest bid. Rule "demand": the
-# k-th lowest bid, where k is the volunteer post's slots (the instructor's
-# demand for that job over a class session), capped at the number of bids.
-# NA when there are no bids (caller falls back to the post wage).
+# that round's wage bids (no rationing — the wage applies to whoever volunteers).
+# Rules:
+#   "lowest" — the lowest bid (k = 1).
+#   "demand" — the k-th lowest bid, k = the volunteer post's slots (standing
+#              demand for that job over a class session).
+#   "posted" — the k-th lowest bid, k = the expected demand posted for this
+#              round (set at the start of class in the Live Tracker); falls
+#              back to the post's slots when none is posted.
+# k is capped at the number of bids. NA when there are no bids (caller falls
+# back to the post wage).
 volunteer_clearing_wage <- function(round_id, category_id, slots, query_fn = db_query) {
   if (is.na(round_id %||% NA) || is.na(category_id %||% NA)) return(NA_real_)
   bids <- tryCatch(query_fn(
@@ -892,8 +907,17 @@ volunteer_clearing_wage <- function(round_id, category_id, slots, query_fn = db_
     error = function(e) data.frame())
   if (!nrow(bids)) return(NA_real_)
   rule <- as.character(get_setting("volunteer_clearing_rule", "lowest"))
-  k <- if (identical(rule, "demand")) min(nrow(bids), max(1L, as.integer(slots %||% 1L))) else 1L
-  as.numeric(bids$min_wage[k])
+  k <- if (identical(rule, "demand")) {
+    max(1L, as.integer(slots %||% 1L))
+  } else if (identical(rule, "posted")) {
+    posted <- tryCatch(query_fn(
+      "SELECT demand FROM volunteer_demand WHERE round_id=? AND category_id=?;",
+      list(as.integer(round_id), as.integer(category_id))),
+      error = function(e) data.frame())
+    if (nrow(posted) && !is.na(posted$demand[1] %||% NA)) max(1L, as.integer(posted$demand[1]))
+    else max(1L, as.integer(slots %||% 1L))
+  } else 1L
+  as.numeric(bids$min_wage[min(nrow(bids), k)])
 }
 
 compute_clearing_wage <- function(category_id, round_id, slots) {
@@ -1594,7 +1618,8 @@ server <- function(input, output, session) {
       t3 <- tryCatch(db_query("SELECT assignments_revealed FROM arcade_state WHERE id=1;")$assignments_revealed[1] %||% "0", error=function(e)"")
       t4 <- tryCatch(db_query("SELECT MAX(created_at || COALESCE(committed_at,'')) ts FROM live_score_events;")$ts[1] %||% "", error=function(e)"")
       t5 <- tryCatch(db_query("SELECT MAX(updated_at) ts FROM assignment_reveals;")$ts[1] %||% "", error=function(e)"")
-      paste(t1, t2, t3, t4, t5)
+      t6 <- tryCatch(db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(updated_at),'') ts FROM volunteer_demand;")$ts[1] %||% "", error=function(e)"")
+      paste(t1, t2, t3, t4, t5, t6)
     },
     valueFunc = function() {
       if (!isTRUE(rv$is_admin)) return(list(
@@ -1700,7 +1725,10 @@ server <- function(input, output, session) {
       r3 <- tryCatch(
         db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(id),0) ts FROM job_posts;")$ts[1] %||% "",
         error = function(e) "")
-      paste(uid, r1, r2, r3, sep = "|")
+      r4 <- tryCatch(
+        db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(updated_at),'') ts FROM volunteer_demand;")$ts[1] %||% "",
+        error = function(e) "")
+      paste(uid, r1, r2, r3, r4, sep = "|")
     },
     valueFunc = function() {
       uid <- rv$user_id
@@ -1990,6 +2018,40 @@ server <- function(input, output, session) {
             span(style = "font-size:.83rem;color:#888;",
                  paste0("Closes: ", r$bid_close_date))
         )
+      },
+
+      # Volunteer wages (uniform clearing wage per category in wage-bidding rounds)
+      if (nrow(jp$round) &&
+          identical(jp$round$assignment_mode[1] %||% "random", "wage_bidding")) {
+        vrid <- jp$round$id[1]
+        vposts <- tryCatch(db_query(
+          "SELECT jp2.job_name, jp2.category_id, jp2.slots,
+                  COALESCE(jp2.wage_override, jc.default_wage, 1) AS fallback_wage
+           FROM job_posts jp2
+           LEFT JOIN job_categories jc ON jc.id=jp2.category_id
+           WHERE jp2.round_id=? AND COALESCE(jp2.active,1)=1
+             AND (COALESCE(jc.voluntary,0)=1 OR COALESCE(jp2.voluntary,0)=1)
+           ORDER BY jp2.display_order, jp2.job_name;", list(vrid)),
+          error = function(e) data.frame())
+        if (nrow(vposts)) {
+          tagList(
+            div(class = "sec-label", "Volunteer Wages This Round"),
+            div(class = "jm-card",
+              tags$p(style = "color:#555;font-size:.83rem;margin:0 0 .4rem;",
+                     "Everyone who volunteers for a job earns the same market wage, set by this round's bids."),
+              lapply(seq_len(nrow(vposts)), function(vi) {
+                vp <- vposts[vi, ]
+                cw <- volunteer_clearing_wage(vrid, vp$category_id,
+                                              as.integer(vp$slots %||% 1L),
+                                              query_fn = db_query)
+                w  <- if (!is.na(cw)) cw else as.numeric(vp$fallback_wage %||% 1)
+                div(style = "display:flex;justify-content:space-between;font-size:.88rem;padding:.15rem 0;",
+                    span(vp$job_name %||% ""),
+                    span(style = "font-weight:600;", sprintf("%g tokens", w)))
+              })
+            )
+          )
+        }
       },
 
       # Current assignment
@@ -4423,7 +4485,41 @@ server <- function(input, output, session) {
         } else {
           et_choices <- setNames(vol_cats$id,
                                  paste0(vol_cats$name, " (+", as.integer(vol_cats$tokens), ")"))
+          vol_rule <- as.character(get_setting("volunteer_clearing_rule", "lowest"))
+          demand_editor <- if (identical(mode, "wage_bidding") && identical(vol_rule, "posted") && !is.na(rid)) {
+            dcats <- tryCatch(db_query(
+              "SELECT jc.id, jc.name, MIN(jp.slots) AS slots, vd.demand
+               FROM job_posts jp
+               JOIN job_categories jc ON jc.id=jp.category_id
+               LEFT JOIN volunteer_demand vd ON vd.round_id=jp.round_id AND vd.category_id=jc.id
+               WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+                 AND (COALESCE(jc.voluntary,0)=1 OR COALESCE(jp.voluntary,0)=1)
+               GROUP BY jc.id, jc.name, vd.demand
+               ORDER BY jc.display_order, jc.name;", list(rid)),
+              error = function(e) data.frame())
+            if (nrow(dcats)) {
+              div(style = paste0("background:#f0f4ff;border-left:3px solid #4a6fa5;padding:.5rem .8rem;",
+                                 "border-radius:0 4px 4px 0;margin-bottom:.6rem;"),
+                tags$b(style = "font-size:.85rem;", "Today's expected demand (posted clearing rule)"),
+                tags$p(style = "color:#555;font-size:.8rem;margin:.2rem 0 .4rem;",
+                       "Post how many of each volunteer job you expect to take this class. The clearing wage is the k-th lowest bid."),
+                fluidRow(lapply(seq_len(nrow(dcats)), function(di) {
+                  dr <- dcats[di, ]
+                  cur_k <- if (!is.na(dr$demand %||% NA)) as.integer(dr$demand)
+                           else max(1L, as.integer(dr$slots %||% 1L))
+                  cw <- volunteer_clearing_wage(rid, dr$id, cur_k, query_fn = db_query)
+                  column(3,
+                    numericInput(paste0("vd_", as.integer(dr$id)),
+                                 sprintf("%s%s", dr$name,
+                                         if (!is.na(cw)) sprintf(" (wage %g)", cw) else " (no bids)"),
+                                 value = cur_k, min = 1, step = 1))
+                })),
+                actionButton("post_vol_demand_btn", "Post demand", class = "btn btn-sm btn-primary")
+              )
+            } else NULL
+          } else NULL
           tagList(
+            demand_editor,
             div(class = "live-toolbar",
               selectInput("part_event_type", "Job:", choices = et_choices, width = "100%")
             ),
@@ -4955,13 +5051,15 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Volunteer Clearing Wage"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "In wage-bidding rounds, every volunteer in a category is paid the same equilibrium wage from that round's bids — not their own bid. ",
+               "In wage-bidding rounds, every volunteer in a category is paid the same equilibrium wage from that round's bids — not their own bid, and nobody is rationed out. ",
                tags$b("Lowest bid"), " pays the cheapest bid in the category. ",
-               tags$b("Demand-based"), " pays the k-th lowest bid, where k is the volunteer post's slots — set slots to how many of that job you expect to take in a class session. ",
+               tags$b("Demand-based"), " pays the k-th lowest bid, where k is the volunteer post's slots — a standing demand you set once. ",
+               tags$b("Posted demand"), " is the same k-th-lowest rule, but you post k for today's class in the Live Tracker (Voluntary Participation panel), e.g. at the start of class; it falls back to the post's slots until you post one. ",
                "With no bids in a category, the post's default wage is used."),
-        selectInput("vol_clearing_rule_sel", NULL, width = "360px",
+        selectInput("vol_clearing_rule_sel", NULL, width = "420px",
                     choices = c("Lowest bid" = "lowest",
-                                "Demand-based (k-th lowest bid, k = post slots)" = "demand"),
+                                "Demand-based (k-th lowest bid, k = post slots)" = "demand",
+                                "Posted demand (set k per class in Live Tracker)" = "posted"),
                     selected = as.character(get_setting("volunteer_clearing_rule", "lowest"))),
         actionButton("save_vol_clearing_btn", "Save", class = "btn btn-sm btn-primary"),
 
@@ -6841,14 +6939,49 @@ server <- function(input, output, session) {
   observeEvent(input$save_vol_clearing_btn, {
     req(rv$is_admin)
     rule <- input$vol_clearing_rule_sel %||% "lowest"
-    if (!rule %in% c("lowest", "demand")) rule <- "lowest"
+    if (!rule %in% c("lowest", "demand", "posted")) rule <- "lowest"
     db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('volunteer_clearing_rule',?);",
             list(rule))
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification(
-      if (identical(rule, "demand")) "Volunteer clearing wage: k-th lowest bid (k = post slots)."
-      else "Volunteer clearing wage: lowest bid.",
+      switch(rule,
+        demand = "Volunteer clearing wage: k-th lowest bid (k = post slots).",
+        posted = "Volunteer clearing wage: k-th lowest bid (k = demand posted per class in Live Tracker).",
+        "Volunteer clearing wage: lowest bid."),
       type = "message")
+  })
+
+  observeEvent(input$post_vol_demand_btn, {
+    req(rv$is_admin)
+    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                        error = function(e) data.frame())
+    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    rid <- rid_row$id[1]
+    dcats <- tryCatch(db_query(
+      "SELECT DISTINCT jc.id, jc.name
+       FROM job_posts jp
+       JOIN job_categories jc ON jc.id=jp.category_id
+       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+         AND (COALESCE(jc.voluntary,0)=1 OR COALESCE(jp.voluntary,0)=1);", list(rid)),
+      error = function(e) data.frame())
+    if (!nrow(dcats)) { showNotification("No volunteer categories this round.", type = "error"); return() }
+    wages <- character(0)
+    for (di in seq_len(nrow(dcats))) {
+      cid <- as.integer(dcats$id[di])
+      v   <- suppressWarnings(as.integer(input[[paste0("vd_", cid)]] %||% NA))
+      if (is.na(v) || v < 1) next
+      db_exec(
+        "INSERT INTO volunteer_demand(round_id, category_id, demand, updated_at)
+         VALUES(?,?,?,CURRENT_TIMESTAMP)
+         ON CONFLICT(round_id, category_id)
+         DO UPDATE SET demand=excluded.demand, updated_at=CURRENT_TIMESTAMP;",
+        list(rid, cid, v))
+      cw <- volunteer_clearing_wage(rid, cid, v, query_fn = db_query)
+      wages <- c(wages, sprintf("%s: k=%d → %s", dcats$name[di], v,
+                                if (!is.na(cw)) sprintf("%g tokens", cw) else "no bids"))
+    }
+    if (!length(wages)) { showNotification("Enter a demand of at least 1.", type = "warning"); return() }
+    showNotification(paste("Demand posted.", paste(wages, collapse = " · ")), type = "message")
   })
 
   # ── Job draw ──────────────────────────────────────────────────────────────────
