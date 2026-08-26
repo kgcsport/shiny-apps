@@ -431,6 +431,7 @@ db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('class_start_tim
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('bid_lock_lead_min','60');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('bid_reopen_time','17:00');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('class_tz','America/New_York');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('volunteer_clearing_rule','lowest');")
 
 # ── Default job catalog ───────────────────────────────────────────────────────
 # Simplified catalog. Categories are the level students bid on: assigned class
@@ -874,6 +875,25 @@ compute_student_grade <- function(uid) {
 
   list(cats = cat_summary, items = all_items, overall = overall,
        graded_weight = graded_wt, total_weight = sum(cats$weight, na.rm = TRUE))
+}
+
+# Uniform wage paid to every volunteer in a category for a round, derived from
+# that round's wage bids. Rule "lowest": the lowest bid. Rule "demand": the
+# k-th lowest bid, where k is the volunteer post's slots (the instructor's
+# demand for that job over a class session), capped at the number of bids.
+# NA when there are no bids (caller falls back to the post wage).
+volunteer_clearing_wage <- function(round_id, category_id, slots, query_fn = db_query) {
+  if (is.na(round_id %||% NA) || is.na(category_id %||% NA)) return(NA_real_)
+  bids <- tryCatch(query_fn(
+    "SELECT min_wage FROM wage_bids
+     WHERE round_id=? AND category_id=? AND min_wage IS NOT NULL
+     ORDER BY min_wage ASC;",
+    list(as.integer(round_id), as.integer(category_id))),
+    error = function(e) data.frame())
+  if (!nrow(bids)) return(NA_real_)
+  rule <- as.character(get_setting("volunteer_clearing_rule", "lowest"))
+  k <- if (identical(rule, "demand")) min(nrow(bids), max(1L, as.integer(slots %||% 1L))) else 1L
+  as.numeric(bids$min_wage[k])
 }
 
 compute_clearing_wage <- function(category_id, round_id, slots) {
@@ -4124,13 +4144,24 @@ server <- function(input, output, session) {
     # Voluntary job posts for participation panel (Panel 2)
     vol_cats <- if (!is.na(rid)) {
       tryCatch(db_query(
-        "SELECT jp.id, jp.job_name AS name, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
+        "SELECT jp.id, jp.job_name AS name, jp.category_id, jp.slots,
+                COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
          FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
          WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
            AND (COALESCE(jc.voluntary,0)=1 OR COALESCE(jp.voluntary,0)=1)
          ORDER BY jp.job_name;", list(rid)),
         error = function(e) data.frame())
     } else data.frame()
+    # In wage-bidding rounds volunteers are paid the category's clearing wage,
+    # so show that amount on the logging buttons instead of the post default.
+    if (nrow(vol_cats) && identical(mode, "wage_bidding")) {
+      for (vi in seq_len(nrow(vol_cats))) {
+        cw <- volunteer_clearing_wage(rid, vol_cats$category_id[vi],
+                                      as.integer(vol_cats$slots[vi] %||% 1L),
+                                      query_fn = db_query)
+        if (!is.na(cw)) vol_cats$tokens[vi] <- cw
+      }
+    }
 
     # Build student choices: bidders for current round first
     bidder_ids <- if (!is.na(rid) && nrow(students_sec)) {
@@ -4919,6 +4950,20 @@ server <- function(input, output, session) {
             actionButton("save_hwm_btn", "Save", class = "btn btn-sm btn-primary")
           )
         },
+
+        # ── Volunteer Clearing Wage ───────────────────────────────────────────────
+        tags$hr(),
+        tags$h6(style = "font-weight:700;color:#951829;", "Volunteer Clearing Wage"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+               "In wage-bidding rounds, every volunteer in a category is paid the same equilibrium wage from that round's bids — not their own bid. ",
+               tags$b("Lowest bid"), " pays the cheapest bid in the category. ",
+               tags$b("Demand-based"), " pays the k-th lowest bid, where k is the volunteer post's slots — set slots to how many of that job you expect to take in a class session. ",
+               "With no bids in a category, the post's default wage is used."),
+        selectInput("vol_clearing_rule_sel", NULL, width = "360px",
+                    choices = c("Lowest bid" = "lowest",
+                                "Demand-based (k-th lowest bid, k = post slots)" = "demand"),
+                    selected = as.character(get_setting("volunteer_clearing_rule", "lowest"))),
+        actionButton("save_vol_clearing_btn", "Save", class = "btn btn-sm btn-primary"),
 
         # ── Templates ─────────────────────────────────────────────────────────────
         tags$hr(),
@@ -6470,7 +6515,7 @@ server <- function(input, output, session) {
                       error = function(e) data.frame())
     dname <- if (nrow(u_row)) u_row$display_name[1] %||% uid else uid
     post_row <- tryCatch(db_query(
-      "SELECT jp.id, jp.category_id, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
+      "SELECT jp.id, jp.category_id, jp.slots, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
        FROM job_posts jp
        LEFT JOIN job_categories jc ON jc.id = jp.category_id
        WHERE jp.id=? AND jp.round_id=?
@@ -6483,16 +6528,16 @@ server <- function(input, output, session) {
     }
     post_id   <- as.integer(post_row$id[1])
     wage_val  <- as.numeric(post_row$tokens[1] %||% 0)
-    # In wage-bidding rounds a volunteer is paid the wage they bid for that
-    # category, when they have one; the audit queue is the review step.
+    # In wage-bidding rounds every volunteer in a category is paid the same
+    # equilibrium wage from that round's bids — not their own bid. The rule is
+    # either the lowest bid, or (demand-based) the k-th lowest where k is the
+    # post's slots: the instructor's demand for that job over the session.
     if (identical(rid_row$assignment_mode[1] %||% "random", "wage_bidding") &&
         !is.na(post_row$category_id[1] %||% NA)) {
-      bid_row <- tryCatch(db_query(
-        "SELECT min_wage FROM wage_bids WHERE round_id=? AND category_id=? AND user_id=?;",
-        list(rid, as.integer(post_row$category_id[1]), uid)),
-        error = function(e) data.frame())
-      if (nrow(bid_row) && !is.na(bid_row$min_wage[1] %||% NA))
-        wage_val <- as.numeric(bid_row$min_wage[1])
+      cw <- volunteer_clearing_wage(rid, as.integer(post_row$category_id[1]),
+                                    as.integer(post_row$slots[1] %||% 1L),
+                                    query_fn = db_query)
+      if (!is.na(cw)) wage_val <- cw
     }
     half_mult <- tryCatch(as.numeric(get_setting("half_wage_multiplier","0.5")),
                           error=function(e) 0.5)
@@ -6791,6 +6836,19 @@ server <- function(input, output, session) {
     db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('half_wage_multiplier',?);",
             list(as.character(hwm)))
     showNotification(sprintf("Half-wage multiplier set to %.2f.", hwm), type = "message")
+  })
+
+  observeEvent(input$save_vol_clearing_btn, {
+    req(rv$is_admin)
+    rule <- input$vol_clearing_rule_sel %||% "lowest"
+    if (!rule %in% c("lowest", "demand")) rule <- "lowest"
+    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('volunteer_clearing_rule',?);",
+            list(rule))
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification(
+      if (identical(rule, "demand")) "Volunteer clearing wage: k-th lowest bid (k = post slots)."
+      else "Volunteer clearing wage: lowest bid.",
+      type = "message")
   })
 
   # ── Job draw ──────────────────────────────────────────────────────────────────
