@@ -170,7 +170,7 @@ test_that("build_cli_cmd: chat returns raw prompt", {
 
 test_that("build_cli_cmd: single quotes in prompt are shell-escaped", {
   cmd <- build_cli_cmd("claude_code", "it's a test")
-  expect_match(cmd, "it'\\\\''s a test")
+  expect_match(cmd, "it'''s a test", fixed = TRUE)
 })
 
 # ── R file validation (parse-based) ──────────────────────────────────────────

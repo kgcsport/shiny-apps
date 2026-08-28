@@ -2,9 +2,6 @@
 # Unit tests for token_ledger operations (student_balance, ledger_add, spend_tokens).
 # Run: testthat::test_file("tests/unit/test-token-ledger.R")
 
-source(file.path(dirname(dirname(rstudioapi::getSourceEditorContext()$path %||% ".")),
-                 "unit", "helpers.R"), local = TRUE)
-# Portable source path:
 here <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) ".")
 source(file.path(here, "helpers.R"), local = TRUE)
 

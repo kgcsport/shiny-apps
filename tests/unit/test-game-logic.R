@@ -290,7 +290,7 @@ test_that("spend_tokens: extension purchase reduces balance", {
 safe_eval_rule <- function(rule) {
   # Mirrors question_cost_for_index() sanitization logic from class-job-market
   sanitized <- gsub("\\b(question|index|q|n)\\b", "0", rule)
-  if (!grepl("^[0-9 .+\\-*/^()[:space:]]+$", sanitized)) return(NULL)
+  if (!grepl("^[0-9 .+*/^()\\s-]+$", sanitized, perl = TRUE)) return(NULL)
   tryCatch(eval(parse(text = sanitized)), error = function(e) NULL)
 }
 

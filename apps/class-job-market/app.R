@@ -326,7 +326,7 @@ ensure_column("live_score_events", "outcome TEXT")
 ensure_column("live_score_events", "tokens REAL")
 ensure_column("live_score_events", "logged_by TEXT")
 ensure_column("live_score_events", "committed_at TEXT")
-ensure_column("live_score_events", "created_at TEXT DEFAULT CURRENT_TIMESTAMP")
+ensure_column("live_score_events", "created_at TEXT")
 
 db_exec("CREATE TABLE IF NOT EXISTS assignment_reveals(
   round_id   INTEGER,
@@ -413,7 +413,7 @@ ensure_column("job_posts", "display_order INTEGER DEFAULT 99")
 ensure_column("job_posts", "voluntary INTEGER DEFAULT 0")
 ensure_column("job_posts", "in_draw INTEGER DEFAULT 1")
 ensure_column("job_posts", "selection_time TEXT")
-ensure_column("job_posts", "created_at TEXT DEFAULT CURRENT_TIMESTAMP")
+ensure_column("job_posts", "created_at TEXT")
 ensure_column("job_categories", "selection_time TEXT")
 ensure_column("job_categories", "contribution_type TEXT")
 ensure_column("job_categories", "purpose TEXT")
@@ -438,7 +438,7 @@ ensure_column("job_assignments", "outcome TEXT")
 ensure_column("job_assignments", "tokens_awarded INTEGER DEFAULT 0")
 ensure_column("job_assignments", "updated_at TEXT")
 ensure_column("job_assignments", "tokens_credited INTEGER DEFAULT 1")
-ensure_column("job_assignments", "created_at TEXT DEFAULT CURRENT_TIMESTAMP")
+ensure_column("job_assignments", "created_at TEXT")
 db_exec("CREATE TABLE IF NOT EXISTS wage_bids(
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id     INTEGER,
@@ -449,7 +449,7 @@ db_exec("CREATE TABLE IF NOT EXISTS wage_bids(
   UNIQUE(round_id, category_id, user_id)
 );")
 ensure_column("wage_bids", "min_wage REAL")
-ensure_column("wage_bids", "submitted_at TEXT DEFAULT CURRENT_TIMESTAMP")
+ensure_column("wage_bids", "submitted_at TEXT")
 db_exec("CREATE TABLE IF NOT EXISTS application_bids(
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id     INTEGER,
@@ -460,7 +460,7 @@ db_exec("CREATE TABLE IF NOT EXISTS application_bids(
   UNIQUE(round_id, category_id, user_id)
 );")
 ensure_column("application_bids", "tickets INTEGER DEFAULT 0")
-ensure_column("application_bids", "submitted_at TEXT DEFAULT CURRENT_TIMESTAMP")
+ensure_column("application_bids", "submitted_at TEXT")
 db_exec("CREATE TABLE IF NOT EXISTS job_templates(
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   name           TEXT NOT NULL,
@@ -478,7 +478,7 @@ ensure_column("job_templates", "selection_time TEXT")
 ensure_column("job_templates", "voluntary INTEGER DEFAULT 0")
 ensure_column("job_templates", "in_draw INTEGER DEFAULT 1")
 ensure_column("job_templates", "display_order INTEGER DEFAULT 99")
-ensure_column("job_templates", "created_at TEXT DEFAULT CURRENT_TIMESTAMP")
+ensure_column("job_templates", "created_at TEXT")
 
 # Compatibility backfills for live databases created by older test/setup code.
 backfill_cols <- function(table) {
