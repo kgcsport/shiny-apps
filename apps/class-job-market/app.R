@@ -30,6 +30,10 @@ source(shared_sqlite)
 source(file.path(dirname(shared_sqlite), "demo_login.R"))
 
 `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 && !is.na(a[1])) a else b
+nonempty_values <- function(x) {
+  x <- as.character(x %||% character(0))
+  x[!is.na(x) & nzchar(x)]
+}
 
 # ── Google OAuth config ───────────────────────────────────────────────────────
 GOOGLE_CLIENT_ID     <- Sys.getenv("GOOGLE_CLIENT_ID", "")
@@ -4256,31 +4260,38 @@ server <- function(input, output, session) {
 
     # Section picker data
     all_sections <- tryCatch(
-      sort(unique(Filter(nzchar,
-        db_query("SELECT DISTINCT section FROM users WHERE COALESCE(active,1)=1;")$section
-          %||% character(0)))),
+      sort(unique(nonempty_values(
+        db_query("SELECT DISTINCT section FROM users WHERE COALESCE(active,1)=1;")$section))),
       error = function(e) character(0))
     sec_choices <- c("(All sections)" = "", setNames(all_sections, all_sections))
     cur_sec <- rv$active_section %||% ""
 
     # Filter assignments to active section
-    assignments_show <- if (nzchar(cur_sec) && nrow(td$assignments))
-      td$assignments[td$assignments$section == cur_sec, , drop = FALSE]
-    else td$assignments
+    assignments_show <- td$assignments
+    if (nzchar(cur_sec) && nrow(assignments_show) && "section" %in% names(assignments_show)) {
+      keep <- !is.na(assignments_show$section) & as.character(assignments_show$section) == cur_sec
+      assignments_show <- assignments_show[keep, , drop = FALSE]
+    }
     n_show <- nrow(assignments_show)
 
-    students_sec <- if (nrow(td$students) && nzchar(cur_sec))
-      td$students[td$students$section == cur_sec, , drop = FALSE]
-    else td$students
-    pending_show <- if (nzchar(cur_sec) && nrow(td$pending_scores))
-      td$pending_scores[td$pending_scores$section == cur_sec, , drop = FALSE]
-    else td$pending_scores
+    students_sec <- td$students
+    if (nzchar(cur_sec) && nrow(students_sec) && "section" %in% names(students_sec)) {
+      keep <- !is.na(students_sec$section) & as.character(students_sec$section) == cur_sec
+      students_sec <- students_sec[keep, , drop = FALSE]
+    }
+    pending_show <- td$pending_scores
+    if (nzchar(cur_sec) && nrow(pending_show) && "section" %in% names(pending_show)) {
+      keep <- !is.na(pending_show$section) & as.character(pending_show$section) == cur_sec
+      pending_show <- pending_show[keep, , drop = FALSE]
+    }
 
     # Round ID
     rid <- if (nrow(round)) round$id[1] else NA_integer_
     section_revealed <- FALSE
     if (!is.na(rid) && nzchar(cur_sec) && nrow(td$section_reveals)) {
-      sr <- td$section_reveals[td$section_reveals$section == cur_sec, , drop = FALSE]
+      keep_sr <- !is.na(td$section_reveals$section) &
+        as.character(td$section_reveals$section) == cur_sec
+      sr <- td$section_reveals[keep_sr, , drop = FALSE]
       section_revealed <- isTRUE(nrow(sr) && as.integer(sr$revealed[1] %||% 0L) == 1L)
     }
 
@@ -4312,9 +4323,11 @@ server <- function(input, output, session) {
         "SELECT DISTINCT user_id FROM wage_bids WHERE round_id=?;",
         list(rid))$user_id, error = function(e) character(0))
     } else character(0)
-    stu_nm  <- students_sec$display_name %||% students_sec$user_id
-    stu_sec <- students_sec$section %||% ""
-    stu_lbl <- ifelse(nzchar(stu_sec), paste0(stu_nm, " (", stu_sec, ")"), stu_nm)
+      stu_nm  <- students_sec$display_name %||% students_sec$user_id
+      stu_sec <- students_sec$section %||% ""
+      stu_nm[is.na(stu_nm) | !nzchar(stu_nm)] <- students_sec$user_id[is.na(stu_nm) | !nzchar(stu_nm)]
+      stu_sec[is.na(stu_sec)] <- ""
+      stu_lbl <- ifelse(nzchar(stu_sec), paste0(stu_nm, " (", stu_sec, ")"), stu_nm)
     stu_choices_raw <- setNames(students_sec$user_id, stu_lbl)
     is_bidder   <- students_sec$user_id %in% bidder_ids
     stu_choices <- c(stu_choices_raw[is_bidder], stu_choices_raw[!is_bidder])
@@ -4751,7 +4764,9 @@ server <- function(input, output, session) {
                 )),
                 tags$tbody(lapply(seq_len(nrow(merged)), function(i) {
                   row <- merged[i, ]
-                  sec_label <- if (nzchar(row$section)) row$section else "(no section)"
+                  sec_value <- as.character(row$section %||% "")
+                  if (is.na(sec_value)) sec_value <- ""
+                  sec_label <- if (nzchar(sec_value)) sec_value else "(no section)"
                   n_sub   <- as.integer(row$n_sub   %||% 0)
                   n_total <- as.integer(row$n_total %||% n_sub)
                   n_miss  <- as.integer(row$n_missing %||% 0)
@@ -4780,8 +4795,7 @@ server <- function(input, output, session) {
             )
           }
         )
-      }),
-
+      })
     )
   })
 
@@ -6127,9 +6141,10 @@ server <- function(input, output, session) {
           }
         }
       }
-      sections <- c("All", sort(unique(Filter(nzchar, as.character(students$section %||% character(0))))))
+      sections <- c("All", sort(unique(nonempty_values(students$section))))
       stu_lbl  <- if (nrow(students)) {
         sec_lbl <- as.character(students$section %||% "")
+        sec_lbl[is.na(sec_lbl)] <- ""
         nm_lbl  <- as.character(students$display_name %||% students$user_id)
         bad_nm  <- is.na(nm_lbl) | !nzchar(nm_lbl)
         nm_lbl[bad_nm] <- students$user_id[bad_nm]
