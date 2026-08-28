@@ -25,6 +25,7 @@ R_RENVIRON_SITE="$(Rscript --no-save --no-restore -e 'cat(file.path(R.home("etc"
   [ -n "${GOOGLE_CLIENT_ID:-}"     ] && printf 'GOOGLE_CLIENT_ID=%s\n'     "$GOOGLE_CLIENT_ID"
   [ -n "${GOOGLE_CLIENT_SECRET:-}" ] && printf 'GOOGLE_CLIENT_SECRET=%s\n' "$GOOGLE_CLIENT_SECRET"
   [ -n "${SHINY_APP_URL:-}"        ] && printf 'SHINY_APP_URL=%s\n'        "$SHINY_APP_URL"
+  [ -n "${ADMIN_EMAILS:-}"         ] && printf 'ADMIN_EMAILS=%s\n'         "$ADMIN_EMAILS"
 } >> "$R_RENVIRON_SITE"
 
 awk '

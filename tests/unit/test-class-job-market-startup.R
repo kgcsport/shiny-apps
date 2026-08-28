@@ -61,7 +61,7 @@ test_that("class-job-market starts against a fresh DB with required tables and c
 
 test_that("ADMIN_EMAILS bootstraps Google admins on fresh DB startup", {
   with_app_env({
-    Sys.setenv(ADMIN_EMAILS = "kcoombs@vassar.edu, other-admin@vassar.edu")
+    Sys.setenv(ADMIN_EMAILS = "'kcoombs@vassar.edu', other-admin@vassar.edu")
     expect_error(suppressWarnings(source_app()), NA)
     con <- DBI::dbConnect(RSQLite::SQLite(), db_path())
     on.exit(suppressWarnings(try(DBI::dbDisconnect(con), silent = TRUE)), add = TRUE)

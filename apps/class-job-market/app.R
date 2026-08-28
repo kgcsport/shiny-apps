@@ -716,6 +716,7 @@ make_token <- function() {
 }
 bootstrap_admin_emails <- function() {
   emails <- trimws(strsplit(Sys.getenv("ADMIN_EMAILS", ""), ",", fixed = TRUE)[[1]])
+  emails <- gsub("^[\"']|[\"']$", "", emails)
   emails <- unique(tolower(emails[nzchar(emails)]))
   for (email in emails) {
     db_exec(
