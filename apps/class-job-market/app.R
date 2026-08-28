@@ -1632,19 +1632,32 @@ server <- function(input, output, session) {
       students <- tryCatch(db_query(
         "SELECT u.user_id, u.display_name, u.section,
                 COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned,
-                COALESCE(SUM(tl.amount),0) AS tokens_on_hand,
-                COALESCE(pend.tokens_pending, 0) AS tokens_pending
+                COALESCE(SUM(tl.amount),0) AS tokens_on_hand
          FROM users u
          LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
-         LEFT JOIN (
-           SELECT user_id, SUM(COALESCE(tokens_awarded,0)) AS tokens_pending
-           FROM job_assignments
-           WHERE COALESCE(tokens_credited,1)=0 AND COALESCE(tokens_awarded,0)>0
-           GROUP BY user_id
-         ) pend ON pend.user_id=u.user_id
          WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
          GROUP BY u.user_id ORDER BY u.section, u.display_name;"),
         error = function(e) data.frame())
+      ja_cols <- tryCatch(db_query("PRAGMA table_info(job_assignments);")$name,
+                          error = function(e) character(0))
+      lse_cols <- tryCatch(db_query("PRAGMA table_info(live_score_events);")$name,
+                           error = function(e) character(0))
+      if (nrow(students)) {
+        students$tokens_pending <- 0
+        if (all(c("tokens_awarded", "tokens_credited") %in% ja_cols)) {
+          pending <- tryCatch(db_query(
+            "SELECT user_id, SUM(COALESCE(tokens_awarded,0)) AS tokens_pending
+             FROM job_assignments
+             WHERE COALESCE(tokens_credited,1)=0 AND COALESCE(tokens_awarded,0)>0
+             GROUP BY user_id;"),
+            error = function(e) data.frame())
+          if (nrow(pending)) {
+            pend_map <- setNames(as.numeric(pending$tokens_pending %||% 0), pending$user_id)
+            students$tokens_pending <- as.numeric(pend_map[students$user_id])
+            students$tokens_pending[is.na(students$tokens_pending)] <- 0
+          }
+        }
+      }
       active <- tryCatch(
         db_query("SELECT active_game FROM arcade_state WHERE id=1;")$active_game[1] %||% "",
         error = function(e) "")
@@ -1669,17 +1682,11 @@ server <- function(input, output, session) {
           error = function(e) data.frame())
       } else data.frame()
       assignments <- if (!is.na(rid)) {
-        tryCatch(db_query(
-          "SELECT ja.id, ja.user_id, u.display_name, u.section, jp.job_name,
-                  ja.assigned_wage,
-                  COALESCE(ja.outcome,'') AS outcome,
-                  COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
-                  COALESCE(pse.outcome,'') AS pending_outcome,
-                  pse.tokens AS pending_tokens
-           FROM job_assignments ja
-           JOIN users u ON u.user_id=ja.user_id
-           JOIN job_posts jp ON jp.id=ja.job_post_id
-           LEFT JOIN (
+        outcome_expr <- if ("outcome" %in% ja_cols) "COALESCE(ja.outcome,'')" else "''"
+        awarded_expr <- if ("tokens_awarded" %in% ja_cols) "COALESCE(ja.tokens_awarded,0)" else "0"
+        status_filter <- if ("status" %in% ja_cols) "AND COALESCE(ja.status,'assigned')='assigned'" else ""
+        pending_join <- if (all(c("job_assignment_id", "outcome", "tokens", "event_kind", "committed_at") %in% lse_cols)) {
+          "LEFT JOIN (
              SELECT lse.job_assignment_id, lse.outcome, lse.tokens
              FROM live_score_events lse
              JOIN (
@@ -1688,13 +1695,32 @@ server <- function(input, output, session) {
                WHERE event_kind='assignment' AND committed_at IS NULL
                GROUP BY job_assignment_id
              ) latest ON latest.id=lse.id
-           ) pse ON pse.job_assignment_id=ja.id
-            WHERE ja.round_id=? AND COALESCE(ja.status,'assigned')='assigned'
-            ORDER BY u.section, u.display_name;", list(rid)),
+           ) pse ON pse.job_assignment_id=ja.id"
+        } else ""
+        pending_outcome_expr <- if (nzchar(pending_join)) "COALESCE(pse.outcome,'')" else "''"
+        pending_tokens_expr  <- if (nzchar(pending_join)) "pse.tokens" else "0"
+        tryCatch(db_query(sprintf(
+          "SELECT ja.id, ja.user_id, u.display_name, u.section, jp.job_name,
+                  ja.assigned_wage,
+                  %s AS outcome,
+                  %s AS tokens_awarded,
+                  %s AS pending_outcome,
+                  %s AS pending_tokens
+           FROM job_assignments ja
+           JOIN users u ON u.user_id=ja.user_id
+           JOIN job_posts jp ON jp.id=ja.job_post_id
+           %s
+            WHERE ja.round_id=? %s
+            ORDER BY u.section, u.display_name;",
+          outcome_expr, awarded_expr, pending_outcome_expr, pending_tokens_expr,
+          pending_join, status_filter), list(rid)),
           error = function(e) data.frame())
       } else data.frame()
       pending_scores <- if (!is.na(rid)) {
-        tryCatch(db_query(
+        required_lse <- c("id", "round_id", "user_id", "job_assignment_id",
+                          "job_post_id", "event_kind", "outcome", "tokens",
+                          "created_at", "committed_at")
+        if (!all(required_lse %in% lse_cols)) data.frame() else tryCatch(db_query(
           "SELECT lse.id, lse.round_id, lse.user_id, u.display_name, u.section,
                   lse.job_assignment_id, lse.job_post_id, lse.event_kind,
                   lse.outcome, lse.tokens, lse.created_at,
@@ -4325,7 +4351,10 @@ server <- function(input, output, session) {
             paste("Mode:", mode))
           {
             tok_rev <- isTRUE(as.integer(round$tokens_revealed[1] %||% 1L) == 1L)
-            n_pending <- if (!tok_rev && n_show > 0) {
+            ja_cols_panel <- tryCatch(db_query("PRAGMA table_info(job_assignments);")$name,
+                                      error = function(e) character(0))
+            n_pending <- if (!tok_rev && n_show > 0 &&
+                             all(c("tokens_credited", "tokens_awarded") %in% ja_cols_panel)) {
               tryCatch(db_query(
                 "SELECT COUNT(*) n FROM job_assignments WHERE round_id=? AND COALESCE(tokens_credited,1)=0 AND tokens_awarded>0;",
                 list(round$id[1]))$n[1], error=function(e) 0L)
@@ -6074,25 +6103,39 @@ server <- function(input, output, session) {
     } else if (act == "token_admin") {
       students <- tryCatch(db_query(
         "SELECT u.user_id, u.display_name, u.section,
-                COALESCE(SUM(tl.amount),0) AS tokens_on_hand,
-                COALESCE(pend.tokens_pending, 0) AS tokens_pending
+                COALESCE(SUM(tl.amount),0) AS tokens_on_hand
          FROM users u
          LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
-         LEFT JOIN (
-           SELECT user_id, SUM(COALESCE(tokens_awarded,0)) AS tokens_pending
-           FROM job_assignments
-           WHERE COALESCE(tokens_credited,1)=0 AND COALESCE(tokens_awarded,0)>0
-           GROUP BY user_id
-         ) pend ON pend.user_id=u.user_id
          WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
          GROUP BY u.user_id ORDER BY u.section, u.display_name;"),
         error = function(e) data.frame())
-      sections <- c("All", sort(unique(Filter(nzchar, students$section %||% character(0)))))
+      if (nrow(students)) {
+        students$tokens_pending <- 0
+        ja_cols <- tryCatch(db_query("PRAGMA table_info(job_assignments);")$name,
+                            error = function(e) character(0))
+        if (all(c("tokens_awarded", "tokens_credited") %in% ja_cols)) {
+          pending <- tryCatch(db_query(
+            "SELECT user_id, SUM(COALESCE(tokens_awarded,0)) AS tokens_pending
+             FROM job_assignments
+             WHERE COALESCE(tokens_credited,1)=0 AND COALESCE(tokens_awarded,0)>0
+             GROUP BY user_id;"),
+            error = function(e) data.frame())
+          if (nrow(pending)) {
+            pend_map <- setNames(as.numeric(pending$tokens_pending %||% 0), pending$user_id)
+            students$tokens_pending <- as.numeric(pend_map[students$user_id])
+            students$tokens_pending[is.na(students$tokens_pending)] <- 0
+          }
+        }
+      }
+      sections <- c("All", sort(unique(Filter(nzchar, as.character(students$section %||% character(0))))))
       stu_lbl  <- if (nrow(students)) {
-        sec_lbl <- students$section %||% ""
+        sec_lbl <- as.character(students$section %||% "")
+        nm_lbl  <- as.character(students$display_name %||% students$user_id)
+        bad_nm  <- is.na(nm_lbl) | !nzchar(nm_lbl)
+        nm_lbl[bad_nm] <- students$user_id[bad_nm]
         ifelse(nzchar(sec_lbl),
-               paste0(students$display_name," (",sec_lbl,")"),
-               students$display_name %||% students$user_id)
+               paste0(nm_lbl," (",sec_lbl,")"),
+               nm_lbl)
       } else character(0)
       tagList(
         if (nrow(students)) {
@@ -6109,11 +6152,16 @@ server <- function(input, output, session) {
               tags$tbody(lapply(seq_len(nrow(students)), function(i) {
                 r    <- students[i, ]
                 pend <- as.integer(r$tokens_pending %||% 0)
+                if (is.na(pend)) pend <- 0L
+                hand <- as.integer(r$tokens_on_hand %||% 0)
+                if (is.na(hand)) hand <- 0L
+                dname <- r$display_name %||% r$user_id
+                if (is.na(dname) || !nzchar(dname)) dname <- r$user_id
                 tags$tr(
-                  tags$td(r$display_name %||% r$user_id),
+                  tags$td(dname),
                   tags$td(style="color:#888;font-size:.82em;", r$section %||% ""),
                   tags$td(style="text-align:right;font-weight:600;",
-                          as.integer(r$tokens_on_hand %||% 0)),
+                          hand),
                   tags$td(style="text-align:right;color:#856404;font-style:italic;",
                           if (pend > 0) pend else "—")
                 )
