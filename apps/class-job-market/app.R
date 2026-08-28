@@ -552,11 +552,14 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
       db_exec("DELETE FROM application_bids WHERE category_id=?;", list(old_id))
       db_exec("DELETE FROM job_categories WHERE id=?;", list(old_id))
     }
-    for (old_name in retired_jobs) {
-      db_exec("UPDATE job_templates SET active=0 WHERE lower(name)=lower(?);", list(old_name))
-      db_exec("UPDATE job_posts SET active=0 WHERE lower(job_name)=lower(?);", list(old_name))
-    }
     db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('job_catalog_v2_migrated','1');")
+  }
+
+  # Keep old catalog entries out of production databases that already ran the
+  # one-time migration before the stripped-down job list was finalized.
+  for (old_name in retired_jobs) {
+    db_exec("UPDATE job_templates SET active=0 WHERE lower(name)=lower(?);", list(old_name))
+    db_exec("UPDATE job_posts SET active=0 WHERE lower(job_name)=lower(?);", list(old_name))
   }
 
   for (tt in templates) {
