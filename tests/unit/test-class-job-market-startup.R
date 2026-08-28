@@ -13,13 +13,16 @@ app_file <- file.path(repo_root, "apps", "class-job-market", "app.R")
 with_app_env <- function(code) {
   old_connect <- Sys.getenv("CONNECT_CONTENT_DIR", unset = NA_character_)
   old_demo <- Sys.getenv("DEMO_MODE", unset = NA_character_)
+  old_admin_emails <- Sys.getenv("ADMIN_EMAILS", unset = NA_character_)
   td <- tempfile("class-job-market-test-")
   dir.create(file.path(td, "data"), recursive = TRUE)
   Sys.setenv(CONNECT_CONTENT_DIR = td)
   Sys.unsetenv("DEMO_MODE")
+  Sys.unsetenv("ADMIN_EMAILS")
   on.exit({
     if (is.na(old_connect)) Sys.unsetenv("CONNECT_CONTENT_DIR") else Sys.setenv(CONNECT_CONTENT_DIR = old_connect)
     if (is.na(old_demo)) Sys.unsetenv("DEMO_MODE") else Sys.setenv(DEMO_MODE = old_demo)
+    if (is.na(old_admin_emails)) Sys.unsetenv("ADMIN_EMAILS") else Sys.setenv(ADMIN_EMAILS = old_admin_emails)
     unlink(td, recursive = TRUE, force = TRUE)
   }, add = TRUE)
   force(code)
@@ -53,6 +56,26 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true("assignments_revealed" %in% cols(con, "arcade_state"))
     expect_true(all(c("tokens_awarded", "tokens_credited", "status", "job_post_id") %in% cols(con, "job_assignments")))
     expect_true(all(c("job_post_id", "event_kind", "tokens", "committed_at") %in% cols(con, "live_score_events")))
+  })
+})
+
+test_that("ADMIN_EMAILS bootstraps Google admins on fresh DB startup", {
+  with_app_env({
+    Sys.setenv(ADMIN_EMAILS = "kcoombs@vassar.edu, other-admin@vassar.edu")
+    expect_error(suppressWarnings(source_app()), NA)
+    con <- DBI::dbConnect(RSQLite::SQLite(), db_path())
+    on.exit(suppressWarnings(try(DBI::dbDisconnect(con), silent = TRUE)), add = TRUE)
+
+    admins <- DBI::dbGetQuery(con, "
+      SELECT user_id, is_admin, active, COALESCE(is_demo,0) AS is_demo
+      FROM users
+      WHERE user_id IN ('kcoombs@vassar.edu', 'other-admin@vassar.edu')
+      ORDER BY user_id;")
+
+    expect_equal(admins$user_id, c("kcoombs@vassar.edu", "other-admin@vassar.edu"))
+    expect_true(all(admins$is_admin == 1L))
+    expect_true(all(admins$active == 1L))
+    expect_true(all(admins$is_demo == 0L))
   })
 })
 

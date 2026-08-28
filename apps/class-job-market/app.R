@@ -714,6 +714,22 @@ SESSION_DAYS <- 14L
 make_token <- function() {
   paste(sample(c(letters, LETTERS, 0:9), 48L, replace = TRUE), collapse = "")
 }
+bootstrap_admin_emails <- function() {
+  emails <- trimws(strsplit(Sys.getenv("ADMIN_EMAILS", ""), ",", fixed = TRUE)[[1]])
+  emails <- unique(tolower(emails[nzchar(emails)]))
+  for (email in emails) {
+    db_exec(
+      "INSERT INTO users(user_id, display_name, pw_hash, is_admin, section, active, is_demo)
+       VALUES(?,?,?,1,NULL,1,0)
+       ON CONFLICT(user_id) DO UPDATE SET
+         is_admin=1,
+         active=1,
+         is_demo=0,
+         display_name=COALESCE(NULLIF(display_name,''), excluded.display_name);",
+      list(email, email, bcrypt::hashpw(make_token())))
+  }
+}
+bootstrap_admin_emails()
 store_token <- function(token, user_id) {
   db_exec(
     "INSERT INTO arcade_sessions(token, user_id, expires_at)
