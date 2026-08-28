@@ -686,7 +686,7 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
   if (isTRUE(ensure_round) && !nrow(latest_round)) {
     db_exec(
       "INSERT INTO weekly_rounds(label, assignment_mode, tiebreak_method, tokens_revealed, tickets_per_student)
-       VALUES('Demo Class 1', 'random', 'weighted_lottery', 1, 10);")
+       VALUES('Current Class', 'random', 'weighted_lottery', 0, 10);")
     latest_round <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
                              error = function(e) data.frame())
   }
@@ -709,7 +709,7 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
     }
   }
 }
-seed_class_job_defaults()
+seed_class_job_defaults(ensure_round = TRUE)
 
 SESSION_DAYS <- 14L
 
@@ -4151,7 +4151,7 @@ server <- function(input, output, session) {
        VALUES(?,?,?,?,?);",
       list(new_label, mode,
            if (nrow(last)) last$tiebreak_method[1] %||% "weighted_lottery" else "weighted_lottery",
-           if (nrow(last)) as.integer(last$tokens_revealed[1] %||% 1L) else 1L,
+           if (nrow(last)) as.integer(last$tokens_revealed[1] %||% 0L) else 0L,
            if (nrow(last)) as.integer(last$tickets_per_student[1] %||% 10L) else 10L))
     new_rid <- tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1],
                         error = function(e) NA_integer_)
@@ -5470,7 +5470,7 @@ server <- function(input, output, session) {
         ), selected = "weighted_lottery"),
         checkboxInput("new_round_delayed_tokens",
           "Delay token reveal (students see outcome but not amounts until you release)",
-          value = FALSE),
+          value = TRUE),
         fluidRow(
           column(4, dateInput("new_round_open",  "Bid opens:")),
           column(4, dateInput("new_round_close", "Bid closes:")),

@@ -56,6 +56,12 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true("assignments_revealed" %in% cols(con, "arcade_state"))
     expect_true(all(c("tokens_awarded", "tokens_credited", "status", "job_post_id") %in% cols(con, "job_assignments")))
     expect_true(all(c("job_post_id", "event_kind", "tokens", "committed_at") %in% cols(con, "live_score_events")))
+
+    round <- DBI::dbGetQuery(con, "SELECT label, tokens_revealed FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
+    posts <- DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM job_posts;")
+    expect_equal(round$label[1], "Current Class")
+    expect_equal(round$tokens_revealed[1], 0)
+    expect_gt(posts$n[1], 0)
   })
 })
 
