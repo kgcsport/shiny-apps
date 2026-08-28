@@ -79,6 +79,42 @@ test_that("ADMIN_EMAILS bootstraps Google admins on fresh DB startup", {
   })
 })
 
+test_that("custom grade item weights drive category and overall grades", {
+  with_app_env({
+    app <- suppressWarnings(source_app())
+    con <- DBI::dbConnect(RSQLite::SQLite(), db_path())
+    on.exit(suppressWarnings(try(DBI::dbDisconnect(con), silent = TRUE)), add = TRUE)
+
+    DBI::dbExecute(con, "DELETE FROM gradebook_item_names;")
+    DBI::dbExecute(con, "DELETE FROM gradebook_categories;")
+    DBI::dbExecute(con, "DELETE FROM student_grades;")
+    DBI::dbExecute(con, "INSERT OR IGNORE INTO users(user_id, display_name, section, active) VALUES('alice', 'Alice', 'S01', 1);")
+    DBI::dbExecute(con, "
+      INSERT INTO gradebook_categories(id, name, weight, item_count, item_prefix, max_points, source, display_order)
+      VALUES(100, 'Problem Sets', 30, 3, 'PS', 100, 'manual', 1);")
+    DBI::dbExecute(con, "
+      INSERT INTO gradebook_item_names(category_id, item_index, item_name, item_weight)
+      VALUES
+        (100, 1, 'PS1', 5),
+        (100, 2, 'PS2', 10),
+        (100, 3, 'PS3', 15);")
+    DBI::dbExecute(con, "
+      INSERT INTO student_grades(user_id, assignment_name, score, max_score, grade_pct)
+      VALUES
+        ('alice', 'PS1', 100, 100, 100),
+        ('alice', 'PS2',  50, 100,  50),
+        ('alice', 'PS3', 100, 100, 100);")
+
+    result <- app$compute_student_grade("alice")
+    expected <- (100 * 5 + 50 * 10 + 100 * 15) / 30
+
+    expect_equal(result$cats$cat_avg[1], expected, tolerance = 1e-8)
+    expect_equal(result$cats$graded_weight[1], 30)
+    expect_equal(result$overall, expected, tolerance = 1e-8)
+    expect_equal(result$items$item_weight, c(5, 10, 15))
+  })
+})
+
 test_that("class-job-market migrates an older live DB schema on startup", {
   with_app_env({
     local({

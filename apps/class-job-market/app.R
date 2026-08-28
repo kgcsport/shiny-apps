@@ -352,8 +352,10 @@ db_exec("CREATE TABLE IF NOT EXISTS gradebook_item_names(
   category_id INTEGER NOT NULL,
   item_index INTEGER NOT NULL,
   item_name TEXT NOT NULL,
+  item_weight REAL,
   UNIQUE(category_id, item_index)
 );")
+ensure_column("gradebook_item_names", "item_weight REAL")
 db_exec("CREATE TABLE IF NOT EXISTS student_grades(
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id         TEXT NOT NULL,
@@ -880,6 +882,33 @@ get_rw_max_points <- function() {
   as.integer(tryCatch(get_setting("grade_reweight_max_points", "5"), error=function(e)"5") %||% 5L)
 }
 
+gradebook_item_specs <- function(cat_row, inames_df = data.frame()) {
+  n <- max(1L, as.integer(cat_row$item_count %||% 1L))
+  cat_weight <- as.numeric(cat_row$weight %||% 0)
+  equal_weight <- if (n > 0) cat_weight / n else cat_weight
+  prefix <- if (!is.null(cat_row$item_prefix) && !is.na(cat_row$item_prefix) && nzchar(cat_row$item_prefix))
+              cat_row$item_prefix else cat_row$name
+  overrides <- if (nrow(inames_df))
+    inames_df[inames_df$category_id == cat_row$id, , drop = FALSE]
+  else data.frame()
+  do.call(rbind, lapply(seq_len(n), function(i) {
+    ov <- if (nrow(overrides)) overrides[overrides$item_index == i, , drop = FALSE] else data.frame()
+    nm <- if (nrow(ov) && nzchar(ov$item_name[1] %||% "")) ov$item_name[1]
+          else if (n == 1) cat_row$name
+          else paste0(prefix, " ", i)
+    custom <- nrow(ov) && "item_weight" %in% names(ov) &&
+      !is.na(suppressWarnings(as.numeric(ov$item_weight[1])))
+    wt <- if (custom) suppressWarnings(as.numeric(ov$item_weight[1])) else equal_weight
+    data.frame(
+      item_index = i,
+      item_name = nm,
+      item_weight = wt,
+      custom_weight = custom,
+      stringsAsFactors = FALSE
+    )
+  }))
+}
+
 # Returns a named list suitable for selectInput grouped choices: list(CatName = c(item1, item2, ...))
 get_all_gradebook_items <- function() {
   cats   <- tryCatch(db_query("SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
@@ -890,16 +919,8 @@ get_all_gradebook_items <- function() {
   out <- list()
   for (i in seq_len(nrow(cats))) {
     r      <- cats[i, ]
-    n      <- as.integer(r$item_count %||% 1L)
-    prefix <- if (!is.null(r$item_prefix) && !is.na(r$item_prefix) && nzchar(r$item_prefix))
-                r$item_prefix else r$name
-    ovr    <- if (nrow(inames)) inames[inames$category_id == r$id, , drop=FALSE] else data.frame()
-    items  <- sapply(seq_len(n), function(j) {
-      ov <- if (nrow(ovr)) ovr$item_name[ovr$item_index == j] else character(0)
-      if (length(ov) && nzchar(ov[1])) ov[1]
-      else if (n == 1) r$name
-      else paste0(prefix, " ", j)
-    })
+    specs <- gradebook_item_specs(r, inames)
+    items <- specs$item_name
     out[[r$name %||% paste0("Cat", i)]] <- setNames(items, items)
   }
   out
@@ -948,21 +969,15 @@ compute_student_grade <- function(uid) {
 
   all_items <- data.frame(item_name=character(), cat_idx=integer(),
                           category_name=character(), weight=numeric(),
-                          item_count=integer(), grade_pct=numeric(),
+                          item_weight=numeric(), item_count=integer(), grade_pct=numeric(),
                           score=numeric(), max_score=numeric(),
                           stringsAsFactors=FALSE)
   for (i in seq_len(nrow(cats))) {
     r      <- cats[i, ]
-    n      <- as.integer(r$item_count %||% 1L)
-    prefix <- if (!is.null(r$item_prefix) && !is.na(r$item_prefix) && nzchar(r$item_prefix))
-                r$item_prefix else r$name
-    ovr    <- if (nrow(inames_df)) inames_df[inames_df$category_id == r$id, , drop=FALSE]
-              else data.frame()
+    specs  <- gradebook_item_specs(r, inames_df)
+    n      <- nrow(specs)
     for (j in seq_len(n)) {
-      ov  <- if (nrow(ovr)) ovr$item_name[ovr$item_index == j] else character(0)
-      nm  <- if (length(ov) && nzchar(ov[1])) ov[1]
-             else if (n == 1) r$name
-             else paste0(prefix, " ", j)
+      nm <- specs$item_name[j]
       matched <- if (nrow(grades)) grades[grades$assignment_name == nm, , drop=FALSE]
                  else data.frame()
       all_items <- rbind(all_items, data.frame(
@@ -970,6 +985,7 @@ compute_student_grade <- function(uid) {
         cat_idx       = i,
         category_name = r$name,
         weight        = as.numeric(r$weight %||% 0),
+        item_weight   = as.numeric(specs$item_weight[j] %||% 0),
         item_count    = n,
         grade_pct     = if (nrow(matched)) as.numeric(matched$grade_pct[1]) else NA_real_,
         score         = if (nrow(matched)) as.numeric(matched$score[1] %||% NA) else NA_real_,
@@ -982,19 +998,24 @@ compute_student_grade <- function(uid) {
   cat_summary <- do.call(rbind, lapply(seq_len(nrow(cats)), function(i) {
     r      <- cats[i, ]
     items  <- all_items[all_items$cat_idx == i, , drop=FALSE]
-    graded <- items$grade_pct[!is.na(items$grade_pct)]
-    cat_avg <- if (length(graded)) mean(graded) else NA_real_
+    graded <- items[!is.na(items$grade_pct), , drop=FALSE]
+    cat_wt <- sum(graded$item_weight, na.rm = TRUE)
+    cat_avg <- if (nrow(graded) && cat_wt > 0)
+      sum(graded$grade_pct * graded$item_weight, na.rm = TRUE) / cat_wt
+    else if (nrow(graded)) mean(graded$grade_pct, na.rm = TRUE)
+    else NA_real_
     data.frame(
       category     = r$name,
       weight       = as.numeric(r$weight %||% 0),
+      graded_weight = cat_wt,
       cat_avg      = cat_avg,
-      contribution = if (!is.na(cat_avg)) cat_avg * as.numeric(r$weight %||% 0) / 100
+      contribution = if (!is.na(cat_avg)) cat_avg * cat_wt / 100
                      else NA_real_,
       stringsAsFactors = FALSE
     )
   }))
 
-  graded_wt   <- sum(cat_summary$weight[!is.na(cat_summary$cat_avg)], na.rm = TRUE)
+  graded_wt   <- sum(cat_summary$graded_weight[!is.na(cat_summary$cat_avg)], na.rm = TRUE)
   graded_cont <- sum(cat_summary$contribution, na.rm = TRUE)
   overall <- if (graded_wt > 0) graded_cont / graded_wt * 100 else NA_real_
 
@@ -5798,16 +5819,7 @@ server <- function(input, output, session) {
       sec_choices <- c("All sections" = "all", sort(sections_df$section %||% character(0)))
 
       get_item_names_for_cat <- function(cat_row) {
-        n      <- as.integer(cat_row$item_count %||% 1)
-        prefix <- if (!is.null(cat_row$item_prefix) && !is.na(cat_row$item_prefix) && nzchar(cat_row$item_prefix))
-                    cat_row$item_prefix else cat_row$name
-        overrides <- if (nrow(inames)) inames[inames$category_id == cat_row$id, , drop=FALSE] else data.frame()
-        sapply(seq_len(n), function(i) {
-          ov <- if (nrow(overrides)) overrides$item_name[overrides$item_index == i] else character(0)
-          if (length(ov) && nzchar(ov[1])) ov[1]
-          else if (n == 1) cat_row$name
-          else paste0(prefix, " ", i)
-        })
+        gradebook_item_specs(cat_row, inames)$item_name
       }
 
       sec_hdr <- function(n, lbl) tags$h6(
@@ -5834,7 +5846,8 @@ server <- function(input, output, session) {
                 tags$tbody(lapply(seq_len(nrow(cats)), function(i) {
                   r       <- cats[i, ]
                   cid_js  <- as.integer(r$id)
-                  nm_list <- get_item_names_for_cat(r)
+                  specs   <- gradebook_item_specs(r, inames)
+                  nm_list <- specs$item_name
                   src     <- r$source %||% "manual"
                   is_part <- identical(src, "participation")
                   inp_style <- "width:100%;font-size:.82rem;padding:.15rem .35rem;border:1px solid #ddd;border-radius:4px;"
@@ -5898,21 +5911,28 @@ server <- function(input, output, session) {
                           # Item name overrides
                           tags$hr(style = "margin:.3rem 0;"),
                           tags$p(style = "color:#555;font-size:.82rem;margin-bottom:.3rem;",
-                                 "Override individual item names (optional):"),
+                                 "Override item names and weights. Leave weight blank for equal split within the category."),
                           lapply(seq_along(nm_list), function(j) {
+                            wt_val <- if (isTRUE(specs$custom_weight[j])) as.numeric(specs$item_weight[j]) else ""
                             div(style = "display:flex;align-items:center;gap:.4rem;margin-bottom:.25rem;",
                               tags$span(style = "font-size:.78rem;color:#888;width:1.8rem;text-align:right;", paste0(j, ".")),
                               tags$input(type="text", id=sprintf("gbi_%d_%d", cid_js, j),
                                          value=nm_list[j],
                                          style="font-size:.82rem;padding:.15rem .35rem;border:1px solid #ddd;border-radius:4px;width:14rem;"),
+                              tags$input(type="number", id=sprintf("gbiw_%d_%d", cid_js, j),
+                                         value=wt_val, min=0, max=100, step=0.5,
+                                         placeholder=sprintf("%.4g", as.numeric(specs$item_weight[j] %||% 0)),
+                                         title="Weight percentage points of total grade; blank = equal split",
+                                         style="font-size:.82rem;padding:.15rem .35rem;border:1px solid #ddd;border-radius:4px;width:5.8rem;"),
                               tags$button(
                                 class="btn btn-xs btn-outline-secondary",
                                 style="padding:.1rem .4rem;font-size:.72rem;",
                                 onclick=sprintf(paste0(
                                   "var v=document.getElementById('gbi_%d_%d').value;",
+                                  "var w=document.getElementById('gbiw_%d_%d').value;",
                                   "Shiny.setInputValue('rename_gb_item_btn',",
-                                  "{cat_id:%d,idx:%d,name:v},{priority:'event'});"),
-                                  cid_js, j, cid_js, j),
+                                  "{cat_id:%d,idx:%d,name:v,weight:w},{priority:'event'});"),
+                                  cid_js, j, cid_js, j, cid_js, j),
                                 "Save"))
                           })
                         )
@@ -5984,11 +6004,12 @@ server <- function(input, output, session) {
           # Build item → category mapping
           item_cat_map <- if (nrow(cats)) do.call(rbind, lapply(seq_len(nrow(cats)), function(i) {
             r       <- cats[i, ]
-            nm_list <- get_item_names_for_cat(r)
-            data.frame(item_name = nm_list,
+            specs   <- gradebook_item_specs(r, inames)
+            data.frame(item_name = specs$item_name,
                        cat_id    = as.integer(r$id),
                        cat_name  = r$name %||% "",
                        weight    = as.numeric(r$weight %||% 0),
+                       item_weight = as.numeric(specs$item_weight %||% 0),
                        source    = r$source %||% "manual",
                        stringsAsFactors = FALSE)
           })) else data.frame()
@@ -6047,10 +6068,16 @@ server <- function(input, output, session) {
                         cat_gr <- if (nrow(stu_gr) && "cat_name" %in% names(stu_gr))
                           stu_gr[!is.na(stu_gr$cat_name) & stu_gr$cat_name == cn, , drop=FALSE]
                         else data.frame()
-                        avg <- if (nrow(cat_gr) && any(!is.na(cat_gr$grade_pct)))
-                          mean(cat_gr$grade_pct, na.rm = TRUE) else NA_real_
+                        avg <- NA_real_
+                        graded_cat <- if (nrow(cat_gr)) cat_gr[!is.na(cat_gr$grade_pct), , drop=FALSE] else data.frame()
+                        if (nrow(graded_cat)) {
+                          iw <- as.numeric(graded_cat$item_weight %||% 0)
+                          avg <- if (sum(iw, na.rm = TRUE) > 0)
+                            sum(graded_cat$grade_pct * iw, na.rm = TRUE) / sum(iw, na.rm = TRUE)
+                          else mean(graded_cat$grade_pct, na.rm = TRUE)
+                        }
                         if (!is.na(avg)) {
-                          w <- as.numeric(cats$weight[cats$name == cn][1] %||% 0)
+                          w <- sum(as.numeric(graded_cat$item_weight %||% 0), na.rm = TRUE)
                           wt_num <<- wt_num + avg * w
                           wt_den <<- wt_den + w
                         }
@@ -6530,20 +6557,14 @@ server <- function(input, output, session) {
       col_weight <- character(0)
       for (i in seq_len(nrow(cats))) {
         r   <- cats[i, ]
-        n   <- as.integer(r$item_count %||% 1)
+        specs <- gradebook_item_specs(r, inames_df)
+        n   <- nrow(specs)
         is_part <- identical(r$source %||% "manual", "participation")
-        prefix  <- if (!is.null(r$item_prefix) && !is.na(r$item_prefix) && nzchar(r$item_prefix))
-                     r$item_prefix else r$name
-        ovr_df  <- if (nrow(inames_df)) inames_df[inames_df$category_id == r$id, , drop=FALSE] else data.frame()
-        item_wt <- sprintf("%.4g%%", as.numeric(r$weight %||% 0) / n)
         for (j in seq_len(n)) {
-          ov  <- if (nrow(ovr_df)) ovr_df$item_name[ovr_df$item_index == j] else character(0)
-          nm  <- if (length(ov) && nzchar(ov[1])) ov[1]
-                 else if (n == 1) r$name
-                 else paste0(prefix, " ", j)
+          nm <- specs$item_name[j]
           col_names  <- c(col_names,  nm)
           col_maxpts <- c(col_maxpts, if (is_part) "(from app)" else as.character(as.integer(r$max_points %||% 100)))
-          col_weight <- c(col_weight, item_wt)
+          col_weight <- c(col_weight, sprintf("%.4g%%", as.numeric(specs$item_weight[j] %||% 0)))
         }
       }
 
@@ -6611,20 +6632,14 @@ server <- function(input, output, session) {
       for (i in seq_len(nrow(cats))) {
         cat_col_start[i] <- cur_col
         r   <- cats[i, ]
-        n   <- as.integer(r$item_count %||% 1L)
+        specs <- gradebook_item_specs(r, inames_df)
+        n   <- nrow(specs)
         is_part <- identical(r$source %||% "manual", "participation")
-        prefix  <- if (!is.null(r$item_prefix) && !is.na(r$item_prefix) && nzchar(r$item_prefix))
-                     r$item_prefix else r$name
-        ovr_df  <- if (nrow(inames_df)) inames_df[inames_df$category_id == r$id, , drop=FALSE] else data.frame()
-        item_wt <- sprintf("%.4g%%", as.numeric(r$weight %||% 0) / n)
         for (j in seq_len(n)) {
-          ov  <- if (nrow(ovr_df)) ovr_df$item_name[ovr_df$item_index == j] else character(0)
-          nm  <- if (length(ov) && nzchar(ov[1])) ov[1]
-                 else if (n == 1) r$name
-                 else paste0(prefix, " ", j)
+          nm <- specs$item_name[j]
           col_names  <- c(col_names,  nm)
           col_maxpts <- c(col_maxpts, if (is_part) "(from app)" else as.character(as.integer(r$max_points %||% 100)))
-          col_weight <- c(col_weight, item_wt)
+          col_weight <- c(col_weight, sprintf("%.4g%%", as.numeric(specs$item_weight[j] %||% 0)))
         }
         cur_col <- cur_col + n
       }
@@ -6647,19 +6662,16 @@ server <- function(input, output, session) {
 
         for (i in seq_len(nrow(cats))) {
           r   <- cats[i, ]
-          n   <- as.integer(r$item_count %||% 1L)
+          specs <- gradebook_item_specs(r, inames_df)
+          n   <- nrow(specs)
           is_part <- identical(r$source %||% "manual", "participation")
           cs  <- cat_col_start[i]
-          ovr_df <- if (nrow(inames_df)) inames_df[inames_df$category_id == r$id, , drop=FALSE] else data.frame()
-          prefix <- if (!is.null(r$item_prefix) && !is.na(r$item_prefix) && nzchar(r$item_prefix))
-                      r$item_prefix else r$name
 
           item_pcts <- numeric(0)
+          item_wts  <- numeric(0)
           for (j in seq_len(n)) {
-            ov  <- if (nrow(ovr_df)) ovr_df$item_name[ovr_df$item_index == j] else character(0)
-            col_nm <- if (length(ov) && nzchar(ov[1])) ov[1]
-                      else if (n == 1) r$name
-                      else paste0(prefix, " ", j)
+            col_nm <- specs$item_name[j]
+            item_wt <- as.numeric(specs$item_weight[j] %||% 0)
             col_idx <- cs + j - 1L
             if (is_part) {
               tok_val <- as.character(as.integer(stu$tokens_earned %||% 0))
@@ -6668,6 +6680,7 @@ server <- function(input, output, session) {
               if (!is.na(maxpts) && maxpts > 0) {
                 pct <- min(100, 100 * as.numeric(stu$tokens_earned %||% 0) / maxpts)
                 item_pcts <- c(item_pcts, pct)
+                item_wts  <- c(item_wts, item_wt)
               }
             } else if (nrow(grade_rows_dl)) {
               match_rows <- grade_rows_dl[!is.na(grade_rows_dl$user_id) &
@@ -6678,14 +6691,18 @@ server <- function(input, output, session) {
                 pct_val <- as.numeric(match_rows$grade_pct[1])
                 cells[col_idx] <- sprintf("%.1f", pct_val)
                 item_pcts <- c(item_pcts, pct_val)
+                item_wts  <- c(item_wts, item_wt)
               }
             }
           }
 
-          cat_pct <- if (length(item_pcts) > 0) mean(item_pcts, na.rm = TRUE) else NA_real_
+          cat_pct <- if (length(item_pcts) > 0 && sum(item_wts, na.rm = TRUE) > 0)
+            sum(item_pcts * item_wts, na.rm = TRUE) / sum(item_wts, na.rm = TRUE)
+          else if (length(item_pcts) > 0) mean(item_pcts, na.rm = TRUE)
+          else NA_real_
           cat_avgs[i] <- if (!is.na(cat_pct)) sprintf("%.1f%%", cat_pct) else ""
           if (!is.na(cat_pct)) {
-            w <- as.numeric(r$weight %||% 0)
+            w <- sum(item_wts, na.rm = TRUE)
             wt_num <- wt_num + cat_pct * w
             wt_den <- wt_den + w
           }
@@ -7076,12 +7093,18 @@ server <- function(input, output, session) {
     cid <- suppressWarnings(as.integer(ev$cat_id %||% 0))
     idx <- suppressWarnings(as.integer(ev$idx %||% 0))
     nm  <- trimws(ev$name %||% "")
+    wt_raw <- trimws(as.character(ev$weight %||% ""))
+    wt <- suppressWarnings(as.numeric(wt_raw))
+    if (!nzchar(wt_raw)) wt <- NA_real_
     if (is.na(cid) || cid <= 0 || is.na(idx) || idx <= 0 || !nzchar(nm)) return()
+    if (!is.na(wt) && wt < 0) {
+      showNotification("Item weight must be 0 or higher.", type = "error"); return()
+    }
     db_exec(
-      "INSERT OR REPLACE INTO gradebook_item_names(category_id,item_index,item_name) VALUES(?,?,?);",
-      list(cid, idx, nm))
+      "INSERT OR REPLACE INTO gradebook_item_names(category_id,item_index,item_name,item_weight) VALUES(?,?,?,?);",
+      list(cid, idx, nm, if (!is.na(wt)) wt else NA_real_))
     rv$gradebook_ver <- rv$gradebook_ver + 1L
-    showNotification("Item name saved.", type = "message")
+    showNotification("Item settings saved.", type = "message")
   }, ignoreNULL = TRUE)
 
   # ── Token Admin ───────────────────────────────────────────────────────────────
