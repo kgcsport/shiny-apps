@@ -65,8 +65,27 @@ db_exec <- function(sql, params = NULL) {
     error = function(e) { message("db_exec: ", e$message); -1L }
   )
 }
+ensure_column <- function(table, column_def) {
+  column_name <- strsplit(trimws(column_def), "\\s+")[[1]][1]
+  cols <- tryCatch(db_query(sprintf("PRAGMA table_info(%s);", table))$name,
+                   error = function(e) character(0))
+  if (!column_name %in% cols) {
+    try(db_exec(sprintf("ALTER TABLE %s ADD COLUMN %s;", table, column_def)),
+        silent = TRUE)
+  }
+}
 
 # ── Table init ────────────────────────────────────────────────────────────────
+db_exec("CREATE TABLE IF NOT EXISTS users(
+  user_id      TEXT PRIMARY KEY,
+  display_name TEXT,
+  pw_hash      TEXT,
+  is_admin     INTEGER DEFAULT 0,
+  section      TEXT,
+  active       INTEGER DEFAULT 1,
+  is_demo      INTEGER DEFAULT 0
+);")
+
 db_exec("
   CREATE TABLE IF NOT EXISTS arcade_state (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
@@ -74,9 +93,9 @@ db_exec("
     updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
   );
 ")
+ensure_column("arcade_state", "assignments_revealed INTEGER DEFAULT 0")
 if (!db_query("SELECT COUNT(*) n FROM arcade_state WHERE id=1;")$n[1])
   db_exec("INSERT INTO arcade_state(id, active_game, assignments_revealed) VALUES(1, NULL, 0);")
-try(db_exec("ALTER TABLE arcade_state ADD COLUMN assignments_revealed INTEGER DEFAULT 0;"), silent = TRUE)
 
 db_exec("
   CREATE TABLE IF NOT EXISTS arcade_sessions (
@@ -105,8 +124,10 @@ db_exec("
 db_exec("INSERT OR IGNORE INTO arcade_config(key,value) VALUES('app_name','Classroom Economy');")
 
 # Ensure these columns exist on the users table (other apps own it, but we add ours)
-try(db_exec("ALTER TABLE users ADD COLUMN active  INTEGER DEFAULT 1;"), silent = TRUE)
-try(db_exec("ALTER TABLE users ADD COLUMN is_demo INTEGER DEFAULT 0;"), silent = TRUE)
+ensure_column("users", "pw_hash TEXT")
+ensure_column("users", "section TEXT")
+ensure_column("users", "active INTEGER DEFAULT 1")
+ensure_column("users", "is_demo INTEGER DEFAULT 0")
 
 # Demo account
 DEMO_HASH <- bcrypt::hashpw("freetour")
@@ -296,6 +317,16 @@ db_exec("CREATE TABLE IF NOT EXISTS live_score_events(
   committed_at      TEXT,
   created_at        TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+ensure_column("live_score_events", "round_id INTEGER")
+ensure_column("live_score_events", "user_id TEXT")
+ensure_column("live_score_events", "job_assignment_id INTEGER")
+ensure_column("live_score_events", "job_post_id INTEGER")
+ensure_column("live_score_events", "event_kind TEXT")
+ensure_column("live_score_events", "outcome TEXT")
+ensure_column("live_score_events", "tokens REAL")
+ensure_column("live_score_events", "logged_by TEXT")
+ensure_column("live_score_events", "committed_at TEXT")
+ensure_column("live_score_events", "created_at TEXT DEFAULT CURRENT_TIMESTAMP")
 
 db_exec("CREATE TABLE IF NOT EXISTS assignment_reveals(
   round_id   INTEGER,
@@ -342,8 +373,11 @@ db_exec("CREATE TABLE IF NOT EXISTS job_categories(
   description   TEXT,
   display_order INTEGER DEFAULT 99
 );")
-try(db_exec("ALTER TABLE job_categories ADD COLUMN voluntary INTEGER DEFAULT 0;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_categories ADD COLUMN in_draw INTEGER DEFAULT 1;"), silent = TRUE)
+ensure_column("job_categories", "default_wage REAL DEFAULT 10")
+ensure_column("job_categories", "description TEXT")
+ensure_column("job_categories", "display_order INTEGER DEFAULT 99")
+ensure_column("job_categories", "voluntary INTEGER DEFAULT 0")
+ensure_column("job_categories", "in_draw INTEGER DEFAULT 1")
 db_exec("CREATE TABLE IF NOT EXISTS weekly_rounds(
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   label               TEXT,
@@ -353,6 +387,12 @@ db_exec("CREATE TABLE IF NOT EXISTS weekly_rounds(
   tickets_per_student INTEGER DEFAULT 10,
   created_at          TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+ensure_column("weekly_rounds", "assignment_mode TEXT DEFAULT 'random'")
+ensure_column("weekly_rounds", "bid_open_date TEXT")
+ensure_column("weekly_rounds", "bid_close_date TEXT")
+ensure_column("weekly_rounds", "tickets_per_student INTEGER DEFAULT 10")
+ensure_column("weekly_rounds", "tokens_revealed INTEGER DEFAULT 1")
+ensure_column("weekly_rounds", "tiebreak_method TEXT DEFAULT 'weighted_lottery'")
 db_exec("CREATE TABLE IF NOT EXISTS job_posts(
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id      INTEGER,
@@ -365,15 +405,20 @@ db_exec("CREATE TABLE IF NOT EXISTS job_posts(
   selection_time TEXT,
   created_at    TEXT DEFAULT CURRENT_TIMESTAMP
 );")
-try(db_exec("ALTER TABLE job_posts ADD COLUMN voluntary INTEGER DEFAULT 0;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_posts ADD COLUMN in_draw INTEGER DEFAULT 1;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_posts ADD COLUMN selection_time TEXT;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_categories ADD COLUMN description TEXT;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_categories ADD COLUMN selection_time TEXT;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_categories ADD COLUMN contribution_type TEXT;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_categories ADD COLUMN purpose TEXT;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_categories ADD COLUMN expected_output TEXT;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_categories ADD COLUMN completion_criterion TEXT;"), silent = TRUE)
+ensure_column("job_posts", "job_name TEXT")
+ensure_column("job_posts", "category_id INTEGER")
+ensure_column("job_posts", "wage_override REAL")
+ensure_column("job_posts", "active INTEGER DEFAULT 1")
+ensure_column("job_posts", "display_order INTEGER DEFAULT 99")
+ensure_column("job_posts", "voluntary INTEGER DEFAULT 0")
+ensure_column("job_posts", "in_draw INTEGER DEFAULT 1")
+ensure_column("job_posts", "selection_time TEXT")
+ensure_column("job_posts", "created_at TEXT DEFAULT CURRENT_TIMESTAMP")
+ensure_column("job_categories", "selection_time TEXT")
+ensure_column("job_categories", "contribution_type TEXT")
+ensure_column("job_categories", "purpose TEXT")
+ensure_column("job_categories", "expected_output TEXT")
+ensure_column("job_categories", "completion_criterion TEXT")
 db_exec("CREATE TABLE IF NOT EXISTS job_assignments(
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id        INTEGER,
@@ -385,6 +430,15 @@ db_exec("CREATE TABLE IF NOT EXISTS job_assignments(
   created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(round_id, user_id)
 );")
+ensure_column("job_assignments", "job_post_id INTEGER")
+ensure_column("job_assignments", "assigned_wage REAL")
+ensure_column("job_assignments", "assignment_mode TEXT")
+ensure_column("job_assignments", "status TEXT DEFAULT 'assigned'")
+ensure_column("job_assignments", "outcome TEXT")
+ensure_column("job_assignments", "tokens_awarded INTEGER DEFAULT 0")
+ensure_column("job_assignments", "updated_at TEXT")
+ensure_column("job_assignments", "tokens_credited INTEGER DEFAULT 1")
+ensure_column("job_assignments", "created_at TEXT DEFAULT CURRENT_TIMESTAMP")
 db_exec("CREATE TABLE IF NOT EXISTS wage_bids(
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id     INTEGER,
@@ -394,6 +448,8 @@ db_exec("CREATE TABLE IF NOT EXISTS wage_bids(
   submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(round_id, category_id, user_id)
 );")
+ensure_column("wage_bids", "min_wage REAL")
+ensure_column("wage_bids", "submitted_at TEXT DEFAULT CURRENT_TIMESTAMP")
 db_exec("CREATE TABLE IF NOT EXISTS application_bids(
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id     INTEGER,
@@ -403,6 +459,8 @@ db_exec("CREATE TABLE IF NOT EXISTS application_bids(
   submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(round_id, category_id, user_id)
 );")
+ensure_column("application_bids", "tickets INTEGER DEFAULT 0")
+ensure_column("application_bids", "submitted_at TEXT DEFAULT CURRENT_TIMESTAMP")
 db_exec("CREATE TABLE IF NOT EXISTS job_templates(
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   name           TEXT NOT NULL,
@@ -412,6 +470,51 @@ db_exec("CREATE TABLE IF NOT EXISTS job_templates(
   active         INTEGER DEFAULT 1,
   created_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+ensure_column("job_templates", "category_id INTEGER")
+ensure_column("job_templates", "slots INTEGER DEFAULT 1")
+ensure_column("job_templates", "suggested_wage REAL")
+ensure_column("job_templates", "active INTEGER DEFAULT 1")
+ensure_column("job_templates", "selection_time TEXT")
+ensure_column("job_templates", "voluntary INTEGER DEFAULT 0")
+ensure_column("job_templates", "in_draw INTEGER DEFAULT 1")
+ensure_column("job_templates", "display_order INTEGER DEFAULT 99")
+ensure_column("job_templates", "created_at TEXT DEFAULT CURRENT_TIMESTAMP")
+
+# Compatibility backfills for live databases created by older test/setup code.
+backfill_cols <- function(table) {
+  tryCatch(db_query(sprintf("PRAGMA table_info(%s);", table))$name,
+           error = function(e) character(0))
+}
+jc_cols <- backfill_cols("job_categories")
+if ("wage" %in% jc_cols) {
+  db_exec("UPDATE job_categories SET default_wage=wage WHERE wage IS NOT NULL AND (default_wage IS NULL OR default_wage=10);")
+}
+jp_cols <- backfill_cols("job_posts")
+if ("wage" %in% jp_cols) {
+  db_exec("UPDATE job_posts SET wage_override=wage WHERE wage IS NOT NULL AND (wage_override IS NULL OR wage_override=10);")
+}
+db_exec("UPDATE job_posts
+           SET job_name=COALESCE((SELECT name FROM job_categories WHERE id=job_posts.category_id), 'Class job')
+         WHERE job_name IS NULL OR trim(job_name)='';")
+wb_cols <- backfill_cols("wage_bids")
+if ("wage" %in% wb_cols) {
+  db_exec("UPDATE wage_bids SET min_wage=wage WHERE wage IS NOT NULL AND min_wage IS NULL;")
+}
+if ("created_at" %in% wb_cols) {
+  db_exec("UPDATE wage_bids SET submitted_at=created_at WHERE created_at IS NOT NULL AND submitted_at IS NULL;")
+}
+ab_cols <- backfill_cols("application_bids")
+if ("created_at" %in% ab_cols) {
+  db_exec("UPDATE application_bids SET submitted_at=created_at WHERE created_at IS NOT NULL AND submitted_at IS NULL;")
+}
+ja_cols <- backfill_cols("job_assignments")
+if ("wage" %in% ja_cols) {
+  db_exec("UPDATE job_assignments SET assigned_wage=wage WHERE wage IS NOT NULL AND assigned_wage IS NULL;")
+}
+if ("tokens" %in% ja_cols) {
+  db_exec("UPDATE job_assignments SET tokens_awarded=CAST(tokens AS INTEGER) WHERE tokens IS NOT NULL AND (tokens_awarded IS NULL OR tokens_awarded=0);")
+}
+db_exec("UPDATE job_assignments SET status='assigned' WHERE status IS NULL OR trim(status)='';")
 # Expected demand for volunteer jobs, posted per round (e.g. at the start of
 # class). Used by the 'posted' volunteer clearing rule.
 db_exec("CREATE TABLE IF NOT EXISTS volunteer_demand(
@@ -423,18 +526,7 @@ db_exec("CREATE TABLE IF NOT EXISTS volunteer_demand(
 );")
 # Job assignment outcome tracking (safe on re-run via try; must come AFTER the
 # CREATE TABLE statements above so a fresh database gets the columns too)
-try(db_exec("ALTER TABLE job_assignments ADD COLUMN outcome TEXT;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_assignments ADD COLUMN tokens_awarded INTEGER DEFAULT 0;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_assignments ADD COLUMN updated_at TEXT;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_assignments ADD COLUMN tokens_credited INTEGER DEFAULT 1;"), silent = TRUE)
-try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN tokens_revealed INTEGER DEFAULT 1;"), silent = TRUE)
-try(db_exec("ALTER TABLE weekly_rounds ADD COLUMN tiebreak_method TEXT DEFAULT 'weighted_lottery';"), silent = TRUE)
-
-# Template-level defaults so every copied post carries timing/voluntary/in-draw
-try(db_exec("ALTER TABLE job_templates ADD COLUMN selection_time TEXT;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_templates ADD COLUMN voluntary INTEGER DEFAULT 0;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_templates ADD COLUMN in_draw INTEGER DEFAULT 1;"), silent = TRUE)
-try(db_exec("ALTER TABLE job_templates ADD COLUMN display_order INTEGER DEFAULT 99;"), silent = TRUE)
+# Template-level defaults above make every copied post carry timing/voluntary/in-draw.
 
 # Recurring bid-lock window: bids lock shortly before each class session and
 # reopen that evening (all editable in Settings > Round Setup)
@@ -2163,14 +2255,14 @@ server <- function(input, output, session) {
       return(div(class = "alert alert-secondary", "Bidding is not open right now."))
     }
     if (!nrow(cats)) {
-      return(div(style = "color:#999;", "No job categories available for this round."))
+      return(div(style = "color:#999;", "No job types available for this round."))
     }
 
     if (mode == "wage_bidding") {
       tagList(
         lock_note,
         tags$p(style = "color:#555;font-size:.88rem;",
-               "Enter the minimum wage you'd accept for each job category.",
+               "Enter the minimum wage you'd accept for each job type.",
                "The instructor takes the cheapest bids and reveals the result in class."),
         div(class = "jm-card",
           lapply(seq_len(nrow(cats)), function(i) {
@@ -2200,8 +2292,8 @@ server <- function(input, output, session) {
       tagList(
         lock_note,
         tags$p(style = "color:#555;font-size:.88rem;",
-               sprintf("Allocate up to %d participation tickets across job categories.", tickets_total),
-               "More tickets in a category = higher odds of being assigned there."),
+               sprintf("Allocate up to %d participation tickets across job types.", tickets_total),
+               "More tickets in a job type = higher odds of being assigned there."),
         div(class = "jm-card",
           lapply(seq_len(nrow(cats)), function(i) {
             cat <- cats[i, ]
@@ -5033,7 +5125,7 @@ server <- function(input, output, session) {
             div(style = "padding:.5rem 0;",
               fluidRow(
                 column(3, textInput("new_post_name", "Post name:")),
-                column(2, selectInput("new_post_cat", "Category:", choices = all_cat_choices)),
+                column(2, selectInput("new_post_cat", "Job type:", choices = all_cat_choices)),
                 column(1, numericInput("new_post_slots", "Slots:", value = 1L, min = 1L, step = 1L)),
                 column(2, selectInput("new_post_timing", "Timing:",
                                       choices = c("Any" = "any", "Start" = "start",
@@ -5050,11 +5142,11 @@ server <- function(input, output, session) {
           )
         },
 
-        # ── Job Categories ────────────────────────────────────────────────────────
+        # ── Job Types ─────────────────────────────────────────────────────────────
         tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Job Categories"),
+        tags$h6(style = "font-weight:700;color:#951829;", "Job Types"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "Categories set the default wage for all posts in that category. Click a category row to expand and edit it, then click Save changes (the form closes automatically)."),
+               "Job types group related posts and set their default wage. Click a row to expand and edit it, then click Save changes (the form closes automatically)."),
         if (nrow(all_cats)) {
           tagList(lapply(seq_len(nrow(all_cats)), function(i) {
             r <- all_cats[i, ]
@@ -5104,7 +5196,7 @@ server <- function(input, output, session) {
                         tags$button(
                           class = "btn btn-sm btn-outline-danger",
                           onclick = sprintf(
-                            "if(confirm('Delete category \"%s\"? Posts in this category will have no category.')){Shiny.setInputValue('delete_job_cat_btn',%d,{priority:'event'})}",
+                            "if(confirm('Delete job type \"%s\"? Posts in this type will have no job type.')){Shiny.setInputValue('delete_job_cat_btn',%d,{priority:'event'})}",
                             r$name %||% "", cid_js),
                           "Delete")))
                   )
@@ -5112,11 +5204,11 @@ server <- function(input, output, session) {
               )
             )
           }))
-        } else div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;", "No categories yet."),
+        } else div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;", "No job types yet."),
 
         tags$details(
           tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
-                       "Add category"),
+                       "Add job type"),
           div(style = "padding:.5rem 0;",
             fluidRow(
               column(3, textInput("new_cat_name", "Name:")),
@@ -5149,11 +5241,11 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Volunteer Clearing Wage"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "In wage-bidding rounds, every volunteer in a category is paid the same equilibrium wage from that round's bids — not their own bid, and nobody is rationed out. ",
-               tags$b("Lowest bid"), " pays the cheapest bid in the category. ",
+               "In wage-bidding rounds, every volunteer in a job type is paid the same equilibrium wage from that round's bids — not their own bid, and nobody is rationed out. ",
+               tags$b("Lowest bid"), " pays the cheapest bid in the job type. ",
                tags$b("Demand-based"), " pays the k-th lowest bid, where k is the volunteer post's slots — a standing demand you set once. ",
                tags$b("Posted demand"), " is the same k-th-lowest rule, but you post k for today's class in the Live Tracker (Voluntary Participation panel), e.g. at the start of class; it falls back to the post's slots until you post one. ",
-               "With no bids in a category, the post's default wage is used."),
+               "With no bids in a job type, the post's default wage is used."),
         selectInput("vol_clearing_rule_sel", NULL, width = "420px",
                     choices = c("Lowest bid" = "lowest",
                                 "Demand-based (k-th lowest bid, k = post slots)" = "demand",
@@ -5224,14 +5316,14 @@ server <- function(input, output, session) {
         {
           tpl_cat_choices <- if (nrow(all_cats))
             setNames(all_cats$id, all_cats$name)
-          else c("(no categories)" = "")
+          else c("(no job types)" = "")
           tags$details(
             tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
                          "Add template"),
             div(style = "padding:.5rem 0;",
               fluidRow(
                 column(3, textInput("new_tpl_name", "Name:")),
-                column(3, selectInput("new_tpl_cat", "Category:", choices = tpl_cat_choices)),
+                column(3, selectInput("new_tpl_cat", "Job type:", choices = tpl_cat_choices)),
                 column(2, numericInput("new_tpl_slots", "Slots:", value = 1L, min = 1L, step = 1L)),
                 column(2, numericInput("new_tpl_wage", "Suggested wage:", value = NA, min = 0, step = 1)),
                 column(2, selectInput("new_tpl_timing", "Timing:",
