@@ -3328,10 +3328,10 @@ server <- function(input, output, session) {
     nm  <- trimws(input$new_stu_name %||% "")
     pw  <- input$new_stu_pw %||% ""
     sec <- trimws(input$new_stu_section %||% "")
-    if (!nzchar(uid) || !nzchar(pw)) {
-      showNotification("Username and password are required.", type = "error"); return()
+    if (!nzchar(uid)) {
+      showNotification("Username/email is required.", type = "error"); return()
     }
-    if (nchar(pw) < 4) {
+    if (nzchar(pw) && nchar(pw) < 4) {
       showNotification("Password must be at least 4 characters.", type = "error"); return()
     }
     ex <- db_query("SELECT user_id FROM users WHERE LOWER(user_id)=LOWER(?);", list(uid))
@@ -3339,7 +3339,9 @@ server <- function(input, output, session) {
     db_exec(
       "INSERT INTO users(user_id, display_name, pw_hash, is_admin, section, active, is_demo)
        VALUES(?,?,?,0,?,1,0);",
-      list(uid, if (nzchar(nm)) nm else uid, bcrypt::hashpw(pw), sec))
+      list(uid, if (nzchar(nm)) nm else uid,
+           if (nzchar(pw)) bcrypt::hashpw(pw) else bcrypt::hashpw(make_token()),
+           sec))
     showNotification(sprintf("Created student %s.", uid), type = "message")
   })
 
@@ -3360,37 +3362,87 @@ server <- function(input, output, session) {
     showNotification(sprintf("Password reset for %s.", uid), type = "message")
   })
 
+  output$student_csv_mapper <- renderUI({
+    req(rv$is_admin)
+    f <- input$upload_students_csv
+    if (is.null(f)) return(NULL)
+    hdr <- tryCatch(read.csv(f$datapath, nrows = 0, check.names = FALSE),
+                    error = function(e) NULL)
+    if (is.null(hdr)) {
+      return(tags$p(style = "color:#856404;font-size:.85rem;",
+                    "Could not read CSV headers. Check the file format."))
+    }
+    cols <- names(hdr)
+    norm_cols <- tolower(trimws(cols))
+    guess_col <- function(aliases) {
+      hit <- match(aliases, norm_cols)
+      if (any(!is.na(hit))) cols[hit[which(!is.na(hit))[1]]] else ""
+    }
+    optional_choices <- c("Do not import" = "", stats::setNames(cols, cols))
+    required_choices <- c("Choose column" = "", stats::setNames(cols, cols))
+    tagList(
+      tags$p(style = "color:#555;font-size:.85rem;margin-top:.35rem;",
+             "Map your CSV columns to the student fields. Password is optional for Google-only accounts."),
+      fluidRow(
+        column(3, selectInput("student_csv_uid_col", "Username/email:",
+                              choices = required_choices,
+                              selected = guess_col(c("username","user_id","userid","login","email")))),
+        column(3, selectInput("student_csv_name_col", "Display name:",
+                              choices = optional_choices,
+                              selected = guess_col(c("display_name","name","fullname","full_name")))),
+        column(3, selectInput("student_csv_section_col", "Section:",
+                              choices = optional_choices,
+                              selected = guess_col(c("section","class","group")))),
+        column(3, selectInput("student_csv_pw_col", "Password:",
+                              choices = optional_choices,
+                              selected = guess_col(c("password","pw","pass"))))
+      )
+    )
+  })
+
   observeEvent(input$bulk_upload_students_btn, {
     req(rv$is_admin)
     f <- input$upload_students_csv
     if (is.null(f)) { showNotification("Choose a CSV file first.", type = "error"); return() }
     do_update <- isTRUE(input$upload_stu_update)
-    df <- tryCatch(read.csv(f$datapath, stringsAsFactors = FALSE, colClasses = "character"),
+    df <- tryCatch(read.csv(f$datapath, stringsAsFactors = FALSE, colClasses = "character",
+                            check.names = FALSE),
                    error = function(e) { showNotification(paste("CSV error:", e$message), type = "error"); NULL })
     if (is.null(df)) return()
-    # Normalize column names
-    names(df) <- tolower(trimws(names(df)))
-    uid_col  <- intersect(c("username","user_id","userid","login"), names(df))
-    name_col <- intersect(c("display_name","name","fullname","full_name"), names(df))
-    sec_col  <- intersect(c("section","class","group"), names(df))
-    pw_col   <- intersect(c("password","pw","pass"), names(df))
-    if (!length(uid_col)) {
-      showNotification("CSV must have a 'username' column.", type = "error"); return()
+    cols <- names(df)
+    norm_cols <- tolower(trimws(cols))
+    guess_col <- function(aliases) {
+      hit <- match(aliases, norm_cols)
+      if (any(!is.na(hit))) cols[hit[which(!is.na(hit))[1]]] else ""
     }
+    valid_col <- function(x) nzchar(x %||% "") && (x %in% cols)
+    uid_col  <- input$student_csv_uid_col %||% guess_col(c("username","user_id","userid","login","email"))
+    name_col <- input$student_csv_name_col %||% guess_col(c("display_name","name","fullname","full_name"))
+    sec_col  <- input$student_csv_section_col %||% guess_col(c("section","class","group"))
+    pw_col   <- input$student_csv_pw_col %||% guess_col(c("password","pw","pass"))
+    if (!valid_col(uid_col)) {
+      showNotification("Choose the CSV column containing each student's username/email.", type = "error")
+      return()
+    }
+    if (!valid_col(name_col)) name_col <- ""
+    if (!valid_col(sec_col))  sec_col  <- ""
+    if (!valid_col(pw_col))   pw_col   <- ""
+    locked_pw_hash <- bcrypt::hashpw(make_token())
     n_created <- 0L; n_updated <- 0L; n_skipped <- 0L; n_bad_pw <- 0L
     for (i in seq_len(nrow(df))) {
-      uid  <- trimws(df[[uid_col[1]]][i] %||% "")
-      nm   <- if (length(name_col))  trimws(df[[name_col[1]]][i] %||% "") else ""
-      sec  <- if (length(sec_col))   trimws(df[[sec_col[1]]][i]  %||% "") else ""
-      pw   <- if (length(pw_col))    trimws(df[[pw_col[1]]][i]   %||% "") else ""
+      uid  <- trimws(df[[uid_col]][i] %||% "")
+      nm   <- if (nzchar(name_col)) trimws(df[[name_col]][i] %||% "") else ""
+      sec  <- if (nzchar(sec_col))  trimws(df[[sec_col]][i]  %||% "") else ""
+      pw   <- if (nzchar(pw_col))   trimws(df[[pw_col]][i]   %||% "") else ""
       if (!nzchar(uid)) next
       exists <- nrow(db_query("SELECT user_id FROM users WHERE LOWER(user_id)=LOWER(?);", list(uid))) > 0
       if (!exists) {
-        if (!nzchar(pw) || nchar(pw) < 4) { n_bad_pw <- n_bad_pw + 1L; next }
+        if (nzchar(pw) && nchar(pw) < 4) { n_bad_pw <- n_bad_pw + 1L; next }
         db_exec(
           "INSERT INTO users(user_id,display_name,pw_hash,is_admin,section,active,is_demo)
            VALUES(?,?,?,0,?,1,0);",
-          list(uid, if (nzchar(nm)) nm else uid, bcrypt::hashpw(pw),
+          list(uid, if (nzchar(nm)) nm else uid,
+               if (nzchar(pw)) bcrypt::hashpw(pw) else locked_pw_hash,
                if (nzchar(sec)) sec else NA_character_))
         n_created <- n_created + 1L
       } else if (do_update) {
@@ -3410,7 +3462,7 @@ server <- function(input, output, session) {
     if (n_created > 0) parts <- c(parts, sprintf("%d created",  n_created))
     if (n_updated > 0) parts <- c(parts, sprintf("%d updated",  n_updated))
     if (n_skipped > 0) parts <- c(parts, sprintf("%d skipped (already exist)", n_skipped))
-    if (n_bad_pw  > 0) parts <- c(parts, sprintf("%d skipped (missing/short password)", n_bad_pw))
+    if (n_bad_pw  > 0) parts <- c(parts, sprintf("%d skipped (password shorter than 4 chars)", n_bad_pw))
     showNotification(paste("Upload complete:", paste(parts, collapse = ", ")), type = "message",
                      duration = 8)
   })
@@ -5347,11 +5399,13 @@ server <- function(input, output, session) {
         } else div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;", "No students."),
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Add Student"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+               "Use the student's Vassar email as username. Password is optional for Google-only accounts."),
         fluidRow(
           column(3, textInput("new_stu_uid", "Username:")),
           column(3, textInput("new_stu_name", "Display name:")),
           column(2, textInput("new_stu_section", "Section:")),
-          column(3, passwordInput("new_stu_pw", "Password:")),
+          column(3, passwordInput("new_stu_pw", "Password (optional):")),
           column(1, tags$br(),
                  actionButton("create_student_btn", "Add", class = "btn btn-sm btn-primary"))
         ),
@@ -5366,14 +5420,14 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Bulk Upload Students"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "Upload a CSV with columns ", tags$code("username"), ", ",
-               tags$code("display_name"), ", ", tags$code("section"), ", ",
-               tags$code("password"), ". Password must be at least 4 characters."),
+               "Upload a CSV, then map its columns to username/email, display name, section, and optional password. ",
+               "Leave password unmapped for Google-only student accounts."),
         downloadButton("dl_student_template", "Download CSV template",
                        class = "btn btn-sm btn-outline-secondary"),
         tags$br(), tags$br(),
         fileInput("upload_students_csv", NULL, accept = ".csv",
                   buttonLabel = "Choose CSV", placeholder = "No file chosen"),
+        uiOutput("student_csv_mapper"),
         checkboxInput("upload_stu_update",
                       "Update existing students (display name + section; password only if provided in CSV)",
                       value = FALSE),
@@ -6192,10 +6246,10 @@ server <- function(input, output, session) {
     filename = function() "student_upload_template.csv",
     content  = function(file) write.csv(
       data.frame(
-        username     = c("jsmith", "jdoe"),
+        username     = c("jsmith@vassar.edu", "jdoe@vassar.edu"),
         display_name = c("Jane Smith", "John Doe"),
         section      = c("101", "102"),
-        password     = c("changeme1", "changeme2"),
+        password     = c("", ""),
         stringsAsFactors = FALSE),
       file, row.names = FALSE)
   )
