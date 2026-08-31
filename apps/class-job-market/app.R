@@ -4003,6 +4003,68 @@ server <- function(input, output, session) {
     showNotification("Assignment removed.", type = "message")
   }, ignoreNULL = TRUE)
 
+  observeEvent(input$manual_add_assignment_btn, {
+    req(rv$is_admin)
+    round <- tryCatch(db_query("SELECT id, assignment_mode FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                      error = function(e) data.frame())
+    if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
+    rid <- as.integer(round$id[1])
+    uid <- trimws(input$manual_assign_uid %||% "")
+    post_id <- suppressWarnings(as.integer(input$manual_assign_post_id %||% 0))
+    if (!nzchar(uid) || is.na(post_id) || post_id <= 0) {
+      showNotification("Pick a student and job first.", type = "warning")
+      return()
+    }
+    stu <- tryCatch(db_query(
+      "SELECT user_id, display_name
+       FROM users
+       WHERE user_id=? AND COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
+         AND COALESCE(is_demo,0)=0
+       LIMIT 1;",
+      list(uid)),
+      error = function(e) data.frame())
+    if (!nrow(stu)) { showNotification("Student is not active.", type = "error"); return() }
+    post <- tryCatch(db_query(
+      "SELECT jp.id, jp.job_name, COALESCE(jp.wage_override, jc.default_wage, 0) AS wage
+       FROM job_posts jp
+       LEFT JOIN job_categories jc ON jc.id=jp.category_id
+       WHERE jp.id=? AND jp.round_id=? AND COALESCE(jp.active,1)=1
+       LIMIT 1;",
+      list(post_id, rid)),
+      error = function(e) data.frame())
+    if (!nrow(post)) { showNotification("Job is not active for the current round.", type = "error"); return() }
+
+    old <- tryCatch(db_query(
+      "SELECT id FROM job_assignments WHERE round_id=? AND user_id=? LIMIT 1;",
+      list(rid, uid)),
+      error = function(e) data.frame())
+    if (nrow(old)) {
+      db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;",
+              list(as.integer(old$id[1])))
+    }
+    db_exec(
+      "INSERT INTO job_assignments(round_id, user_id, job_post_id, assigned_wage,
+              assignment_mode, status, outcome, tokens_awarded, tokens_credited, updated_at)
+       VALUES(?,?,?,?,?,'assigned','',0,1,datetime('now'))
+       ON CONFLICT(round_id, user_id)
+       DO UPDATE SET job_post_id=excluded.job_post_id,
+                     assigned_wage=excluded.assigned_wage,
+                     assignment_mode=excluded.assignment_mode,
+                     status='assigned',
+                     outcome='',
+                     tokens_awarded=0,
+                     tokens_credited=1,
+                     updated_at=datetime('now');",
+      list(rid, uid, post_id,
+           if (is.na(post$wage[1] %||% NA)) NA_real_ else as.numeric(post$wage[1]),
+           round$assignment_mode[1] %||% "manual"))
+    showNotification(
+      sprintf("Added %s back to %s.",
+              stu$display_name[1] %||% uid,
+              post$job_name[1] %||% "the job"),
+      type = "message")
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$redraw_absent_btn, {
     req(rv$is_admin)
     aid <- suppressWarnings(as.integer(input$redraw_absent_btn %||% 0))
@@ -4499,6 +4561,26 @@ server <- function(input, output, session) {
     stu_choices_raw <- setNames(students_sec$user_id, stu_lbl)
     is_bidder   <- students_sec$user_id %in% bidder_ids
     stu_choices <- c(stu_choices_raw[is_bidder], stu_choices_raw[!is_bidder])
+    manual_posts <- if (!is.na(rid)) {
+      tryCatch(db_query(
+        "SELECT jp.id, jp.job_name,
+                COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time,
+                COALESCE(jp.wage_override, jc.default_wage, 0) AS wage
+         FROM job_posts jp
+         LEFT JOIN job_categories jc ON jc.id=jp.category_id
+         WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+         ORDER BY jp.display_order, jp.job_name;",
+        list(rid)),
+        error = function(e) data.frame())
+    } else data.frame()
+    manual_post_choices <- if (nrow(manual_posts)) {
+      post_labels <- sprintf("%s [%s, %g token%s]",
+                             manual_posts$job_name %||% paste("Job", manual_posts$id),
+                             manual_posts$selection_time %||% "any",
+                             as.numeric(manual_posts$wage %||% 0),
+                             ifelse(as.numeric(manual_posts$wage %||% 0) == 1, "", "s"))
+      setNames(manual_posts$id, post_labels)
+    } else character(0)
 
     tagList(
       div(class = "tab-howto",
@@ -4600,7 +4682,24 @@ server <- function(input, output, session) {
               tags$p(style = "font-size:.8rem;color:#888;margin-top:.4rem;margin-bottom:0;",
                      sprintf("%d students assigned · %s", n_show,
                              if (revealed) "Visible to students" else "Hidden from students")),
-            uiOutput("draw_preview_table")
+            uiOutput("draw_preview_table"),
+            tags$hr(),
+            tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.4rem;",
+                    "Add Assignment Back"),
+            if (!length(stu_choices) || !length(manual_post_choices)) {
+              tags$p(style = "color:#999;margin:0;font-size:.86rem;",
+                     "No eligible students or active jobs available for this round.")
+            } else {
+              fluidRow(
+                column(4, selectInput("manual_assign_uid", "Student:",
+                                      choices = stu_choices, width = "100%")),
+                column(5, selectInput("manual_assign_post_id", "Job:",
+                                      choices = manual_post_choices, width = "100%")),
+                column(3, tags$br(),
+                       actionButton("manual_add_assignment_btn", "Add Back",
+                                    class = "btn btn-sm btn-primary"))
+              )
+            }
           )}
         }
       ),
