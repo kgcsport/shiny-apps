@@ -550,14 +550,12 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
   db_query <- query_fn
 
   categories <- list(
-    list(name = "Class roles",       wage = 2, voluntary = 0L, in_draw = 1L, order = 1L,
+    list(name = "Class roles", wage = 2, voluntary = 0L, in_draw = 1L, order = 1L,
          desc = "Recurring per-class jobs assigned by draw early in the semester, then by bids."),
-    list(name = "Answer a question", wage = 1, voluntary = 0L, in_draw = 1L, order = 2L,
-         desc = "Answer a question in class — as a cold call or by volunteering."),
-    list(name = "Ask a question",    wage = 1, voluntary = 1L, in_draw = 0L, order = 3L,
-         desc = "Ask a substantive question about the material — volunteer only."),
-    list(name = "Board work",        wage = 1, voluntary = 0L, in_draw = 1L, order = 4L,
-         desc = "Draw a graph or work an answer on the board — cold call or volunteer.")
+    list(name = "Volunteer", wage = 1, voluntary = 1L, in_draw = 0L, order = 2L,
+         desc = "Live participation jobs logged during class."),
+    list(name = "Cold Call", wage = 1, voluntary = 0L, in_draw = 1L, order = 3L,
+         desc = "In-class cold-call draws")
   )
 
   # Templates. Every-class jobs are active (auto-copied into each new round);
@@ -573,12 +571,12 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
     list(name = "Policy/example scout", cat = "Class roles", timing = "end",   slots = 1L, wage = 2, vol = 0L, draw = 1L, active = 1L, order = 5L),
     # Some sessions only
     list(name = "Discussion lead",      cat = "Class roles", timing = "end",   slots = 1L, wage = 2, vol = 0L, draw = 1L, active = 0L, order = 6L),
-    list(name = "Cold call: answer a question",     cat = "Answer a question", timing = "during", slots = 1L, wage = 1, vol = 0L, draw = 1L, active = 1L, order = 7L),
-    list(name = "Cold call: graph/answer on board", cat = "Board work",        timing = "during", slots = 1L, wage = 1, vol = 0L, draw = 1L, active = 1L, order = 8L),
+    list(name = "Cold call: answer a question",     cat = "Cold Call", timing = "during", slots = 1L, wage = 1, vol = 0L, draw = 1L, active = 1L, order = 7L),
+    list(name = "Cold call: graph/answer on board", cat = "Cold Call", timing = "during", slots = 1L, wage = 1, vol = 0L, draw = 1L, active = 1L, order = 8L),
     # Volunteering — never drawn; logged live during class
-    list(name = "Volunteer: answer a question",      cat = "Answer a question", timing = "volunteer", slots = 99L, wage = 1, vol = 1L, draw = 0L, active = 1L, order = 9L),
-    list(name = "Volunteer: ask a question",         cat = "Ask a question",    timing = "volunteer", slots = 99L, wage = 1, vol = 1L, draw = 0L, active = 1L, order = 10L),
-    list(name = "Volunteer: graph/answer on board",  cat = "Board work",        timing = "volunteer", slots = 99L, wage = 1, vol = 1L, draw = 0L, active = 1L, order = 11L)
+    list(name = "Volunteer: answer a question",      cat = "Volunteer", timing = "volunteer", slots = 99L, wage = 1, vol = 1L, draw = 0L, active = 1L, order = 9L),
+    list(name = "Volunteer: ask a question",         cat = "Volunteer", timing = "volunteer", slots = 99L, wage = 1, vol = 1L, draw = 0L, active = 1L, order = 10L),
+    list(name = "Volunteer: graph/answer on board",  cat = "Volunteer", timing = "volunteer", slots = 99L, wage = 1, vol = 1L, draw = 0L, active = 1L, order = 11L)
   )
 
   # Jobs seeded by earlier versions of this app that no longer exist.
@@ -599,13 +597,13 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
     "Opening recap"                            = "Class roles",
     "Reading analyst"                          = "Class roles",
     "Policy/example scout"                     = "Class roles",
-    "Concept explainer"                        = "Board work",
+    "Concept explainer"                        = "Cold Call",
     "Class record keeper"                      = "Class roles",
     "Discussion lead"                          = "Class roles",
-    "Course-material fix or suggestion"        = "Ask a question",
-    "Concept explanation or graph improvement" = "Board work",
-    "Forum answer or muddiest-point post"      = "Answer a question",
-    "Policy/data example or source check"      = "Answer a question"
+    "Course-material fix or suggestion"        = "Volunteer",
+    "Concept explanation or graph improvement" = "Cold Call",
+    "Forum answer or muddiest-point post"      = "Volunteer",
+    "Policy/data example or source check"      = "Volunteer"
   )
 
   cat_id_for <- function(nm) {
@@ -653,27 +651,15 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
     db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('job_catalog_v2_migrated','1');")
   }
 
-  # Keep old catalog entries out of production databases that already ran the
-  # one-time migration before the stripped-down job list was finalized.
-  for (old_name in retired_jobs) {
-    db_exec("UPDATE job_templates SET active=0 WHERE lower(name)=lower(?);", list(old_name))
-    db_exec("UPDATE job_posts SET active=0 WHERE lower(job_name)=lower(?);", list(old_name))
+  # Keep old catalog entries out during the one-time catalog migration only.
+  # After that, instructor edits must stick across restarts.
+  if (first_migration) {
+    for (old_name in retired_jobs) {
+      db_exec("UPDATE job_templates SET active=0 WHERE lower(name)=lower(?);", list(old_name))
+      db_exec("UPDATE job_posts SET active=0 WHERE lower(job_name)=lower(?);", list(old_name))
+    }
   }
 
-  # Cold calls are live in-class draws. Keep them available even in databases
-  # that were initialized while these templates were seeded inactive.
-  for (cold_name in c("Cold call: answer a question", "Cold call: graph/answer on board")) {
-    db_exec(
-      "UPDATE job_templates
-       SET active=1, in_draw=1, voluntary=0, selection_time='during'
-       WHERE lower(name)=lower(?);",
-      list(cold_name))
-    db_exec(
-      "UPDATE job_posts
-       SET active=1, in_draw=1, voluntary=0, selection_time='during'
-       WHERE lower(job_name)=lower(?);",
-      list(cold_name))
-  }
 
   for (tt in templates) {
     cid <- cat_ids[[tt$cat]]
@@ -3730,6 +3716,156 @@ server <- function(input, output, session) {
     showNotification("Template added.", type = "message")
   })
 
+  job_category_choices <- function(selected_id = NULL) {
+    cats <- tryCatch(db_query(
+      "SELECT id, name FROM job_categories
+       WHERE lower(name) IN ('class roles','volunteer','cold call')
+       ORDER BY display_order, name;"),
+      error = function(e) data.frame())
+    choices <- if (nrow(cats)) setNames(cats$id, cats$name) else c("(no categories)" = "")
+    if (!is.null(selected_id) && !is.na(selected_id) &&
+        !as.character(selected_id) %in% as.character(unname(choices))) {
+      cur <- tryCatch(db_query("SELECT id, name FROM job_categories WHERE id=?;", list(selected_id)),
+                      error = function(e) data.frame())
+      if (nrow(cur)) choices <- c(setNames(cur$id, paste0(cur$name, " (old)")), choices)
+    }
+    choices
+  }
+
+  job_timing_choices <- c("Any" = "any", "Start" = "start",
+                          "During (cold call)" = "during",
+                          "End" = "end", "Volunteer" = "volunteer")
+
+  observeEvent(input$edit_job_post_open, {
+    req(rv$is_admin)
+    pid <- suppressWarnings(as.integer(input$edit_job_post_open %||% 0))
+    if (is.na(pid) || pid <= 0) return()
+    post <- tryCatch(db_query(
+      "SELECT jp.id, jp.job_name, jp.category_id, jp.slots,
+              COALESCE(jp.wage_override, jc.default_wage, 0) AS wage,
+              COALESCE(jp.in_draw,1) AS in_draw,
+              COALESCE(jp.voluntary,0) AS voluntary,
+              COALESCE(jp.active,1) AS active,
+              COALESCE(NULLIF(jp.selection_time,''),'any') AS selection_time
+       FROM job_posts jp
+       LEFT JOIN job_categories jc ON jc.id=jp.category_id
+       WHERE jp.id=?;",
+      list(pid)),
+      error = function(e) data.frame())
+    if (!nrow(post)) { showNotification("Job post not found.", type = "error"); return() }
+    showModal(modalDialog(
+      title = "Edit Job Post",
+      numericInput("edit_post_id", NULL, value = pid, min = 1, step = 1),
+      tags$script("$('#edit_post_id').closest('.form-group').hide();"),
+      textInput("edit_post_name", "Name:", value = post$job_name[1] %||% ""),
+      selectInput("edit_post_cat", "Category:", choices = job_category_choices(post$category_id[1]),
+                  selected = post$category_id[1]),
+      fluidRow(
+        column(4, numericInput("edit_post_slots", "Slots:", value = as.integer(post$slots[1] %||% 1L), min = 1, step = 1)),
+        column(4, numericInput("edit_post_wage", "Wage:", value = as.numeric(post$wage[1] %||% 0), min = 0, step = 1)),
+        column(4, selectInput("edit_post_timing", "Timing:", choices = job_timing_choices,
+                              selected = post$selection_time[1] %||% "any"))
+      ),
+      fluidRow(
+        column(4, checkboxInput("edit_post_in_draw", "In draw", value = isTRUE(as.integer(post$in_draw[1]) == 1L))),
+        column(4, checkboxInput("edit_post_voluntary", "Voluntary", value = isTRUE(as.integer(post$voluntary[1]) == 1L))),
+        column(4, checkboxInput("edit_post_active", "Active", value = isTRUE(as.integer(post$active[1]) == 1L)))
+      ),
+      footer = tagList(modalButton("Cancel"), actionButton("save_job_post_btn", "Save", class = "btn-primary")),
+      easyClose = TRUE
+    ))
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$save_job_post_btn, {
+    req(rv$is_admin)
+    pid <- suppressWarnings(as.integer(input$edit_post_id %||% 0))
+    nm <- trimws(input$edit_post_name %||% "")
+    cat_id <- suppressWarnings(as.integer(input$edit_post_cat %||% 0))
+    slots <- max(1L, as.integer(input$edit_post_slots %||% 1L))
+    wage <- suppressWarnings(as.numeric(input$edit_post_wage %||% 0))
+    timing <- input$edit_post_timing %||% "any"
+    if (is.na(pid) || pid <= 0 || !nzchar(nm)) {
+      showNotification("Name is required.", type = "error"); return()
+    }
+    db_exec(
+      "UPDATE job_posts
+       SET job_name=?, category_id=?, slots=?, wage_override=?, selection_time=?,
+           in_draw=?, voluntary=?, active=?
+       WHERE id=?;",
+      list(nm, if (!is.na(cat_id) && cat_id > 0) cat_id else NA_integer_,
+           slots, if (!is.na(wage)) wage else NA_real_, timing,
+           as.integer(isTRUE(input$edit_post_in_draw)),
+           as.integer(isTRUE(input$edit_post_voluntary)),
+           as.integer(isTRUE(input$edit_post_active)), pid))
+    removeModal()
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification("Job post updated.", type = "message")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$edit_template_open, {
+    req(rv$is_admin)
+    tid <- suppressWarnings(as.integer(input$edit_template_open %||% 0))
+    if (is.na(tid) || tid <= 0) return()
+    tpl <- tryCatch(db_query(
+      "SELECT id, name, category_id, slots, suggested_wage,
+              COALESCE(active,1) AS active,
+              COALESCE(voluntary,0) AS voluntary,
+              COALESCE(in_draw,1) AS in_draw,
+              COALESCE(NULLIF(selection_time,''),'any') AS selection_time
+       FROM job_templates
+       WHERE id=?;",
+      list(tid)),
+      error = function(e) data.frame())
+    if (!nrow(tpl)) { showNotification("Template not found.", type = "error"); return() }
+    showModal(modalDialog(
+      title = "Edit Template",
+      numericInput("edit_tpl_id", NULL, value = tid, min = 1, step = 1),
+      tags$script("$('#edit_tpl_id').closest('.form-group').hide();"),
+      textInput("edit_tpl_name", "Name:", value = tpl$name[1] %||% ""),
+      selectInput("edit_tpl_cat", "Category:", choices = job_category_choices(tpl$category_id[1]),
+                  selected = tpl$category_id[1]),
+      fluidRow(
+        column(4, numericInput("edit_tpl_slots", "Slots:", value = as.integer(tpl$slots[1] %||% 1L), min = 1, step = 1)),
+        column(4, numericInput("edit_tpl_wage", "Suggested wage:", value = as.numeric(tpl$suggested_wage[1] %||% 0), min = 0, step = 1)),
+        column(4, selectInput("edit_tpl_timing", "Timing:", choices = job_timing_choices,
+                              selected = tpl$selection_time[1] %||% "any"))
+      ),
+      fluidRow(
+        column(4, checkboxInput("edit_tpl_in_draw", "In draw", value = isTRUE(as.integer(tpl$in_draw[1]) == 1L))),
+        column(4, checkboxInput("edit_tpl_voluntary", "Voluntary", value = isTRUE(as.integer(tpl$voluntary[1]) == 1L))),
+        column(4, checkboxInput("edit_tpl_active", "Auto-copy", value = isTRUE(as.integer(tpl$active[1]) == 1L)))
+      ),
+      footer = tagList(modalButton("Cancel"), actionButton("save_template_btn", "Save", class = "btn-primary")),
+      easyClose = TRUE
+    ))
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$save_template_btn, {
+    req(rv$is_admin)
+    tid <- suppressWarnings(as.integer(input$edit_tpl_id %||% 0))
+    nm <- trimws(input$edit_tpl_name %||% "")
+    cat_id <- suppressWarnings(as.integer(input$edit_tpl_cat %||% 0))
+    slots <- max(1L, as.integer(input$edit_tpl_slots %||% 1L))
+    wage <- suppressWarnings(as.numeric(input$edit_tpl_wage %||% 0))
+    timing <- input$edit_tpl_timing %||% "any"
+    if (is.na(tid) || tid <= 0 || !nzchar(nm)) {
+      showNotification("Name is required.", type = "error"); return()
+    }
+    db_exec(
+      "UPDATE job_templates
+       SET name=?, category_id=?, slots=?, suggested_wage=?, selection_time=?,
+           in_draw=?, voluntary=?, active=?
+       WHERE id=?;",
+      list(nm, if (!is.na(cat_id) && cat_id > 0) cat_id else NA_integer_,
+           slots, if (!is.na(wage)) wage else NA_real_, timing,
+           as.integer(isTRUE(input$edit_tpl_in_draw)),
+           as.integer(isTRUE(input$edit_tpl_voluntary)),
+           as.integer(isTRUE(input$edit_tpl_active)), tid))
+    removeModal()
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification("Template updated.", type = "message")
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$remove_template_btn, {
     req(rv$is_admin)
     tid <- suppressWarnings(as.integer(input$remove_template_btn %||% 0))
@@ -5302,7 +5438,10 @@ server <- function(input, output, session) {
       rid <- if (nrow(rid_row)) rid_row$id[1] else NA_integer_
 
       all_cats <- tryCatch(
-        db_query("SELECT * FROM job_categories ORDER BY display_order, name;"),
+        db_query(
+          "SELECT * FROM job_categories
+           WHERE lower(name) IN ('class roles','volunteer','cold call')
+           ORDER BY display_order, name;"),
         error = function(e) data.frame())
       vol_cats <- if (nrow(all_cats))
         all_cats[as.integer(all_cats$voluntary %||% 0) == 1L, , drop = FALSE]
@@ -5408,6 +5547,13 @@ server <- function(input, output, session) {
                   tags$td(make_flag_btn("\U2713 Active", "\U2715 Inactive", "toggle_post_active",
                                         r$id, is_act, "btn-success", "btn-outline-secondary")),
                   tags$td(
+                    tags$button(
+                      class = "btn btn-xs btn-outline-primary",
+                      style = "padding:.1rem .3rem;font-size:.7rem;margin-right:.15rem;",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('edit_job_post_open',%d,{priority:'event'});",
+                        as.integer(r$id)),
+                      "Edit"),
                     tags$button(
                       class = "btn btn-xs btn-outline-danger",
                       style = "padding:.1rem .3rem;font-size:.7rem;",
@@ -5607,6 +5753,13 @@ server <- function(input, output, session) {
                   tags$td(make_flag_btn("\U2713 Auto-copy", "\U2715 Off", "toggle_template_active",
                                         r$id, is_act, "btn-success", "btn-outline-secondary")),
                   tags$td(
+                    tags$button(
+                      class = "btn btn-xs btn-outline-primary",
+                      style = "padding:.1rem .35rem;font-size:.72rem;margin-right:.15rem;",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('edit_template_open',%d,{priority:'event'});",
+                        as.integer(r$id)),
+                      "Edit"),
                     tags$button(
                       class = "btn btn-xs btn-outline-danger",
                       style = "padding:.1rem .35rem;font-size:.72rem;",

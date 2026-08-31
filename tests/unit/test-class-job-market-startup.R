@@ -59,6 +59,7 @@ test_that("class-job-market starts against a fresh DB with required tables and c
 
     round <- DBI::dbGetQuery(con, "SELECT label, tokens_revealed FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
     posts <- DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM job_posts;")
+    cats <- DBI::dbGetQuery(con, "SELECT name FROM job_categories ORDER BY display_order, name;")
     cold_posts <- DBI::dbGetQuery(con, "
       SELECT COUNT(*) n
       FROM job_posts
@@ -68,6 +69,7 @@ test_that("class-job-market starts against a fresh DB with required tables and c
         AND job_name LIKE 'Cold call:%';")
     expect_equal(round$label[1], "Current Class")
     expect_equal(round$tokens_revealed[1], 0)
+    expect_equal(cats$name, c("Class roles", "Volunteer", "Cold Call"))
     expect_gt(posts$n[1], 0)
     expect_gt(cold_posts$n[1], 0)
   })
