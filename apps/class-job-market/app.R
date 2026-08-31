@@ -1469,6 +1469,7 @@ server <- function(input, output, session) {
     cold_call_draw = NULL,
     active_section = get_setting("active_section", ""),
     jobs_ver       = 0L,    # bumped after any job-post or category mutation
+    students_ver   = 0L,    # bumped after any student roster mutation
     gradebook_ver  = 0L     # bumped after any gradebook category/item mutation
   )
 
@@ -3476,6 +3477,7 @@ server <- function(input, output, session) {
     uid <- trimws(input$archive_uid %||% "")
     if (!nzchar(uid)) return()
     db_exec("UPDATE users SET active=0 WHERE user_id=?;", list(uid))
+    rv$students_ver <- rv$students_ver + 1L
     showNotification(sprintf("Archived %s.", uid), type = "warning")
   }, ignoreNULL = TRUE)
 
@@ -3484,7 +3486,92 @@ server <- function(input, output, session) {
     uid <- trimws(input$restore_uid %||% "")
     if (!nzchar(uid)) return()
     db_exec("UPDATE users SET active=1 WHERE user_id=?;", list(uid))
+    rv$students_ver <- rv$students_ver + 1L
     showNotification(sprintf("Restored %s.", uid), type = "message")
+  }, ignoreNULL = TRUE)
+
+  user_ref_tables <- c(
+    "arcade_sessions", "extension_purchases", "grade_reweight_requests",
+    "public_good_contributions", "flex_purchases", "token_ledger",
+    "olig_submissions", "olig_payouts", "pledges", "participation_events",
+    "live_score_events", "student_grades", "job_assignments",
+    "wage_bids", "application_bids"
+  )
+
+  update_user_references <- function(old_uid, new_uid, display_name) {
+    for (tbl in user_ref_tables) {
+      cols <- tryCatch(db_query(sprintf("PRAGMA table_info(%s);", tbl))$name,
+                       error = function(e) character(0))
+      if ("user_id" %in% cols) {
+        db_exec(sprintf("UPDATE %s SET user_id=? WHERE user_id=?;", tbl),
+                list(new_uid, old_uid))
+      }
+    }
+    db_exec("UPDATE token_ledger SET display_name=? WHERE user_id=?;",
+            list(display_name, new_uid))
+  }
+
+  observeEvent(input$edit_student_open, {
+    req(rv$is_admin, !rv$impersonating)
+    uid <- trimws(input$edit_student_open %||% "")
+    if (!nzchar(uid)) return()
+    stu <- tryCatch(db_query(
+      "SELECT user_id, display_name, section, COALESCE(active,1) AS active
+       FROM users
+       WHERE user_id=? AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0;",
+      list(uid)),
+      error = function(e) data.frame())
+    if (!nrow(stu)) { showNotification("Student not found.", type = "error"); return() }
+    showModal(modalDialog(
+      title = "Edit Student",
+      textInput("edit_student_old_uid", NULL, value = stu$user_id[1]),
+      tags$script("$('#edit_student_old_uid').closest('.form-group').hide();"),
+      textInput("edit_student_uid", "Username/email:", value = stu$user_id[1]),
+      textInput("edit_student_name", "Display name:", value = stu$display_name[1] %||% ""),
+      textInput("edit_student_section", "Section:", value = stu$section[1] %||% ""),
+      passwordInput("edit_student_pw", "New password (optional):"),
+      checkboxInput("edit_student_active", "Active", value = isTRUE(as.integer(stu$active[1] %||% 1L) == 1L)),
+      footer = tagList(modalButton("Cancel"), actionButton("save_student_btn", "Save", class = "btn-primary")),
+      easyClose = TRUE
+    ))
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$save_student_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    old_uid <- trimws(input$edit_student_old_uid %||% "")
+    new_uid <- trimws(input$edit_student_uid %||% "")
+    nm <- trimws(input$edit_student_name %||% "")
+    sec <- trimws(input$edit_student_section %||% "")
+    pw <- input$edit_student_pw %||% ""
+    if (!nzchar(old_uid) || !nzchar(new_uid)) {
+      showNotification("Username/email is required.", type = "error"); return()
+    }
+    if (nzchar(pw) && nchar(pw) < 4) {
+      showNotification("Password must be at least 4 characters.", type = "error"); return()
+    }
+    if (!identical(tolower(old_uid), tolower(new_uid))) {
+      exists <- tryCatch(db_query(
+        "SELECT user_id FROM users WHERE LOWER(user_id)=LOWER(?) AND user_id<>?;",
+        list(new_uid, old_uid)),
+        error = function(e) data.frame())
+      if (nrow(exists)) {
+        showNotification("That username/email already exists.", type = "error"); return()
+      }
+    }
+    display_name <- if (nzchar(nm)) nm else new_uid
+    db_exec(
+      "UPDATE users
+       SET user_id=?, display_name=?, section=?, active=?
+       WHERE user_id=? AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0;",
+      list(new_uid, display_name, sec, as.integer(isTRUE(input$edit_student_active)), old_uid))
+    update_user_references(old_uid, new_uid, display_name)
+    if (nzchar(pw)) {
+      db_exec("UPDATE users SET pw_hash=? WHERE user_id=?;",
+              list(bcrypt::hashpw(pw), new_uid))
+    }
+    removeModal()
+    rv$students_ver <- rv$students_ver + 1L
+    showNotification(sprintf("Updated student %s.", new_uid), type = "message")
   }, ignoreNULL = TRUE)
 
   observeEvent(input$create_student_btn, {
@@ -3507,6 +3594,7 @@ server <- function(input, output, session) {
       list(uid, if (nzchar(nm)) nm else uid,
            if (nzchar(pw)) bcrypt::hashpw(pw) else bcrypt::hashpw(make_token()),
            sec))
+    rv$students_ver <- rv$students_ver + 1L
     showNotification(sprintf("Created student %s.", uid), type = "message")
   })
 
@@ -3524,6 +3612,7 @@ server <- function(input, output, session) {
     if (!nrow(ex)) { showNotification("User not found.", type = "error"); return() }
     db_exec("UPDATE users SET pw_hash=? WHERE LOWER(user_id)=LOWER(?);",
             list(bcrypt::hashpw(pw), uid))
+    rv$students_ver <- rv$students_ver + 1L
     showNotification(sprintf("Password reset for %s.", uid), type = "message")
   })
 
@@ -6100,6 +6189,7 @@ server <- function(input, output, session) {
       )
 
     } else if (act == "students") {
+      rv$students_ver
       students <- tryCatch(db_query(
         "SELECT user_id, display_name, section,
                 COALESCE(active,1) AS active, COALESCE(is_admin,0) AS is_admin
@@ -6131,27 +6221,43 @@ server <- function(input, output, session) {
                     tagList(
                       tags$button(
                         onclick = sprintf(
-                          "Shiny.setInputValue('impersonate_uid','%s',{priority:'event'});",
-                          r$user_id),
+                          "Shiny.setInputValue('edit_student_open',%s,{priority:'event'});",
+                          jsonlite::toJSON(r$user_id, auto_unbox = TRUE)),
+                        class = "btn btn-xs btn-outline-secondary",
+                        style = "padding:.1rem .35rem;font-size:.72rem;margin-right:.2rem;",
+                        "Edit"),
+                      tags$button(
+                        onclick = sprintf(
+                          "Shiny.setInputValue('impersonate_uid',%s,{priority:'event'});",
+                          jsonlite::toJSON(r$user_id, auto_unbox = TRUE)),
                         class = "btn btn-xs btn-outline-primary",
                         style = "padding:.1rem .35rem;font-size:.72rem;margin-right:.2rem;",
                         "View as"),
                       tags$button(
                         onclick = sprintf(
-                          "Shiny.setInputValue('archive_uid','%s',{priority:'event'});",
-                          r$user_id),
+                          "Shiny.setInputValue('archive_uid',%s,{priority:'event'});",
+                          jsonlite::toJSON(r$user_id, auto_unbox = TRUE)),
                         class = "btn btn-xs btn-outline-warning",
                         style = "padding:.1rem .35rem;font-size:.72rem;",
                         "Archive")
                     )
                   } else {
-                    tags$button(
-                      onclick = sprintf(
-                        "Shiny.setInputValue('restore_uid','%s',{priority:'event'});",
-                        r$user_id),
-                      class = "btn btn-xs btn-outline-secondary",
-                      style = "padding:.1rem .35rem;font-size:.72rem;",
-                      "Restore")
+                    tagList(
+                      tags$button(
+                        onclick = sprintf(
+                          "Shiny.setInputValue('edit_student_open',%s,{priority:'event'});",
+                          jsonlite::toJSON(r$user_id, auto_unbox = TRUE)),
+                        class = "btn btn-xs btn-outline-secondary",
+                        style = "padding:.1rem .35rem;font-size:.72rem;margin-right:.2rem;",
+                        "Edit"),
+                      tags$button(
+                        onclick = sprintf(
+                          "Shiny.setInputValue('restore_uid',%s,{priority:'event'});",
+                          jsonlite::toJSON(r$user_id, auto_unbox = TRUE)),
+                        class = "btn btn-xs btn-outline-secondary",
+                        style = "padding:.1rem .35rem;font-size:.72rem;",
+                        "Restore")
+                    )
                   }
                 )
               )
