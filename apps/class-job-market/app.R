@@ -1466,6 +1466,7 @@ server <- function(input, output, session) {
     impersonating  = FALSE,
     orig_state     = NULL,
     draw_preview   = NULL,   # NULL | list of draw pairs for preview
+    cold_call_draw = NULL,
     active_section = get_setting("active_section", ""),
     jobs_ver       = 0L,    # bumped after any job-post or category mutation
     gradebook_ver  = 0L     # bumped after any gradebook category/item mutation
@@ -4201,6 +4202,128 @@ server <- function(input, output, session) {
       type = "message")
   }, ignoreNULL = TRUE)
 
+  observeEvent(input$draw_cold_call_btn, {
+    req(rv$is_admin)
+    sec <- trimws(rv$active_section %||% "")
+    pool <- tryCatch(
+      if (nzchar(sec)) {
+        db_query(
+          "SELECT u.user_id, u.display_name, u.section,
+                  COALESCE(cc.n,0) AS cold_calls
+           FROM users u
+           LEFT JOIN (
+             SELECT lse.user_id, COUNT(*) n
+             FROM live_score_events lse
+             LEFT JOIN job_posts jp ON jp.id=lse.job_post_id
+             WHERE lse.event_kind='cold_call'
+                OR lower(COALESCE(jp.selection_time,''))='during'
+                OR lower(COALESCE(jp.job_name,'')) LIKE 'cold call:%'
+             GROUP BY lse.user_id
+           ) cc ON cc.user_id=u.user_id
+           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
+             AND COALESCE(u.is_demo,0)=0 AND u.section=?
+           ORDER BY cold_calls ASC, RANDOM()
+           LIMIT 1;",
+          list(sec))
+      } else {
+        db_query(
+          "SELECT u.user_id, u.display_name, u.section,
+                  COALESCE(cc.n,0) AS cold_calls
+           FROM users u
+           LEFT JOIN (
+             SELECT lse.user_id, COUNT(*) n
+             FROM live_score_events lse
+             LEFT JOIN job_posts jp ON jp.id=lse.job_post_id
+             WHERE lse.event_kind='cold_call'
+                OR lower(COALESCE(jp.selection_time,''))='during'
+                OR lower(COALESCE(jp.job_name,'')) LIKE 'cold call:%'
+             GROUP BY lse.user_id
+           ) cc ON cc.user_id=u.user_id
+           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
+             AND COALESCE(u.is_demo,0)=0
+           ORDER BY cold_calls ASC, RANDOM()
+           LIMIT 1;")
+      },
+      error = function(e) data.frame())
+    if (!nrow(pool)) {
+      showNotification("No eligible students for a cold call.", type = "warning")
+      return()
+    }
+    rv$cold_call_draw <- list(
+      user_id = pool$user_id[1],
+      display_name = pool$display_name[1] %||% pool$user_id[1],
+      section = pool$section[1] %||% "")
+  }, ignoreNULL = TRUE)
+
+  cold_call_post_id <- function(kind, rid) {
+    kind <- if (identical(kind, "board")) "board" else "answer"
+    pattern <- if (identical(kind, "board")) "%board%" else "%answer%"
+    post <- tryCatch(db_query(
+      "SELECT id, COALESCE(wage_override, jc.default_wage, 1) AS wage
+       FROM job_posts jp
+       LEFT JOIN job_categories jc ON jc.id=jp.category_id
+       WHERE jp.round_id=?
+         AND COALESCE(jp.active,1)=1
+         AND lower(COALESCE(jp.selection_time,''))='during'
+         AND lower(COALESCE(jp.job_name,'')) LIKE ?
+       ORDER BY jp.id
+       LIMIT 1;",
+      list(rid, pattern)),
+      error = function(e) data.frame())
+    if (nrow(post)) return(post)
+    cat <- tryCatch(db_query(
+      "SELECT id, default_wage FROM job_categories
+       WHERE lower(name)='cold call'
+       ORDER BY id LIMIT 1;"),
+      error = function(e) data.frame())
+    cat_id <- if (nrow(cat)) as.integer(cat$id[1]) else NA_integer_
+    wage <- if (nrow(cat)) as.numeric(cat$default_wage[1] %||% 1) else 1
+    name <- if (identical(kind, "board")) "Cold call: graph/answer on board" else "Cold call: answer a question"
+    db_exec(
+      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override,
+                             in_draw, voluntary, selection_time)
+       VALUES(?,?,?,?,?,1,0,'during');",
+      list(rid, name, cat_id, 1L, wage))
+    new_id <- tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1],
+                       error = function(e) NA_integer_)
+    data.frame(id = new_id, wage = wage)
+  }
+
+  record_cold_call <- function(kind) {
+    req(rv$is_admin, !rv$impersonating)
+    drawn <- rv$cold_call_draw
+    if (!is.list(drawn) || !nzchar(drawn$user_id %||% "")) {
+      showNotification("Draw a cold-call student first.", type = "warning")
+      return()
+    }
+    round <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                      error = function(e) data.frame())
+    if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
+    rid <- as.integer(round$id[1])
+    post <- cold_call_post_id(kind, rid)
+    if (!nrow(post) || is.na(post$id[1])) {
+      showNotification("Could not find or create the cold-call job post.", type = "error")
+      return()
+    }
+    uid <- drawn$user_id
+    tokens <- as.numeric(post$wage[1] %||% 1)
+    db_exec(
+      "INSERT INTO live_score_events(round_id, user_id, job_post_id, event_kind,
+              outcome, tokens, logged_by)
+       VALUES(?,?,?,'cold_call','succeed',?,?);",
+      list(rid, uid, as.integer(post$id[1]), tokens, rv$user_id %||% "admin"))
+    rv$cold_call_draw <- NULL
+    showNotification(
+      sprintf("Queued cold call for %s.", drawn$display_name %||% uid),
+      type = "message")
+  }
+
+  observeEvent(input$record_cold_call_answer_btn, record_cold_call("answer"), ignoreNULL = TRUE)
+  observeEvent(input$record_cold_call_board_btn,  record_cold_call("board"),  ignoreNULL = TRUE)
+  observeEvent(input$clear_cold_call_draw_btn, {
+    rv$cold_call_draw <- NULL
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$redraw_absent_btn, {
     req(rv$is_admin)
     aid <- suppressWarnings(as.integer(input$redraw_absent_btn %||% 0))
@@ -4817,9 +4940,42 @@ server <- function(input, output, session) {
         column(4,
           selectInput("draw_timing_filter", "Draw jobs:",
                       choices = c("All timings" = "all", "Start of class" = "start",
-                                  "During class (cold call)" = "during",
                                   "End/post class" = "end"),
                       selected = "all", width = "100%"))
+      ),
+
+      wellPanel(
+        tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
+                "Cold Call"),
+        if (!nrow(students_sec)) {
+          tags$p(style = "color:#999;margin:0;", "No students in the selected section.")
+        } else {
+          drawn <- rv$cold_call_draw
+          drawn_uid <- if (is.list(drawn)) drawn$user_id %||% "" else ""
+          drawn_name <- if (is.list(drawn)) drawn$display_name %||% drawn_uid else ""
+          tagList(
+            div(style = "display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;",
+              actionButton("draw_cold_call_btn", "Draw Cold Call",
+                           class = "btn btn-sm btn-primary"),
+              if (nzchar(drawn_uid)) {
+                span(style = "font-weight:700;",
+                     sprintf("%s", drawn_name))
+              } else {
+                span(style = "color:#888;font-size:.88rem;", "Draw a student, then record the cold-call type.")
+              }
+            ),
+            if (nzchar(drawn_uid)) {
+              div(style = "display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.6rem;",
+                actionButton("record_cold_call_answer_btn", "Answering Question",
+                             class = "btn btn-sm btn-outline-success"),
+                actionButton("record_cold_call_board_btn", "Board Work",
+                             class = "btn btn-sm btn-outline-success"),
+                actionButton("clear_cold_call_draw_btn", "Clear",
+                             class = "btn btn-sm btn-outline-secondary")
+              )
+            }
+          )
+        }
       ),
 
       # Panel 1: Job Assignments
@@ -5089,7 +5245,10 @@ server <- function(input, output, session) {
                   tags$tr(
                     tags$td(r$display_name %||% r$user_id),
                     tags$td(r$job_name %||% ""),
-                    tags$td(if (identical(r$event_kind, "assignment")) "assigned" else "voluntary"),
+                    tags$td(switch(as.character(r$event_kind %||% ""),
+                                   assignment = "assigned",
+                                   cold_call = "cold call",
+                                   "voluntary")),
                     tags$td(r$outcome %||% ""),
                     tags$td(style = "text-align:right;", as.integer(r$tokens %||% 0)),
                     tags$td(tags$button(
