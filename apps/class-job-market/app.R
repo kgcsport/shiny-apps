@@ -573,8 +573,8 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
     list(name = "Policy/example scout", cat = "Class roles", timing = "end",   slots = 1L, wage = 2, vol = 0L, draw = 1L, active = 1L, order = 5L),
     # Some sessions only
     list(name = "Discussion lead",      cat = "Class roles", timing = "end",   slots = 1L, wage = 2, vol = 0L, draw = 1L, active = 0L, order = 6L),
-    list(name = "Cold call: answer a question",     cat = "Answer a question", timing = "during", slots = 1L, wage = 1, vol = 0L, draw = 1L, active = 0L, order = 7L),
-    list(name = "Cold call: graph/answer on board", cat = "Board work",        timing = "during", slots = 1L, wage = 1, vol = 0L, draw = 1L, active = 0L, order = 8L),
+    list(name = "Cold call: answer a question",     cat = "Answer a question", timing = "during", slots = 1L, wage = 1, vol = 0L, draw = 1L, active = 1L, order = 7L),
+    list(name = "Cold call: graph/answer on board", cat = "Board work",        timing = "during", slots = 1L, wage = 1, vol = 0L, draw = 1L, active = 1L, order = 8L),
     # Volunteering — never drawn; logged live during class
     list(name = "Volunteer: answer a question",      cat = "Answer a question", timing = "volunteer", slots = 99L, wage = 1, vol = 1L, draw = 0L, active = 1L, order = 9L),
     list(name = "Volunteer: ask a question",         cat = "Ask a question",    timing = "volunteer", slots = 99L, wage = 1, vol = 1L, draw = 0L, active = 1L, order = 10L),
@@ -658,6 +658,21 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
   for (old_name in retired_jobs) {
     db_exec("UPDATE job_templates SET active=0 WHERE lower(name)=lower(?);", list(old_name))
     db_exec("UPDATE job_posts SET active=0 WHERE lower(job_name)=lower(?);", list(old_name))
+  }
+
+  # Cold calls are live in-class draws. Keep them available even in databases
+  # that were initialized while these templates were seeded inactive.
+  for (cold_name in c("Cold call: answer a question", "Cold call: graph/answer on board")) {
+    db_exec(
+      "UPDATE job_templates
+       SET active=1, in_draw=1, voluntary=0, selection_time='during'
+       WHERE lower(name)=lower(?);",
+      list(cold_name))
+    db_exec(
+      "UPDATE job_posts
+       SET active=1, in_draw=1, voluntary=0, selection_time='during'
+       WHERE lower(job_name)=lower(?);",
+      list(cold_name))
   }
 
   for (tt in templates) {
@@ -4415,6 +4430,29 @@ server <- function(input, output, session) {
       pending_show <- pending_show[keep, , drop = FALSE]
     }
 
+    end_pending <- tryCatch(db_query(
+      "SELECT ja.id, ja.user_id, u.display_name, u.section,
+              COALESCE(wr.label, 'Round ' || ja.round_id) AS round_label,
+              jp.job_name, ja.assigned_wage
+       FROM job_assignments ja
+       JOIN users u ON u.user_id=ja.user_id
+       JOIN job_posts jp ON jp.id=ja.job_post_id
+       LEFT JOIN weekly_rounds wr ON wr.id=ja.round_id
+       WHERE COALESCE(ja.status,'assigned')='assigned'
+         AND COALESCE(ja.outcome,'')=''
+         AND COALESCE(jp.selection_time,'')='end'
+         AND NOT EXISTS (
+           SELECT 1 FROM live_score_events lse
+           WHERE lse.job_assignment_id=ja.id AND lse.committed_at IS NULL
+         )
+       ORDER BY ja.created_at DESC, ja.id DESC
+       LIMIT 50;"),
+      error = function(e) data.frame())
+    if (nzchar(cur_sec) && nrow(end_pending) && "section" %in% names(end_pending)) {
+      keep <- !is.na(end_pending$section) & as.character(end_pending$section) == cur_sec
+      end_pending <- end_pending[keep, , drop = FALSE]
+    }
+
     # Round ID
     rid <- if (nrow(round)) round$id[1] else NA_integer_
     section_revealed <- FALSE
@@ -4646,6 +4684,53 @@ server <- function(input, output, session) {
                       onclick = sprintf(
                         "Shiny.setInputValue('unassign_job_btn',%d,{priority:'event'});",
                         as.integer(r$id)), "\U2715")
+                  )
+                )
+              }))
+            )
+          )
+        )
+      },
+
+      if (nrow(end_pending) > 0) {
+        tagList(
+          div(class = "sec-label", "End-of-Class Jobs Needing Grades"),
+          div(class = "tracker-wrap",
+            tags$table(class = "table table-sm",
+              tags$thead(tags$tr(
+                tags$th("Student"), tags$th("Section"), tags$th("Round"),
+                tags$th("Job"), tags$th(style = "text-align:right;", "Wage"),
+                tags$th("Grade")
+              )),
+              tags$tbody(lapply(seq_len(nrow(end_pending)), function(i) {
+                r <- end_pending[i, ]
+                wage <- suppressWarnings(as.numeric(r$assigned_wage %||% 0))
+                tags$tr(
+                  tags$td(r$display_name %||% r$user_id),
+                  tags$td(style = "color:#888;font-size:.85em;", r$section %||% ""),
+                  tags$td(style = "color:#888;font-size:.85em;", r$round_label %||% ""),
+                  tags$td(style = "font-weight:600;", r$job_name %||% ""),
+                  tags$td(style = "text-align:right;font-size:.85em;color:#888;",
+                          if (!is.na(wage) && wage > 0) sprintf("%g", wage) else ""),
+                  tags$td(
+                    tags$button(
+                      class = "btn btn-xs btn-outline-success",
+                      style = "padding:.1rem .3rem;font-size:.7rem;margin-right:.1rem;",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('eval_outcome',{id:%d,outcome:'complete'},{priority:'event'});",
+                        as.integer(r$id)), "Complete"),
+                    tags$button(
+                      class = "btn btn-xs btn-outline-warning",
+                      style = "padding:.1rem .3rem;font-size:.7rem;margin-right:.1rem;",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('eval_outcome',{id:%d,outcome:'tried'},{priority:'event'});",
+                        as.integer(r$id)), "Tried"),
+                    tags$button(
+                      class = "btn btn-xs btn-outline-danger",
+                      style = "padding:.1rem .3rem;font-size:.7rem;",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('eval_outcome',{id:%d,outcome:'missed'},{priority:'event'});",
+                        as.integer(r$id)), "Missed")
                   )
                 )
               }))
@@ -5520,11 +5605,13 @@ server <- function(input, output, session) {
       students <- tryCatch(db_query(
         "SELECT user_id, display_name, section,
                 COALESCE(active,1) AS active, COALESCE(is_admin,0) AS is_admin
-         FROM users WHERE COALESCE(is_demo,0)=0 AND COALESCE(active,1)=1
+         FROM users WHERE COALESCE(is_demo,0)=0
          ORDER BY section, display_name;"),
         error = function(e) data.frame())
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Student Roster"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+               "Archived students stay here so you can restore them if they were removed by mistake."),
         if (nrow(students)) {
           tags$table(class = "table table-sm",
             tags$thead(tags$tr(
