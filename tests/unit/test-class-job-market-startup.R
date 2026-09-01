@@ -52,7 +52,7 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     on.exit(suppressWarnings(try(DBI::dbDisconnect(con), silent = TRUE)), add = TRUE)
 
     expect_true(file.exists(db_path()))
-    expect_true(all(c("user_id", "display_name", "pw_hash", "section", "active", "is_demo") %in% cols(con, "users")))
+    expect_true(all(c("user_id", "display_name", "pw_hash", "course", "section", "active", "is_demo") %in% cols(con, "users")))
     expect_true("assignments_revealed" %in% cols(con, "arcade_state"))
     expect_true(all(c("tokens_awarded", "tokens_credited", "status", "job_post_id") %in% cols(con, "job_assignments")))
     expect_true(all(c("job_post_id", "event_kind", "tokens", "committed_at") %in% cols(con, "live_score_events")))
@@ -72,6 +72,13 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_equal(cats$name, c("Class roles", "Volunteer", "Cold Call"))
     expect_gt(posts$n[1], 0)
     expect_gt(cold_posts$n[1], 0)
+
+    settings <- DBI::dbGetQuery(con, "
+      SELECT key, value FROM labor_settings
+      WHERE key IN ('active_course', 'active_section', 'hide_archived_students')
+      ORDER BY key;")
+    expect_equal(settings$key, c("active_course", "active_section", "hide_archived_students"))
+    expect_equal(settings$value, c("", "", "0"))
   })
 })
 
@@ -158,7 +165,7 @@ test_that("class-job-market migrates an older live DB schema on startup", {
     con <- DBI::dbConnect(RSQLite::SQLite(), db_path())
     on.exit(suppressWarnings(try(DBI::dbDisconnect(con), silent = TRUE)), add = TRUE)
 
-    expect_true(all(c("pw_hash", "section", "active", "is_demo") %in% cols(con, "users")))
+    expect_true(all(c("pw_hash", "course", "section", "active", "is_demo") %in% cols(con, "users")))
     expect_true("assignments_revealed" %in% cols(con, "arcade_state"))
     expect_true(all(c("round_id", "user_id", "job_assignment_id", "job_post_id", "event_kind", "outcome", "tokens", "logged_by", "committed_at", "created_at") %in% cols(con, "live_score_events")))
     expect_true(all(c("default_wage", "description", "voluntary", "in_draw") %in% cols(con, "job_categories")))
