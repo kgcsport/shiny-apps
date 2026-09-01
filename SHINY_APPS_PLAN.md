@@ -166,6 +166,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-08-31** (Codex) - Added an authenticated `?view=cold-call-slide`
+  mode to `class-job-market` that exposes a compact cold-call draw/record
+  panel for embedding in Reveal/Quarto slides while preserving the existing
+  `live_score_events` write path.
+
 - **2026-08-26** (Claude Code, branch `claude/class-job-market-simplify-szx2ai`) — Fixed settings-panel reactivity, student-poll invalidation keys, and fresh-DB migration ordering in class-job-market. Replaced the seeded job catalog with the simplified 4-category/11-template model plus a one-time data migration. Added template-level timing/voluntary/in-draw/auto-copy (carried into rounds by "Create next round"), a `during` timing with a cold-call draw filter, the recurring bid-lock schedule, the volunteer clearing-wage engine with three rules and a per-class posted-demand editor, student-facing volunteer wages, and a scratch-DB smoke test.
 
 ## Next actions

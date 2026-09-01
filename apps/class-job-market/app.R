@@ -1472,12 +1472,17 @@ server <- function(input, output, session) {
     orig_state     = NULL,
     draw_preview   = NULL,   # NULL | list of draw pairs for preview
     cold_call_draw = NULL,
+    cold_call_last = NULL,
     active_course  = get_setting("active_course", ""),
     active_section = get_setting("active_section", ""),
     jobs_ver       = 0L,    # bumped after any job-post or category mutation
     students_ver   = 0L,    # bumped after any student roster mutation
     gradebook_ver  = 0L     # bumped after any gradebook category/item mutation
   )
+
+  is_cold_call_slide_view <- reactive({
+    grepl("(^|[?&])view=cold-call-slide(&|$)", session$clientData$url_search %||% "")
+  })
 
   # ── Root UI ──────────────────────────────────────────────────────────────────
   output$root_ui <- renderUI({
@@ -1547,6 +1552,9 @@ server <- function(input, output, session) {
     } else {
       # ── Authenticated app ──
       tagList(
+        if (is_cold_call_slide_view()) {
+          return(uiOutput("slide_cold_call_panel"))
+        },
         div(class = "arc-header",
           div(class = "arc-title", paste0("\U0001f393 ", APP_NAME)),
           uiOutput("header_widgets", inline = TRUE),
@@ -4333,7 +4341,7 @@ server <- function(input, output, session) {
       type = "message")
   }, ignoreNULL = TRUE)
 
-  observeEvent(input$draw_cold_call_btn, {
+  draw_cold_call <- function() {
     req(rv$is_admin)
     sec <- trimws(rv$active_section %||% "")
     course <- trimws(rv$active_course %||% "")
@@ -4388,7 +4396,10 @@ server <- function(input, output, session) {
       user_id = pool$user_id[1],
       display_name = pool$display_name[1] %||% pool$user_id[1],
       section = pool$section[1] %||% "")
-  }, ignoreNULL = TRUE)
+  }
+
+  observeEvent(input$draw_cold_call_btn, draw_cold_call(), ignoreNULL = TRUE)
+  observeEvent(input$slide_draw_cold_call_btn, draw_cold_call(), ignoreNULL = TRUE)
 
   cold_call_post_id <- function(kind, rid) {
     kind <- if (identical(kind, "board")) "board" else "answer"
@@ -4447,6 +4458,12 @@ server <- function(input, output, session) {
               outcome, tokens, logged_by)
        VALUES(?,?,?,'cold_call','succeed',?,?);",
       list(rid, uid, as.integer(post$id[1]), tokens, rv$user_id %||% "admin"))
+    rv$cold_call_last <- list(
+      display_name = drawn$display_name %||% uid,
+      kind = kind,
+      tokens = tokens,
+      recorded_at = format(Sys.time(), "%I:%M %p")
+    )
     rv$cold_call_draw <- NULL
     showNotification(
       sprintf("Queued cold call for %s.", drawn$display_name %||% uid),
@@ -4455,9 +4472,66 @@ server <- function(input, output, session) {
 
   observeEvent(input$record_cold_call_answer_btn, record_cold_call("answer"), ignoreNULL = TRUE)
   observeEvent(input$record_cold_call_board_btn,  record_cold_call("board"),  ignoreNULL = TRUE)
+  observeEvent(input$slide_record_cold_call_answer_btn, record_cold_call("answer"), ignoreNULL = TRUE)
+  observeEvent(input$slide_record_cold_call_board_btn,  record_cold_call("board"),  ignoreNULL = TRUE)
   observeEvent(input$clear_cold_call_draw_btn, {
     rv$cold_call_draw <- NULL
   }, ignoreNULL = TRUE)
+  observeEvent(input$slide_clear_cold_call_draw_btn, {
+    rv$cold_call_draw <- NULL
+  }, ignoreNULL = TRUE)
+
+  output$slide_cold_call_panel <- renderUI({
+    if (!rv$is_admin) {
+      return(div(
+        style = "font-family: system-ui, sans-serif; padding: 1rem; color: #7f1d1d;",
+        strong("Instructor login required")
+      ))
+    }
+
+    drawn <- rv$cold_call_draw
+    drawn_uid <- if (is.list(drawn)) drawn$user_id %||% "" else ""
+    drawn_name <- if (is.list(drawn)) drawn$display_name %||% drawn_uid else ""
+    last <- rv$cold_call_last
+    last_text <- if (is.list(last)) {
+      sprintf("Last recorded: %s (%s, %s token%s)",
+              last$display_name %||% "",
+              if (identical(last$kind, "board")) "board" else "answer",
+              last$tokens %||% 0,
+              if (isTRUE(as.numeric(last$tokens %||% 0) == 1)) "" else "s")
+    } else {
+      "No cold call recorded in this panel yet."
+    }
+
+    div(
+      style = paste(
+        "font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;",
+        "background: #ffffff; color: #1f2937; border: 1px solid #d1d5db;",
+        "border-radius: 8px; padding: 12px; box-sizing: border-box;",
+        "width: 100%; min-height: 100vh;"
+      ),
+      div(style = "font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #6b7280;",
+          "Cold Call"),
+      div(style = "font-size: 12px; color: #6b7280; margin-top: 2px;",
+          paste(c(rv$active_course, rv$active_section)[nzchar(c(rv$active_course, rv$active_section))], collapse = " / ")),
+      div(
+        style = paste(
+          "margin: 10px 0; min-height: 58px; display: flex; align-items: center;",
+          "font-size: 26px; font-weight: 800; line-height: 1.15;"
+        ),
+        if (nzchar(drawn_name)) drawn_name else "Ready"
+      ),
+      div(style = "display: flex; gap: 6px; flex-wrap: wrap;",
+        actionButton("slide_draw_cold_call_btn", "Draw", class = "btn btn-sm btn-primary"),
+        if (nzchar(drawn_uid)) tagList(
+          actionButton("slide_record_cold_call_answer_btn", "Answer", class = "btn btn-sm btn-success"),
+          actionButton("slide_record_cold_call_board_btn", "Board", class = "btn btn-sm btn-success"),
+          actionButton("slide_clear_cold_call_draw_btn", "Clear", class = "btn btn-sm btn-outline-secondary")
+        )
+      ),
+      div(style = "font-size: 12px; color: #6b7280; margin-top: 10px;", last_text)
+    )
+  })
 
   observeEvent(input$redraw_absent_btn, {
     req(rv$is_admin)
