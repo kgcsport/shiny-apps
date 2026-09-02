@@ -47,7 +47,10 @@ cols <- function(con, table) {
 
 test_that("class-job-market starts against a fresh DB with required tables and columns", {
   with_app_env({
-    expect_error(suppressWarnings(source_app()), NA)
+    app <- NULL
+    expect_error(app <- suppressWarnings(source_app()), NA)
+    expect_equal(app$norm_username(" KCOOMBS@VASSAR.EDU "), "kcoombs@vassar.edu")
+    expect_equal(app$unique_ci(c("ECON 101", "econ 101", "ECON 102")), c("ECON 101", "ECON 102"))
     con <- DBI::dbConnect(RSQLite::SQLite(), db_path())
     on.exit(suppressWarnings(try(DBI::dbDisconnect(con), silent = TRUE)), add = TRUE)
 

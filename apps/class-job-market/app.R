@@ -34,6 +34,12 @@ nonempty_values <- function(x) {
   x <- as.character(x %||% character(0))
   x[!is.na(x) & nzchar(x)]
 }
+norm_key <- function(x) tolower(trimws(as.character(x %||% "")))
+norm_username <- norm_key
+unique_ci <- function(x) {
+  x <- nonempty_values(x)
+  x[!duplicated(norm_key(x))]
+}
 
 # ── Google OAuth config ───────────────────────────────────────────────────────
 GOOGLE_CLIENT_ID     <- Sys.getenv("GOOGLE_CLIENT_ID", "")
@@ -1652,7 +1658,7 @@ server <- function(input, output, session) {
 
   # ── Manual login ──────────────────────────────────────────────────────────────
   observeEvent(input$login_btn, {
-    u <- trimws(input$login_user %||% "")
+    u <- norm_username(input$login_user %||% "")
     p <- input$login_pw %||% ""
     if (!nzchar(u) || !nzchar(p)) {
       showNotification("Enter username and password.", type = "error"); return()
@@ -2056,7 +2062,7 @@ server <- function(input, output, session) {
         section_revealed <- tryCatch(
           isTRUE(as.integer(db_query(
             "SELECT COALESCE(revealed,0) v FROM assignment_reveals
-             WHERE round_id=? AND section=?;",
+             WHERE round_id=? AND LOWER(section)=LOWER(?);",
             list(jp$round$id[1], sec))$v[1] %||% 0L) == 1L),
           error = function(e) FALSE)
       }
@@ -3448,11 +3454,11 @@ server <- function(input, output, session) {
   # ── Impersonation ─────────────────────────────────────────────────────────────
   observeEvent(input$impersonate_uid, {
     req(rv$is_admin, !rv$impersonating)
-    uid <- trimws(input$impersonate_uid %||% "")
+    uid <- norm_username(input$impersonate_uid %||% "")
     if (!nzchar(uid)) return()
     row <- db_query(
       "SELECT user_id, display_name, course, section, COALESCE(is_demo,0) AS is_demo
-       FROM users WHERE user_id=? AND COALESCE(active,1)=1;", list(uid))
+       FROM users WHERE LOWER(user_id)=LOWER(?) AND COALESCE(active,1)=1;", list(uid))
     if (!nrow(row)) return()
     rv$orig_state   <- list(user_id=rv$user_id, name=rv$name, course=rv$course, section=rv$section,
                             is_admin=rv$is_admin, is_demo=rv$is_demo)
@@ -3577,7 +3583,7 @@ server <- function(input, output, session) {
   observeEvent(input$save_student_btn, {
     req(rv$is_admin, !rv$impersonating)
     old_uid <- trimws(input$edit_student_old_uid %||% "")
-    new_uid <- trimws(input$edit_student_uid %||% "")
+    new_uid <- norm_username(input$edit_student_uid %||% "")
     nm <- trimws(input$edit_student_name %||% "")
     course <- trimws(input$edit_student_course %||% "")
     sec <- trimws(input$edit_student_section %||% "")
@@ -3590,7 +3596,7 @@ server <- function(input, output, session) {
     }
     if (!identical(tolower(old_uid), tolower(new_uid))) {
       exists <- tryCatch(db_query(
-        "SELECT user_id FROM users WHERE LOWER(user_id)=LOWER(?) AND user_id<>?;",
+        "SELECT user_id FROM users WHERE LOWER(user_id)=LOWER(?) AND LOWER(user_id)<>LOWER(?);",
         list(new_uid, old_uid)),
         error = function(e) data.frame())
       if (nrow(exists)) {
@@ -3615,7 +3621,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$create_student_btn, {
     req(rv$is_admin)
-    uid <- trimws(input$new_stu_uid %||% "")
+    uid <- norm_username(input$new_stu_uid %||% "")
     nm  <- trimws(input$new_stu_name %||% "")
     pw  <- input$new_stu_pw %||% ""
     course <- trimws(input$new_stu_course %||% "")
@@ -3640,7 +3646,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$reset_pw_btn, {
     req(rv$is_admin)
-    uid <- trimws(input$reset_pw_uid %||% "")
+    uid <- norm_username(input$reset_pw_uid %||% "")
     pw  <- input$reset_pw_new %||% ""
     if (!nzchar(uid) || !nzchar(pw)) {
       showNotification("Username and new password are required.", type = "error"); return()
@@ -3729,7 +3735,7 @@ server <- function(input, output, session) {
     locked_pw_hash <- bcrypt::hashpw(make_token())
     n_created <- 0L; n_updated <- 0L; n_skipped <- 0L; n_bad_pw <- 0L
     for (i in seq_len(nrow(df))) {
-      uid  <- trimws(df[[uid_col]][i] %||% "")
+      uid  <- norm_username(df[[uid_col]][i] %||% "")
       nm   <- if (nzchar(name_col)) trimws(df[[name_col]][i] %||% "") else ""
       course <- if (nzchar(course_col)) trimws(df[[course_col]][i] %||% "") else ""
       sec  <- if (nzchar(sec_col))  trimws(df[[sec_col]][i]  %||% "") else ""
@@ -4176,7 +4182,7 @@ server <- function(input, output, session) {
       db_exec(
         "DELETE FROM live_score_events
          WHERE round_id=? AND committed_at IS NULL
-           AND user_id IN (SELECT user_id FROM users WHERE section=?);",
+           AND user_id IN (SELECT user_id FROM users WHERE LOWER(section)=LOWER(?));",
         list(rid_row$id[1], cur_sec))
     } else {
       db_exec("DELETE FROM live_score_events WHERE round_id=? AND committed_at IS NULL;",
@@ -4195,7 +4201,7 @@ server <- function(input, output, session) {
       tryCatch(db_query(
         "SELECT lse.*, u.display_name
          FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
-         WHERE lse.round_id=? AND lse.committed_at IS NULL AND u.section=?
+         WHERE lse.round_id=? AND lse.committed_at IS NULL AND LOWER(u.section)=LOWER(?)
          ORDER BY lse.id;", list(rid_row$id[1], cur_sec)),
         error=function(e) data.frame())
     } else {
@@ -4361,8 +4367,8 @@ server <- function(input, output, session) {
              GROUP BY lse.user_id
            ) cc ON cc.user_id=u.user_id
            WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
-             AND COALESCE(u.is_demo,0)=0 AND u.section=?
-             AND (?='' OR u.course=?)
+             AND COALESCE(u.is_demo,0)=0 AND LOWER(u.section)=LOWER(?)
+             AND (?='' OR LOWER(u.course)=LOWER(?))
            ORDER BY cold_calls ASC, RANDOM()
            LIMIT 1;",
           list(sec, course, course))
@@ -4382,7 +4388,7 @@ server <- function(input, output, session) {
            ) cc ON cc.user_id=u.user_id
            WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
              AND COALESCE(u.is_demo,0)=0
-             AND (?='' OR u.course=?)
+             AND (?='' OR LOWER(u.course)=LOWER(?))
            ORDER BY cold_calls ASC, RANDOM()
            LIMIT 1;",
           list(course, course))
@@ -4556,8 +4562,8 @@ server <- function(input, output, session) {
           "SELECT u.user_id, u.display_name
            FROM users u
            WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
-             AND COALESCE(u.is_demo,0)=0 AND u.section=?
-             AND u.user_id<>?
+             AND COALESCE(u.is_demo,0)=0 AND LOWER(u.section)=LOWER(?)
+             AND LOWER(u.user_id)<>LOWER(?)
              AND NOT EXISTS (
                SELECT 1 FROM job_assignments ja
                WHERE ja.round_id=? AND ja.user_id=u.user_id
@@ -4570,7 +4576,7 @@ server <- function(input, output, session) {
            FROM users u
            WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
              AND COALESCE(u.is_demo,0)=0
-             AND u.user_id<>?
+             AND LOWER(u.user_id)<>LOWER(?)
              AND NOT EXISTS (
                SELECT 1 FROM job_assignments ja
                WHERE ja.round_id=? AND ja.user_id=u.user_id
@@ -5022,19 +5028,19 @@ server <- function(input, output, session) {
 
     # Class/section picker data
     all_courses <- tryCatch(
-      sort(unique(nonempty_values(
-        db_query("SELECT DISTINCT course FROM users WHERE COALESCE(active,1)=1;")$course))),
+      sort(unique_ci(
+        db_query("SELECT DISTINCT course FROM users WHERE COALESCE(active,1)=1;")$course)),
       error = function(e) character(0))
     course_choices <- c("(All classes)" = "", setNames(all_courses, all_courses))
     cur_course <- rv$active_course %||% ""
     all_sections <- tryCatch(
-      sort(unique(nonempty_values(
+      sort(unique_ci(
         if (nzchar(cur_course)) {
-          db_query("SELECT DISTINCT section FROM users WHERE COALESCE(active,1)=1 AND course=?;",
+          db_query("SELECT DISTINCT section FROM users WHERE COALESCE(active,1)=1 AND LOWER(course)=LOWER(?);",
                    list(cur_course))$section
         } else {
           db_query("SELECT DISTINCT section FROM users WHERE COALESCE(active,1)=1;")$section
-        }))),
+        })),
       error = function(e) character(0))
     sec_choices <- c("(All sections)" = "", setNames(all_sections, all_sections))
     cur_sec <- rv$active_section %||% ""
@@ -5042,31 +5048,31 @@ server <- function(input, output, session) {
     # Filter assignments to active class/section
     assignments_show <- td$assignments
     if (nzchar(cur_course) && nrow(assignments_show) && "course" %in% names(assignments_show)) {
-      keep <- !is.na(assignments_show$course) & as.character(assignments_show$course) == cur_course
+      keep <- !is.na(assignments_show$course) & norm_key(assignments_show$course) == norm_key(cur_course)
       assignments_show <- assignments_show[keep, , drop = FALSE]
     }
     if (nzchar(cur_sec) && nrow(assignments_show) && "section" %in% names(assignments_show)) {
-      keep <- !is.na(assignments_show$section) & as.character(assignments_show$section) == cur_sec
+      keep <- !is.na(assignments_show$section) & norm_key(assignments_show$section) == norm_key(cur_sec)
       assignments_show <- assignments_show[keep, , drop = FALSE]
     }
     n_show <- nrow(assignments_show)
 
     students_sec <- td$students
     if (nzchar(cur_course) && nrow(students_sec) && "course" %in% names(students_sec)) {
-      keep <- !is.na(students_sec$course) & as.character(students_sec$course) == cur_course
+      keep <- !is.na(students_sec$course) & norm_key(students_sec$course) == norm_key(cur_course)
       students_sec <- students_sec[keep, , drop = FALSE]
     }
     if (nzchar(cur_sec) && nrow(students_sec) && "section" %in% names(students_sec)) {
-      keep <- !is.na(students_sec$section) & as.character(students_sec$section) == cur_sec
+      keep <- !is.na(students_sec$section) & norm_key(students_sec$section) == norm_key(cur_sec)
       students_sec <- students_sec[keep, , drop = FALSE]
     }
     pending_show <- td$pending_scores
     if (nzchar(cur_course) && nrow(pending_show) && "course" %in% names(pending_show)) {
-      keep <- !is.na(pending_show$course) & as.character(pending_show$course) == cur_course
+      keep <- !is.na(pending_show$course) & norm_key(pending_show$course) == norm_key(cur_course)
       pending_show <- pending_show[keep, , drop = FALSE]
     }
     if (nzchar(cur_sec) && nrow(pending_show) && "section" %in% names(pending_show)) {
-      keep <- !is.na(pending_show$section) & as.character(pending_show$section) == cur_sec
+      keep <- !is.na(pending_show$section) & norm_key(pending_show$section) == norm_key(cur_sec)
       pending_show <- pending_show[keep, , drop = FALSE]
     }
 
@@ -5089,11 +5095,11 @@ server <- function(input, output, session) {
        LIMIT 50;"),
       error = function(e) data.frame())
     if (nzchar(cur_course) && nrow(end_pending) && "course" %in% names(end_pending)) {
-      keep <- !is.na(end_pending$course) & as.character(end_pending$course) == cur_course
+      keep <- !is.na(end_pending$course) & norm_key(end_pending$course) == norm_key(cur_course)
       end_pending <- end_pending[keep, , drop = FALSE]
     }
     if (nzchar(cur_sec) && nrow(end_pending) && "section" %in% names(end_pending)) {
-      keep <- !is.na(end_pending$section) & as.character(end_pending$section) == cur_sec
+      keep <- !is.na(end_pending$section) & norm_key(end_pending$section) == norm_key(cur_sec)
       end_pending <- end_pending[keep, , drop = FALSE]
     }
 
@@ -5102,7 +5108,7 @@ server <- function(input, output, session) {
     section_revealed <- FALSE
     if (!is.na(rid) && nzchar(cur_sec) && nrow(td$section_reveals)) {
       keep_sr <- !is.na(td$section_reveals$section) &
-        as.character(td$section_reveals$section) == cur_sec
+        norm_key(td$section_reveals$section) == norm_key(cur_sec)
       sr <- td$section_reveals[keep_sr, , drop = FALSE]
       section_revealed <- isTRUE(nrow(sr) && as.integer(sr$revealed[1] %||% 0L) == 1L)
     }
@@ -7132,7 +7138,7 @@ server <- function(input, output, session) {
       } else character(0)
       course_vals[is.na(course_vals)] <- ""
       section_vals[is.na(section_vals)] <- ""
-      courses <- sort(unique(course_vals[nzchar(course_vals)]))
+      courses <- sort(unique_ci(course_vals))
       scope_choices <- c("All classes" = "all")
       if (length(courses)) {
         scope_choices <- c(scope_choices,
@@ -7140,10 +7146,13 @@ server <- function(input, output, session) {
                                     paste0("Class: ", courses)))
       }
       if (length(section_vals)) {
-        scope_df <- unique(data.frame(course = course_vals,
-                                      section = section_vals,
-                                      stringsAsFactors = FALSE))
+        scope_df <- data.frame(course = course_vals,
+                               section = section_vals,
+                               stringsAsFactors = FALSE)
         scope_df <- scope_df[nzchar(scope_df$section), , drop = FALSE]
+        scope_df <- scope_df[!duplicated(paste(norm_key(scope_df$course),
+                                               norm_key(scope_df$section),
+                                               sep = "\r")), , drop = FALSE]
         if (nrow(scope_df)) {
           scope_df <- scope_df[order(scope_df$course, scope_df$section), , drop = FALSE]
           scope_labels <- ifelse(nzchar(scope_df$course),
@@ -7427,7 +7436,7 @@ server <- function(input, output, session) {
                   COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned
            FROM users u LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
            WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
-             AND u.section=?
+             AND LOWER(u.section)=LOWER(?)
            GROUP BY u.user_id ORDER BY u.section, u.display_name;"
         if (identical(sec, "all")) db_query(q) else db_query(q, list(sec))
       }, error = function(e) data.frame())
@@ -7497,7 +7506,7 @@ server <- function(input, output, session) {
         if (identical(sec, "all"))
           db_query(paste0(q_base, " GROUP BY u.user_id ORDER BY u.section, u.display_name;"))
         else
-          db_query(paste0(q_base, " AND u.section=? GROUP BY u.user_id ORDER BY u.section, u.display_name;"), list(sec))
+          db_query(paste0(q_base, " AND LOWER(u.section)=LOWER(?) GROUP BY u.user_id ORDER BY u.section, u.display_name;"), list(sec))
       }, error = function(e) data.frame())
       grade_rows_dl <- tryCatch(db_query(
         "SELECT sg.user_id, sg.assignment_name, sg.score, sg.max_score, sg.grade_pct, sg.week_tag
@@ -8010,7 +8019,7 @@ server <- function(input, output, session) {
       tryCatch(db_query(
         "SELECT user_id, display_name FROM users
          WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
-         AND course=?;", list(course)),
+         AND LOWER(course)=LOWER(?);", list(course)),
         error = function(e) data.frame())
     } else if (startsWith(scope, "section:")) {
       raw <- substring(scope, nchar("section:") + 1L)
@@ -8026,13 +8035,13 @@ server <- function(input, output, session) {
         tryCatch(db_query(
           "SELECT user_id, display_name FROM users
            WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
-           AND course=? AND section=?;", list(course, section)),
+           AND LOWER(course)=LOWER(?) AND LOWER(section)=LOWER(?);", list(course, section)),
           error = function(e) data.frame())
       } else {
         tryCatch(db_query(
           "SELECT user_id, display_name FROM users
            WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
-           AND (course IS NULL OR course='') AND section=?;", list(section)),
+           AND (course IS NULL OR course='') AND LOWER(section)=LOWER(?);", list(section)),
           error = function(e) data.frame())
       }
     } else {
@@ -8319,7 +8328,7 @@ server <- function(input, output, session) {
         db_query(
           "SELECT user_id, course, section FROM users
            WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1
-             AND COALESCE(is_demo,0)=0 AND section=?
+             AND COALESCE(is_demo,0)=0 AND LOWER(section)=LOWER(?)
            ORDER BY RANDOM();", list(sec_filter))
       else
         db_query(
@@ -8329,7 +8338,7 @@ server <- function(input, output, session) {
       error = function(e) data.frame())
     course_filter <- rv$active_course %||% ""
     if (nzchar(course_filter) && nrow(students) && "course" %in% names(students)) {
-      students <- students[!is.na(students$course) & as.character(students$course) == course_filter, , drop = FALSE]
+      students <- students[!is.na(students$course) & norm_key(students$course) == norm_key(course_filter), , drop = FALSE]
     }
     if (!nrow(students)) { showNotification("No eligible students found.", type = "error"); return() }
     if (identical(timing_filter, "end")) {
@@ -8406,7 +8415,7 @@ server <- function(input, output, session) {
         db_query(
           "SELECT user_id, course, section FROM users
            WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1
-             AND COALESCE(is_demo,0)=0 AND section=?
+             AND COALESCE(is_demo,0)=0 AND LOWER(section)=LOWER(?)
            ORDER BY RANDOM();", list(sec_filter2))
       else
         db_query(
@@ -8416,7 +8425,7 @@ server <- function(input, output, session) {
       error = function(e) data.frame())
     course_filter2 <- rv$active_course %||% ""
     if (nzchar(course_filter2) && nrow(students) && "course" %in% names(students)) {
-      students <- students[!is.na(students$course) & as.character(students$course) == course_filter2, , drop = FALSE]
+      students <- students[!is.na(students$course) & norm_key(students$course) == norm_key(course_filter2), , drop = FALSE]
     }
     if (!nrow(students)) {
       showNotification("No eligible students found.", type = "error"); return()
@@ -8451,7 +8460,7 @@ server <- function(input, output, session) {
     if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
     cur <- tryCatch(db_query(
       "SELECT COALESCE(revealed,0) v FROM assignment_reveals
-       WHERE round_id=? AND section=?;", list(rid_row$id[1], sec)),
+       WHERE round_id=? AND LOWER(section)=LOWER(?);", list(rid_row$id[1], sec)),
       error=function(e) data.frame())
     new_val <- if (nrow(cur) && isTRUE(as.integer(cur$v[1] %||% 0L) == 1L)) 0L else 1L
     timing <- input$section_reveal_timing %||% "start"
