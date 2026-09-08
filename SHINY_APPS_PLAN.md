@@ -159,12 +159,20 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-02** — Record slide-panel cold calls as standalone live-score
+  events against the existing Cold Call category, with `answer` or `board` as
+  the outcome; never create per-round job posts from the cold-call control.
+
 - **2026-08-26** — Job catalog simplified to 4 categories / 11 templates matching the actual class routine. Categories represent contribution types (the bidding level); cold-call vs volunteer is a post-level mechanism flag, so "Cold call: answer" and "Volunteer: answer" share one category and one bid.
 - **2026-08-26** — Volunteer pay in wage-bidding rounds is a uniform clearing wage (no per-student pay, no rationing — anyone may volunteer at the going wage). Three switchable rules (lowest bid / k = post slots / k = posted per-class demand) so Kyle can experiment during the semester; students always bid their reservation wage regardless of rule.
 - **2026-08-26** — Bid lock is a recurring schedule (lock before class, reopen that evening) layered on top of optional per-round bid open/close dates, matching the Mon/Wed 12pm teaching schedule.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-02** (Codex) - Removed cold-call job-post creation from the
+  embedded slide workflow. Draws now queue a standalone `cold_call` score with
+  an `answer` or `board` outcome and use the existing Cold Call category wage.
 
 - **2026-08-31** (Codex) - Added an authenticated `?view=cold-call-slide`
   mode to `class-job-market` that exposes a compact cold-call draw/record

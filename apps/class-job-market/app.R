@@ -4130,6 +4130,11 @@ server <- function(input, output, session) {
         token_credit(uid, dname, tokens_to_award, 1L, "job", assign_id,
                      note = sprintf("Job wage (%s)", outcome))
       }
+    } else if (identical(as.character(ev$event_kind[1]), "cold_call")) {
+      if (tokens_to_award > 0 && tokens_revealed) {
+        token_credit(uid, dname, tokens_to_award, 1L, "participation", as.integer(ev$id[1]),
+                     note = sprintf("Cold call (%s)", outcome))
+      }
     } else {
       post_id <- as.integer(ev$job_post_id[1])
       wage_val <- tokens_to_award
@@ -4407,38 +4412,14 @@ server <- function(input, output, session) {
   observeEvent(input$draw_cold_call_btn, draw_cold_call(), ignoreNULL = TRUE)
   observeEvent(input$slide_draw_cold_call_btn, draw_cold_call(), ignoreNULL = TRUE)
 
-  cold_call_post_id <- function(kind, rid) {
-    kind <- if (identical(kind, "board")) "board" else "answer"
-    pattern <- if (identical(kind, "board")) "%board%" else "%answer%"
-    post <- tryCatch(db_query(
-      "SELECT id, COALESCE(wage_override, jc.default_wage, 1) AS wage
-       FROM job_posts jp
-       LEFT JOIN job_categories jc ON jc.id=jp.category_id
-       WHERE jp.round_id=?
-         AND COALESCE(jp.active,1)=1
-         AND lower(COALESCE(jp.selection_time,''))='during'
-         AND lower(COALESCE(jp.job_name,'')) LIKE ?
-       ORDER BY jp.id
-       LIMIT 1;",
-      list(rid, pattern)),
-      error = function(e) data.frame())
-    if (nrow(post)) return(post)
-    cat <- tryCatch(db_query(
-      "SELECT id, default_wage FROM job_categories
+  cold_call_wage <- function() {
+    category <- tryCatch(db_query(
+      "SELECT COALESCE(default_wage,1) AS wage
+       FROM job_categories
        WHERE lower(name)='cold call'
        ORDER BY id LIMIT 1;"),
       error = function(e) data.frame())
-    cat_id <- if (nrow(cat)) as.integer(cat$id[1]) else NA_integer_
-    wage <- if (nrow(cat)) as.numeric(cat$default_wage[1] %||% 1) else 1
-    name <- if (identical(kind, "board")) "Cold call: graph/answer on board" else "Cold call: answer a question"
-    db_exec(
-      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override,
-                             in_draw, voluntary, selection_time)
-       VALUES(?,?,?,?,?,1,0,'during');",
-      list(rid, name, cat_id, 1L, wage))
-    new_id <- tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1],
-                       error = function(e) NA_integer_)
-    data.frame(id = new_id, wage = wage)
+    if (nrow(category)) as.numeric(category$wage[1] %||% 1) else 1
   }
 
   record_cold_call <- function(kind) {
@@ -4452,18 +4433,13 @@ server <- function(input, output, session) {
                       error = function(e) data.frame())
     if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
     rid <- as.integer(round$id[1])
-    post <- cold_call_post_id(kind, rid)
-    if (!nrow(post) || is.na(post$id[1])) {
-      showNotification("Could not find or create the cold-call job post.", type = "error")
-      return()
-    }
     uid <- drawn$user_id
-    tokens <- as.numeric(post$wage[1] %||% 1)
+    tokens <- cold_call_wage()
     db_exec(
-      "INSERT INTO live_score_events(round_id, user_id, job_post_id, event_kind,
+      "INSERT INTO live_score_events(round_id, user_id, event_kind,
               outcome, tokens, logged_by)
-       VALUES(?,?,?,'cold_call','succeed',?,?);",
-      list(rid, uid, as.integer(post$id[1]), tokens, rv$user_id %||% "admin"))
+       VALUES(?,?,'cold_call',?,?,?);",
+      list(rid, uid, kind, tokens, rv$user_id %||% "admin"))
     rv$cold_call_last <- list(
       display_name = drawn$display_name %||% uid,
       kind = kind,
@@ -4472,7 +4448,7 @@ server <- function(input, output, session) {
     )
     rv$cold_call_draw <- NULL
     showNotification(
-      sprintf("Queued cold call for %s.", drawn$display_name %||% uid),
+      sprintf("Queued %s cold call for %s.", kind, drawn$display_name %||% uid),
       type = "message")
   }
 
