@@ -159,6 +159,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-08** — Treat Live Tracker rows as an exclusive lifecycle: an
+  assignment is pending until an outcome moves it to audit, audit can return it
+  to pending, and committing removes it from the live workflow. Start- and
+  end-of-class reveal states are independent per section.
+
 - **2026-09-02** — Record slide-panel cold calls as standalone live-score
   events against the existing Cold Call category, with `answer` or `board` as
   the outcome; never create per-round job posts from the cold-call control.
@@ -169,6 +174,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-08** (Codex) - Rebuilt the Live Tracker flow around disjoint
+  pending, volunteer-eligible, and audit panels; moved audit to the bottom,
+  added explicit audit-to-pending returns and duplicate guards, and separated
+  start and end assignment reveals.
 
 - **2026-09-02** (Codex) - Removed cold-call job-post creation from the
   embedded slide workflow. Draws now queue a standalone `cold_call` score with
@@ -183,9 +193,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Sandbox rehearsal before the next class: enter Demo Mode, create a round, run start/end draws, toggle a cold-call template on, draw with the During filter, post volunteer demand, and log volunteers from a phone.
-2. When switching to bidding mid-semester, set the round's assignment mode (wage or application bidding) and verify the bid lock engages at 11:00 AM on a class day; confirm students see volunteer wages.
-3. Design the write-back contract for one-off games (participation/tokens into the semester economy) — the next unchecked build priority.
+1. Browser-test pending to audit to return or commit in Live Tracker.
+2. Verify start and end reveal controls independently in a student session.
+3. Rehearse the full current-round workflow before the next class.
 
 ## Questions for Kyle
 
