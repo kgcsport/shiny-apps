@@ -387,6 +387,16 @@ db_exec("CREATE TABLE IF NOT EXISTS student_grades(
   week_tag        TEXT,
   uploaded_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+db_exec("CREATE TABLE IF NOT EXISTS policy_group_assignments(
+  user_id           TEXT PRIMARY KEY,
+  policy_team       TEXT NOT NULL,
+  presentation_date TEXT NOT NULL,
+  course_unit       TEXT NOT NULL,
+  topic_interests   TEXT,
+  assigned_rank     INTEGER,
+  allocation_seed   TEXT,
+  imported_at       TEXT DEFAULT CURRENT_TIMESTAMP
+);")
 
 # Job market tables (shared with class-job-market; CREATE IF NOT EXISTS is safe)
 db_exec("CREATE TABLE IF NOT EXISTS job_categories(
@@ -1494,7 +1504,8 @@ server <- function(input, output, session) {
     active_section = get_setting("active_section", ""),
     jobs_ver       = 0L,    # bumped after any job-post or category mutation
     students_ver   = 0L,    # bumped after any student roster mutation
-    gradebook_ver  = 0L     # bumped after any gradebook category/item mutation
+    gradebook_ver  = 0L,    # bumped after any gradebook category/item mutation
+    policy_ver     = 0L     # bumped after policy-group assignment import
   )
 
   is_cold_call_slide_view <- reactive({
@@ -3353,6 +3364,7 @@ server <- function(input, output, session) {
   # ── Account tab ───────────────────────────────────────────────────────────────
   output$account_tab <- renderUI({
     req(rv$authed)
+    rv$policy_ver
     tp  <- token_poll()
     bal <- token_bal()
 
@@ -3363,6 +3375,17 @@ server <- function(input, output, session) {
        WHERE ja.user_id=?
        ORDER BY ja.created_at DESC LIMIT 8;",
       list(rv$user_id)), error = function(e) data.frame())
+
+    policy_row <- tryCatch(db_query(
+      "SELECT policy_team, presentation_date, course_unit
+       FROM policy_group_assignments WHERE LOWER(user_id)=LOWER(?) LIMIT 1;",
+      list(rv$user_id)), error = function(e) data.frame())
+    policy_members <- if (nrow(policy_row)) tryCatch(db_query(
+      "SELECT COALESCE(u.display_name, p.user_id) AS display_name
+       FROM policy_group_assignments p
+       LEFT JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+       WHERE p.policy_team=? ORDER BY COALESCE(u.display_name, p.user_id);",
+      list(policy_row$policy_team[1])), error = function(e) data.frame()) else data.frame()
 
     tagList(
       div(class = "tab-howto", "Your token summary, transaction history, and profile."),
@@ -3422,6 +3445,20 @@ server <- function(input, output, session) {
               tags$p(tags$strong("Class: "), rv$course),
             if (nzchar(rv$section %||% ""))
               tags$p(tags$strong("Section: "), rv$section),
+            tags$hr(style = "margin:.75rem 0;"),
+            tags$h6(style = "color:#951829;font-weight:700;", "Policy Presentation"),
+            if (nrow(policy_row)) {
+              tagList(
+                tags$p(tags$strong(policy_row$policy_team[1]), " — ", policy_row$course_unit[1]),
+                tags$p(tags$strong("Date: "),
+                       tryCatch(format(as.Date(policy_row$presentation_date[1]), "%A, %B %d"),
+                                error = function(e) policy_row$presentation_date[1])),
+                if (nrow(policy_members))
+                  tags$p(tags$strong("Group: "), paste(policy_members$display_name, collapse = ", "))
+              )
+            } else {
+              tags$p(style = "color:#999;font-size:.9em;", "No policy group assigned yet.")
+            },
             tags$hr(style = "margin:.75rem 0;"),
             tags$h6(style = "color:#951829;font-weight:700;", "Job History"),
             if (nrow(job_rows)) {
@@ -3795,6 +3832,55 @@ server <- function(input, output, session) {
     rv$students_ver <- rv$students_ver + 1L
     showNotification(paste("Upload complete:", paste(parts, collapse = ", ")), type = "message",
                      duration = 8)
+  })
+
+  observeEvent(input$upload_policy_groups_btn, {
+    req(rv$is_admin)
+    f <- input$upload_policy_groups_csv
+    if (is.null(f)) {
+      showNotification("Choose the policy-group assignment CSV first.", type = "error"); return()
+    }
+    df <- tryCatch(read.csv(f$datapath, stringsAsFactors = FALSE, colClasses = "character",
+                            check.names = FALSE),
+                   error = function(e) { showNotification(paste("CSV error:", e$message), type = "error"); NULL })
+    if (is.null(df)) return()
+    required <- c("user_id", "policy_team", "presentation_date", "course_unit")
+    missing <- setdiff(required, names(df))
+    if (length(missing)) {
+      showNotification(paste("Missing required columns:", paste(missing, collapse = ", ")), type = "error"); return()
+    }
+    optional <- function(name, i) if (name %in% names(df)) df[[name]][i] else NA_character_
+    unknown <- character(0)
+    imported <- 0L
+    for (i in seq_len(nrow(df))) {
+      uid <- norm_username(df$user_id[i] %||% "")
+      user <- db_query("SELECT user_id FROM users WHERE LOWER(user_id)=LOWER(?) LIMIT 1;", list(uid))
+      if (!nrow(user)) { unknown <- c(unknown, uid); next }
+      db_exec(
+        "INSERT INTO policy_group_assignments(
+           user_id, policy_team, presentation_date, course_unit, topic_interests,
+           assigned_rank, allocation_seed, imported_at
+         ) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+         ON CONFLICT(user_id) DO UPDATE SET
+           policy_team=excluded.policy_team,
+           presentation_date=excluded.presentation_date,
+           course_unit=excluded.course_unit,
+           topic_interests=excluded.topic_interests,
+           assigned_rank=excluded.assigned_rank,
+           allocation_seed=excluded.allocation_seed,
+           imported_at=CURRENT_TIMESTAMP;",
+        list(user$user_id[1], trimws(df$policy_team[i]), trimws(df$presentation_date[i]),
+             trimws(df$course_unit[i]), optional("topic_interests", i),
+             optional("assigned_rank", i), optional("allocation_seed", i)))
+      imported <- imported + 1L
+    }
+    rv$policy_ver <- rv$policy_ver + 1L
+    if (length(unknown)) {
+      showNotification(sprintf("Imported %d assignments; skipped unknown users: %s",
+                               imported, paste(unique(unknown), collapse = ", ")), type = "warning", duration = 10)
+    } else {
+      showNotification(sprintf("Imported %d policy-group assignments.", imported), type = "message")
+    }
   })
 
   # ── Job management ────────────────────────────────────────────────────────────
@@ -6404,6 +6490,15 @@ server <- function(input, output, session) {
                       "Update existing students (display name + class + section; password only if provided in CSV)",
                       value = FALSE),
         actionButton("bulk_upload_students_btn", "Upload",
+                     class = "btn btn-sm btn-primary"),
+        tags$hr(),
+        tags$h6(style = "font-weight:700;color:#951829;", "Policy Group Assignments"),
+        tags$p(style = "color:#555;font-size:.85rem;",
+               "Upload the final CSV artifact produced by the PubEcon policy-group allocation Action. ",
+               "Assignments appear on each student's Account profile."),
+        fileInput("upload_policy_groups_csv", NULL, accept = ".csv",
+                  buttonLabel = "Choose assignment CSV", placeholder = "No file chosen"),
+        actionButton("upload_policy_groups_btn", "Import policy groups",
                      class = "btn btn-sm btn-primary")
       )
 

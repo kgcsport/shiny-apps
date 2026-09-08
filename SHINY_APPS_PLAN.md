@@ -159,6 +159,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-08** — Store final ECON 342 policy-team assignments in the app's
+  SQLite database and update them through an instructor-only CSV import. Raw
+  preferences and blackout dates remain outside the Shiny app.
+
 - **2026-09-08** — Treat Live Tracker rows as an exclusive lifecycle: an
   assignment is pending until an outcome moves it to audit, audit can return it
   to pending, and committing removes it from the live workflow. Start- and
@@ -174,6 +178,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-08** (Codex) - Added a policy-group assignment table, instructor
+  CSV importer, and student Account-profile card showing team, presentation
+  date, course unit, and group members.
 
 - **2026-09-08** (Codex) - Rebuilt the Live Tracker flow around disjoint
   pending, volunteer-eligible, and audit panels; moved audit to the bottom,
@@ -193,8 +201,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Browser-test pending to audit to return or commit in Live Tracker.
-2. Verify start and end reveal controls independently in a student session.
+1. Deploy the policy-group CSV importer, import a synthetic assignment file in
+   Demo Mode, and verify the assignment card from a student profile.
+2. Browser-test pending to audit to return or commit in Live Tracker, including
+   independent start and end reveal controls in a student session.
 3. Rehearse the full current-round workflow before the next class.
 
 ## Questions for Kyle
