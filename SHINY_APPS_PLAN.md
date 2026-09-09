@@ -159,6 +159,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-09** — Treat an assignment wage as live until its audit event is
+  committed. Pending displays and Complete outcomes use the job post's current
+  effective wage; commit snapshots that wage into `job_assignments` and the
+  ledger permanently.
+
 - **2026-09-09** — Use a fixed outcome scale for all jobs: Complete earns the
   job wage, Tried earns exactly 1 token, and Missed earns 0. Do not round a
   fractional wage for Tried.
@@ -192,6 +197,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-09** (Codex) - Changed job wages from draw-time snapshots to
+  commit-time snapshots: Today, Pending, and Audit reflect current post wages,
+  while audit commit locks the final wage and award. Fixed committed-state
+  checks to use the outcome rather than mistaking a token amount for a Boolean,
+  so both two-token completions and zero-token misses lock correctly.
 
 - **2026-09-09** (Codex) - Replaced half-wage rounding with the fixed
   Complete=wage, Tried=1, Missed=0 rule across live grading, bulk imports,

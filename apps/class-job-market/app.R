@@ -1802,7 +1802,13 @@ server <- function(input, output, session) {
       t4 <- tryCatch(db_query("SELECT MAX(created_at || COALESCE(committed_at,'')) ts FROM live_score_events;")$ts[1] %||% "", error=function(e)"")
       t5 <- tryCatch(db_query("SELECT MAX(updated_at) ts FROM assignment_timing_reveals;")$ts[1] %||% "", error=function(e)"")
       t6 <- tryCatch(db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(updated_at),'') ts FROM volunteer_demand;")$ts[1] %||% "", error=function(e)"")
-      paste(t1, t2, t3, t4, t5, t6)
+      t7 <- tryCatch(db_query(
+        "SELECT COALESCE(group_concat(sig,'|'),'') ts FROM (
+           SELECT jp.id || ':' || COALESCE(jp.wage_override,'') || ':' ||
+                  COALESCE(jc.default_wage,'') AS sig
+           FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
+           ORDER BY jp.id);")$ts[1] %||% "", error=function(e)"")
+      paste(t1, t2, t3, t4, t5, t6, t7)
     },
     valueFunc = function() {
       if (!isTRUE(rv$is_admin)) return(list(
@@ -1885,7 +1891,7 @@ server <- function(input, output, session) {
         tryCatch(db_query(sprintf(
           "SELECT ja.id, ja.user_id, u.display_name, u.course, u.section, jp.job_name,
                   COALESCE(NULLIF(jp.selection_time,''),'start') AS selection_time,
-                  ja.assigned_wage,
+                  COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0) AS assigned_wage,
                   %s AS outcome,
                   %s AS tokens_awarded,
                   %s AS pending_outcome,
@@ -1893,6 +1899,7 @@ server <- function(input, output, session) {
            FROM job_assignments ja
            JOIN users u ON u.user_id=ja.user_id
            JOIN job_posts jp ON jp.id=ja.job_post_id
+           LEFT JOIN job_categories jc ON jc.id=jp.category_id
            %s
             WHERE ja.round_id=? %s
             ORDER BY u.course, u.section, u.display_name;",
@@ -1907,13 +1914,22 @@ server <- function(input, output, session) {
         if (!all(required_lse %in% lse_cols)) data.frame() else tryCatch(db_query(
           "SELECT lse.id, lse.round_id, lse.user_id, u.display_name, u.course, u.section,
                   lse.job_assignment_id, lse.job_post_id, lse.event_kind,
-                  lse.outcome, lse.tokens, lse.created_at,
+                  lse.outcome,
+                  CASE
+                    WHEN lse.event_kind='assignment' AND lse.outcome='complete'
+                      THEN COALESCE(ap.wage_override, apc.default_wage, lse.tokens, 0)
+                    WHEN lse.event_kind='assignment' AND lse.outcome='tried' THEN 1
+                    WHEN lse.event_kind='assignment' AND lse.outcome='missed' THEN 0
+                    ELSE lse.tokens
+                  END AS tokens,
+                  lse.created_at,
                   COALESCE(jp.job_name, ap.job_name, '') AS job_name
            FROM live_score_events lse
            JOIN users u ON u.user_id=lse.user_id
            LEFT JOIN job_posts jp ON jp.id=lse.job_post_id
            LEFT JOIN job_assignments ja ON ja.id=lse.job_assignment_id
            LEFT JOIN job_posts ap ON ap.id=ja.job_post_id
+           LEFT JOIN job_categories apc ON apc.id=ap.category_id
            WHERE lse.round_id=? AND lse.committed_at IS NULL
            ORDER BY u.course, u.section, u.display_name, lse.created_at;", list(rid)),
           error = function(e) data.frame())
@@ -1947,7 +1963,15 @@ server <- function(input, output, session) {
       r6 <- tryCatch(
         db_query("SELECT COALESCE(assignments_revealed,0) ts FROM arcade_state WHERE id=1;")$ts[1] %||% "",
         error = function(e) "")
-      paste(uid, r1, r2, r3, r4, r5, r6, sep = "|")
+      r7 <- tryCatch(
+        db_query(
+          "SELECT COALESCE(group_concat(sig,'|'),'') ts FROM (
+             SELECT jp.id || ':' || COALESCE(jp.wage_override,'') || ':' ||
+                    COALESCE(jc.default_wage,'') AS sig
+             FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
+             ORDER BY jp.id);")$ts[1] %||% "",
+        error = function(e) "")
+      paste(uid, r1, r2, r3, r4, r5, r6, r7, sep = "|")
     },
     valueFunc = function() {
       uid <- rv$user_id
@@ -1965,10 +1989,15 @@ server <- function(input, output, session) {
       rid <- round$id[1]
 
       my_assign <- tryCatch(db_query(
-        "SELECT jp.job_name, ja.assigned_wage, wr.label AS round_label,
+        "SELECT jp.job_name,
+                CASE WHEN COALESCE(ja.outcome,'')<>'' THEN ja.assigned_wage
+                     ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
+                END AS assigned_wage,
+                wr.label AS round_label,
                 COALESCE(NULLIF(jp.selection_time,''),'start') AS selection_time
          FROM job_assignments ja
          JOIN job_posts jp ON jp.id=ja.job_post_id
+         LEFT JOIN job_categories jc ON jc.id=jp.category_id
          JOIN weekly_rounds wr ON wr.id=ja.round_id
           WHERE ja.user_id=? AND ja.round_id=? AND COALESCE(ja.status,'assigned')='assigned'
           ORDER BY ja.created_at DESC LIMIT 1;",
@@ -1976,11 +2005,14 @@ server <- function(input, output, session) {
 
       all_assign <- tryCatch(db_query(
         "SELECT ja.user_id, u.display_name, u.course, u.section, jp.job_name,
-                ja.assigned_wage,
+                CASE WHEN COALESCE(ja.outcome,'')<>'' THEN ja.assigned_wage
+                     ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
+                END AS assigned_wage,
                 COALESCE(NULLIF(jp.selection_time,''),'start') AS selection_time
          FROM job_assignments ja
          JOIN users u ON u.user_id=ja.user_id
          JOIN job_posts jp ON jp.id=ja.job_post_id
+         LEFT JOIN job_categories jc ON jc.id=jp.category_id
          WHERE ja.round_id=? AND COALESCE(ja.status,'assigned')='assigned'
          ORDER BY u.course, u.section, jp.display_order, u.display_name;",
         list(rid)), error = function(e) data.frame())
@@ -4305,17 +4337,32 @@ server <- function(input, output, session) {
     if (identical(as.character(ev$event_kind[1]), "assignment")) {
       assign_id <- as.integer(ev$job_assignment_id[1])
       cur <- tryCatch(db_query(
-        "SELECT COALESCE(tokens_awarded,0) AS tokens_awarded FROM job_assignments WHERE id=?;",
+        "SELECT COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
+                COALESCE(ja.outcome,'') AS outcome,
+                COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0) AS current_wage
+         FROM job_assignments ja
+         JOIN job_posts jp ON jp.id=ja.job_post_id
+         LEFT JOIN job_categories jc ON jc.id=jp.category_id
+         WHERE ja.id=?;",
         list(assign_id)), error=function(e) data.frame())
-      if (!nrow(cur) || as.integer(cur$tokens_awarded[1] %||% 0L) == 1L) {
+      if (!nrow(cur) ||
+          nzchar(as.character(cur$outcome[1] %||% "")) ||
+          as.numeric(cur$tokens_awarded[1] %||% 0) > 0) {
         db_exec("UPDATE live_score_events SET committed_at=datetime('now') WHERE id=?;",
                 list(as.integer(ev$id[1])))
         return(FALSE)
       }
+      final_wage <- as.numeric(cur$current_wage[1] %||% 0)
+      tokens_to_award <- switch(outcome,
+        complete = final_wage,
+        tried = 1,
+        missed = 0,
+        tokens_to_award)
       db_exec(
-        "UPDATE job_assignments SET outcome=?, tokens_awarded=?, tokens_credited=?,
-                updated_at=datetime('now') WHERE id=?;",
-        list(outcome, tokens_to_award, if (tokens_revealed) 1L else 0L, assign_id))
+        "UPDATE job_assignments SET assigned_wage=?, outcome=?, tokens_awarded=?,
+                tokens_credited=?, updated_at=datetime('now') WHERE id=?;",
+        list(final_wage, outcome, tokens_to_award,
+             if (tokens_revealed) 1L else 0L, assign_id))
       if (tokens_to_award > 0 && tokens_revealed) {
         token_credit(uid, dname, tokens_to_award, 1L, "job", assign_id,
                      note = sprintf("Job wage (%s)", outcome))
@@ -7934,14 +7981,19 @@ server <- function(input, output, session) {
       showNotification("Invalid evaluation.", type = "error"); return()
     }
     row <- db_query(
-      "SELECT ja.user_id, u.display_name, ja.assigned_wage,
+      "SELECT ja.user_id, u.display_name,
+              COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0) AS current_wage,
               COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
+              COALESCE(ja.outcome,'') AS outcome,
               ja.round_id
        FROM job_assignments ja
        JOIN users u ON u.user_id=ja.user_id
+       JOIN job_posts jp ON jp.id=ja.job_post_id
+       LEFT JOIN job_categories jc ON jc.id=jp.category_id
        WHERE ja.id=?;", list(assign_id))
     if (!nrow(row)) { showNotification("Assignment not found.", type = "error"); return() }
-    if (as.integer(row$tokens_awarded[1]) == 1L) {
+    if (nzchar(as.character(row$outcome[1] %||% "")) ||
+        as.numeric(row$tokens_awarded[1] %||% 0) > 0) {
       showNotification("Tokens already awarded — outcome cannot be changed.", type = "warning")
       return()
     }
@@ -7954,7 +8006,7 @@ server <- function(input, output, session) {
     }
     uid   <- row$user_id[1]
     dname <- row$display_name[1] %||% uid
-    wage  <- if (!is.na(row$assigned_wage[1] %||% NA)) as.numeric(row$assigned_wage[1]) else 0
+    wage  <- as.numeric(row$current_wage[1] %||% 0)
     tokens_to_award <- switch(outcome,
       complete = wage,
       tried    = 1,
