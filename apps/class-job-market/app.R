@@ -1933,7 +1933,7 @@ server <- function(input, output, session) {
         db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(id),0) ts FROM weekly_rounds;")$ts[1] %||% "",
         error = function(e) "")
       r2 <- tryCatch(
-        db_query("SELECT MAX(created_at) ts FROM job_assignments;")$ts[1] %||% "",
+        db_query("SELECT MAX(COALESCE(updated_at,created_at)) ts FROM job_assignments;")$ts[1] %||% "",
         error = function(e) "")
       r3 <- tryCatch(
         db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(id),0) ts FROM job_posts;")$ts[1] %||% "",
@@ -1941,11 +1941,18 @@ server <- function(input, output, session) {
       r4 <- tryCatch(
         db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(updated_at),'') ts FROM volunteer_demand;")$ts[1] %||% "",
         error = function(e) "")
-      paste(uid, r1, r2, r3, r4, sep = "|")
+      r5 <- tryCatch(
+        db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(updated_at),'') ts FROM assignment_timing_reveals;")$ts[1] %||% "",
+        error = function(e) "")
+      r6 <- tryCatch(
+        db_query("SELECT COALESCE(assignments_revealed,0) ts FROM arcade_state WHERE id=1;")$ts[1] %||% "",
+        error = function(e) "")
+      paste(uid, r1, r2, r3, r4, r5, r6, sep = "|")
     },
     valueFunc = function() {
       uid <- rv$user_id
       empty <- list(round = data.frame(), my_assign = data.frame(),
+                    all_assign = data.frame(), section_reveals = data.frame(),
                     categories = data.frame(), posts = data.frame(),
                     my_wage_bids = data.frame(), my_app_bids = data.frame())
       if (is.null(uid)) return(empty)
@@ -1966,6 +1973,24 @@ server <- function(input, output, session) {
           WHERE ja.user_id=? AND ja.round_id=? AND COALESCE(ja.status,'assigned')='assigned'
           ORDER BY ja.created_at DESC LIMIT 1;",
         list(uid, rid)), error = function(e) data.frame())
+
+      all_assign <- tryCatch(db_query(
+        "SELECT ja.user_id, u.display_name, u.course, u.section, jp.job_name,
+                ja.assigned_wage,
+                COALESCE(NULLIF(jp.selection_time,''),'start') AS selection_time
+         FROM job_assignments ja
+         JOIN users u ON u.user_id=ja.user_id
+         JOIN job_posts jp ON jp.id=ja.job_post_id
+         WHERE ja.round_id=? AND COALESCE(ja.status,'assigned')='assigned'
+         ORDER BY u.course, u.section, jp.display_order, u.display_name;",
+        list(rid)), error = function(e) data.frame())
+
+      section_reveals <- tryCatch(db_query(
+        "SELECT section, COALESCE(timing,'start') AS timing,
+                COALESCE(revealed,0) AS revealed
+         FROM assignment_timing_reveals
+         WHERE round_id=?;",
+        list(rid)), error = function(e) data.frame())
 
       # Every category with an active post is biddable — including volunteer
       # and cold-call categories, so wage bidding can cover them when it goes
@@ -2002,7 +2027,8 @@ server <- function(input, output, session) {
         "SELECT category_id, tickets FROM application_bids WHERE user_id=? AND round_id=?;",
         list(uid, rid)), error = function(e) data.frame())
 
-      list(round = round, my_assign = my_assign, categories = categories,
+      list(round = round, my_assign = my_assign, all_assign = all_assign,
+           section_reveals = section_reveals, categories = categories,
            posts = posts, my_wage_bids = my_wage_bids, my_app_bids = my_app_bids)
     }
   )
@@ -2100,10 +2126,68 @@ server <- function(input, output, session) {
     }
     revealed <- isTRUE(global_revealed || (section_revealed && identical(my_assignment_timing, reveal_timing)))
 
+    revealed_jobs <- if (!is.null(jp$all_assign)) jp$all_assign else data.frame()
+    viewer_course <- trimws(if (isTRUE(rv$is_admin)) rv$active_course %||% "" else rv$course %||% "")
+    viewer_section <- trimws(if (isTRUE(rv$is_admin)) rv$active_section %||% "" else rv$section %||% "")
+    if (nrow(revealed_jobs) && nzchar(viewer_course)) {
+      revealed_jobs <- revealed_jobs[
+        !is.na(revealed_jobs$course) & norm_key(revealed_jobs$course) == norm_key(viewer_course),
+        , drop = FALSE]
+    }
+    if (nrow(revealed_jobs) && nzchar(viewer_section)) {
+      revealed_jobs <- revealed_jobs[
+        !is.na(revealed_jobs$section) & norm_key(revealed_jobs$section) == norm_key(viewer_section),
+        , drop = FALSE]
+    }
+    if (nrow(revealed_jobs)) {
+      timing_key <- norm_key(revealed_jobs$selection_time)
+      revealed_jobs$reveal_timing <- ifelse(
+        timing_key %in% c("end", "post", "post class", "after class", "end of class or after class"),
+        "end", "start")
+      if (!global_revealed) {
+        sr <- if (!is.null(jp$section_reveals)) jp$section_reveals else data.frame()
+        visible <- vapply(seq_len(nrow(revealed_jobs)), function(i) {
+          if (!nrow(sr)) return(FALSE)
+          sr_timing <- ifelse(
+            norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
+            "end", "start")
+          any(
+            !is.na(sr$section) &
+            norm_key(sr$section) == norm_key(revealed_jobs$section[i]) &
+            sr_timing == revealed_jobs$reveal_timing[i] &
+            as.integer(sr$revealed %||% 0L) == 1L)
+        }, logical(1))
+        revealed_jobs <- revealed_jobs[visible, , drop = FALSE]
+      }
+    }
+
     tagList(
       div(class = "tab-howto",
-        "Your daily snapshot: active class game, your job assignment, and job pools."
+        "Your daily snapshot: revealed class jobs, active class game, your assignment, and job pools."
       ),
+
+      div(class = "sec-label", "Today's Revealed Jobs"),
+      if (!nrow(revealed_jobs)) {
+        div(class = "today-card", style = "color:#888;font-style:italic;",
+            "No jobs have been revealed for this class yet.")
+      } else {
+        div(class = "today-card tracker-wrap",
+          tags$table(class = "table table-sm table-hover", style = "margin-bottom:0;",
+            tags$thead(tags$tr(
+              tags$th("Student"), tags$th("Job"), tags$th("Group")
+            )),
+            tags$tbody(lapply(seq_len(nrow(revealed_jobs)), function(i) {
+              r <- revealed_jobs[i, ]
+              tags$tr(
+                tags$td(r$display_name %||% r$user_id),
+                tags$td(r$job_name %||% ""),
+                tags$td(if (identical(as.character(r$reveal_timing %||% "start"), "end"))
+                          "End of class" else "Start of class")
+              )
+            }))
+          )
+        )
+      },
 
       # Active game
       if (nzchar(active)) {

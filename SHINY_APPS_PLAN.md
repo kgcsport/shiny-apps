@@ -189,6 +189,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-09-09** (Codex) - Added all currently revealed start/end job
+  assignments to Today, scoped to the student's section or the instructor's
+  active class/section, so the instructor can project Today instead of Live
+  Tracker.
+
 - **2026-09-09** (Codex) - Moved bulk/offline recovery into a collapsed panel
   beneath Live Score Audit and clarified that known outcomes should be imported
   as `complete`, `tried`, or `missed`; only pending work stays blank.
