@@ -325,6 +325,7 @@ db_exec("CREATE TABLE IF NOT EXISTS live_score_events(
   tokens            REAL,
   logged_by         TEXT,
   committed_at      TEXT,
+  tokens_credited   INTEGER DEFAULT 1,
   created_at        TEXT DEFAULT CURRENT_TIMESTAMP
 );")
 ensure_column("live_score_events", "round_id INTEGER")
@@ -336,6 +337,7 @@ ensure_column("live_score_events", "outcome TEXT")
 ensure_column("live_score_events", "tokens REAL")
 ensure_column("live_score_events", "logged_by TEXT")
 ensure_column("live_score_events", "committed_at TEXT")
+ensure_column("live_score_events", "tokens_credited INTEGER DEFAULT 1")
 ensure_column("live_score_events", "created_at TEXT")
 
 db_exec("CREATE TABLE IF NOT EXISTS assignment_reveals(
@@ -4348,7 +4350,8 @@ server <- function(input, output, session) {
       if (!nrow(cur) ||
           nzchar(as.character(cur$outcome[1] %||% "")) ||
           as.numeric(cur$tokens_awarded[1] %||% 0) > 0) {
-        db_exec("UPDATE live_score_events SET committed_at=datetime('now') WHERE id=?;",
+        db_exec("UPDATE live_score_events
+                 SET committed_at=datetime('now'), tokens_credited=1 WHERE id=?;",
                 list(as.integer(ev$id[1])))
         return(FALSE)
       }
@@ -4373,36 +4376,23 @@ server <- function(input, output, session) {
                      note = sprintf("Cold call (%s)", outcome))
       }
     } else {
+      # Voluntary contributions are independent, repeatable score events.
+      # Do not upsert job_assignments: that table intentionally represents the
+      # student's single assigned job for the round.
       post_id <- as.integer(ev$job_post_id[1])
-      wage_val <- tokens_to_award
-      if (outcome %in% c("try", "miss")) {
-        post_row <- tryCatch(db_query(
-          "SELECT COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
-           FROM job_posts jp LEFT JOIN job_categories jc ON jc.id = jp.category_id
-           WHERE jp.id=? LIMIT 1;", list(post_id)),
-          error=function(e) data.frame())
-        if (nrow(post_row)) wage_val <- as.numeric(post_row$tokens[1] %||% tokens_to_award)
-      }
-      db_exec(
-        "INSERT INTO job_assignments(round_id, user_id, job_post_id, assigned_wage,
-                assignment_mode, outcome, tokens_awarded, tokens_credited, updated_at)
-         VALUES(?,?,?,?,'voluntary',?,?,?,datetime('now'))
-         ON CONFLICT(round_id, user_id)
-         DO UPDATE SET job_post_id=excluded.job_post_id,
-                       assigned_wage=excluded.assigned_wage,
-                       outcome=excluded.outcome,
-                       tokens_awarded=excluded.tokens_awarded,
-                       tokens_credited=excluded.tokens_credited,
-                       updated_at=excluded.updated_at;",
-        list(rid, uid, post_id, wage_val, outcome,
-             tokens_to_award, if (tokens_revealed) 1L else 0L))
       if (tokens_to_award > 0 && tokens_revealed) {
-        token_credit(uid, dname, tokens_to_award, 1L, "participation", post_id,
-                     note = sprintf("Participation (%s)", outcome))
+        token_credit(uid, dname, tokens_to_award, 1L, "participation",
+                     as.integer(ev$id[1]),
+                     note = sprintf("Participation (%s; post %d)", outcome, post_id))
       }
     }
-    db_exec("UPDATE live_score_events SET committed_at=datetime('now') WHERE id=?;",
-            list(as.integer(ev$id[1])))
+    event_credited <- if (
+      identical(as.character(ev$event_kind[1]), "assignment") ||
+      tokens_revealed || tokens_to_award <= 0
+    ) 1L else 0L
+    db_exec("UPDATE live_score_events
+             SET committed_at=datetime('now'), tokens_credited=? WHERE id=?;",
+            list(event_credited, as.integer(ev$id[1])))
     TRUE
   }
 
@@ -4740,8 +4730,6 @@ server <- function(input, output, session) {
            WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
              AND COALESCE(u.is_demo,0)=0 AND LOWER(u.section)=LOWER(?)
              AND (?='' OR LOWER(u.course)=LOWER(?))
-             AND NOT EXISTS (SELECT 1 FROM job_assignments ja WHERE ja.round_id=(SELECT MAX(id) FROM weekly_rounds) AND ja.user_id=u.user_id AND COALESCE(ja.status,'assigned')='assigned')
-             AND NOT EXISTS (SELECT 1 FROM live_score_events lse2 WHERE lse2.round_id=(SELECT MAX(id) FROM weekly_rounds) AND lse2.user_id=u.user_id AND lse2.committed_at IS NULL)
            ORDER BY cold_calls ASC, RANDOM()
            LIMIT 1;",
           list(sec, course, course))
@@ -4762,8 +4750,6 @@ server <- function(input, output, session) {
            WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
              AND COALESCE(u.is_demo,0)=0
              AND (?='' OR LOWER(u.course)=LOWER(?))
-             AND NOT EXISTS (SELECT 1 FROM job_assignments ja WHERE ja.round_id=(SELECT MAX(id) FROM weekly_rounds) AND ja.user_id=u.user_id AND COALESCE(ja.status,'assigned')='assigned')
-             AND NOT EXISTS (SELECT 1 FROM live_score_events lse2 WHERE lse2.round_id=(SELECT MAX(id) FROM weekly_rounds) AND lse2.user_id=u.user_id AND lse2.committed_at IS NULL)
            ORDER BY cold_calls ASC, RANDOM()
            LIMIT 1;",
           list(course, course))
@@ -5426,9 +5412,17 @@ server <- function(input, output, session) {
       assignments_show <- assignments_show[!(assignments_show$id %in% audit_assignment_ids), , drop = FALSE]
     }
     n_show <- nrow(assignments_show)
+    pending_assignment_users <- if (nrow(pending_show)) {
+      as.character(pending_show$user_id[
+        !is.na(pending_show$job_assignment_id)])
+    } else character(0)
     unavailable_ids <- unique(c(as.character(td$assignments$user_id %||% character(0)),
-                                as.character(pending_show$user_id %||% character(0))))
-    students_vol <- students_sec[!(students_sec$user_id %in% unavailable_ids), , drop = FALSE]
+                                pending_assignment_users))
+    students_assignment_available <- students_sec[
+      !(students_sec$user_id %in% unavailable_ids), , drop = FALSE]
+    # Cold calls and voluntary jobs are repeatable contributions. They remain
+    # available even when the student has an assigned job or another score event.
+    students_vol <- students_sec
 
     # Round ID
     rid <- if (nrow(round)) round$id[1] else NA_integer_
@@ -5480,7 +5474,9 @@ server <- function(input, output, session) {
     stu_choices_raw <- setNames(students_sec$user_id, stu_lbl)
     is_bidder   <- students_sec$user_id %in% bidder_ids
     stu_choices <- c(stu_choices_raw[is_bidder], stu_choices_raw[!is_bidder])
-    vol_stu_choices <- stu_choices[stu_choices %in% students_vol$user_id]
+    vol_stu_choices <- stu_choices
+    assignment_stu_choices <- stu_choices[
+      stu_choices %in% students_assignment_available$user_id]
     manual_posts <- if (!is.na(rid)) {
       tryCatch(db_query(
         "SELECT jp.id, jp.job_name,
@@ -5524,13 +5520,12 @@ server <- function(input, output, session) {
       wellPanel(
         tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
                 "Cold Call"),
-        if (!nrow(students_vol)) {
-          tags$p(style = "color:#999;margin:0;", "No unassigned students are available in the selected section.")
+        if (!nrow(students_sec)) {
+          tags$p(style = "color:#999;margin:0;", "No students are available in the selected section.")
         } else {
           drawn <- rv$cold_call_draw
           drawn_uid <- if (is.list(drawn)) drawn$user_id %||% "" else ""
           drawn_name <- if (is.list(drawn)) drawn$display_name %||% drawn_uid else ""
-          if (drawn_uid %in% unavailable_ids) { drawn_uid <- ""; drawn_name <- "" }
           tagList(
             div(style = "display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;",
               actionButton("draw_cold_call_btn", "Draw Cold Call",
@@ -5573,11 +5568,20 @@ server <- function(input, output, session) {
             tok_rev <- isTRUE(as.integer(round$tokens_revealed[1] %||% 1L) == 1L)
             ja_cols_panel <- tryCatch(db_query("PRAGMA table_info(job_assignments);")$name,
                                       error = function(e) character(0))
-            n_pending <- if (!tok_rev && n_show > 0 &&
+            n_pending <- if (!tok_rev &&
                              all(c("tokens_credited", "tokens_awarded") %in% ja_cols_panel)) {
               tryCatch(db_query(
-                "SELECT COUNT(*) n FROM job_assignments WHERE round_id=? AND COALESCE(tokens_credited,1)=0 AND tokens_awarded>0;",
-                list(round$id[1]))$n[1], error=function(e) 0L)
+                "SELECT
+                   (SELECT COUNT(*) FROM job_assignments
+                    WHERE round_id=? AND COALESCE(tokens_credited,1)=0
+                      AND COALESCE(tokens_awarded,0)>0)
+                   +
+                   (SELECT COUNT(*) FROM live_score_events
+                    WHERE round_id=? AND committed_at IS NOT NULL
+                      AND event_kind IN ('cold_call','participation')
+                      AND COALESCE(tokens_credited,1)=0
+                      AND COALESCE(tokens,0)>0) AS n;",
+                list(round$id[1], round$id[1]))$n[1], error=function(e) 0L)
             } else 0L
             tagList(
             tags$p(style = "color:#555;font-size:.88rem;margin-bottom:.6rem;",
@@ -5643,13 +5647,13 @@ server <- function(input, output, session) {
             tags$hr(),
             tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.4rem;",
                     "Add Assignment Back"),
-            if (!length(vol_stu_choices) || !length(manual_post_choices)) {
+            if (!length(assignment_stu_choices) || !length(manual_post_choices)) {
               tags$p(style = "color:#999;margin:0;font-size:.86rem;",
                      "No eligible students or active jobs available for this round.")
             } else {
               fluidRow(
                 column(4, selectInput("manual_assign_uid", "Student:",
-                                      choices = vol_stu_choices, width = "100%")),
+                                      choices = assignment_stu_choices, width = "100%")),
                 column(5, selectInput("manual_assign_post_id", "Job:",
                                       choices = manual_post_choices, width = "100%")),
                 column(3, tags$br(),
@@ -5756,7 +5760,7 @@ server <- function(input, output, session) {
           tags$p(style = "color:#999;margin:0;",
                  "No voluntary job posts yet. Go to Settings → Jobs and mark a job category as Voluntary.")
         } else if (!nrow(students_vol)) {
-          tags$p(style = "color:#999;margin:0;", "No unassigned students are available in the selected section.")
+          tags$p(style = "color:#999;margin:0;", "No students are available in the selected section.")
         } else {
           et_choices <- setNames(vol_cats$id,
                                  paste0(vol_cats$name, " (+", as.integer(vol_cats$tokens), ")"))
@@ -5855,7 +5859,7 @@ server <- function(input, output, session) {
                                  title = "Full credit: student earns the posted token amount"),
                     actionButton("log_try_btn", "Try",
                                  class = "btn btn-warning btn-sm",
-                                 title = "Partial credit: half tokens awarded"),
+                                 title = "Partial credit: 1 token awarded"),
                     actionButton("log_miss_btn", "Miss",
                                  class = "btn btn-danger btn-sm",
                                  title = "No credit: no tokens awarded")
@@ -8024,29 +8028,6 @@ server <- function(input, output, session) {
               if (tokens_to_award == 1) "" else "s"),
       type = "message")
     return()
-    # Check whether tokens should be credited now or held until instructor releases
-    rnd_row <- tryCatch(db_query("SELECT COALESCE(tokens_revealed,1) v FROM weekly_rounds WHERE id=?;",
-                                  list(as.integer(row$round_id[1]))), error=function(e) data.frame())
-    tokens_revealed <- if (nrow(rnd_row)) isTRUE(as.integer(rnd_row$v[1]) == 1L) else TRUE
-    db_exec(
-      "UPDATE job_assignments SET outcome=?, tokens_awarded=?, tokens_credited=?,
-              updated_at=datetime('now') WHERE id=?;",
-      list(outcome, tokens_to_award, if (tokens_revealed) 1L else 0L, assign_id))
-    if (tokens_to_award > 0 && tokens_revealed) {
-      token_credit(uid, dname, tokens_to_award, 1L, "job", assign_id,
-                   note = sprintf("Job wage (%s)", outcome))
-      showNotification(
-        sprintf("%s — awarded %d token%s to %s.",
-                switch(outcome, complete="Complete", tried="Tried", outcome),
-                as.integer(tokens_to_award), if (tokens_to_award == 1) "" else "s", dname),
-        type = "message")
-    } else if (tokens_to_award > 0) {
-      showNotification(
-        sprintf("%s — outcome logged (%d tokens pending release).", dname, as.integer(tokens_to_award)),
-        type = "message")
-    } else {
-      showNotification(sprintf("Missed — no tokens for %s.", dname), type = "warning")
-    }
   }, ignoreNULL = TRUE)
 
   # ── Voluntary Participation logging ───────────────────────────────────────────
@@ -8063,17 +8044,6 @@ server <- function(input, output, session) {
       showNotification("No active round.", type = "error"); return()
     }
     rid   <- rid_row$id[1]
-    occupied <- tryCatch(db_query(
-      "SELECT 1 FROM job_assignments
-       WHERE round_id=? AND user_id=? AND COALESCE(status,'assigned')='assigned'
-       UNION ALL
-       SELECT 1 FROM live_score_events
-       WHERE round_id=? AND user_id=? AND committed_at IS NULL
-       LIMIT 1;", list(rid, uid, rid, uid)), error = function(e) data.frame())
-    if (nrow(occupied)) {
-      showNotification("That student is already pending or in the audit panel.", type = "warning")
-      return()
-    }
     u_row <- tryCatch(db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid)),
                       error = function(e) data.frame())
     dname <- if (nrow(u_row)) u_row$display_name[1] %||% uid else uid
@@ -8116,37 +8086,6 @@ server <- function(input, output, session) {
               if (tokens_to_award == 1) "" else "s"),
       type = "message")
     return()
-    rnd_row2 <- tryCatch(db_query("SELECT COALESCE(tokens_revealed,1) v FROM weekly_rounds WHERE id=?;",
-                                   list(rid)), error=function(e) data.frame())
-    tokens_revealed2 <- if (nrow(rnd_row2)) isTRUE(as.integer(rnd_row2$v[1]) == 1L) else TRUE
-    db_exec(
-      "INSERT INTO job_assignments(round_id, user_id, job_post_id, assigned_wage,
-              assignment_mode, outcome, tokens_awarded, tokens_credited, updated_at)
-       VALUES(?,?,?,?,'voluntary',?,?,?,datetime('now'))
-       ON CONFLICT(round_id, user_id)
-       DO UPDATE SET job_post_id=excluded.job_post_id,
-                     assigned_wage=excluded.assigned_wage,
-                     outcome=excluded.outcome,
-                     tokens_awarded=excluded.tokens_awarded,
-                     tokens_credited=excluded.tokens_credited,
-                     updated_at=excluded.updated_at;",
-      list(rid, uid, post_id, wage_val, outcome_type,
-           tokens_to_award, if (tokens_revealed2) 1L else 0L))
-    if (tokens_to_award > 0 && tokens_revealed2) {
-      token_credit(uid, dname, tokens_to_award, 1L, "participation", post_id,
-                   note = sprintf("Participation (%s)", outcome_type))
-      showNotification(
-        sprintf("%s — %s (+%d token%s)", dname, outcome_type,
-                as.integer(tokens_to_award), if (tokens_to_award == 1) "" else "s"),
-        type = "message")
-    } else if (tokens_to_award > 0) {
-      showNotification(
-        sprintf("%s — %s (outcome logged, %d tokens pending release)", dname, outcome_type,
-                as.integer(tokens_to_award)),
-        type = "message")
-    } else {
-      showNotification(sprintf("%s — %s (no tokens)", dname, outcome_type), type = "warning")
-    }
   }
 
   observeEvent(input$log_succeed_btn, .log_participation("succeed"), ignoreNULL = TRUE)
@@ -8173,20 +8112,47 @@ server <- function(input, output, session) {
        WHERE ja.round_id=? AND COALESCE(ja.tokens_credited,1)=0
          AND ja.tokens_awarded IS NOT NULL AND ja.tokens_awarded > 0;",
       list(rid)), error=function(e) data.frame())
-    if (!nrow(pending)) {
+    pending_events <- tryCatch(db_query(
+      "SELECT lse.id, lse.user_id, lse.tokens, lse.event_kind, lse.outcome,
+              u.display_name
+       FROM live_score_events lse
+       JOIN users u ON u.user_id=lse.user_id
+       WHERE lse.round_id=? AND lse.committed_at IS NOT NULL
+         AND lse.event_kind IN ('cold_call','participation')
+         AND COALESCE(lse.tokens_credited,1)=0 AND COALESCE(lse.tokens,0)>0;",
+      list(rid)), error=function(e) data.frame())
+    if (!nrow(pending) && !nrow(pending_events)) {
       showNotification("No pending tokens to release.", type="message"); return()
     }
-    for (i in seq_len(nrow(pending))) {
-      r <- pending[i, ]
-      token_credit(r$user_id, r$display_name %||% r$user_id,
-                   as.numeric(r$tokens_awarded), 1L,
-                   "job", as.integer(r$id),
-                   note = sprintf("Job/participation (%s) — released", r$outcome %||% ""))
+    if (nrow(pending)) {
+      for (i in seq_len(nrow(pending))) {
+        r <- pending[i, ]
+        token_credit(r$user_id, r$display_name %||% r$user_id,
+                     as.numeric(r$tokens_awarded), 1L,
+                     "job", as.integer(r$id),
+                     note = sprintf("Assigned job (%s) — released", r$outcome %||% ""))
+      }
+    }
+    if (nrow(pending_events)) {
+      for (i in seq_len(nrow(pending_events))) {
+        r <- pending_events[i, ]
+        token_credit(r$user_id, r$display_name %||% r$user_id,
+                     as.numeric(r$tokens), 1L,
+                     "participation", as.integer(r$id),
+                     note = sprintf("%s (%s) — released",
+                                    r$event_kind %||% "participation",
+                                    r$outcome %||% ""))
+      }
     }
     db_exec("UPDATE job_assignments SET tokens_credited=1 WHERE round_id=? AND COALESCE(tokens_credited,1)=0;",
             list(rid))
+    db_exec("UPDATE live_score_events SET tokens_credited=1
+             WHERE round_id=? AND committed_at IS NOT NULL AND COALESCE(tokens_credited,1)=0;",
+            list(rid))
     db_exec("UPDATE weekly_rounds SET tokens_revealed=1 WHERE id=?;", list(rid))
-    showNotification(sprintf("Released tokens for %d students.", nrow(pending)), type="message")
+    n_released <- nrow(pending) + nrow(pending_events)
+    showNotification(sprintf("Released %d token award%s.", n_released,
+                             if (n_released == 1L) "" else "s"), type="message")
   }, ignoreNULL=TRUE)
 
   # ── Grade upload ──────────────────────────────────────────────────────────────

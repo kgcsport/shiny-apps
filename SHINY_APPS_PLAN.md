@@ -134,7 +134,7 @@ Bidding is continuous but locks around class sessions (Settings → Round Setup 
 Live Tracker → Job Assignments:
 
 - Draw filter: All timings / Start of class / During class (cold call) / End-post class.
-- The **All timings** draw clears and redraws the full round but **excludes `during` posts** — cold calls are drawn live in class with the During filter, which draws incrementally among students who do not yet have a job this round (one job per student per round is enforced by the DB).
+- The **All timings** draw clears and redraws the full assigned-job round but **excludes `during` posts**. Assigned jobs remain one per student per round; live cold calls and voluntary contributions are independent, repeatable score events and may stack with assigned jobs or each other.
 - In `wage_bidding` mode, draws take the cheapest bids per category and pay each drawn student their bid. Tie-breaks per the round's method.
 
 ### Volunteer clearing wage
@@ -158,6 +158,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 `tests/smoke-class-job-market.R` (run `Rscript tests/smoke-class-job-market.R` from repo root; needs DBI + RSQLite) exercises the seed migration, template auto-copy, idempotence across restarts, bid-lock windows, and all three clearing-wage rules against a scratch SQLite DB by extracting the relevant functions from `app.R`. The testthat suite in `tests/unit/` has 20 pre-existing failures unrelated to this work (regex/locale issues in the test environment).
 
 ## Decision Log
+
+- **2026-09-09** — Enforce one assigned job per student per round, but allow
+  unlimited cold-call and voluntary score events. Each repeatable event has its
+  own audit row, ledger source ID, commit state, and delayed-credit state.
 
 - **2026-09-09** — Treat an assignment wage as live until its audit event is
   committed. Pending displays and Complete outcomes use the job post's current
@@ -197,6 +201,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-09** (Codex) - Removed cross-type student exclusion guards from
+  cold calls and voluntary participation, stopped voluntary commits from
+  overwriting assigned jobs, and added per-event delayed-credit tracking so
+  repeated events commit and release independently.
 
 - **2026-09-09** (Codex) - Verified that Token Admin individual adjustments
   remain available after job commit for signed balance corrections, preserve
@@ -261,4 +270,3 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 - In `application_bidding` (point-bid) rounds, volunteers currently earn the post's default wage — clearing wages only apply under wage bidding. Intended until wage bidding starts, or should point bids also price volunteering somehow?
 - Should students see the posted demand k itself, or only the implied wage (current behavior)?
-- One job per student per round is enforced, so cold-call draws only select students without a job that round. Keep, or should cold calls be stackable on top of assigned jobs?
