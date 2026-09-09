@@ -159,6 +159,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-09** — Use `user_id`, never display name, as the persistent student
+  key for Live Tracker offline sheets and bulk imports. Names remain in exported
+  sheets only as a human-readable reference.
+
 - **2026-09-09** — Use one round-trip CSV as the Live Tracker outage
   fallback: download the scoped roster and job reference before class, record
   jobs and optional outcomes offline, then bulk-import it into the normal
@@ -183,6 +187,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-09** (Codex) - Tightened offline and bulk job recovery so imports
+  require `user_id` and never resolve a student from a mutable display name.
 
 - **2026-09-09** (Codex) - Added pasted-list and fallback-CSV bulk job
   imports, a scoped downloadable offline sheet, exact student and job
