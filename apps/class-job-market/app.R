@@ -4458,6 +4458,111 @@ server <- function(input, output, session) {
       type = "message")
   }, ignoreNULL = TRUE)
 
+  output$offline_jobs_download <- downloadHandler(
+    filename = function() paste0("live-tracker-fallback-", Sys.Date(), ".csv"),
+    content = function(file) {
+      req(rv$is_admin)
+      rid_row <- db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
+      req(nrow(rid_row))
+      course <- trimws(rv$active_course %||% "")
+      section <- trimws(rv$active_section %||% "")
+      students <- db_query(
+        "SELECT user_id, display_name AS student, COALESCE(section,'') AS section
+         FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
+           AND (?='' OR LOWER(course)=LOWER(?)) AND (?='' OR LOWER(section)=LOWER(?))
+         ORDER BY section, display_name;",
+        list(course, course, section, section))
+      jobs <- db_query(
+        "SELECT job_name FROM job_posts WHERE round_id=? AND COALESCE(active,1)=1
+         ORDER BY display_order, job_name;", list(rid_row$id[1]))
+      students$job <- ""
+      students$outcome <- ""
+      students$notes <- ""
+      students$available_jobs <- paste(jobs$job_name %||% character(0), collapse = " | ")
+      utils::write.csv(students[c("student","user_id","section","job","outcome","notes","available_jobs")],
+                       file, row.names = FALSE, na = "")
+    }
+  )
+
+  observeEvent(input$import_bulk_jobs_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    rid_row <- tryCatch(db_query("SELECT id, assignment_mode FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                        error = function(e) data.frame())
+    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    upload <- input$bulk_jobs_file
+    rows <- data.frame()
+    pasted <- trimws(input$bulk_jobs_text %||% "")
+    if (!nzchar(pasted) && !is.null(upload) && nzchar(upload$datapath %||% "")) {
+      raw <- tryCatch(utils::read.csv(upload$datapath, stringsAsFactors = FALSE, check.names = FALSE),
+                      error = function(e) data.frame())
+      names(raw) <- tolower(trimws(names(raw)))
+      student_col <- if ("user_id" %in% names(raw)) "user_id" else if ("student" %in% names(raw)) "student" else ""
+      if (nzchar(student_col) && "job" %in% names(raw)) {
+        rows <- data.frame(student = as.character(raw[[student_col]]), job = as.character(raw[["job"]]),
+                           outcome = if ("outcome" %in% names(raw)) as.character(raw[["outcome"]]) else "",
+                           stringsAsFactors = FALSE)
+      }
+    } else {
+      lines <- trimws(strsplit(pasted, "\n", fixed = TRUE)[[1]])
+      lines <- lines[nzchar(lines)]
+      parsed <- lapply(lines, function(line) trimws(strsplit(line, "[|\t,]")[[1]]))
+      parsed <- parsed[vapply(parsed, length, integer(1)) >= 2]
+      if (length(parsed)) rows <- data.frame(
+        student = vapply(parsed, function(x) x[1], character(1)),
+        job = vapply(parsed, function(x) x[2], character(1)),
+        outcome = vapply(parsed, function(x) if (length(x) >= 3) x[3] else "", character(1)),
+        stringsAsFactors = FALSE)
+    }
+    if (!nrow(rows)) { showNotification("No valid rows found. Use Student | Job | Outcome.", type = "error"); return() }
+    header_rows <- norm_key(rows$student) %in% c("student", "name", "user id", "user_id")
+    rows <- rows[!header_rows & nzchar(trimws(rows$student)) & nzchar(trimws(rows$job)), , drop = FALSE]
+    rid <- as.integer(rid_row$id[1])
+    active_course <- trimws(rv$active_course %||% "")
+    active_section <- trimws(rv$active_section %||% "")
+    students <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0 AND (?='' OR LOWER(course)=LOWER(?)) AND (?='' OR LOWER(section)=LOWER(?));", list(active_course, active_course, active_section, active_section))
+    posts <- db_query("SELECT jp.id, jp.job_name, COALESCE(jp.wage_override,jc.default_wage,0) AS wage FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id WHERE jp.round_id=? AND COALESCE(jp.active,1)=1;", list(rid))
+    errors <- character(0)
+    imported <- 0L
+    seen <- character(0)
+    for (i in seq_len(nrow(rows))) {
+      student_key <- norm_key(trimws(rows$student[i]))
+      job_key <- norm_key(trimws(rows$job[i]))
+      sm <- students[norm_key(students$user_id) == student_key | norm_key(students$display_name) == student_key, , drop = FALSE]
+      pm <- posts[norm_key(posts$job_name) == job_key, , drop = FALSE]
+      outcome_raw <- norm_key(trimws(rows$outcome[i] %||% ""))
+      outcome <- if (!nzchar(outcome_raw)) "" else switch(outcome_raw, complete = "complete", completed = "complete", succeed = "complete", success = "complete", tried = "tried", try = "tried", missed = "missed", miss = "missed", NA_character_)
+      if (nrow(sm) != 1L) { errors <- c(errors, sprintf("Row %d: student not uniquely matched: %s", i, rows$student[i])); next }
+      if (nrow(pm) != 1L) { errors <- c(errors, sprintf("Row %d: job not uniquely matched: %s", i, rows$job[i])); next }
+      uid <- as.character(sm$user_id[1])
+      if (uid %in% seen) { errors <- c(errors, sprintf("Row %d: duplicate student: %s", i, rows$student[i])); next }
+      seen <- c(seen, uid)
+      if (is.na(outcome)) { errors <- c(errors, sprintf("Row %d: outcome must be blank, complete, tried, or missed", i)); next }
+      queued <- db_query("SELECT id FROM live_score_events WHERE round_id=? AND user_id=? AND committed_at IS NULL LIMIT 1;", list(rid, uid))
+      if (nrow(queued)) { errors <- c(errors, sprintf("Row %d: student is already in Audit", i)); next }
+      old <- db_query("SELECT id, COALESCE(outcome,'') AS outcome, COALESCE(tokens_awarded,0) AS tokens_awarded FROM job_assignments WHERE round_id=? AND user_id=? LIMIT 1;", list(rid, uid))
+      if (nrow(old) && (nzchar(as.character(old$outcome[1] %||% "")) || as.numeric(old$tokens_awarded[1] %||% 0) > 0)) { errors <- c(errors, sprintf("Row %d: assignment is already committed", i)); next }
+      db_exec(
+        "INSERT INTO job_assignments(round_id,user_id,job_post_id,assigned_wage,assignment_mode,status,outcome,tokens_awarded,tokens_credited,updated_at)
+         VALUES(?,?,?,?,?,'assigned','',0,1,datetime('now'))
+         ON CONFLICT(round_id,user_id) DO UPDATE SET job_post_id=excluded.job_post_id,assigned_wage=excluded.assigned_wage,assignment_mode=excluded.assignment_mode,status='assigned',outcome='',tokens_awarded=0,tokens_credited=1,updated_at=datetime('now');",
+        list(rid, uid, as.integer(pm$id[1]), as.numeric(pm$wage[1] %||% 0), rid_row$assignment_mode[1] %||% "manual"))
+      aid <- if (nrow(old)) as.integer(old$id[1]) else as.integer(db_query("SELECT last_insert_rowid() AS id;")$id[1])
+      if (nzchar(outcome)) {
+        wage <- as.numeric(pm$wage[1] %||% 0)
+        half <- tryCatch(as.numeric(get_setting("half_wage_multiplier", "0.5")), error = function(e) 0.5)
+        tokens <- switch(outcome, complete = wage, tried = round(wage * half), missed = 0, 0)
+        db_exec("INSERT INTO live_score_events(round_id,user_id,job_assignment_id,event_kind,outcome,tokens,logged_by) VALUES(?,?,?,'assignment',?,?,?);",
+                list(rid, uid, aid, outcome, tokens, rv$user_id %||% "admin"))
+      }
+      imported <- imported + 1L
+    }
+    updateTextAreaInput(session, "bulk_jobs_text", value = "")
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    if (length(errors)) showModal(modalDialog(title = sprintf("Imported %d row%s; %d need attention", imported, if (imported == 1L) "" else "s", length(errors)),
+      tags$ul(lapply(errors, tags$li)), easyClose = TRUE, footer = modalButton("Close")))
+    else showNotification(sprintf("Imported %d job%s.", imported, if (imported == 1L) "" else "s"), type = "message")
+  }, ignoreNULL = TRUE)
+
   draw_cold_call <- function() {
     req(rv$is_admin)
     sec <- trimws(rv$active_section %||% "")
@@ -5259,6 +5364,22 @@ server <- function(input, output, session) {
                       choices = c("All timings" = "all", "Start of class" = "start",
                                   "End/post class" = "end"),
                       selected = "all", width = "100%"))
+      ),
+
+      wellPanel(
+        tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
+                "Bulk Jobs and Offline Fallback"),
+        tags$p(style = "color:#555;font-size:.86rem;",
+          "Paste one assignment per line as Student | Job | Outcome, or upload the fallback CSV. Outcome is optional; blank rows enter Pending, while complete, tried, or missed rows enter Audit."),
+        textAreaInput("bulk_jobs_text", "Paste assignments:", rows = 5, width = "100%",
+          placeholder = "Student Name | Materials summary | complete\nStudent Name | Note taker"),
+        fluidRow(
+          column(5, fileInput("bulk_jobs_file", "Upload fallback CSV:", accept = c(".csv", "text/csv"), width = "100%")),
+          column(3, tags$br(), actionButton("import_bulk_jobs_btn", "Import Jobs", class = "btn btn-primary btn-sm")),
+          column(4, tags$br(), downloadButton("offline_jobs_download", "Download Offline Sheet", class = "btn btn-outline-secondary btn-sm"))
+        ),
+        tags$p(style = "color:#777;font-size:.8rem;margin-bottom:0;",
+          "Keep the downloaded sheet on your laptop or print it before class. If the app goes down, fill it in and upload it here later.")
       ),
 
       wellPanel(

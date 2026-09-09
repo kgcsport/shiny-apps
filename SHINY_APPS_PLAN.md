@@ -159,6 +159,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-09** — Use one round-trip CSV as the Live Tracker outage
+  fallback: download the scoped roster and job reference before class, record
+  jobs and optional outcomes offline, then bulk-import it into the normal
+  Pending and Audit lifecycle when service returns.
+
 - **2026-09-08** — Store final ECON 342 policy-team assignments in the app's
   SQLite database and update them through an instructor-only CSV import. Raw
   preferences and blackout dates remain outside the Shiny app.
@@ -178,6 +183,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-09** (Codex) - Added pasted-list and fallback-CSV bulk job
+  imports, a scoped downloadable offline sheet, exact student and job
+  validation, outcome normalization, and protection for Audit and committed
+  assignments.
 
 - **2026-09-08** (Codex) - Added a policy-group assignment table, instructor
   CSV importer, and student Account-profile card showing team, presentation
@@ -201,11 +211,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Deploy the policy-group CSV importer, import a synthetic assignment file in
-   Demo Mode, and verify the assignment card from a student profile.
-2. Browser-test pending to audit to return or commit in Live Tracker, including
-   independent start and end reveal controls in a student session.
-3. Rehearse the full current-round workflow before the next class.
+1. Download an offline sheet for the active section and open it in a spreadsheet.
+2. Demo-import blank-outcome rows to Pending and graded rows to Audit.
+3. Verify invalid and duplicate rows produce a useful attention report.
 
 ## Questions for Kyle
 
