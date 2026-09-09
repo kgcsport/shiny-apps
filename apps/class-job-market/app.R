@@ -7530,6 +7530,8 @@ server <- function(input, output, session) {
         ),
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Individual Adjustment"),
+        tags$p(style = "color:#555;font-size:.88rem;",
+               "Correct a student's token balance at any time, including after a job score is committed. Use a positive amount to add tokens or a negative amount to deduct them. The correction is recorded separately so the original committed job remains auditable."),
         div(class = "spend-form-box",
           if (!nrow(students)) {
             tags$p(style = "color:#999;", "No students found.")
@@ -7538,7 +7540,7 @@ server <- function(input, output, session) {
               column(4, selectInput("indiv_uid", "Student:",
                                     choices = setNames(students$user_id, stu_lbl))),
               column(2, numericInput("indiv_amount", "Amount (+/-):", value = 1, step = 1)),
-              column(4, textInput("indiv_note", "Note:", placeholder = "")),
+              column(4, textInput("indiv_note", "Correction note:", placeholder = "e.g. correct committed job wage")),
               column(2, tags$br(),
                      actionButton("indiv_award_btn", "Apply", class = "btn btn-warning btn-sm"))
             )

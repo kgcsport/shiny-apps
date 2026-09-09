@@ -198,6 +198,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-09-09** (Codex) - Verified that Token Admin individual adjustments
+  remain available after job commit for signed balance corrections, preserve
+  the locked job record, and create a separate audited ledger entry; clarified
+  this workflow in the UI.
+
 - **2026-09-09** (Codex) - Changed job wages from draw-time snapshots to
   commit-time snapshots: Today, Pending, and Audit reflect current post wages,
   while audit commit locks the final wage and award. Fixed committed-state
