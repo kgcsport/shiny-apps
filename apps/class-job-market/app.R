@@ -4662,7 +4662,24 @@ server <- function(input, output, session) {
     active_course <- trimws(rv$active_course %||% "")
     active_section <- trimws(rv$active_section %||% "")
     students <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0 AND (?='' OR LOWER(course)=LOWER(?)) AND (?='' OR LOWER(section)=LOWER(?));", list(active_course, active_course, active_section, active_section))
-    posts <- db_query("SELECT jp.id, jp.job_name, COALESCE(jp.wage_override,jc.default_wage,0) AS wage FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id WHERE jp.round_id=? AND COALESCE(jp.active,1)=1;", list(rid))
+    posts <- db_query(
+      "SELECT jp.id, jp.job_name,
+              COALESCE(jp.wage_override,jc.default_wage,0) AS wage,
+              CASE
+                WHEN LOWER(COALESCE(jp.selection_time,jc.selection_time,'')) IN ('during','during class')
+                  OR LOWER(COALESCE(jp.job_name,'')) LIKE 'cold call%'
+                  OR LOWER(COALESCE(jc.name,''))='cold call'
+                  THEN 'cold_call'
+                WHEN COALESCE(jp.voluntary,0)=1 OR COALESCE(jc.voluntary,0)=1
+                  OR LOWER(COALESCE(jp.selection_time,jc.selection_time,''))='volunteer'
+                  OR LOWER(COALESCE(jp.job_name,'')) LIKE 'volunteer%'
+                  THEN 'participation'
+                ELSE 'assignment'
+              END AS event_kind
+       FROM job_posts jp
+       LEFT JOIN job_categories jc ON jc.id=jp.category_id
+       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1;",
+      list(rid))
     errors <- character(0)
     imported <- 0L
     seen <- character(0)
@@ -4680,13 +4697,39 @@ server <- function(input, output, session) {
       if (nrow(sm) > 1L) { errors <- c(errors, sprintf("Row %d: student name is ambiguous; use user_id: %s", i, rows$student_key[i])); next }
       if (nrow(pm) != 1L) { errors <- c(errors, sprintf("Row %d: job not uniquely matched: %s", i, rows$job[i])); next }
       uid <- as.character(sm$user_id[1])
-      if (uid %in% seen) { errors <- c(errors, sprintf("Row %d: duplicate student: %s", i, rows$student_key[i])); next }
-      seen <- c(seen, uid)
       if (is.na(outcome)) { errors <- c(errors, sprintf("Row %d: outcome must be blank, complete, tried, or missed", i)); next }
-      queued <- db_query("SELECT id FROM live_score_events WHERE round_id=? AND user_id=? AND committed_at IS NULL LIMIT 1;", list(rid, uid))
-      if (nrow(queued)) { errors <- c(errors, sprintf("Row %d: student is already in Audit", i)); next }
+
+      event_kind <- as.character(pm$event_kind[1] %||% "assignment")
+      wage <- as.numeric(pm$wage[1] %||% 0)
+      if (event_kind %in% c("cold_call", "participation")) {
+        if (!nzchar(outcome)) {
+          errors <- c(errors, sprintf(
+            "Row %d: repeatable cold-call/volunteer jobs require an outcome", i))
+          next
+        }
+        tokens <- switch(outcome, complete = wage, tried = 1, missed = 0, 0)
+        stored_outcome <- if (identical(event_kind, "participation")) {
+          switch(outcome, complete = "succeed", tried = "try", missed = "miss", outcome)
+        } else outcome
+        db_exec(
+          "INSERT INTO live_score_events(round_id,user_id,job_post_id,event_kind,outcome,tokens,logged_by)
+           VALUES(?,?,?,?,?,?,?);",
+          list(rid, uid, as.integer(pm$id[1]), event_kind, stored_outcome,
+               tokens, rv$user_id %||% "admin"))
+        imported <- imported + 1L
+        next
+      }
+
+      # Only assigned jobs use the one-row-per-student round constraint.
+      if (uid %in% seen) { errors <- c(errors, sprintf("Row %d: duplicate assigned job for student: %s", i, rows$student_key[i])); next }
+      seen <- c(seen, uid)
+      queued <- db_query(
+        "SELECT id FROM live_score_events
+         WHERE round_id=? AND user_id=? AND event_kind='assignment'
+           AND committed_at IS NULL LIMIT 1;", list(rid, uid))
+      if (nrow(queued)) { errors <- c(errors, sprintf("Row %d: assigned job is already in Audit", i)); next }
       old <- db_query("SELECT id, COALESCE(outcome,'') AS outcome, COALESCE(tokens_awarded,0) AS tokens_awarded FROM job_assignments WHERE round_id=? AND user_id=? LIMIT 1;", list(rid, uid))
-      if (nrow(old) && (nzchar(as.character(old$outcome[1] %||% "")) || as.numeric(old$tokens_awarded[1] %||% 0) > 0)) { errors <- c(errors, sprintf("Row %d: assignment is already committed", i)); next }
+      if (nrow(old) && (nzchar(as.character(old$outcome[1] %||% "")) || as.numeric(old$tokens_awarded[1] %||% 0) > 0)) { errors <- c(errors, sprintf("Row %d: assigned job is already committed", i)); next }
       db_exec(
         "INSERT INTO job_assignments(round_id,user_id,job_post_id,assigned_wage,assignment_mode,status,outcome,tokens_awarded,tokens_credited,updated_at)
          VALUES(?,?,?,?,?,'assigned','',0,1,datetime('now'))
@@ -4694,7 +4737,6 @@ server <- function(input, output, session) {
         list(rid, uid, as.integer(pm$id[1]), as.numeric(pm$wage[1] %||% 0), rid_row$assignment_mode[1] %||% "manual"))
       aid <- if (nrow(old)) as.integer(old$id[1]) else as.integer(db_query("SELECT last_insert_rowid() AS id;")$id[1])
       if (nzchar(outcome)) {
-        wage <- as.numeric(pm$wage[1] %||% 0)
         tokens <- switch(outcome, complete = wage, tried = 1, missed = 0, 0)
         db_exec("INSERT INTO live_score_events(round_id,user_id,job_assignment_id,event_kind,outcome,tokens,logged_by) VALUES(?,?,?,'assignment',?,?,?);",
                 list(rid, uid, aid, outcome, tokens, rv$user_id %||% "admin"))
@@ -6037,7 +6079,7 @@ server <- function(input, output, session) {
         div(
           style = "padding:0 1rem 1rem 1rem;",
           tags$p(style = "color:#555;font-size:.86rem;",
-            "Paste Student or User ID | Job | Outcome, paste a CSV with headers, or upload the fallback CSV. Enter complete, tried, or missed when you know the result. Leave outcome blank only when the assignment should enter Pending. Imports store the persistent user_id; if both identity columns are populated, user_id wins. Unmatched or ambiguous students are reported."),
+            "Paste Student or User ID | Job | Outcome, paste a CSV with headers, or upload the fallback CSV. Enter complete, tried, or missed when you know the result. Leave outcome blank only for a regular assigned job that should enter Pending; repeatable cold-call and volunteer rows require an outcome. Imports store the persistent user_id; if both identity columns are populated, user_id wins. Unmatched or ambiguous students are reported."),
           textAreaInput("bulk_jobs_text", "Paste assignments:", rows = 5, width = "100%",
             placeholder = "student,user_id,job,outcome\nJane Smith,student123,Materials summary,complete\nJohn Doe,,Note taker,tried"),
           fluidRow(

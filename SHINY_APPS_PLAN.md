@@ -202,6 +202,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-09-09** (Codex) - Fixed the bulk importer to classify cold-call and
+  voluntary job posts as repeatable score events. Multiple completed CSV rows
+  for one student now enter Audit independently; only regular assigned jobs
+  trigger already-committed and duplicate-assignment checks.
+
 - **2026-09-09** (Codex) - Removed cross-type student exclusion guards from
   cold calls and voluntary participation, stopped voluntary commits from
   overwriting assigned jobs, and added per-event delayed-credit tracking so
