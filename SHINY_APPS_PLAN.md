@@ -159,9 +159,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
-- **2026-09-09** — Use `user_id`, never display name, as the persistent student
-  key for Live Tracker offline sheets and bulk imports. Names remain in exported
-  sheets only as a human-readable reference.
+- **2026-09-09** — Store Live Tracker assignments under `user_id`. Bulk input
+  may identify a student by exact display name or user ID for convenience;
+  `user_id` wins when both CSV columns are populated, and unmatched or
+  ambiguous names must be reported rather than guessed.
 
 - **2026-09-09** — Use one round-trip CSV as the Live Tracker outage
   fallback: download the scoped roster and job reference before class, record
@@ -189,7 +190,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 ## Work Log
 
 - **2026-09-09** (Codex) - Tightened offline and bulk job recovery so imports
-  require `user_id` and never resolve a student from a mutable display name.
+  persist `user_id`; then added pasted CSV support and exact name-or-ID input
+  with explicit unmatched and ambiguous-student reporting.
 
 - **2026-09-09** (Codex) - Added pasted-list and fallback-CSV bulk job
   imports, a scoped downloadable offline sheet, exact student and job

@@ -4492,29 +4492,50 @@ server <- function(input, output, session) {
     upload <- input$bulk_jobs_file
     rows <- data.frame()
     pasted <- trimws(input$bulk_jobs_text %||% "")
+    import_rows <- function(raw) {
+      if (!nrow(raw)) return(data.frame())
+      names(raw) <- gsub("[ .-]+", "_", tolower(trimws(names(raw))))
+      has_uid <- "user_id" %in% names(raw)
+      has_student <- "student" %in% names(raw)
+      if ((!has_uid && !has_student) || !"job" %in% names(raw)) return(data.frame())
+      uid <- if (has_uid) trimws(as.character(raw[["user_id"]])) else rep("", nrow(raw))
+      student <- if (has_student) trimws(as.character(raw[["student"]])) else rep("", nrow(raw))
+      uid[is.na(uid)] <- ""
+      student[is.na(student)] <- ""
+      use_uid <- nzchar(uid)
+      data.frame(
+        student_key = ifelse(use_uid, uid, student),
+        id_only = use_uid,
+        job = as.character(raw[["job"]]),
+        outcome = if ("outcome" %in% names(raw)) as.character(raw[["outcome"]]) else "",
+        stringsAsFactors = FALSE)
+    }
     if (!nzchar(pasted) && !is.null(upload) && nzchar(upload$datapath %||% "")) {
       raw <- tryCatch(utils::read.csv(upload$datapath, stringsAsFactors = FALSE, check.names = FALSE),
                       error = function(e) data.frame())
-      names(raw) <- tolower(trimws(names(raw)))
-      if ("user_id" %in% names(raw) && "job" %in% names(raw)) {
-        rows <- data.frame(user_id = as.character(raw[["user_id"]]), job = as.character(raw[["job"]]),
-                           outcome = if ("outcome" %in% names(raw)) as.character(raw[["outcome"]]) else "",
-                           stringsAsFactors = FALSE)
-      }
+      rows <- import_rows(raw)
     } else {
-      lines <- trimws(strsplit(pasted, "\n", fixed = TRUE)[[1]])
-      lines <- lines[nzchar(lines)]
-      parsed <- lapply(lines, function(line) trimws(strsplit(line, "[|\t,]")[[1]]))
-      parsed <- parsed[vapply(parsed, length, integer(1)) >= 2]
-      if (length(parsed)) rows <- data.frame(
-        user_id = vapply(parsed, function(x) x[1], character(1)),
-        job = vapply(parsed, function(x) x[2], character(1)),
-        outcome = vapply(parsed, function(x) if (length(x) >= 3) x[3] else "", character(1)),
-        stringsAsFactors = FALSE)
+      first_line <- trimws(strsplit(pasted, "\n", fixed = TRUE)[[1]][1] %||% "")
+      if (grepl(",", first_line) && grepl("(^|,)[[:space:]]*(student|user[ _-]?id)[[:space:]]*(,|$)", first_line, ignore.case = TRUE)) {
+        raw <- tryCatch(utils::read.csv(text = pasted, stringsAsFactors = FALSE, check.names = FALSE),
+                        error = function(e) data.frame())
+        rows <- import_rows(raw)
+      } else {
+        lines <- trimws(strsplit(pasted, "\n", fixed = TRUE)[[1]])
+        lines <- lines[nzchar(lines)]
+        parsed <- lapply(lines, function(line) trimws(strsplit(line, "[|\t,]")[[1]]))
+        parsed <- parsed[vapply(parsed, length, integer(1)) >= 2]
+        if (length(parsed)) rows <- data.frame(
+          student_key = vapply(parsed, function(x) x[1], character(1)),
+          id_only = FALSE,
+          job = vapply(parsed, function(x) x[2], character(1)),
+          outcome = vapply(parsed, function(x) if (length(x) >= 3) x[3] else "", character(1)),
+          stringsAsFactors = FALSE)
+      }
     }
-    if (!nrow(rows)) { showNotification("No valid rows found. Use Student ID | Job | Outcome; CSV files must contain user_id and job columns.", type = "error"); return() }
-    header_rows <- norm_key(rows$user_id) %in% c("student id", "user id", "user_id")
-    rows <- rows[!header_rows & nzchar(trimws(rows$user_id)) & nzchar(trimws(rows$job)), , drop = FALSE]
+    if (!nrow(rows)) { showNotification("No valid rows found. Use Student or User ID | Job | Outcome, or paste/upload CSV with student or user_id plus job.", type = "error"); return() }
+    header_rows <- norm_key(rows$student_key) %in% c("student", "student id", "user id", "user_id")
+    rows <- rows[!header_rows & nzchar(trimws(rows$student_key)) & nzchar(trimws(rows$job)), , drop = FALSE]
     rid <- as.integer(rid_row$id[1])
     active_course <- trimws(rv$active_course %||% "")
     active_section <- trimws(rv$active_section %||% "")
@@ -4524,16 +4545,20 @@ server <- function(input, output, session) {
     imported <- 0L
     seen <- character(0)
     for (i in seq_len(nrow(rows))) {
-      student_key <- norm_key(trimws(rows$user_id[i]))
+      student_key <- norm_key(trimws(rows$student_key[i]))
       job_key <- norm_key(trimws(rows$job[i]))
       sm <- students[norm_key(students$user_id) == student_key, , drop = FALSE]
+      if (!isTRUE(rows$id_only[i]) && nrow(sm) == 0L) {
+        sm <- students[norm_key(students$display_name) == student_key, , drop = FALSE]
+      }
       pm <- posts[norm_key(posts$job_name) == job_key, , drop = FALSE]
       outcome_raw <- norm_key(trimws(rows$outcome[i] %||% ""))
       outcome <- if (!nzchar(outcome_raw)) "" else switch(outcome_raw, complete = "complete", completed = "complete", succeed = "complete", success = "complete", tried = "tried", try = "tried", missed = "missed", miss = "missed", NA_character_)
-      if (nrow(sm) != 1L) { errors <- c(errors, sprintf("Row %d: student ID not found in the active section: %s", i, rows$user_id[i])); next }
+      if (nrow(sm) == 0L) { errors <- c(errors, sprintf("Row %d: student not found in the active section: %s", i, rows$student_key[i])); next }
+      if (nrow(sm) > 1L) { errors <- c(errors, sprintf("Row %d: student name is ambiguous; use user_id: %s", i, rows$student_key[i])); next }
       if (nrow(pm) != 1L) { errors <- c(errors, sprintf("Row %d: job not uniquely matched: %s", i, rows$job[i])); next }
       uid <- as.character(sm$user_id[1])
-      if (uid %in% seen) { errors <- c(errors, sprintf("Row %d: duplicate student ID: %s", i, rows$user_id[i])); next }
+      if (uid %in% seen) { errors <- c(errors, sprintf("Row %d: duplicate student: %s", i, rows$student_key[i])); next }
       seen <- c(seen, uid)
       if (is.na(outcome)) { errors <- c(errors, sprintf("Row %d: outcome must be blank, complete, tried, or missed", i)); next }
       queued <- db_query("SELECT id FROM live_score_events WHERE round_id=? AND user_id=? AND committed_at IS NULL LIMIT 1;", list(rid, uid))
@@ -5369,9 +5394,9 @@ server <- function(input, output, session) {
         tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
                 "Bulk Jobs and Offline Fallback"),
         tags$p(style = "color:#555;font-size:.86rem;",
-          "Paste one assignment per line as Student ID | Job | Outcome, or upload the fallback CSV. Student ID is the persistent identity key; names are included in the sheet only as a reference. Outcome is optional; blank rows enter Pending, while complete, tried, or missed rows enter Audit."),
+          "Paste Student or User ID | Job | Outcome, paste a CSV with headers, or upload the fallback CSV. Imports accept exact student names or user IDs, then store the persistent user_id. If both CSV columns are present, user_id wins. Unmatched or ambiguous students are reported."),
         textAreaInput("bulk_jobs_text", "Paste assignments:", rows = 5, width = "100%",
-          placeholder = "student123 | Materials summary | complete\nstudent456 | Note taker"),
+          placeholder = "student,user_id,job,outcome\nJane Smith,student123,Materials summary,complete\nJohn Doe,,Note taker,"),
         fluidRow(
           column(5, fileInput("bulk_jobs_file", "Upload fallback CSV:", accept = c(".csv", "text/csv"), width = "100%")),
           column(3, tags$br(), actionButton("import_bulk_jobs_btn", "Import Jobs", class = "btn btn-primary btn-sm")),
