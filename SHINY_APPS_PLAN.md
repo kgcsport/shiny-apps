@@ -159,6 +159,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-09** — Use a fixed outcome scale for all jobs: Complete earns the
+  job wage, Tried earns exactly 1 token, and Missed earns 0. Do not round a
+  fractional wage for Tried.
+
 - **2026-09-09** — Store Live Tracker assignments under `user_id`. Bulk input
   may identify a student by exact display name or user ID for convenience;
   `user_id` wins when both CSV columns are populated, and unmatched or
@@ -188,6 +192,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-09** (Codex) - Replaced half-wage rounding with the fixed
+  Complete=wage, Tried=1, Missed=0 rule across live grading, bulk imports,
+  voluntary jobs, and outcome previews; removed the obsolete multiplier UI.
 
 - **2026-09-09** (Codex) - Added all currently revealed start/end job
   assignments to Today, scoped to the student's section or the instructor's

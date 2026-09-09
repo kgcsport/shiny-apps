@@ -4658,8 +4658,7 @@ server <- function(input, output, session) {
       aid <- if (nrow(old)) as.integer(old$id[1]) else as.integer(db_query("SELECT last_insert_rowid() AS id;")$id[1])
       if (nzchar(outcome)) {
         wage <- as.numeric(pm$wage[1] %||% 0)
-        half <- tryCatch(as.numeric(get_setting("half_wage_multiplier", "0.5")), error = function(e) 0.5)
-        tokens <- switch(outcome, complete = wage, tried = round(wage * half), missed = 0, 0)
+        tokens <- switch(outcome, complete = wage, tried = 1, missed = 0, 0)
         db_exec("INSERT INTO live_score_events(round_id,user_id,job_assignment_id,event_kind,outcome,tokens,logged_by) VALUES(?,?,?,'assignment',?,?,?);",
                 list(rid, uid, aid, outcome, tokens, rv$user_id %||% "admin"))
       }
@@ -5617,8 +5616,6 @@ server <- function(input, output, session) {
 
       # Assignments table + evaluation
       if (n_show > 0) {
-        half_mult <- tryCatch(as.numeric(get_setting("half_wage_multiplier","0.5")),
-                              error=function(e) 0.5)
         tagList(
           div(class = "sec-label", "Pending Assignments"),
           div(class = "tracker-wrap",
@@ -5649,7 +5646,7 @@ server <- function(input, output, session) {
                            sprintf("Pending: %s", switch(poc, complete = "complete", tried = "tried", missed = "missed", poc)))
                     } else if (ta == 1L) {
                       awarded_amt <- switch(oc,
-                        complete = wage, tried = round(wage * half_mult), missed = 0, 0)
+                        complete = wage, tried = 1, missed = 0, 0)
                       span(style = "color:#888;font-size:.82rem;",
                            sprintf("%s (+%d)",
                                    switch(oc, complete = "✓", tried = "~",
@@ -6346,20 +6343,6 @@ server <- function(input, output, session) {
             )
           )
         ),
-
-        # ── Try-Outcome Wage Multiplier ───────────────────────────────────────────
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Try-Outcome Wage Multiplier"),
-        tags$p(style = "color:#555;font-size:.85rem;",
-               "When a student Tries (partial credit) on an assigned or voluntary job, they earn this fraction of the wage. Default 0.5 = 50%."),
-        {
-          current_hwm2 <- tryCatch(as.numeric(get_setting("half_wage_multiplier","0.5")), error=function(e) 0.5)
-          tagList(
-            numericInput("half_wage_input", "Multiplier (0–1):",
-                         value = current_hwm2, min = 0, max = 1, step = 0.05, width = "220px"),
-            actionButton("save_hwm_btn", "Save", class = "btn btn-sm btn-primary")
-          )
-        },
 
         # ── Volunteer Clearing Wage ───────────────────────────────────────────────
         tags$hr(),
@@ -7972,10 +7955,9 @@ server <- function(input, output, session) {
     uid   <- row$user_id[1]
     dname <- row$display_name[1] %||% uid
     wage  <- if (!is.na(row$assigned_wage[1] %||% NA)) as.numeric(row$assigned_wage[1]) else 0
-    half_mult <- tryCatch(as.numeric(get_setting("half_wage_multiplier","0.5")), error=function(e) 0.5)
     tokens_to_award <- switch(outcome,
       complete = wage,
-      tried    = round(wage * half_mult),
+      tried    = 1,
       missed   = 0,
       0)
     db_exec(
@@ -8066,11 +8048,9 @@ server <- function(input, output, session) {
                                     query_fn = db_query)
       if (!is.na(cw)) wage_val <- cw
     }
-    half_mult <- tryCatch(as.numeric(get_setting("half_wage_multiplier","0.5")),
-                          error=function(e) 0.5)
     tokens_to_award <- switch(outcome_type,
       succeed = wage_val,
-      try     = round(wage_val * half_mult),
+      try     = 1,
       miss    = 0, 0)
     db_exec(
       "INSERT INTO live_score_events(round_id, user_id, job_post_id, event_kind,
@@ -8390,18 +8370,7 @@ server <- function(input, output, session) {
     }
   })
 
-  # ── Participation event type + half-wage settings ─────────────────────────────
-  observeEvent(input$save_hwm_btn, {
-    req(rv$is_admin)
-    hwm <- suppressWarnings(as.numeric(input$half_wage_input %||% 0.5))
-    if (is.na(hwm) || hwm < 0 || hwm > 1) {
-      showNotification("Multiplier must be between 0 and 1.", type = "error"); return()
-    }
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('half_wage_multiplier',?);",
-            list(as.character(hwm)))
-    showNotification(sprintf("Half-wage multiplier set to %.2f.", hwm), type = "message")
-  })
-
+  # ── Participation and volunteer settings ─────────────────────────────────────
   observeEvent(input$save_vol_clearing_btn, {
     req(rv$is_admin)
     rule <- input$vol_clearing_rule_sel %||% "lowest"
