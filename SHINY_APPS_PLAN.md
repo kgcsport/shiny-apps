@@ -189,6 +189,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-09-09** (Codex) - Moved bulk/offline recovery into a collapsed panel
+  beneath Live Score Audit and clarified that known outcomes should be imported
+  as `complete`, `tried`, or `missed`; only pending work stays blank.
+
 - **2026-09-09** (Codex) - Tightened offline and bulk job recovery so imports
   persist `user_id`; then added pasted CSV support and exact name-or-ID input
   with explicit unmatched and ambiguous-student reporting.

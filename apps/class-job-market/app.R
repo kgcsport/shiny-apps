@@ -4478,8 +4478,9 @@ server <- function(input, output, session) {
       students$job <- ""
       students$outcome <- ""
       students$notes <- ""
+      students$allowed_outcomes <- "complete | tried | missed (blank = pending)"
       students$available_jobs <- paste(jobs$job_name %||% character(0), collapse = " | ")
-      utils::write.csv(students[c("user_id","student","section","job","outcome","notes","available_jobs")],
+      utils::write.csv(students[c("user_id","student","section","job","outcome","notes","allowed_outcomes","available_jobs")],
                        file, row.names = FALSE, na = "")
     }
   )
@@ -5392,22 +5393,6 @@ server <- function(input, output, session) {
 
       wellPanel(
         tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
-                "Bulk Jobs and Offline Fallback"),
-        tags$p(style = "color:#555;font-size:.86rem;",
-          "Paste Student or User ID | Job | Outcome, paste a CSV with headers, or upload the fallback CSV. Imports accept exact student names or user IDs, then store the persistent user_id. If both CSV columns are present, user_id wins. Unmatched or ambiguous students are reported."),
-        textAreaInput("bulk_jobs_text", "Paste assignments:", rows = 5, width = "100%",
-          placeholder = "student,user_id,job,outcome\nJane Smith,student123,Materials summary,complete\nJohn Doe,,Note taker,"),
-        fluidRow(
-          column(5, fileInput("bulk_jobs_file", "Upload fallback CSV:", accept = c(".csv", "text/csv"), width = "100%")),
-          column(3, tags$br(), actionButton("import_bulk_jobs_btn", "Import Jobs", class = "btn btn-primary btn-sm")),
-          column(4, tags$br(), downloadButton("offline_jobs_download", "Download Offline Sheet", class = "btn btn-outline-secondary btn-sm"))
-        ),
-        tags$p(style = "color:#777;font-size:.8rem;margin-bottom:0;",
-          "Keep the downloaded sheet on your laptop or print it before class. If the app goes down, fill it in and upload it here later.")
-      ),
-
-      wellPanel(
-        tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
                 "Cold Call"),
         if (!nrow(students_vol)) {
           tags$p(style = "color:#999;margin:0;", "No unassigned students are available in the selected section.")
@@ -5910,7 +5895,29 @@ server <- function(input, output, session) {
             )
           )
         }
+      ),
+
+      tags$details(
+        style = "margin-top:.75rem;border:1px solid #ddd;border-radius:6px;background:#fafafa;",
+        tags$summary(
+          style = "cursor:pointer;padding:.75rem 1rem;font-weight:700;color:#951829;",
+          "Bulk Jobs and Offline Fallback"),
+        div(
+          style = "padding:0 1rem 1rem 1rem;",
+          tags$p(style = "color:#555;font-size:.86rem;",
+            "Paste Student or User ID | Job | Outcome, paste a CSV with headers, or upload the fallback CSV. Enter complete, tried, or missed when you know the result. Leave outcome blank only when the assignment should enter Pending. Imports store the persistent user_id; if both identity columns are populated, user_id wins. Unmatched or ambiguous students are reported."),
+          textAreaInput("bulk_jobs_text", "Paste assignments:", rows = 5, width = "100%",
+            placeholder = "student,user_id,job,outcome\nJane Smith,student123,Materials summary,complete\nJohn Doe,,Note taker,tried"),
+          fluidRow(
+            column(5, fileInput("bulk_jobs_file", "Upload fallback CSV:", accept = c(".csv", "text/csv"), width = "100%")),
+            column(3, tags$br(), actionButton("import_bulk_jobs_btn", "Import Jobs", class = "btn btn-primary btn-sm")),
+            column(4, tags$br(), downloadButton("offline_jobs_download", "Download Offline Sheet", class = "btn btn-outline-secondary btn-sm"))
+          ),
+          tags$p(style = "color:#777;font-size:.8rem;margin-bottom:0;",
+            "Allowed outcomes: complete, tried, or missed. Blank means Pending. Keep the downloaded sheet locally or print it before class; if the app goes down, fill it in and import it later.")
+        )
       )
+
     )
   })
 
