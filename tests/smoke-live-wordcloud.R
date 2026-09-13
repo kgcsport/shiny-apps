@@ -9,6 +9,10 @@ stopifnot(is.null(validate_poll_response("land value")))
 stopifnot(!is.null(validate_poll_response("")))
 stopifnot(!is.null(validate_poll_response("!!!")))
 stopifnot(!is.null(validate_poll_response("one two three four five")))
+stopifnot(
+  live_poll_submission_token("browser-a", "session-a", 1L) !=
+    live_poll_submission_token("browser-a", "session-a", 2L)
+)
 
 specs <- cloud_term_specs(data.frame(
   label = c("income", "land value"),

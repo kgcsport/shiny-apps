@@ -160,6 +160,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-13** — Treat every explicit Submit click as a visible word-cloud
+  response. Use a browser/session/click submission key only for idempotence;
+  do not silently replace an earlier response from the same browser.
+
 - **2026-09-13** — Refresh only cloud results on the three-second poll timer;
   keep question metadata and the response form stable so active typing is never
   replaced. Put response clearing on the poll page behind password confirmation.
@@ -216,6 +220,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-09-13** (Codex) - Reproduced production persistence with a submit,
+  full reload, and separate display session. Removed the misleading one-row-
+  per-browser behavior so successive submissions now append and remain visible
+  instead of silently replacing the browser's previous answer.
+
 - **2026-09-13** (Codex) - Fixed the live poll erasing in-progress answers by
   separating metadata/form invalidation from result polling. Added a compact
   Clear responses control with modal password confirmation, and passed a real
@@ -235,7 +244,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 - **2026-09-13** (Codex) - Added apps/live-wordcloud, a slide-sized
   dependency-light response form and collision-free flex word cloud. Added
-  response normalization, browser-token upserts, SQLite persistence, live
+  response normalization, idempotent submission keys, SQLite persistence, live
   three-second refresh, password-protected clearing, and a smoke test covering
   validation, aggregation, and response replacement.
 

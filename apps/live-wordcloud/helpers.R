@@ -31,6 +31,10 @@ validate_poll_response <- function(x, max_words = 4L, max_chars = 42L) {
   NULL
 }
 
+live_poll_submission_token <- function(client_token, session_token, submit_index) {
+  paste(client_token, session_token, as.integer(submit_index), sep = "::")
+}
+
 initialize_live_poll_schema <- function(con) {
   DBI::dbExecute(con, "
     CREATE TABLE IF NOT EXISTS live_polls (

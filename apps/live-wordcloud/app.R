@@ -183,8 +183,13 @@ server <- function(input, output, session) {
       showNotification(error, type = "error", duration = 4)
       return()
     }
-    token <- trimws(input$client_token %||% session$token)
-    upsert_live_poll_response(con, selected_poll_id(), token, response)
+    browser_token <- trimws(input$client_token %||% session$token)
+    submission_token <- live_poll_submission_token(
+      browser_token,
+      session$token,
+      input$submit
+    )
+    upsert_live_poll_response(con, selected_poll_id(), submission_token, response)
     updateTextInput(session, "response", value = "")
     cloud_version(cloud_version() + 1L)
     showNotification("Response added.", type = "message", duration = 2)
