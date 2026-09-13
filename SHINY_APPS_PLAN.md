@@ -160,6 +160,17 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-13** — Use static JavaScript for deterministic browser-only
+  visualizers and Cloudflare Durable Objects for anonymous shared classroom
+  rooms. Keep Reclaim as the authoritative home for the roster, token ledger,
+  longitudinal student records, and Google integrations; do not add
+  bidirectional synchronization merely to reduce Shiny memory.
+
+- **2026-09-13** — Audited all 17 apps in
+  `CLOUDFLARE_MIGRATION_AUDIT.md` and built `live-wordcloud` as the first
+  Worker/Durable Object pilot. The old Shiny route remains available until the
+  replacement survives a two-phone classroom test.
+
 - **2026-09-13** — Treat every explicit Submit click as a visible word-cloud
   response. Use a browser/session/click submission key only for idempotence;
   do not silently replace an earlier response from the same browser.
@@ -313,10 +324,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Pull the latest live-word-cloud image on Reclaim, then test the embedded
-   excess-burden slide from two browsers.
-2. Dry-run the instructor reset at /live-wordcloud/?admin=1.
-3. Resume the offline Live Tracker import test with blank and graded rows.
+1. Classroom-test the Cloudflare live poll from two phones and clear the QA
+   responses through its password-protected instructor view.
+2. Port `tax-incidence` as the first static-JavaScript visualizer.
+3. Decide whether `review-quiz` and `supply-auction-game` need canonical
+   participation credit before moving either away from Reclaim.
 
 ## Questions for Kyle
 
