@@ -82,6 +82,7 @@ Sandbox mode is for testing the live class experience without touching student r
 
 ## Near-Term Build Priorities
 
+- [x] Add a persistent anonymous live word cloud for slide-embedded classroom polling. *(2026-09-13: dependency-light Shiny app with browser-level response replacement, SQLite persistence, three-second refresh, and password-protected reset.)*
 - [x] Stabilize the class-job-market hub around live teaching workflows. *(2026-08-26: round setup, template auto-copy, and settings-panel reactivity fixed; see Work Log.)*
 - [x] Make job setup easier to maintain: fewer defaults, clearer timing, clean in-draw/voluntary controls, and sensible demo mirroring. *(2026-08-26: simplified 4-category / 11-template catalog with one-time migration; template-level timing/voluntary/in-draw/auto-copy controls.)*
 - [ ] Add write-back contracts for one-off games so participation and outcomes can feed the semester economy.
@@ -159,6 +160,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-13** — Implement the excess-burden tax-base prompt as a small
+  anonymous Shiny app backed by the shared persistent SQLite volume. Treat one
+  browser as one response that can be updated, refresh the aggregate every
+  three seconds, and protect destructive reset behind the existing instructor
+  password.
+
 - **2026-09-09** — Enforce one assigned job per student per round, but allow
   unlimited cold-call and voluntary score events. Each repeatable event has its
   own audit row, ledger source ID, commit state, and delayed-credit state.
@@ -201,6 +208,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-13** (Codex) - Added apps/live-wordcloud, a slide-sized
+  dependency-light response form and collision-free flex word cloud. Added
+  response normalization, browser-token upserts, SQLite persistence, live
+  three-second refresh, password-protected clearing, and a smoke test covering
+  validation, aggregation, and response replacement.
 
 - **2026-09-09** (Codex) - Fixed the bulk importer to classify cold-call and
   voluntary job posts as repeatable score events. Multiple completed CSV rows
@@ -267,9 +280,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Download an offline sheet for the active section and open it in a spreadsheet.
-2. Demo-import blank-outcome rows to Pending and graded rows to Audit.
-3. Verify invalid and duplicate rows produce a useful attention report.
+1. Verify the live word-cloud image is running on Reclaim and test it in the
+   embedded excess-burden slide from two browsers.
+2. Dry-run the instructor reset at /live-wordcloud/?admin=1.
+3. Resume the offline Live Tracker import test with blank and graded rows.
 
 ## Questions for Kyle
 
