@@ -98,7 +98,7 @@ ui <- fluidPage(
   uiOutput("poll_instructions"),
   uiOutput("poll_entry"),
   div(class = "cloud-shell", uiOutput("cloud")),
-  textOutput("response_count", container = tags$div, class = "response-count"),
+  div(class = "response-count", textOutput("response_count")),
   uiOutput("admin_controls")
 )
 
