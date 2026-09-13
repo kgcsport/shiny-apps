@@ -63,6 +63,14 @@ ui <- fluidPage(
         white-space:nowrap; }
       .cloud-empty { color:#777; font-size:20px; }
       .response-count { text-align:center; color:#666; font-size:14px; margin-top:2px; }
+      html.display-mode { overflow:hidden; }
+      html.display-mode .container-fluid { max-width:none; padding:0; }
+      html.display-mode #poll_heading,
+      html.display-mode #poll_instructions,
+      html.display-mode #poll_entry,
+      html.display-mode #admin_controls { display:none; }
+      html.display-mode .cloud-shell { height:390px; margin:0; border:0; }
+      html.display-mode .response-count { font-size:16px; margin-top:4px; }
       .admin-box { margin-top:16px; padding:14px; background:#f7f7f7;
         border:1px solid #ccc; border-radius:5px; }
       .admin-box h3 { margin-top:0; color:#7a1731; }
@@ -76,6 +84,9 @@ ui <- fluidPage(
     ")),
     tags$script(HTML("
       (function () {
+        if (new URLSearchParams(window.location.search).get('display') === '1') {
+          document.documentElement.classList.add('display-mode');
+        }
         function sendPollToken() {
           var key = 'econ342-live-poll-token';
           var token = window.localStorage.getItem(key);
@@ -309,7 +320,7 @@ server <- function(input, output, session) {
     if (!startsWith(url, "http")) return(url)
     paste0(
       '<iframe src="', url,
-      '" title="Live class poll" style="width:100%;height:510px;',
+      '&amp;display=1" title="Live class poll" style="width:100%;height:420px;',
       'border:1px solid #ddd;border-radius:6px;" loading="eager"></iframe>'
     )
   })

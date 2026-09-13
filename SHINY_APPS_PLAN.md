@@ -160,6 +160,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-13** — Separate live-poll participation from projection: stable
+  poll URLs show the response form on student phones, while `display=1` iframe
+  URLs show only the continuously refreshed word cloud and response count.
+
 - **2026-09-13** — Store live-poll questions as SQLite data and address each
   one through a stable poll URL key. Instructors create, edit, open, close,
   and clear questions in the password-protected app screen; slide sources only
@@ -207,6 +211,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-13** (Codex) - Added a scrollbar-free `display=1` projection mode
+  for the live word cloud and changed generated Quarto iframe snippets to use
+  it. The exact container passed its smoke test and a 720-by-420 browser check
+  with content height equal to viewport height.
 
 - **2026-09-13** (Codex) - Generalized the slide word cloud into a reusable
   poll manager. Added persistent question definitions, URL routing, instructor
@@ -284,8 +293,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Verify the live word-cloud image is running on Reclaim and test it in the
-   embedded excess-burden slide from two browsers.
+1. Pull the latest live-word-cloud image on Reclaim, then test the embedded
+   excess-burden slide from two browsers.
 2. Dry-run the instructor reset at /live-wordcloud/?admin=1.
 3. Resume the offline Live Tracker import test with blank and graded rows.
 
