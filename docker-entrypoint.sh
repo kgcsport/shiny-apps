@@ -26,6 +26,8 @@ R_RENVIRON_SITE="$(Rscript --no-save --no-restore -e 'cat(file.path(R.home("etc"
   [ -n "${GOOGLE_CLIENT_SECRET:-}" ] && printf 'GOOGLE_CLIENT_SECRET=%s\n' "$GOOGLE_CLIENT_SECRET"
   [ -n "${SHINY_APP_URL:-}"        ] && printf 'SHINY_APP_URL=%s\n'        "$SHINY_APP_URL"
   [ -n "${ADMIN_EMAILS:-}"         ] && printf 'ADMIN_EMAILS=%s\n'         "$ADMIN_EMAILS"
+  [ -n "${SHINY_PASSWORD:-}"       ] && printf 'SHINY_PASSWORD=%s\n'       "$SHINY_PASSWORD"
+  [ -n "${LIVE_POLL_BASE_URL:-}"   ] && printf 'LIVE_POLL_BASE_URL=%s\n'   "$LIVE_POLL_BASE_URL"
 } >> "$R_RENVIRON_SITE"
 
 awk '

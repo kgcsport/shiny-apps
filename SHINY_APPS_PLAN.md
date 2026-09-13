@@ -160,6 +160,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-13** — Refresh only cloud results on the three-second poll timer;
+  keep question metadata and the response form stable so active typing is never
+  replaced. Put response clearing on the poll page behind password confirmation.
+
 - **2026-09-13** — Separate live-poll participation from projection: stable
   poll URLs show the response form on student phones, while `display=1` iframe
   URLs show only the continuously refreshed word cloud and response count.
@@ -211,6 +215,13 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-13** (Codex) - Fixed the live poll erasing in-progress answers by
+  separating metadata/form invalidation from result polling. Added a compact
+  Clear responses control with modal password confirmation, and passed a real
+  browser test covering five seconds of typing, submission, and clearing.
+  Also propagated `SHINY_PASSWORD` and `LIVE_POLL_BASE_URL` into Shiny worker
+  environments; Shiny Server's login worker otherwise discarded both variables.
 
 - **2026-09-13** (Codex) - Added a scrollbar-free `display=1` projection mode
   for the live word cloud and changed generated Quarto iframe snippets to use

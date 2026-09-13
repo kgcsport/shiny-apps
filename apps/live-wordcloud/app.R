@@ -63,11 +63,14 @@ ui <- fluidPage(
         white-space:nowrap; }
       .cloud-empty { color:#777; font-size:20px; }
       .response-count { text-align:center; color:#666; font-size:14px; margin-top:2px; }
+      .poll-actions { text-align:right; margin-top:2px; }
+      .poll-actions .btn-link { color:#777; font-size:13px; padding:2px 4px; }
       html.display-mode { overflow:hidden; }
       html.display-mode .container-fluid { max-width:none; padding:0; }
       html.display-mode #poll_heading,
       html.display-mode #poll_instructions,
       html.display-mode #poll_entry,
+      html.display-mode #poll_actions,
       html.display-mode #admin_controls { display:none; }
       html.display-mode .cloud-shell { height:390px; margin:0; border:0; }
       html.display-mode .response-count { font-size:16px; margin-top:4px; }
@@ -110,11 +113,13 @@ ui <- fluidPage(
   uiOutput("poll_entry"),
   div(class = "cloud-shell", uiOutput("cloud")),
   div(class = "response-count", textOutput("response_count")),
+  uiOutput("poll_actions"),
   uiOutput("admin_controls")
 )
 
 server <- function(input, output, session) {
-  refresh_version <- reactiveVal(0L)
+  poll_version <- reactiveVal(0L)
+  cloud_version <- reactiveVal(0L)
   cloud_timer <- reactiveTimer(3000, session)
 
   query_values <- reactive({
@@ -130,14 +135,13 @@ server <- function(input, output, session) {
   admin_mode <- reactive(identical(query_values()$admin %||% "", "1"))
 
   poll_record <- reactive({
-    cloud_timer()
-    refresh_version()
+    poll_version()
     get_live_poll(con, selected_poll_id())
   })
 
   cloud_data <- reactive({
     cloud_timer()
-    refresh_version()
+    cloud_version()
     live_poll_counts(con, selected_poll_id())
   })
 
@@ -182,7 +186,7 @@ server <- function(input, output, session) {
     token <- trimws(input$client_token %||% session$token)
     upsert_live_poll_response(con, selected_poll_id(), token, response)
     updateTextInput(session, "response", value = "")
-    refresh_version(refresh_version() + 1L)
+    cloud_version(cloud_version() + 1L)
     showNotification("Response added.", type = "message", duration = 2)
   })
 
@@ -214,6 +218,14 @@ server <- function(input, output, session) {
     total <- sum(cloud_data()$n)
     if (total == 0) "No responses yet"
     else paste(total, if (total == 1) "response" else "responses")
+  })
+
+  output$poll_actions <- renderUI({
+    req(nrow(poll_record()))
+    div(
+      class = "poll-actions",
+      actionButton("request_public_clear", "Clear responses", class = "btn-link")
+    )
   })
 
   admin_version <- reactiveVal(0L)
@@ -274,13 +286,14 @@ server <- function(input, output, session) {
     updateCheckboxInput(session, "admin_is_open", value = TRUE)
   })
 
-  instructor_authorized <- function() {
+  instructor_authorized <- function(password) {
     configured <- Sys.getenv("SHINY_PASSWORD", "")
-    nzchar(configured) && identical(input$admin_password, configured)
+    supplied <- trimws(as.character(password %||% "")[1])
+    nzchar(configured) && isTRUE(supplied == configured)
   }
 
   observeEvent(input$save_poll, {
-    if (!instructor_authorized()) {
+    if (!instructor_authorized(input$admin_password)) {
       showNotification("Incorrect instructor password.", type = "error", duration = 4)
       return()
     }
@@ -301,7 +314,8 @@ server <- function(input, output, session) {
     )
     updateTextInput(session, "admin_poll_id", value = saved)
     admin_version(admin_version() + 1L)
-    refresh_version(refresh_version() + 1L)
+    poll_version(poll_version() + 1L)
+    cloud_version(cloud_version() + 1L)
     showNotification("Question saved.", type = "message", duration = 3)
   })
 
@@ -355,14 +369,48 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$confirm_reset, {
-    if (!instructor_authorized()) {
+    if (!instructor_authorized(input$admin_password)) {
       removeModal()
       showNotification("Incorrect instructor password.", type = "error", duration = 4)
       return()
     }
     clear_live_poll_responses(con, current_admin_poll_id())
     removeModal()
-    refresh_version(refresh_version() + 1L)
+    cloud_version(cloud_version() + 1L)
+    showNotification("Responses cleared.", type = "message", duration = 3)
+  })
+
+  observeEvent(input$request_public_clear, {
+    poll <- poll_record()
+    req(nrow(poll))
+    showModal(modalDialog(
+      title = "Clear responses?",
+      tags$p(paste0("Remove every response to “", poll$prompt[1], "”?")),
+      passwordInput("public_clear_password", "Instructor password"),
+      footer = tagList(
+        modalButton("Cancel"),
+        tags$button(
+          type = "button",
+          class = "btn btn-danger",
+          onclick = paste0(
+            "Shiny.setInputValue('public_clear_request', ",
+            "document.getElementById('public_clear_password').value, ",
+            "{priority:'event'});"
+          ),
+          "Clear responses"
+        )
+      )
+    ))
+  })
+
+  observeEvent(input$public_clear_request, {
+    if (!instructor_authorized(input$public_clear_request)) {
+      showNotification("Incorrect instructor password.", type = "error", duration = 4)
+      return()
+    }
+    clear_live_poll_responses(con, selected_poll_id())
+    removeModal()
+    cloud_version(cloud_version() + 1L)
     showNotification("Responses cleared.", type = "message", duration = 3)
   })
 }
