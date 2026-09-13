@@ -3,9 +3,11 @@ library(RSQLite)
 
 source("apps/live-wordcloud/helpers.R")
 
+stopifnot(identical(normalize_poll_id(" Tariff Welfare?! "), "tariff-welfare"))
 stopifnot(identical(normalize_poll_response("  Land-value TAX! "), "land value tax"))
 stopifnot(is.null(validate_poll_response("land value")))
 stopifnot(!is.null(validate_poll_response("")))
+stopifnot(!is.null(validate_poll_response("!!!")))
 stopifnot(!is.null(validate_poll_response("one two three four five")))
 
 specs <- cloud_term_specs(data.frame(
@@ -22,48 +24,31 @@ on.exit({
   unlink(db)
 }, add = TRUE)
 
-dbExecute(con, "
-  CREATE TABLE live_poll_responses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    poll_id TEXT NOT NULL,
-    client_token TEXT NOT NULL,
-    response TEXT NOT NULL,
-    response_norm TEXT NOT NULL,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(poll_id, client_token)
-  );
-")
+initialize_live_poll_schema(con)
+seed_live_poll(con, "tax-base", "What should we tax?", "Use a few words.", 4L)
+save_live_poll(con, "tariff-welfare", "What disappears after a tariff?", "", 5L, TRUE)
 
-upsert <- function(token, response) {
-  dbExecute(
-    con,
-    "INSERT INTO live_poll_responses
-       (poll_id, client_token, response, response_norm)
-     VALUES ('test', ?, ?, ?)
-     ON CONFLICT(poll_id, client_token) DO UPDATE SET
-       response = excluded.response,
-       response_norm = excluded.response_norm,
-       updated_at = CURRENT_TIMESTAMP;",
-    params = list(token, response, normalize_poll_response(response))
-  )
-}
+polls <- list_live_polls(con)
+stopifnot(nrow(polls) == 2L)
+stopifnot(get_live_poll(con, "tax-base")$max_words[1] == 4L)
 
-upsert("student-a", "Land value")
-upsert("student-b", "land value!")
-upsert("student-a", "Income")
+upsert_live_poll_response(con, "tax-base", "student-a", "Land value")
+upsert_live_poll_response(con, "tax-base", "student-b", "land value!")
+upsert_live_poll_response(con, "tax-base", "student-a", "Income")
+upsert_live_poll_response(con, "tariff-welfare", "student-a", "Import varieties")
 
-counts <- dbGetQuery(
-  con,
-  "SELECT response_norm, COUNT(*) n
-   FROM live_poll_responses
-   WHERE poll_id='test'
-   GROUP BY response_norm
-   ORDER BY response_norm;"
-)
+tax_counts <- live_poll_counts(con, "tax-base")
+tariff_counts <- live_poll_counts(con, "tariff-welfare")
 
-stopifnot(nrow(counts) == 2L)
-stopifnot(counts$n[counts$response_norm == "income"] == 1L)
-stopifnot(counts$n[counts$response_norm == "land value"] == 1L)
+stopifnot(nrow(tax_counts) == 2L)
+stopifnot(sum(tax_counts$n) == 2L)
+stopifnot(tax_counts$n[tax_counts$response_norm == "income"] == 1L)
+stopifnot(tax_counts$n[tax_counts$response_norm == "land value"] == 1L)
+stopifnot(nrow(tariff_counts) == 1L)
+stopifnot(tariff_counts$response_norm[1] == "import varieties")
+
+clear_live_poll_responses(con, "tax-base")
+stopifnot(sum(live_poll_counts(con, "tax-base")$n) == 0L)
+stopifnot(sum(live_poll_counts(con, "tariff-welfare")$n) == 1L)
 
 cat("live-wordcloud smoke test passed\n")

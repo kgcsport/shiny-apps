@@ -82,7 +82,7 @@ Sandbox mode is for testing the live class experience without touching student r
 
 ## Near-Term Build Priorities
 
-- [x] Add a persistent anonymous live word cloud for slide-embedded classroom polling. *(2026-09-13: dependency-light Shiny app with browser-level response replacement, SQLite persistence, three-second refresh, and password-protected reset.)*
+- [x] Add a reusable persistent live-word-cloud question manager for slide-embedded classroom polling. *(2026-09-13: questions are created and edited in the instructor screen, routed by stable URL key, and require no app-code or slide-source change after embedding.)*
 - [x] Stabilize the class-job-market hub around live teaching workflows. *(2026-08-26: round setup, template auto-copy, and settings-panel reactivity fixed; see Work Log.)*
 - [x] Make job setup easier to maintain: fewer defaults, clearer timing, clean in-draw/voluntary controls, and sensible demo mirroring. *(2026-08-26: simplified 4-category / 11-template catalog with one-time migration; template-level timing/voluntary/in-draw/auto-copy controls.)*
 - [ ] Add write-back contracts for one-off games so participation and outcomes can feed the semester economy.
@@ -160,11 +160,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
-- **2026-09-13** — Implement the excess-burden tax-base prompt as a small
-  anonymous Shiny app backed by the shared persistent SQLite volume. Treat one
-  browser as one response that can be updated, refresh the aggregate every
-  three seconds, and protect destructive reset behind the existing instructor
-  password.
+- **2026-09-13** — Store live-poll questions as SQLite data and address each
+  one through a stable poll URL key. Instructors create, edit, open, close,
+  and clear questions in the password-protected app screen; slide sources only
+  need the generated embed URL.
 
 - **2026-09-09** — Enforce one assigned job per student per round, but allow
   unlimited cold-call and voluntary score events. Each repeatable event has its
@@ -208,6 +207,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-13** (Codex) - Generalized the slide word cloud into a reusable
+  poll manager. Added persistent question definitions, URL routing, instructor
+  create/edit/open/close controls, per-question clearing, generated embed URLs,
+  and multi-poll isolation tests.
 
 - **2026-09-13** (Codex) - Added apps/live-wordcloud, a slide-sized
   dependency-light response form and collision-free flex word cloud. Added
