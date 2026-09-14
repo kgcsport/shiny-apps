@@ -160,6 +160,23 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-14** — Draw cold calls uniformly with replacement from the active
+  course/section roster. Track absence per round and exclude marked-absent
+  students immediately; prior call counts do not change draw eligibility.
+
+- **2026-09-14** — Store concise instructions on individual job posts and
+  templates, copy template instructions into each new round, and expose them
+  through collapsed details so job lists remain compact.
+
+- **2026-09-14** — Use one section-scoped reveal toggle with Start, End, and
+  All scopes. The timing rows are authoritative; retire the legacy global
+  override that could reveal assignments outside the selected group.
+
+- **2026-09-14** — Treat assignment timing as a reveal/workflow distinction,
+  not a lecture-index shift. End-of-class jobs such as note taking belong to
+  the lecture that just ended; creating the next lecture remains an explicit
+  Round Setup action.
+
 - **2026-09-13** — Use static JavaScript for deterministic browser-only
   visualizers and Cloudflare Durable Objects for anonymous shared classroom
   rooms. Keep Reclaim as the authoritative home for the roster, token ledger,
@@ -230,6 +247,26 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-14** (Codex) - Replaced least-called-first cold-call selection
+  with uniform random draws with replacement. Added round-specific absence
+  tracking plus Absent & Redraw controls in both tracker and slide views, and
+  connected assignment-redraw absences to the same exclusion list.
+
+- **2026-09-14** (Codex) - Added optional quick descriptions to job posts and
+  templates, including add/edit forms and round-to-round copying. Student
+  assignment, revealed-job, and job-pool views now show those instructions on
+  click without expanding every card by default.
+
+- **2026-09-14** (Codex) - Consolidated assignment visibility into a stable
+  Start/End/All selector and one reveal/hide toggle. Preserved the selection
+  across tracker refreshes, made All update both timing groups, and removed the
+  legacy global override that revealed every section and timing at once.
+
+- **2026-09-14** (Codex) - Fixed end-of-class draws so note-taking and other
+  end-timed jobs remain indexed to the lecture just completed instead of
+  silently creating and attaching themselves to the next round. Added a smoke
+  regression check and clarified the draw confirmation.
 
 - **2026-09-13** (Codex) - Reproduced production persistence with a submit,
   full reload, and separate display session. Removed the misleading one-row-

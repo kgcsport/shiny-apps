@@ -19,7 +19,9 @@ db_exec <- function(sql, params = NULL) {
 
 app <- parse("apps/class-job-market/app.R")
 # Pull the definitions we need out of app.R without running the whole app
-wanted <- c("seed_class_job_defaults", "get_setting", "bid_lock_status", "volunteer_clearing_wage")
+wanted <- c("seed_class_job_defaults", "get_setting", "bid_lock_status",
+            "volunteer_clearing_wage", "assignment_round_for_timing",
+            "reveal_timings_for_scope")
 extracted <- 0
 for (ex in app) {
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") &&
@@ -28,6 +30,14 @@ for (ex in app) {
   }
 }
 stopifnot(extracted == length(wanted))
+
+# End-of-class jobs, especially lecture notes, belong to the class session
+# that just ended. Timing must never advance their lecture/round index.
+stopifnot(assignment_round_for_timing(3L, "end") == 3L)
+stopifnot(assignment_round_for_timing(3L, "start") == 3L)
+stopifnot(identical(reveal_timings_for_scope("start"), "start"))
+stopifnot(identical(reveal_timings_for_scope("end"), "end"))
+stopifnot(identical(reveal_timings_for_scope("all"), c("start", "end")))
 
 # Pull the table-creation / migration SQL straight from app.R: run every
 # top-level db_exec("...") call whose SQL is a literal string.
