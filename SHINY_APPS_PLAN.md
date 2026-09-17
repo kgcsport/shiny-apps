@@ -160,6 +160,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-17** — Provide contextual, collapsible tutorial notes rather than
+  a blocking guided tour. A single header switch controls all help notes and
+  remembers the browser's preference locally.
+
 - **2026-09-14** — Draw cold calls uniformly with replacement from the active
   course/section roster. Track absence per round and exclude marked-absent
   students immediately; prior call counts do not change draw eligibility.
@@ -247,6 +251,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-17** (Codex) - Added a persistent Show help / Hide help switch and
+  concise tutorial sequences for Today, Job Market, Live Tracker, and Settings.
+  Help visibility is stored in browser local storage and remains responsive on
+  phone-sized instructor screens.
 
 - **2026-09-14** (Codex) - Replaced least-called-first cold-call selection
   with uniform random draws with replacement. Added round-specific absence

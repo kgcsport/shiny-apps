@@ -1182,9 +1182,19 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
                border: 1px solid rgba(255,255,255,.4); font-size: .82rem;
                padding: .25rem .6rem; border-radius: 6px; cursor: pointer; }
 .arc-signout:hover { background: rgba(255,255,255,.28); }
+.arc-tutorial-toggle { background: rgba(255,255,255,.15); color: #fff;
+                       border: 1px solid rgba(255,255,255,.4); font-size: .82rem;
+                       padding: .25rem .6rem; border-radius: 6px; cursor: pointer;
+                       white-space: nowrap; }
+.arc-tutorial-toggle:hover { background: rgba(255,255,255,.28); }
 .arc-font-ctrl { display:flex; align-items:center; gap:.3rem; font-size:.75rem;
                  opacity:.8; white-space:nowrap; }
 .arc-font-ctrl input[type=range] { width:70px; accent-color:#fff; cursor:pointer; }
+@media (max-width: 700px) {
+  .arc-header { flex-wrap: wrap; padding: .6rem .75rem; }
+  .arc-title { flex-basis: 100%; }
+  .arc-font-ctrl { display:none; }
+}
 
 /* ── Page body ──────────────────────────────────────────────────────────── */
 .arc-body { max-width: 900px; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
@@ -1240,6 +1250,13 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
 /* ── How-to callout (per-tab) ───────────────────────────────────────────── */
 .tab-howto { background: #f0f4ff; border: 1px solid #c7d7f8; border-radius: 7px;
              padding: .55rem .9rem; margin-bottom: .9rem; font-size: .83rem; color: #3a4e7c; }
+.tutorial-note { background:#fffbea; border:1px solid #eadb9b; border-radius:8px;
+                 padding:.55rem .8rem; margin:.55rem 0 .9rem; color:#5f521d;
+                 font-size:.84rem; }
+.tutorial-note summary { cursor:pointer; font-weight:700; color:#765f00; }
+.tutorial-note ol, .tutorial-note ul { margin:.5rem 0 .15rem; padding-left:1.25rem; }
+.tutorial-note li { margin-bottom:.3rem; }
+body.tutorial-off .tab-howto, body.tutorial-off .tutorial-note { display:none !important; }
 
 /* ── Active game slot ───────────────────────────────────────────────────── */
 .slot-card {
@@ -1472,6 +1489,25 @@ COOKIE_JS <- HTML("
     if (window.history && window.history.replaceState)
       window.history.replaceState({}, document.title, location.pathname);
   });
+  window.setTutorialNotes = function(show) {
+    document.body.classList.toggle('tutorial-off', !show);
+    localStorage.setItem('classJobTutorialNotes', show ? 'on' : 'off');
+    document.querySelectorAll('.arc-tutorial-toggle').forEach(function(btn) {
+      btn.textContent = show ? 'Hide help' : 'Show help';
+      btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+    });
+  };
+  window.toggleTutorialNotes = function() {
+    window.setTutorialNotes(document.body.classList.contains('tutorial-off'));
+  };
+  $(function() {
+    window.setTutorialNotes(localStorage.getItem('classJobTutorialNotes') !== 'off');
+  });
+  $(document).on('shiny:value', function() {
+    setTimeout(function() {
+      window.setTutorialNotes(localStorage.getItem('classJobTutorialNotes') !== 'off');
+    }, 0);
+  });
 })();
 ")
 
@@ -1505,6 +1541,14 @@ job_description_details <- function(description, label = "What to do") {
     style = "margin-top:.22rem;font-size:.78rem;color:#555;",
     tags$summary(style = "cursor:pointer;color:#951829;font-weight:600;", label),
     div(style = "padding:.3rem .15rem;white-space:pre-wrap;", description)
+  )
+}
+
+tutorial_note <- function(title, steps, open = FALSE) {
+  tags$details(
+    class = "tutorial-note", open = if (isTRUE(open)) NA else NULL,
+    tags$summary(title),
+    tags$ol(lapply(steps, tags$li))
   )
 }
 
@@ -1628,6 +1672,11 @@ server <- function(input, output, session) {
               oninput = "document.body.style.fontSize = this.value + '%';"
             ),
             tags$span("A", style = "font-size:1.1em;")
+          ),
+          tags$button(
+            type = "button", class = "arc-tutorial-toggle",
+            onclick = "toggleTutorialNotes();", "aria-pressed" = "true",
+            "Hide help"
           ),
           actionButton("logout_btn", "Sign out", class = "arc-signout")
         ),
@@ -2233,6 +2282,11 @@ server <- function(input, output, session) {
       div(class = "tab-howto",
         "Your daily snapshot: revealed class jobs, active class game, your assignment, and job pools."
       ),
+      tutorial_note("How to use Today", c(
+        "Check Today's Revealed Jobs to see which classmates are handling each role.",
+        "Open Instructions beneath your assignment before starting the job.",
+        "Use Job Pools to see which roles exist and whether their slots are filled."
+      )),
 
       div(class = "sec-label", "Today's Revealed Jobs"),
       if (!nrow(revealed_jobs)) {
@@ -2373,6 +2427,12 @@ server <- function(input, output, session) {
       div(class = "tab-howto",
         "Submit bids for your class job each round. The mode (random / wage bid / ticket allocation) is set by your instructor."
       ),
+      tutorial_note("How to use the Job Market", c(
+        "Read the current round and assignment mode at the top.",
+        "Expand job descriptions before deciding which work fits you.",
+        "Enter wages or allocate tickets, then submit before the bid window closes.",
+        "Return here after the draw to confirm your assignment and instructions."
+      )),
 
       # Round info pill
       if (nrow(jp$round)) {
@@ -5620,6 +5680,13 @@ server <- function(input, output, session) {
     tagList(
       div(class = "tab-howto",
           "Manage job assignments and log participation during class. Updates every 5 seconds."),
+      tutorial_note("Live class workflow", c(
+        "Choose the active class and section before drawing or scoring anything.",
+        "Draw start-, end-, or all-timing jobs; use Preview Draw when you want to inspect first.",
+        "Use Reveal group to show Start, End, or All assignments independently.",
+        "For cold calls, record Answer or Board; use Absent & Redraw to exclude an absent student for this lecture.",
+        "Mark job outcomes, review them in Live Score Audit, then commit when they are correct."
+      )),
 
       # Section selector
       fluidRow(
@@ -6217,21 +6284,30 @@ server <- function(input, output, session) {
   # ── Settings tab (admin) ──────────────────────────────────────────────────────
   output$settings_tab <- renderUI({
     req(rv$is_admin)
-    wellPanel(
-      selectInput("config_action", "Settings section:", width = "100%", choices = c(
-        "Jobs"                  = "jobs",
-        "Round Setup"           = "round_setup",
-        "Students"              = "students",
-        "Token Admin"           = "token_admin",
-        "Grades & Gradebook"    = "gradebook",
-        "Exports"               = "exports",
-        "Extensions"            = "extensions",
-        "Flex Questions"        = "flex_questions",
-        "Game Controls"         = "game_controls",
-        "App Settings"          = "app_settings",
-        "Demo / Testing"        = "sandbox_demo"
-      ), selected = "jobs"),
-      uiOutput("config_panel")
+    tagList(
+      tutorial_note("How to configure the app", c(
+        "Jobs: edit reusable templates, instructions, wages, timing, and current-round posts.",
+        "Round Setup: create the next lecture only when the current lecture is complete.",
+        "Students: add, archive, restore, or impersonate roster members.",
+        "Token Admin and Grades: make audited corrections and import course records.",
+        "App Settings and Demo / Testing: change shared behavior or rehearse without affecting students."
+      )),
+      wellPanel(
+        selectInput("config_action", "Settings section:", width = "100%", choices = c(
+          "Jobs"                  = "jobs",
+          "Round Setup"           = "round_setup",
+          "Students"              = "students",
+          "Token Admin"           = "token_admin",
+          "Grades & Gradebook"    = "gradebook",
+          "Exports"               = "exports",
+          "Extensions"            = "extensions",
+          "Flex Questions"        = "flex_questions",
+          "Game Controls"         = "game_controls",
+          "App Settings"          = "app_settings",
+          "Demo / Testing"        = "sandbox_demo"
+        ), selected = "jobs"),
+        uiOutput("config_panel")
+      )
     )
   })
 
