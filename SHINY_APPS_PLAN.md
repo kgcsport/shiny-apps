@@ -160,6 +160,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-21** — Treat sandbox credentials as canonical disposable test
+  state. Reapply demo usernames, password hashes, roles, sections, and active
+  flags on every sandbox bootstrap instead of preserving stale user rows.
+
 - **2026-09-21** — Treat Today as an unfinished-work view. An assignment rolls
   off as soon as an outcome enters Audit, and manual Add Back records are
   hidden from Today by default unless explicitly marked visible for their
@@ -256,6 +260,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-21** (Codex) - Fixed locked demo logins by changing sandbox user
+  seeding from insert-only to an idempotent credential reset. Existing corrupt
+  or outdated hashes for the instructor and test students are now repaired
+  automatically when demo mode opens.
 
 - **2026-09-21** (Codex) - Made Today and job-pool fill counts show only
   unfinished assignments and refresh immediately when an outcome is queued.

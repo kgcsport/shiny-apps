@@ -34,7 +34,15 @@ demo_login_ui <- tagList(
         style = "margin:0 0 8px;font-size:13px;"
       ),
       tags$button("Demo (Admin)",   onclick = "window.location.href='?demo_db=1&demo_as=teacher'", class = "btn btn-sm btn-warning", style = "margin:2px;"),
-      tags$button("Demo (Student)", onclick = "window.location.href='?demo_db=1&demo_as=student'", class = "btn btn-sm btn-default", style = "margin:2px;")
+      tags$button("Demo (Student)", onclick = "window.location.href='?demo_db=1&demo_as=student'", class = "btn btn-sm btn-default", style = "margin:2px;"),
+      tags$details(
+        style = "margin-top:8px;font-size:12px;color:#6b5b22;",
+        tags$summary(style = "cursor:pointer;font-weight:600;", "Manual demo credentials"),
+        tags$div(style = "margin-top:4px;",
+          tags$code("instructor / admin123"), tags$br(),
+          tags$code("alice / test123")
+        )
+      )
     ),
   ),
   tags$script(HTML('
@@ -218,7 +226,9 @@ demo_db_bootstrap <- function(demo_con, prod_path) {
     for (tbl in c("job_categories", "job_templates", "weekly_rounds", "job_posts"))
       copy_table(tbl)
 
-    # Seed test users (INSERT OR IGNORE so re-runs are safe)
+    # Restore canonical sandbox users on every startup. The demo database is
+    # disposable, and preserving an old/corrupt password hash can permanently
+    # lock both quick-login buttons.
     hash_pw <- if (requireNamespace("bcrypt", quietly = TRUE)) bcrypt::hashpw
                else function(p) p
     test_users <- list(
@@ -231,8 +241,15 @@ demo_db_bootstrap <- function(demo_con, prod_path) {
     )
     for (u in test_users)
       try(DBI::dbExecute(demo_con,
-        "INSERT OR IGNORE INTO users(user_id,display_name,is_admin,pw_hash,section,active,is_demo)
-         VALUES(?,?,?,?,?,1,0);",
+        "INSERT INTO users(user_id,display_name,is_admin,pw_hash,section,active,is_demo)
+         VALUES(?,?,?,?,?,1,0)
+         ON CONFLICT(user_id) DO UPDATE SET
+           display_name=excluded.display_name,
+           is_admin=excluded.is_admin,
+           pw_hash=excluded.pw_hash,
+           section=excluded.section,
+           active=1,
+           is_demo=0;",
         list(u$id, u$name, u$admin, hash_pw(u$pw), u$sec)), silent = TRUE)
 
   }, error = function(e) message("demo_db_bootstrap: ", e$message))
