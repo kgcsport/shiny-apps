@@ -125,6 +125,10 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true(is.na(policy$topic_interests))
     expect_equal(policy$assigned_rank, 1L)
     expect_true(is.na(policy$allocation_seed))
+
+    expect_match(app$ARCADE_CSS, "min-height: 44px", fixed=TRUE)
+    expect_match(app$ARCADE_CSS, ".arc-font-ctrl { display:flex; flex:1; }", fixed=TRUE)
+    expect_match(as.character(app$COOKIE_JS), "classJobFontScale", fixed=TRUE)
   })
 })
 

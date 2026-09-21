@@ -1219,7 +1219,8 @@ DEMOS <- list(
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 ARCADE_CSS <- "
-body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; margin: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7;
+       margin: 0; font-size: 1rem; line-height: 1.5; }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
 .arc-header {
@@ -1234,25 +1235,56 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7; m
               padding: .2rem .65rem; border-radius: 999px; font-weight: 600; }
 .arc-signout { background: rgba(255,255,255,.15); color: #fff;
                border: 1px solid rgba(255,255,255,.4); font-size: .82rem;
-               padding: .25rem .6rem; border-radius: 6px; cursor: pointer; }
+               padding: .45rem .75rem; min-height: 40px; border-radius: 6px; cursor: pointer; }
 .arc-signout:hover { background: rgba(255,255,255,.28); }
 .arc-tutorial-toggle { background: rgba(255,255,255,.15); color: #fff;
                        border: 1px solid rgba(255,255,255,.4); font-size: .82rem;
-                       padding: .25rem .6rem; border-radius: 6px; cursor: pointer;
+                       padding: .45rem .75rem; min-height: 40px; border-radius: 6px; cursor: pointer;
                        white-space: nowrap; }
 .arc-tutorial-toggle:hover { background: rgba(255,255,255,.28); }
-.arc-font-ctrl { display:flex; align-items:center; gap:.3rem; font-size:.75rem;
-                 opacity:.8; white-space:nowrap; }
-.arc-font-ctrl input[type=range] { width:70px; accent-color:#fff; cursor:pointer; }
+.arc-font-ctrl { display:flex; align-items:center; gap:.4rem; font-size:.82rem;
+                 opacity:.9; white-space:nowrap; }
+.arc-font-ctrl input[type=range] { width:100px; min-height:32px; accent-color:#fff;
+                                   cursor:pointer; touch-action:manipulation; }
 @media (max-width: 700px) {
   .arc-header { flex-wrap: wrap; padding: .6rem .75rem; }
   .arc-title { flex-basis: 100%; }
-  .arc-font-ctrl { display:none; }
+  .arc-font-ctrl { display:flex; flex:1; }
+  .arc-signout, .arc-tutorial-toggle { min-height:44px; font-size:.9rem; }
 }
 
 /* ── Page body ──────────────────────────────────────────────────────────── */
 .arc-body { max-width: 900px; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
 
+
+/* ── Readability and touch targets ──────────────────────────────────────── */
+.arc-body .btn, .login-card .btn, .modal .btn {
+  min-height: 44px; padding: .55rem .9rem; font-size: .96rem;
+  touch-action: manipulation;
+}
+.arc-body .btn-xs {
+  min-height: 40px !important; padding: .45rem .7rem !important;
+  font-size: .9rem !important;
+}
+.arc-body .form-control, .login-card .form-control, .modal .form-control,
+.arc-body select, .login-card select, .modal select {
+  min-height: 44px; font-size: 1rem;
+}
+.arc-body .control-label, .login-card .control-label, .modal .control-label {
+  font-size: .96rem;
+}
+.arc-body input[type=checkbox], .arc-body input[type=radio],
+.modal input[type=checkbox], .modal input[type=radio] {
+  width: 1.2rem; height: 1.2rem; vertical-align: middle;
+}
+.nav-tabs .nav-link {
+  min-height: 44px; display:flex; align-items:center; font-size:.96rem;
+}
+@media (max-width: 600px) {
+  .arc-body { padding-top: .9rem; }
+  .arc-body .table { font-size: .94rem; }
+  .arc-body .btn, .modal .btn { min-height: 48px; }
+}
 /* ── Nav tabs ───────────────────────────────────────────────────────────── */
 .nav-tabs { border-bottom: 2px solid #e0e0e0; margin-bottom: 1.25rem; }
 .nav-tabs .nav-link        { color: #555; border: none; padding: .55rem .9rem; }
@@ -1477,7 +1509,7 @@ body.tutorial-off .tab-howto, body.tutorial-off .tutorial-note { display:none !i
 .live-card-name { font-size: 1.05rem; font-weight: 700; line-height: 1.2; }
 .live-card-section { color: #888; font-size: .78rem; margin: .12rem 0 .55rem; }
 .live-card-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .35rem; }
-.live-card-actions .btn { min-height: 42px; white-space: normal; font-weight: 600; }
+.live-card-actions .btn { min-height: 48px; white-space: normal; font-weight: 600; }
 @media (max-width: 600px) {
   .arc-body { padding-left: .6rem; padding-right: .6rem; }
   .live-grid { grid-template-columns: 1fr; }
@@ -1543,6 +1575,17 @@ COOKIE_JS <- HTML("
     if (window.history && window.history.replaceState)
       window.history.replaceState({}, document.title, location.pathname);
   });
+  window.setArcadeFontScale = function(value) {
+    var scale = parseInt(value || '110', 10);
+    if (!Number.isFinite(scale)) scale = 110;
+    scale = Math.max(90, Math.min(140, scale));
+    document.documentElement.style.fontSize = (16 * scale / 100) + 'px';
+    localStorage.setItem('classJobFontScale', String(scale));
+    document.querySelectorAll('.arc-font-range').forEach(function(slider) {
+      if (String(slider.value) !== String(scale)) slider.value = scale;
+      slider.setAttribute('aria-valuetext', scale + '% text size');
+    });
+  };
   window.setTutorialNotes = function(show) {
     document.body.classList.toggle('tutorial-off', !show);
     localStorage.setItem('classJobTutorialNotes', show ? 'on' : 'off');
@@ -1556,10 +1599,12 @@ COOKIE_JS <- HTML("
   };
   $(function() {
     window.setTutorialNotes(localStorage.getItem('classJobTutorialNotes') !== 'off');
+    window.setArcadeFontScale(localStorage.getItem('classJobFontScale') || '110');
   });
   $(document).on('shiny:value', function() {
     setTimeout(function() {
       window.setTutorialNotes(localStorage.getItem('classJobTutorialNotes') !== 'off');
+      window.setArcadeFontScale(localStorage.getItem('classJobFontScale') || '110');
     }, 0);
   });
 })();
@@ -1720,11 +1765,12 @@ server <- function(input, output, session) {
           div(class = "arc-title", paste0("\U0001f393 ", APP_NAME)),
           uiOutput("header_widgets", inline = TRUE),
           tags$div(class = "arc-font-ctrl",
-            tags$span("A"),
+            tags$span("Text"),
             tags$input(
-              type  = "range", min = "80", max = "130", value = "100", step = "5",
-              title = "Adjust font size",
-              oninput = "document.body.style.fontSize = this.value + '%';"
+              type = "range", class = "arc-font-range",
+              min = "90", max = "140", value = "110", step = "5",
+              title = "Adjust text and control size", "aria-label" = "Text size",
+              oninput = "setArcadeFontScale(this.value);"
             ),
             tags$span("A", style = "font-size:1.1em;")
           ),

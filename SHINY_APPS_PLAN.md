@@ -160,6 +160,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-21** — Use a 110% readable default and persistent 90–140% text
+  control for the class-job-market app. Keep primary controls at least 44px
+  tall, increase phone targets to 48px where space permits, and expose the text
+  control on mobile instead of hiding it. Projector-specific layouts remain
+  separately sized.
+
 - **2026-09-21** — Price assignment extensions with one instructor-configured
   convex power curve instead of discrete duration products. Students choose
   hours directly within configured limits; the recorded purchase retains the
@@ -269,6 +275,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-21** (Codex) - Increased the class-job-market default text scale,
+  repaired and exposed the persistent text-size slider on phones, enlarged
+  buttons and form fields to accessible touch targets, and increased dense
+  mobile table text. Preserved compact projector styling and added static
+  regression assertions for the accessibility rules.
 
 - **2026-09-21** (Codex) - Added a prefilled manual policy-group editor to
   Settings → Students. Instructors can select one student and update the team,
@@ -412,14 +424,16 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Confirm a manual policy-group reassignment appears immediately when viewing
+1. Phone-test the larger controls in dense instructor workflows, especially
+   roster actions and Live Tracker scoring, at the default 110% scale.
+2. Confirm a manual policy-group reassignment appears immediately when viewing
    that student's Account profile in the deployed demo.
-2. Exercise extension pricing and assignment CSV import in the deployed demo,
+3. Exercise extension pricing and assignment CSV import in the deployed demo,
    including an inactive assignment and a non-default slider increment.
-3. Classroom-test the Cloudflare live poll from two phones and clear the QA
+4. Classroom-test the Cloudflare live poll from two phones and clear the QA
    responses through its password-protected instructor view.
-4. Port `tax-incidence` as the first static-JavaScript visualizer.
-5. Decide whether `review-quiz` and `supply-auction-game` need canonical
+5. Port `tax-incidence` as the first static-JavaScript visualizer.
+6. Decide whether `review-quiz` and `supply-auction-game` need canonical
    participation credit before moving either away from Reclaim.
 
 ## Questions for Kyle
