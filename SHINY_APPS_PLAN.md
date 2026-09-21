@@ -160,6 +160,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-21** — Let enlarged controls reflow instead of shrinking their text.
+  Widen the desktop class-job-market canvas to 1100px, minimize phone edge
+  gutters, wrap button groups and modal actions, and stack dense launch cards
+  on phones. Use shorter labels where the surrounding panel already supplies
+  the context, while retaining explanatory tooltips for ambiguous controls.
+
 - **2026-09-21** — Use a 110% readable default and persistent 90–140% text
   control for the class-job-market app. Keep primary controls at least 44px
   tall, increase phone targets to 48px where space permits, and expose the text
@@ -275,6 +281,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-21** (Codex) - Reflowed the enlarged class-job-market controls on a
+  wider desktop canvas with tighter phone gutters, wrapping button groups and
+  modal actions, stacked phone launch cards, and flexible bid inputs. Shortened
+  crowded action labels while preserving context and tooltips, and added static
+  regression assertions for the responsive width and wrapping rules.
 
 - **2026-09-21** (Codex) - Increased the class-job-market default text scale,
   repaired and exposed the persistent text-size slider on phones, enlarged
@@ -424,8 +436,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Phone-test the larger controls in dense instructor workflows, especially
-   roster actions and Live Tracker scoring, at the default 110% scale.
+1. Phone- and tablet-test dense instructor workflows, especially roster actions
+   and Live Tracker scoring, for collisions and sensible wrapping at 110–140%
+   text scale.
 2. Confirm a manual policy-group reassignment appears immediately when viewing
    that student's Account profile in the deployed demo.
 3. Exercise extension pricing and assignment CSV import in the deployed demo,

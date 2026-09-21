@@ -1254,13 +1254,14 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7;
 }
 
 /* ── Page body ──────────────────────────────────────────────────────────── */
-.arc-body { max-width: 900px; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+.arc-body { max-width: 1100px; margin: 0 auto; padding: 1.25rem 1.25rem 3rem; }
 
 
 /* ── Readability and touch targets ──────────────────────────────────────── */
 .arc-body .btn, .login-card .btn, .modal .btn {
   min-height: 44px; padding: .55rem .9rem; font-size: .96rem;
-  touch-action: manipulation;
+  touch-action: manipulation; white-space: normal; overflow-wrap: anywhere;
+  line-height: 1.2;
 }
 .arc-body .btn-xs {
   min-height: 40px !important; padding: .45rem .7rem !important;
@@ -1280,10 +1281,21 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7;
 .nav-tabs .nav-link {
   min-height: 44px; display:flex; align-items:center; font-size:.96rem;
 }
+.arc-body .btn-group, .modal-footer {
+  display:flex; flex-wrap:wrap; gap:.4rem;
+}
+.modal-footer .btn + .btn { margin-left:0; }
+.arc-body .form-group { margin-bottom:1rem; }
 @media (max-width: 600px) {
-  .arc-body { padding-top: .9rem; }
+  .arc-body { padding: .9rem .4rem 2.5rem; }
   .arc-body .table { font-size: .94rem; }
   .arc-body .btn, .modal .btn { min-height: 48px; }
+  .launch-card { flex-direction:column; align-items:stretch; gap:.75rem; }
+  .btn-launch { width:100%; text-align:center; }
+  .game-list-header, .demo-card-foot { flex-wrap:wrap; }
+  .jm-bid-row { flex-wrap:wrap; }
+  .jm-bid-input { width:min(180px, 100%); }
+  .modal-footer .btn { flex:1 1 auto; }
 }
 /* ── Nav tabs ───────────────────────────────────────────────────────────── */
 .nav-tabs { border-bottom: 2px solid #e0e0e0; margin-bottom: 1.25rem; }
@@ -1511,7 +1523,7 @@ body.tutorial-off .tab-howto, body.tutorial-off .tutorial-note { display:none !i
 .live-card-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .35rem; }
 .live-card-actions .btn { min-height: 48px; white-space: normal; font-weight: 600; }
 @media (max-width: 600px) {
-  .arc-body { padding-left: .6rem; padding-right: .6rem; }
+  .arc-body { padding-left: .4rem; padding-right: .4rem; }
   .live-grid { grid-template-columns: 1fr; }
   .live-card-name { font-size: 1.15rem; }
 }
@@ -2452,7 +2464,7 @@ server <- function(input, output, session) {
               if (!is.null(ginfo)) ginfo$label else active),
           div(style = "color:#888;font-size:.84rem;", "A game is running now."),
           div(style = "margin-top:.65rem;",
-            actionButton("go_to_games", "Go to Games & Demos →", class = "btn btn-sm btn-primary"))
+            actionButton("go_to_games", "Open Games →", class = "btn btn-sm btn-primary"))
         )
       },
 
@@ -2472,7 +2484,7 @@ server <- function(input, output, session) {
                    sprintf("You own %d of %d questions. Next costs %d tokens.",
                            as.integer(owned_n %||% 0L), as.integer(total_q),
                            as.integer(next_cost))),
-            actionButton("go_to_spend_fq", "Buy in Spend tab →",
+            actionButton("go_to_spend_fq", "Open Spend →",
                          class = "btn btn-sm btn-outline-primary",
                          style = "margin-top:.2rem;")
           )
@@ -2751,7 +2763,7 @@ server <- function(input, output, session) {
             )
           }),
           div(style = "margin-top:.65rem;",
-            actionButton("submit_app_bids", "Save ticket allocation",
+            actionButton("submit_app_bids", "Save tickets",
                          class = "btn btn-primary"))
         )
       )
@@ -3292,7 +3304,7 @@ server <- function(input, output, session) {
                   sprintf("%g hours", hours))
               })),
           uiOutput("ext_cost_preview"),
-          actionButton("submit_extension", "Purchase extension", class = "btn btn-warning")
+          actionButton("submit_extension", "Buy extension", class = "btn btn-warning")
         )
       )
 
@@ -3309,7 +3321,7 @@ server <- function(input, output, session) {
                     min = 1, max = max_pts, value = 1, step = 1),
         uiOutput("rw_cost_preview"),
         uiOutput("rw_grade_preview"),
-        actionButton("submit_reweight", "Submit request", class = "btn btn-warning"),
+        actionButton("submit_reweight", "Submit", class = "btn btn-warning"),
         tags$p(style = "font-size:.8rem;color:#888;margin-top:.4rem;",
                "Your instructor will review and apply approved requests.")
       )
@@ -5977,7 +5989,7 @@ server <- function(input, output, session) {
           drawn_name <- if (is.list(drawn)) drawn$display_name %||% drawn_uid else ""
           tagList(
             div(style = "display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;",
-              actionButton("draw_cold_call_btn", "Draw Cold Call",
+              actionButton("draw_cold_call_btn", "Draw",
                            class = "btn btn-sm btn-primary"),
               if (nzchar(drawn_uid)) {
                 span(style = "font-weight:700;",
@@ -5988,7 +6000,7 @@ server <- function(input, output, session) {
             ),
             if (nzchar(drawn_uid)) {
               div(style = "display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.6rem;",
-                actionButton("record_cold_call_answer_btn", "Answering Question",
+                actionButton("record_cold_call_answer_btn", "Answer",
                              class = "btn btn-sm btn-outline-success"),
                 actionButton("record_cold_call_board_btn", "Board Work",
                              class = "btn btn-sm btn-outline-success"),
@@ -6047,8 +6059,9 @@ server <- function(input, output, session) {
                              class = "btn btn-primary btn-sm",
                              title = if (mode == "random") "Draw per-section (select section above first)" else "Assign from this week\'s bids")),
               column(2,
-                actionButton("preview_draw_btn", "\U0001f441 Preview Draw",
-                             class = "btn btn-outline-secondary btn-sm")),
+                actionButton("preview_draw_btn", "\U0001f441 Preview",
+                             class = "btn btn-outline-secondary btn-sm",
+                             title = "Preview assignments without saving")),
               column(3,
                 selectInput("section_reveal_timing", "Reveal group:",
                             choices = c("Start of class" = "start",
@@ -6058,11 +6071,11 @@ server <- function(input, output, session) {
               column(3,
                 if (nzchar(cur_sec)) {
                   if (section_revealed)
-                    actionButton("toggle_section_reveal_btn", "Hide Selected",
+                    actionButton("toggle_section_reveal_btn", "Hide",
                                  class = "btn btn-outline-secondary btn-sm",
                                  title = "Hide the selected assignment group for this section")
                   else
-                    actionButton("toggle_section_reveal_btn", "Reveal Selected",
+                    actionButton("toggle_section_reveal_btn", "Reveal",
                                  class = "btn btn-success btn-sm",
                                  title = "Reveal the selected assignment group for this section")
                 } else {
@@ -6101,8 +6114,9 @@ server <- function(input, output, session) {
                   column(5, selectInput("manual_assign_post_id", "Job:",
                                         choices = manual_post_choices, width = "100%")),
                   column(3, tags$br(),
-                         actionButton("manual_add_assignment_btn", "Add Back",
-                                      class = "btn btn-sm btn-primary"))
+                         actionButton("manual_add_assignment_btn", "Add",
+                                      class = "btn btn-sm btn-primary",
+                                      title = "Add this assignment back"))
                 ),
                 fluidRow(
                   column(4, dateInput("manual_assign_date", "Date job belongs to:",
@@ -6498,7 +6512,7 @@ server <- function(input, output, session) {
           fluidRow(
             column(5, fileInput("bulk_jobs_file", "Upload fallback CSV:", accept = c(".csv", "text/csv"), width = "100%")),
             column(3, tags$br(), actionButton("import_bulk_jobs_btn", "Import Jobs", class = "btn btn-primary btn-sm")),
-            column(4, tags$br(), downloadButton("offline_jobs_download", "Download Offline Sheet", class = "btn btn-outline-secondary btn-sm"))
+            column(4, tags$br(), downloadButton("offline_jobs_download", "Offline Sheet", class = "btn btn-outline-secondary btn-sm"))
           ),
           tags$p(style = "color:#777;font-size:.8rem;margin-bottom:0;",
             "Allowed outcomes: complete, tried, or missed. Blank means Pending. Keep the downloaded sheet locally or print it before class; if the app goes down, fill it in and import it later.")
@@ -7108,7 +7122,7 @@ server <- function(input, output, session) {
               column(3, textInput("bl_tz", "Time zone:",
                                   value = get_setting("class_tz", "America/New_York")))
             ),
-            actionButton("save_bid_lock_btn", "Save bid lock schedule",
+            actionButton("save_bid_lock_btn", "Save schedule",
                          class = "btn btn-sm btn-primary")
           )
         }
@@ -7221,7 +7235,7 @@ server <- function(input, output, session) {
         tags$p(style = "color:#555;font-size:.85rem;",
                "Upload a CSV, then map its columns to username/email, display name, class, section, and optional password. ",
                "Leave password unmapped for Google-only student accounts."),
-        downloadButton("dl_student_template", "Download CSV template",
+        downloadButton("dl_student_template", "CSV template",
                        class = "btn btn-sm btn-outline-secondary"),
         tags$br(), tags$br(),
         fileInput("upload_students_csv", NULL, accept = ".csv",
@@ -7258,7 +7272,7 @@ server <- function(input, output, session) {
                "Required CSV columns: user_id, policy_team, presentation_date, and course_unit."),
         fileInput("upload_policy_groups_csv", NULL, accept = ".csv",
                   buttonLabel = "Choose assignment CSV", placeholder = "No file chosen"),
-        actionButton("upload_policy_groups_btn", "Import policy groups",
+        actionButton("upload_policy_groups_btn", "Import CSV",
                      class = "btn btn-sm btn-primary")
       )
 
@@ -7342,13 +7356,13 @@ server <- function(input, output, session) {
                        "Bulk upload assignments"),
           tags$p(style="color:#555;font-size:.82rem;margin-top:.5rem;",
                  "Upload or paste CSV with name, original_deadline, solutions_posted_at, and active. An optional id updates that exact assignment; otherwise matching names are updated and new names are added."),
-          downloadButton("dl_problem_sets_template", "Download CSV template",
+          downloadButton("dl_problem_sets_template", "CSV template",
                          class="btn btn-sm btn-outline-secondary"),
           fileInput("problem_sets_csv_file", NULL, accept=c(".csv","text/csv"),
                     buttonLabel="Choose CSV", placeholder="No file chosen"),
           textAreaInput("problem_sets_csv_text", "Or paste CSV:", rows=4, width="100%",
                         placeholder="name,original_deadline,solutions_posted_at,active\nProblem Set 1,2026-09-30,,1"),
-          actionButton("import_problem_sets_btn", "Import assignments",
+          actionButton("import_problem_sets_btn", "Import CSV",
                        class="btn btn-sm btn-primary")
         )
       )
@@ -7862,7 +7876,7 @@ server <- function(input, output, session) {
             )
           )
         },
-        actionButton("save_rw_setup_btn", "Save reweighting setup", class = "btn btn-sm btn-primary")
+        actionButton("save_rw_setup_btn", "Save setup", class = "btn btn-sm btn-primary")
       )
 
     } else if (act == "game_controls") {
