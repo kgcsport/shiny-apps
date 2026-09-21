@@ -481,6 +481,8 @@ ensure_column("job_assignments", "tokens_awarded INTEGER DEFAULT 0")
 ensure_column("job_assignments", "updated_at TEXT")
 ensure_column("job_assignments", "tokens_credited INTEGER DEFAULT 1")
 ensure_column("job_assignments", "created_at TEXT")
+ensure_column("job_assignments", "scheduled_date TEXT")
+ensure_column("job_assignments", "display_on_today INTEGER DEFAULT 1")
 db_exec("CREATE TABLE IF NOT EXISTS wage_bids(
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id     INTEGER,
@@ -2056,7 +2058,12 @@ server <- function(input, output, session) {
              FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
              ORDER BY jp.id);")$ts[1] %||% "",
         error = function(e) "")
-      paste(uid, r1, r2, r3, r4, r5, r6, r7, sep = "|")
+      r8 <- tryCatch(
+        db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(id),0) || '-' ||
+                         COALESCE(MAX(created_at || COALESCE(committed_at,'')),'') ts
+                  FROM live_score_events;")$ts[1] %||% "",
+        error = function(e) "")
+      paste(uid, r1, r2, r3, r4, r5, r6, r7, r8, sep = "|")
     },
     valueFunc = function() {
       uid <- rv$user_id
@@ -2085,7 +2092,15 @@ server <- function(input, output, session) {
          JOIN job_posts jp ON jp.id=ja.job_post_id
          LEFT JOIN job_categories jc ON jc.id=jp.category_id
          JOIN weekly_rounds wr ON wr.id=ja.round_id
-          WHERE ja.user_id=? AND ja.round_id=? AND COALESCE(ja.status,'assigned')='assigned'
+          WHERE ja.user_id=? AND ja.round_id=?
+            AND COALESCE(ja.status,'assigned')='assigned'
+            AND COALESCE(ja.outcome,'')=''
+            AND COALESCE(ja.display_on_today,1)=1
+            AND (COALESCE(ja.scheduled_date,'')='' OR ja.scheduled_date=date('now','localtime'))
+            AND NOT EXISTS (
+              SELECT 1 FROM live_score_events lse
+              WHERE lse.job_assignment_id=ja.id
+            )
           ORDER BY ja.created_at DESC LIMIT 1;",
         list(uid, rid)), error = function(e) data.frame())
 
@@ -2100,7 +2115,15 @@ server <- function(input, output, session) {
          JOIN users u ON u.user_id=ja.user_id
          JOIN job_posts jp ON jp.id=ja.job_post_id
          LEFT JOIN job_categories jc ON jc.id=jp.category_id
-         WHERE ja.round_id=? AND COALESCE(ja.status,'assigned')='assigned'
+         WHERE ja.round_id=?
+           AND COALESCE(ja.status,'assigned')='assigned'
+           AND COALESCE(ja.outcome,'')=''
+           AND COALESCE(ja.display_on_today,1)=1
+           AND (COALESCE(ja.scheduled_date,'')='' OR ja.scheduled_date=date('now','localtime'))
+           AND NOT EXISTS (
+             SELECT 1 FROM live_score_events lse
+             WHERE lse.job_assignment_id=ja.id
+           )
          ORDER BY u.course, u.section, jp.display_order, u.display_name;",
         list(rid)), error = function(e) data.frame())
 
@@ -2131,8 +2154,17 @@ server <- function(input, output, session) {
          FROM job_posts jp
          LEFT JOIN job_categories jc ON jc.id=jp.category_id
          LEFT JOIN (
-           SELECT job_post_id, COUNT(*) n FROM job_assignments
-           WHERE status='assigned' GROUP BY job_post_id
+           SELECT ja2.job_post_id, COUNT(*) n
+           FROM job_assignments ja2
+           WHERE COALESCE(ja2.status,'assigned')='assigned'
+             AND COALESCE(ja2.outcome,'')=''
+             AND COALESCE(ja2.display_on_today,1)=1
+             AND (COALESCE(ja2.scheduled_date,'')='' OR ja2.scheduled_date=date('now','localtime'))
+             AND NOT EXISTS (
+               SELECT 1 FROM live_score_events lse2
+               WHERE lse2.job_assignment_id=ja2.id
+             )
+           GROUP BY ja2.job_post_id
          ) fill ON fill.job_post_id=jp.id
         WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
           AND COALESCE(jp.in_draw, COALESCE(jc.in_draw,1), 1)=1
@@ -4636,6 +4668,10 @@ server <- function(input, output, session) {
     rid <- as.integer(round$id[1])
     uid <- trimws(input$manual_assign_uid %||% "")
     post_id <- suppressWarnings(as.integer(input$manual_assign_post_id %||% 0))
+    scheduled_date <- tryCatch(as.character(as.Date(input$manual_assign_date)),
+                               error = function(e) as.character(Sys.Date()))
+    if (!nzchar(scheduled_date %||% "")) scheduled_date <- as.character(Sys.Date())
+    display_today <- as.integer(isTRUE(input$manual_assign_show_today))
     if (!nzchar(uid) || is.na(post_id) || post_id <= 0) {
       showNotification("Pick a student and job first.", type = "warning")
       return()
@@ -4669,8 +4705,9 @@ server <- function(input, output, session) {
     }
     db_exec(
       "INSERT INTO job_assignments(round_id, user_id, job_post_id, assigned_wage,
-              assignment_mode, status, outcome, tokens_awarded, tokens_credited, updated_at)
-       VALUES(?,?,?,?,?,'assigned','',0,1,datetime('now'))
+              assignment_mode, status, outcome, tokens_awarded, tokens_credited,
+              scheduled_date, display_on_today, updated_at)
+       VALUES(?,?,?,?,?,'assigned','',0,1,?,?,datetime('now'))
        ON CONFLICT(round_id, user_id)
        DO UPDATE SET job_post_id=excluded.job_post_id,
                      assigned_wage=excluded.assigned_wage,
@@ -4679,14 +4716,19 @@ server <- function(input, output, session) {
                      outcome='',
                      tokens_awarded=0,
                      tokens_credited=1,
+                     scheduled_date=excluded.scheduled_date,
+                     display_on_today=excluded.display_on_today,
                      updated_at=datetime('now');",
       list(rid, uid, post_id,
            if (is.na(post$wage[1] %||% NA)) NA_real_ else as.numeric(post$wage[1]),
-           round$assignment_mode[1] %||% "manual"))
+           round$assignment_mode[1] %||% "manual",
+           scheduled_date, display_today))
     showNotification(
-      sprintf("Added %s back to %s.",
+      sprintf("Added %s back to %s for %s%s.",
               stu$display_name[1] %||% uid,
-              post$job_name[1] %||% "the job"),
+              post$job_name[1] %||% "the job",
+              scheduled_date,
+              if (display_today == 1L) " (shown in Today when current)" else " (kept out of Today)"),
       type = "message")
   }, ignoreNULL = TRUE)
 
@@ -5831,14 +5873,26 @@ server <- function(input, output, session) {
               tags$p(style = "color:#999;margin:0;font-size:.86rem;",
                      "No eligible students or active jobs available for this round.")
             } else {
-              fluidRow(
-                column(4, selectInput("manual_assign_uid", "Student:",
-                                      choices = assignment_stu_choices, width = "100%")),
-                column(5, selectInput("manual_assign_post_id", "Job:",
-                                      choices = manual_post_choices, width = "100%")),
-                column(3, tags$br(),
-                       actionButton("manual_add_assignment_btn", "Add Back",
-                                    class = "btn btn-sm btn-primary"))
+              tagList(
+                fluidRow(
+                  column(4, selectInput("manual_assign_uid", "Student:",
+                                        choices = assignment_stu_choices, width = "100%")),
+                  column(5, selectInput("manual_assign_post_id", "Job:",
+                                        choices = manual_post_choices, width = "100%")),
+                  column(3, tags$br(),
+                         actionButton("manual_add_assignment_btn", "Add Back",
+                                      class = "btn btn-sm btn-primary"))
+                ),
+                fluidRow(
+                  column(4, dateInput("manual_assign_date", "Date job belongs to:",
+                                      value = Sys.Date(), width = "100%")),
+                  column(8, tags$br(),
+                         checkboxInput("manual_assign_show_today",
+                                       "Show in Today when this date is current",
+                                       value = FALSE))
+                ),
+                tags$p(style = "font-size:.78rem;color:#888;margin:.15rem 0 0;",
+                       "Add Back is hidden from Today by default, which is useful for historical corrections.")
               )
             }
           )}

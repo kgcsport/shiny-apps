@@ -160,6 +160,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-21** — Treat Today as an unfinished-work view. An assignment rolls
+  off as soon as an outcome enters Audit, and manual Add Back records are
+  hidden from Today by default unless explicitly marked visible for their
+  scheduled date.
+
 - **2026-09-17** — Provide contextual, collapsible tutorial notes rather than
   a blocking guided tour. A single header switch controls all help notes and
   remembers the browser's preference locally.
@@ -251,6 +256,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-21** (Codex) - Made Today and job-pool fill counts show only
+  unfinished assignments and refresh immediately when an outcome is queued.
+  Added a work date and opt-in Today visibility to Add Assignment Back so
+  historical corrections do not clutter the current class view.
 
 - **2026-09-17** (Codex) - Added a persistent Show help / Hide help switch and
   concise tutorial sequences for Today, Job Market, Live Tracker, and Settings.

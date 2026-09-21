@@ -58,7 +58,8 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true(all(c("user_id", "display_name", "pw_hash", "course", "section", "active", "is_demo") %in% cols(con, "users")))
     expect_true("assignments_revealed" %in% cols(con, "arcade_state"))
     expect_true(all(c("round_id", "user_id", "marked_at") %in% cols(con, "round_absences")))
-    expect_true(all(c("tokens_awarded", "tokens_credited", "status", "job_post_id") %in% cols(con, "job_assignments")))
+    expect_true(all(c("tokens_awarded", "tokens_credited", "status", "job_post_id",
+                      "scheduled_date", "display_on_today") %in% cols(con, "job_assignments")))
     expect_true(all(c("job_post_id", "event_kind", "tokens", "committed_at") %in% cols(con, "live_score_events")))
 
     round <- DBI::dbGetQuery(con, "SELECT label, tokens_revealed FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
@@ -175,7 +176,8 @@ test_that("class-job-market migrates an older live DB schema on startup", {
     expect_true(all(c("default_wage", "description", "voluntary", "in_draw") %in% cols(con, "job_categories")))
     expect_true(all(c("job_name", "wage_override", "active", "display_order", "selection_time", "description") %in% cols(con, "job_posts")))
     expect_true("description" %in% cols(con, "job_templates"))
-    expect_true(all(c("assigned_wage", "tokens_awarded", "tokens_credited", "status") %in% cols(con, "job_assignments")))
+    expect_true(all(c("assigned_wage", "tokens_awarded", "tokens_credited", "status",
+                      "scheduled_date", "display_on_today") %in% cols(con, "job_assignments")))
     expect_true(all(c("min_wage", "submitted_at") %in% cols(con, "wage_bids")))
     expect_true("tickets" %in% cols(con, "application_bids"))
 
