@@ -159,6 +159,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 `tests/smoke-class-job-market.R` (run `Rscript tests/smoke-class-job-market.R` from repo root; needs DBI + RSQLite) exercises the seed migration, template auto-copy, idempotence across restarts, bid-lock windows, and all three clearing-wage rules against a scratch SQLite DB by extracting the relevant functions from `app.R`. The testthat suite in `tests/unit/` has 20 pre-existing failures unrelated to this work (regex/locale issues in the test environment).
 
 ## Decision Log
+- **2026-09-21** — Never split short control labels character by character.
+  Wrap buttons only between words, keep native file-picker buttons on one line,
+  and allocate grid width according to the control rather than leaving unused
+  columns. Compact repeated scoring actions may use keyed single-letter labels.
+
 
 - **2026-09-21** — Allow class-job-market browser clients to reconnect to a new
   Shiny session after a network interruption or mobile background suspension.
@@ -287,6 +292,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-09-21** (Codex) - Removed arbitrary mid-word button wrapping, gave the
+  Live Tracker Clear/Release slot the unused width beside Reveal/Hide, replaced
+  repeated volunteer outcomes with large S/T/M buttons and a visible key,
+  standardized file inputs on a nonbreaking Browse label, and restored spacing
+  between checkbox controls and their labels. Updated responsive assertions.
+
 
 - **2026-09-21** (Codex) - Enabled Shiny's supported automatic new-session
   reconnection for class-job-market. Phones can now recover after their browser
@@ -448,10 +459,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Phone-test Live Tracker after locking the screen or backgrounding the browser
-   for more than 15 seconds; confirm it reconnects without a manual reload and
-   retains persisted volunteer scores. Also check dense controls for sensible
-   wrapping at 110–140% text scale.
+1. Phone-test Live Tracker after locking or backgrounding for more than 15
+   seconds; confirm automatic reconnect and persisted volunteer scores. At
+   110–140% text scale, verify Clear/Hide remain whole, S/T/M stays keyed and
+   tappable, file buttons remain horizontal, and checkbox labels have a gap.
 2. Confirm a manual policy-group reassignment appears immediately when viewing
    that student's Account profile in the deployed demo.
 3. Exercise extension pricing and assignment CSV import in the deployed demo,

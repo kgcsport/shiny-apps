@@ -1260,7 +1260,8 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7;
 /* ── Readability and touch targets ──────────────────────────────────────── */
 .arc-body .btn, .login-card .btn, .modal .btn {
   min-height: 44px; padding: .55rem .9rem; font-size: .96rem;
-  touch-action: manipulation; white-space: normal; overflow-wrap: anywhere;
+  touch-action: manipulation; white-space: normal; overflow-wrap: normal;
+  word-break: normal;
   line-height: 1.2;
 }
 .arc-body .btn-xs {
@@ -1274,9 +1275,25 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7;
 .arc-body .control-label, .login-card .control-label, .modal .control-label {
   font-size: .96rem;
 }
+.arc-body .btn-file, .modal .btn-file {
+  white-space: nowrap !important; overflow-wrap: normal; word-break: normal;
+  min-width: 6rem;
+}
 .arc-body input[type=checkbox], .arc-body input[type=radio],
 .modal input[type=checkbox], .modal input[type=radio] {
   width: 1.2rem; height: 1.2rem; vertical-align: middle;
+}
+.arc-body .checkbox label, .arc-body .radio label,
+.modal .checkbox label, .modal .radio label {
+  padding-left: 1.8rem;
+}
+.arc-body .checkbox input[type=checkbox], .arc-body .radio input[type=radio],
+.modal .checkbox input[type=checkbox], .modal .radio input[type=radio] {
+  margin-left: -1.8rem;
+}
+.arc-body .checkbox-inline, .arc-body .radio-inline,
+.modal .checkbox-inline, .modal .radio-inline {
+  padding-left: 1.8rem;
 }
 .nav-tabs .nav-link {
   min-height: 44px; display:flex; align-items:center; font-size:.96rem;
@@ -1521,7 +1538,10 @@ body.tutorial-off .tab-howto, body.tutorial-off .tutorial-note { display:none !i
 .live-card-name { font-size: 1.05rem; font-weight: 700; line-height: 1.2; }
 .live-card-section { color: #888; font-size: .78rem; margin: .12rem 0 .55rem; }
 .live-card-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .35rem; }
-.live-card-actions .btn { min-height: 48px; white-space: normal; font-weight: 600; }
+.live-card-actions .btn { min-height:48px; min-width:0; white-space:nowrap; font-size:1.05rem; font-weight:700; }
+.live-outcome-key { display:flex; flex-wrap:wrap; gap:.35rem .85rem;
+                    margin:.2rem 0 .65rem; color:#555; font-size:.82rem; }
+.live-outcome-key b { color:#222; }
 @media (max-width: 600px) {
   .arc-body { padding-left: .4rem; padding-right: .4rem; }
   .live-grid { grid-template-columns: 1fr; }
@@ -6072,7 +6092,7 @@ server <- function(input, output, session) {
                                         "End of class" = "end",
                                         "All assignments" = "all"),
                             selected = selected_reveal_timing, width = "100%")),
-              column(3,
+              column(2,
                 if (nzchar(cur_sec)) {
                   if (section_revealed)
                     actionButton("toggle_section_reveal_btn", "Hide",
@@ -6085,7 +6105,7 @@ server <- function(input, output, session) {
                 } else {
                   tags$span(style = "color:#999;font-size:.8rem;", "Pick section")
                 }),
-              column(1,
+              column(3,
                 if (!tok_rev && n_pending > 0)
                   actionButton("release_tokens_btn",
                                "Release",
@@ -6275,6 +6295,11 @@ server <- function(input, output, session) {
             div(class = "live-toolbar",
               selectInput("part_event_type", "Job:", choices = et_choices, width = "100%")
             ),
+            div(class = "live-outcome-key",
+              span(tags$b("S"), " = Succeed / full credit"),
+              span(tags$b("T"), " = Try / partial credit"),
+              span(tags$b("M"), " = Miss / no credit")
+            ),
             div(class = "live-grid",
               lapply(seq_len(nrow(students_vol)), function(i) {
                 r <- students_vol[i, ]
@@ -6287,31 +6312,34 @@ server <- function(input, output, session) {
                       type = "button",
                       class = "btn btn-success btn-sm",
                       title = "Full credit",
+                      "aria-label" = "Succeed — full credit",
                       onclick = sprintf(
                         "Shiny.setInputValue('part_card_click',{user_id:%s,outcome:'succeed',nonce:Math.random()},{priority:'event'});",
                         jsonlite::toJSON(uid, auto_unbox = TRUE)
                       ),
-                      "Succeed"
+                      "S"
                     ),
                     tags$button(
                       type = "button",
                       class = "btn btn-warning btn-sm",
                       title = "Partial credit",
+                      "aria-label" = "Try — partial credit",
                       onclick = sprintf(
                         "Shiny.setInputValue('part_card_click',{user_id:%s,outcome:'try',nonce:Math.random()},{priority:'event'});",
                         jsonlite::toJSON(uid, auto_unbox = TRUE)
                       ),
-                      "Try"
+                      "T"
                     ),
                     tags$button(
                       type = "button",
                       class = "btn btn-danger btn-sm",
                       title = "No credit",
+                      "aria-label" = "Miss — no credit",
                       onclick = sprintf(
                         "Shiny.setInputValue('part_card_click',{user_id:%s,outcome:'miss',nonce:Math.random()},{priority:'event'});",
                         jsonlite::toJSON(uid, auto_unbox = TRUE)
                       ),
-                      "Miss"
+                      "M"
                     )
                   )
                 )
@@ -6327,13 +6355,13 @@ server <- function(input, output, session) {
                 column(6,
                   tags$label("Outcome:"),
                   div(style = "display:flex;gap:.35rem;flex-wrap:wrap;",
-                    actionButton("log_succeed_btn", "Succeed",
+                    actionButton("log_succeed_btn", "S",
                                  class = "btn btn-success btn-sm",
                                  title = "Full credit: student earns the posted token amount"),
-                    actionButton("log_try_btn", "Try",
+                    actionButton("log_try_btn", "T",
                                  class = "btn btn-warning btn-sm",
                                  title = "Partial credit: 1 token awarded"),
-                    actionButton("log_miss_btn", "Miss",
+                    actionButton("log_miss_btn", "M",
                                  class = "btn btn-danger btn-sm",
                                  title = "No credit: no tokens awarded")
                   )
@@ -7243,7 +7271,7 @@ server <- function(input, output, session) {
                        class = "btn btn-sm btn-outline-secondary"),
         tags$br(), tags$br(),
         fileInput("upload_students_csv", NULL, accept = ".csv",
-                  buttonLabel = "Choose CSV", placeholder = "No file chosen"),
+                  buttonLabel = "Browse…", placeholder = "No file chosen"),
         uiOutput("student_csv_mapper"),
         checkboxInput("upload_stu_update",
                       "Update existing students (display name + class + section; password only if provided in CSV)",
@@ -7275,7 +7303,7 @@ server <- function(input, output, session) {
         tags$p(style="color:#555;font-size:.82rem;",
                "Required CSV columns: user_id, policy_team, presentation_date, and course_unit."),
         fileInput("upload_policy_groups_csv", NULL, accept = ".csv",
-                  buttonLabel = "Choose assignment CSV", placeholder = "No file chosen"),
+                  buttonLabel = "Browse…", placeholder = "No file chosen"),
         actionButton("upload_policy_groups_btn", "Import CSV",
                      class = "btn btn-sm btn-primary")
       )
@@ -7363,7 +7391,7 @@ server <- function(input, output, session) {
           downloadButton("dl_problem_sets_template", "CSV template",
                          class="btn btn-sm btn-outline-secondary"),
           fileInput("problem_sets_csv_file", NULL, accept=c(".csv","text/csv"),
-                    buttonLabel="Choose CSV", placeholder="No file chosen"),
+                    buttonLabel="Browse…", placeholder="No file chosen"),
           textAreaInput("problem_sets_csv_text", "Or paste CSV:", rows=4, width="100%",
                         placeholder="name,original_deadline,solutions_posted_at,active\nProblem Set 1,2026-09-30,,1"),
           actionButton("import_problem_sets_btn", "Import CSV",
@@ -7460,7 +7488,7 @@ server <- function(input, output, session) {
                "Upload a plain-text file (one question per non-empty line) or a CSV with 'question_text' and optional 'exam_tag' columns."),
         fileInput("upload_flex_questions", NULL,
                   accept = c(".txt", ".md", ".csv", ".yaml", ".yml"),
-                  buttonLabel = "Choose file", placeholder = "No file chosen"),
+                  buttonLabel = "Browse…", placeholder = "No file chosen"),
         textInput("upload_fq_exam", "Apply exam tag to all uploaded questions (optional):",
                   placeholder = "e.g. Final — overridden by CSV's exam_tag column"),
         checkboxInput("fq_replace_all", "Replace all existing questions", value = FALSE),

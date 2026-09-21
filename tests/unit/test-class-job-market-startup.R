@@ -128,7 +128,9 @@ test_that("class-job-market starts against a fresh DB with required tables and c
 
     expect_match(app$ARCADE_CSS, "min-height: 44px", fixed=TRUE)
     expect_match(app$ARCADE_CSS, "max-width: 1100px", fixed=TRUE)
-    expect_match(app$ARCADE_CSS, "overflow-wrap: anywhere", fixed=TRUE)
+    expect_match(app$ARCADE_CSS, "overflow-wrap: normal", fixed=TRUE)
+    expect_match(app$ARCADE_CSS, ".arc-body .btn-file", fixed=TRUE)
+    expect_match(app$ARCADE_CSS, "padding-left: 1.8rem", fixed=TRUE)
     app_source <- paste(readLines(app_file, warn = FALSE), collapse = "\n")
     expect_match(app_source, "session$allowReconnect(TRUE)", fixed = TRUE)
     expect_match(app$ARCADE_CSS, ".arc-font-ctrl { display:flex; flex:1; }", fixed=TRUE)
