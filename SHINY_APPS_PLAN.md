@@ -250,8 +250,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
   Pending and Audit lifecycle when service returns.
 
 - **2026-09-08** — Store final ECON 342 policy-team assignments in the app's
-  SQLite database and update them through an instructor-only CSV import. Raw
-  preferences and blackout dates remain outside the Shiny app.
+  SQLite database and update them through an instructor-only CSV import or
+  per-student manual editor. Raw preferences and blackout dates remain outside
+  the Shiny app.
 
 - **2026-09-08** — Treat Live Tracker rows as an exclusive lifecycle: an
   assignment is pending until an outcome moves it to audit, audit can return it
@@ -268,6 +269,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-21** (Codex) - Added a prefilled manual policy-group editor to
+  Settings → Students. Instructors can select one student and update the team,
+  presentation date, course unit, interests, assigned rank, and allocation
+  seed; the student Account profile refreshes immediately. Manual edits and CSV
+  imports now share one tested upsert path.
 
 - **2026-09-21** (Codex) - Replaced fixed extension options with a validated
   convex pricing formula, student hours slider, configurable shortcut buttons,
@@ -405,12 +412,14 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Exercise extension pricing and assignment CSV import in the deployed demo,
+1. Confirm a manual policy-group reassignment appears immediately when viewing
+   that student's Account profile in the deployed demo.
+2. Exercise extension pricing and assignment CSV import in the deployed demo,
    including an inactive assignment and a non-default slider increment.
-2. Classroom-test the Cloudflare live poll from two phones and clear the QA
+3. Classroom-test the Cloudflare live poll from two phones and clear the QA
    responses through its password-protected instructor view.
-3. Port `tax-incidence` as the first static-JavaScript visualizer.
-4. Decide whether `review-quiz` and `supply-auction-game` need canonical
+4. Port `tax-incidence` as the first static-JavaScript visualizer.
+5. Decide whether `review-quiz` and `supply-auction-game` need canonical
    participation credit before moving either away from Reclaim.
 
 ## Questions for Kyle

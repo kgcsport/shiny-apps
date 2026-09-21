@@ -105,6 +105,26 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_equal(costs, c(3, 8, 14))
     expect_gt(pricing$exponent, 1)
     expect_gte(costs[3] - costs[2], costs[2] - costs[1])
+
+    policy_exec <- function(sql, params)
+      DBI::dbExecute(con, sql, params=params)
+    app$upsert_policy_group_assignment(
+      "alice", "Team A", "2026-10-05", "Trade", "tariffs", 2L, "seed-1",
+      exec_fn=policy_exec)
+    app$upsert_policy_group_assignment(
+      "alice", "Team B", "2026-10-12", "Labor", NA_character_, 1L, NA_character_,
+      exec_fn=policy_exec)
+    policy <- DBI::dbGetQuery(con, "
+      SELECT user_id, policy_team, presentation_date, course_unit,
+             topic_interests, assigned_rank, allocation_seed
+      FROM policy_group_assignments WHERE user_id='alice';")
+    expect_equal(nrow(policy), 1L)
+    expect_equal(policy$policy_team, "Team B")
+    expect_equal(policy$presentation_date, "2026-10-12")
+    expect_equal(policy$course_unit, "Labor")
+    expect_true(is.na(policy$topic_interests))
+    expect_equal(policy$assigned_rank, 1L)
+    expect_true(is.na(policy$allocation_seed))
   })
 })
 

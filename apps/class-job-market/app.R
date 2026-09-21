@@ -412,6 +412,27 @@ db_exec("CREATE TABLE IF NOT EXISTS policy_group_assignments(
   imported_at       TEXT DEFAULT CURRENT_TIMESTAMP
 );")
 
+upsert_policy_group_assignment <- function(user_id, policy_team, presentation_date,
+                                           course_unit, topic_interests=NA_character_,
+                                           assigned_rank=NA_integer_, allocation_seed=NA_character_,
+                                           exec_fn=db_exec) {
+  exec_fn(
+    "INSERT INTO policy_group_assignments(
+       user_id, policy_team, presentation_date, course_unit, topic_interests,
+       assigned_rank, allocation_seed, imported_at
+     ) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+     ON CONFLICT(user_id) DO UPDATE SET
+       policy_team=excluded.policy_team,
+       presentation_date=excluded.presentation_date,
+       course_unit=excluded.course_unit,
+       topic_interests=excluded.topic_interests,
+       assigned_rank=excluded.assigned_rank,
+       allocation_seed=excluded.allocation_seed,
+       imported_at=CURRENT_TIMESTAMP;",
+    list(user_id, policy_team, presentation_date, course_unit, topic_interests,
+         assigned_rank, allocation_seed))
+}
+
 # Job market tables (shared with class-job-market; CREATE IF NOT EXISTS is safe)
 db_exec("CREATE TABLE IF NOT EXISTS job_categories(
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4140,6 +4161,81 @@ server <- function(input, output, session) {
                      duration = 8)
   })
 
+  output$manual_policy_group_editor <- renderUI({
+    req(rv$is_admin)
+    rv$policy_ver
+    uid <- norm_username(input$manual_policy_user %||% "")
+    if (!nzchar(uid)) return(NULL)
+    row <- tryCatch(db_query(
+      "SELECT policy_team, presentation_date, course_unit, topic_interests,
+              assigned_rank, allocation_seed
+       FROM policy_group_assignments WHERE LOWER(user_id)=LOWER(?) LIMIT 1;",
+      list(uid)), error=function(e) data.frame())
+    value_or_blank <- function(column) {
+      if (nrow(row) && column %in% names(row) && !is.na(row[[column]][1]))
+        as.character(row[[column]][1]) else ""
+    }
+    div(style="border:1px solid #ddd;border-radius:6px;padding:.65rem .8rem;background:#fafafa;",
+      if (nrow(row))
+        tags$p(style="color:#1a6e3c;font-size:.82rem;margin-bottom:.45rem;",
+               "Editing this student's current assignment.")
+      else
+        tags$p(style="color:#777;font-size:.82rem;margin-bottom:.45rem;",
+               "This student does not have a policy group yet."),
+      fluidRow(
+        column(4, textInput("manual_policy_team", "Policy team:",
+                            value=value_or_blank("policy_team"))),
+        column(4, textInput("manual_policy_date", "Presentation date:",
+                            value=value_or_blank("presentation_date"), placeholder="YYYY-MM-DD")),
+        column(4, textInput("manual_policy_unit", "Course unit:",
+                            value=value_or_blank("course_unit")))
+      ),
+      fluidRow(
+        column(5, textInput("manual_policy_interests", "Topic interests (optional):",
+                            value=value_or_blank("topic_interests"))),
+        column(3, textInput("manual_policy_rank", "Assigned rank (optional):",
+                            value=value_or_blank("assigned_rank"))),
+        column(4, textInput("manual_policy_seed", "Allocation seed (optional):",
+                            value=value_or_blank("allocation_seed")))
+      ),
+      actionButton("save_manual_policy_group_btn", "Save policy group",
+                   class="btn btn-sm btn-primary")
+    )
+  })
+
+  observeEvent(input$save_manual_policy_group_btn, {
+    req(rv$is_admin)
+    uid <- norm_username(input$manual_policy_user %||% "")
+    team <- trimws(input$manual_policy_team %||% "")
+    date_raw <- trimws(input$manual_policy_date %||% "")
+    unit <- trimws(input$manual_policy_unit %||% "")
+    user <- db_query(
+      "SELECT user_id, display_name FROM users
+       WHERE LOWER(user_id)=LOWER(?) AND COALESCE(is_admin,0)=0 LIMIT 1;", list(uid))
+    if (!nrow(user)) { showNotification("Select a valid student.", type="error"); return() }
+    if (!nzchar(team) || !nzchar(date_raw) || !nzchar(unit)) {
+      showNotification("Policy team, presentation date, and course unit are required.",
+                       type="error"); return()
+    }
+    presentation_date <- suppressWarnings(as.Date(date_raw))
+    if (is.na(presentation_date) || !identical(as.character(presentation_date), date_raw)) {
+      showNotification("Presentation date must use YYYY-MM-DD format.", type="error"); return()
+    }
+    rank_raw <- trimws(input$manual_policy_rank %||% "")
+    rank <- if (nzchar(rank_raw)) suppressWarnings(as.integer(rank_raw)) else NA_integer_
+    if (nzchar(rank_raw) && (is.na(rank) || as.character(rank) != rank_raw || rank < 1L)) {
+      showNotification("Assigned rank must be a positive whole number or blank.", type="error"); return()
+    }
+    blank_to_na <- function(x) { x <- trimws(x %||% ""); if (nzchar(x)) x else NA_character_ }
+    upsert_policy_group_assignment(
+      user$user_id[1], team, as.character(presentation_date), unit,
+      blank_to_na(input$manual_policy_interests), rank,
+      blank_to_na(input$manual_policy_seed), exec_fn=db_exec)
+    rv$policy_ver <- rv$policy_ver + 1L
+    showNotification(sprintf("Updated policy group for %s.", user$display_name[1] %||% user$user_id[1]),
+                     type="message")
+  })
+
   observeEvent(input$upload_policy_groups_btn, {
     req(rv$is_admin)
     f <- input$upload_policy_groups_csv
@@ -4162,22 +4258,11 @@ server <- function(input, output, session) {
       uid <- norm_username(df$user_id[i] %||% "")
       user <- db_query("SELECT user_id FROM users WHERE LOWER(user_id)=LOWER(?) LIMIT 1;", list(uid))
       if (!nrow(user)) { unknown <- c(unknown, uid); next }
-      db_exec(
-        "INSERT INTO policy_group_assignments(
-           user_id, policy_team, presentation_date, course_unit, topic_interests,
-           assigned_rank, allocation_seed, imported_at
-         ) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-         ON CONFLICT(user_id) DO UPDATE SET
-           policy_team=excluded.policy_team,
-           presentation_date=excluded.presentation_date,
-           course_unit=excluded.course_unit,
-           topic_interests=excluded.topic_interests,
-           assigned_rank=excluded.assigned_rank,
-           allocation_seed=excluded.allocation_seed,
-           imported_at=CURRENT_TIMESTAMP;",
-        list(user$user_id[1], trimws(df$policy_team[i]), trimws(df$presentation_date[i]),
-             trimws(df$course_unit[i]), optional("topic_interests", i),
-             optional("assigned_rank", i), optional("allocation_seed", i)))
+      upsert_policy_group_assignment(
+        user$user_id[1], trimws(df$policy_team[i]), trimws(df$presentation_date[i]),
+        trimws(df$course_unit[i]), optional("topic_interests", i),
+        optional("assigned_rank", i), optional("allocation_seed", i),
+        exec_fn=db_exec)
       imported <- imported + 1L
     }
     rv$policy_ver <- rv$policy_ver + 1L
@@ -7104,8 +7189,27 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Policy Group Assignments"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "Upload the final CSV artifact produced by the PubEcon policy-group allocation Action. ",
-               "Assignments appear on each student's Account profile."),
+               "Manually add or update one student, or import the final CSV from the PubEcon policy-group allocation Action. Assignments appear immediately on student Account profiles."),
+        {
+          policy_students <- if (nrow(students))
+            students[as.integer(students$is_admin %||% 0L) == 0L, , drop=FALSE] else data.frame()
+          if (nrow(policy_students)) {
+            selected_uid <- isolate(input$manual_policy_user %||% policy_students$user_id[1])
+            if (!selected_uid %in% policy_students$user_id) selected_uid <- policy_students$user_id[1]
+            tagList(
+              tags$h6(style="font-weight:600;margin-top:.65rem;", "Manual update"),
+              selectInput("manual_policy_user", "Student:",
+                choices=setNames(policy_students$user_id,
+                  sprintf("%s (%s)", policy_students$display_name, policy_students$user_id)),
+                selected=selected_uid),
+              uiOutput("manual_policy_group_editor")
+            )
+          } else div(style="color:#999;font-size:.85rem;", "Add students before assigning policy groups.")
+        },
+        tags$hr(style="margin:.8rem 0;"),
+        tags$h6(style="font-weight:600;", "Bulk import"),
+        tags$p(style="color:#555;font-size:.82rem;",
+               "Required CSV columns: user_id, policy_team, presentation_date, and course_unit."),
         fileInput("upload_policy_groups_csv", NULL, accept = ".csv",
                   buttonLabel = "Choose assignment CSV", placeholder = "No file chosen"),
         actionButton("upload_policy_groups_btn", "Import policy groups",
