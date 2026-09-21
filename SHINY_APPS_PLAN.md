@@ -160,6 +160,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-21** — Allow class-job-market browser clients to reconnect to a new
+  Shiny session after a network interruption or mobile background suspension.
+  Authentication already survives through the persistent session cookie, and
+  live scores are database-backed, so automatic reconnection is safer and less
+  disruptive than requiring an instructor to reload during class.
+
 - **2026-09-21** — Let enlarged controls reflow instead of shrinking their text.
   Widen the desktop class-job-market canvas to 1100px, minimize phone edge
   gutters, wrap button groups and modal actions, and stack dense launch cards
@@ -281,6 +287,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-21** (Codex) - Enabled Shiny's supported automatic new-session
+  reconnection for class-job-market. Phones can now recover after their browser
+  suspends the WebSocket without a manual page reload; the existing login cookie
+  restores the instructor account and persisted live-score records remain
+  available. Added a startup regression assertion for reconnect enablement.
 
 - **2026-09-21** (Codex) - Reflowed the enlarged class-job-market controls on a
   wider desktop canvas with tighter phone gutters, wrapping button groups and
@@ -436,9 +448,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Phone- and tablet-test dense instructor workflows, especially roster actions
-   and Live Tracker scoring, for collisions and sensible wrapping at 110–140%
-   text scale.
+1. Phone-test Live Tracker after locking the screen or backgrounding the browser
+   for more than 15 seconds; confirm it reconnects without a manual reload and
+   retains persisted volunteer scores. Also check dense controls for sensible
+   wrapping at 110–140% text scale.
 2. Confirm a manual policy-group reassignment appears immediately when viewing
    that student's Account profile in the deployed demo.
 3. Exercise extension pricing and assignment CSV import in the deployed demo,

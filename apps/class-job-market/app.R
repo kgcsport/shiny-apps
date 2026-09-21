@@ -1666,6 +1666,10 @@ tutorial_note <- function(title, steps, open = FALSE) {
 # ── Server ────────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
 
+  # Mobile browsers routinely suspend background tabs and drop their WebSocket.
+  # Reconnect to a new session automatically instead of requiring a page reload.
+  session$allowReconnect(TRUE)
+
   dm       <- demo_server_init(session, DB_PATH)
   .sandbox <- dm$is_demo
   db_exec  <- dm$db_exec
