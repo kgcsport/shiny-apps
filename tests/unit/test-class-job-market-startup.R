@@ -84,6 +84,27 @@ test_that("class-job-market starts against a fresh DB with required tables and c
       ORDER BY key;")
     expect_equal(settings$key, c("active_course", "active_section", "hide_archived_students"))
     expect_equal(settings$value, c("", "", "0"))
+
+    extension_settings <- DBI::dbGetQuery(con, "
+      SELECT key, value FROM labor_settings
+      WHERE key IN ('extension_base_hours', 'extension_base_tokens',
+                    'extension_cost_exponent', 'extension_max_hours',
+                    'extension_step_hours', 'extension_shortcuts')
+      ORDER BY key;")
+    expect_equal(extension_settings$key,
+                 sort(c("extension_base_hours", "extension_base_tokens",
+                        "extension_cost_exponent", "extension_max_hours",
+                        "extension_step_hours", "extension_shortcuts")))
+
+    values <- c(extension_base_hours="24", extension_base_tokens="3",
+                extension_cost_exponent="1.35", extension_max_hours="168",
+                extension_step_hours="1", extension_shortcuts="24,48,72")
+    pricing <- app$extension_pricing_settings(function(key, default)
+      if (!is.null(values[[key]])) values[[key]] else default)
+    costs <- vapply(c(24, 48, 72), app$extension_cost_for_hours, numeric(1), settings=pricing)
+    expect_equal(costs, c(3, 8, 14))
+    expect_gt(pricing$exponent, 1)
+    expect_gte(costs[3] - costs[2], costs[2] - costs[1])
   })
 })
 
@@ -104,6 +125,36 @@ test_that("ADMIN_EMAILS bootstraps Google admins on fresh DB startup", {
     expect_true(all(admins$is_admin == 1L))
     expect_true(all(admins$active == 1L))
     expect_true(all(admins$is_demo == 0L))
+  })
+})
+
+test_that("demo bootstrap upgrades an old users schema and repairs credentials", {
+  with_app_env({
+    app <- suppressWarnings(source_app())
+    demo_path <- file.path(Sys.getenv("CONNECT_CONTENT_DIR"), "data", "class-job-market-demo.sqlite")
+    demo_con <- DBI::dbConnect(RSQLite::SQLite(), demo_path)
+    on.exit(suppressWarnings(try(DBI::dbDisconnect(demo_con), silent=TRUE)), add=TRUE)
+    DBI::dbExecute(demo_con, "
+      CREATE TABLE users(
+        user_id TEXT PRIMARY KEY,
+        display_name TEXT,
+        pw_hash TEXT,
+        is_admin INTEGER DEFAULT 0,
+        section TEXT
+      );")
+    DBI::dbExecute(demo_con, "
+      INSERT INTO users(user_id,display_name,pw_hash,is_admin,section)
+      VALUES('alice','Old Alice','bad-hash',0,'OLD');")
+
+    expect_error(app$demo_db_bootstrap(demo_con, db_path()), NA)
+    expect_true(all(c("course", "active", "is_demo") %in% cols(demo_con, "users")))
+    repaired <- DBI::dbGetQuery(demo_con, "
+      SELECT user_id, display_name, pw_hash, is_admin, section, active, is_demo
+      FROM users WHERE user_id IN ('alice','instructor') ORDER BY user_id;")
+    expect_equal(repaired$user_id, c("alice", "instructor"))
+    expect_true(bcrypt::checkpw("test123", repaired$pw_hash[repaired$user_id == "alice"]))
+    expect_true(bcrypt::checkpw("admin123", repaired$pw_hash[repaired$user_id == "instructor"]))
+    expect_true(all(repaired$active == 1L))
   })
 })
 

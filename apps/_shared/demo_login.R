@@ -188,6 +188,28 @@ demo_db_bootstrap <- function(demo_con, prod_path) {
     for (sql in schema$sql)
       try(DBI::dbExecute(demo_con, sql), silent = TRUE)
 
+    # CREATE TABLE IF NOT EXISTS does not upgrade an older sandbox schema.
+    # Reconcile the login columns explicitly before resetting canonical users;
+    # otherwise both the upsert and subsequent login SELECT fail and look like
+    # a bad password.
+    demo_user_columns <- c(
+      "display_name TEXT",
+      "pw_hash TEXT",
+      "is_admin INTEGER DEFAULT 0",
+      "course TEXT",
+      "section TEXT",
+      "active INTEGER DEFAULT 1",
+      "is_demo INTEGER DEFAULT 0"
+    )
+    existing_user_columns <- DBI::dbGetQuery(demo_con, "PRAGMA table_info(users);")$name
+    for (column_def in demo_user_columns) {
+      column_name <- strsplit(column_def, "\\s+")[[1]][1]
+      if (!column_name %in% existing_user_columns) {
+        DBI::dbExecute(demo_con, sprintf("ALTER TABLE users ADD COLUMN %s;", column_def))
+        existing_user_columns <- c(existing_user_columns, column_name)
+      }
+    }
+
     # Copy app config / settings so the app starts with sane defaults
     for (tbl in c("labor_settings", "arcade_config")) {
       rows <- tryCatch(DBI::dbGetQuery(prod_con, sprintf("SELECT * FROM %s;", tbl)),
@@ -239,8 +261,8 @@ demo_db_bootstrap <- function(demo_con, prod_path) {
       list(id = "dan",        name = "Dan",             admin = 0L, pw = "test123",  sec = "S02"),
       list(id = "eve",        name = "Eve",             admin = 0L, pw = "test123",  sec = "S02")
     )
-    for (u in test_users)
-      try(DBI::dbExecute(demo_con,
+    for (u in test_users) {
+      DBI::dbExecute(demo_con,
         "INSERT INTO users(user_id,display_name,is_admin,pw_hash,section,active,is_demo)
          VALUES(?,?,?,?,?,1,0)
          ON CONFLICT(user_id) DO UPDATE SET
@@ -250,7 +272,8 @@ demo_db_bootstrap <- function(demo_con, prod_path) {
            section=excluded.section,
            active=1,
            is_demo=0;",
-        list(u$id, u$name, u$admin, hash_pw(u$pw), u$sec)), silent = TRUE)
+        list(u$id, u$name, u$admin, hash_pw(u$pw), u$sec))
+    }
 
   }, error = function(e) message("demo_db_bootstrap: ", e$message))
   invisible(demo_con)

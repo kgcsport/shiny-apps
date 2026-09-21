@@ -160,9 +160,17 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-21** — Price assignment extensions with one instructor-configured
+  convex power curve instead of discrete duration products. Students choose
+  hours directly within configured limits; the recorded purchase retains the
+  exact hours and charged token cost. Treat extension targets as editable
+  assignments with CSV upsert support.
+
 - **2026-09-21** — Treat sandbox credentials as canonical disposable test
   state. Reapply demo usernames, password hashes, roles, sections, and active
   flags on every sandbox bootstrap instead of preserving stale user rows.
+  Reconcile older sandbox user schemas before credential reset so live-only
+  columns cannot make authentication fail as an apparent bad password.
 
 - **2026-09-21** — Treat Today as an unfinished-work view. An assignment rolls
   off as soon as an outcome enters Audit, and manual Add Back records are
@@ -261,10 +269,18 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-09-21** (Codex) - Replaced fixed extension options with a validated
+  convex pricing formula, student hours slider, configurable shortcut buttons,
+  and live balance preview. Added assignment edit controls, active-state and
+  deadline/solutions-date maintenance, unlimited assignment visibility, and a
+  downloadable CSV bulk upsert workflow with row-level validation. Added
+  startup coverage for settings defaults and representative convex prices.
+
 - **2026-09-21** (Codex) - Fixed locked demo logins by changing sandbox user
-  seeding from insert-only to an idempotent credential reset. Existing corrupt
-  or outdated hashes for the instructor and test students are now repaired
-  automatically when demo mode opens.
+  seeding from insert-only to an idempotent credential reset, then repaired a
+  deployed-only failure where an older sandbox `users` table lacked columns
+  selected by the current login path. Bootstrap now migrates those columns
+  before resetting and verifies Alice and instructor credentials.
 
 - **2026-09-21** (Codex) - Made Today and job-pool fill counts show only
   unfinished assignments and refresh immediately when an outcome is queued.
@@ -389,10 +405,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Classroom-test the Cloudflare live poll from two phones and clear the QA
+1. Exercise extension pricing and assignment CSV import in the deployed demo,
+   including an inactive assignment and a non-default slider increment.
+2. Classroom-test the Cloudflare live poll from two phones and clear the QA
    responses through its password-protected instructor view.
-2. Port `tax-incidence` as the first static-JavaScript visualizer.
-3. Decide whether `review-quiz` and `supply-auction-game` need canonical
+3. Port `tax-incidence` as the first static-JavaScript visualizer.
+4. Decide whether `review-quiz` and `supply-auction-game` need canonical
    participation credit before moving either away from Reclaim.
 
 ## Questions for Kyle

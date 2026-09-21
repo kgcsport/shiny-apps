@@ -230,6 +230,12 @@ db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('active_course',
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('hide_archived_students','0');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('flex_cost_schedule','2,4,6,8,10');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('grade_reweight_max_points','5');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('extension_base_hours','24');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('extension_base_tokens','3');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('extension_cost_exponent','1.35');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('extension_max_hours','168');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('extension_step_hours','1');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('extension_shortcuts','24,48,72');")
 
 # token_ledger table
 db_exec("CREATE TABLE IF NOT EXISTS token_ledger(
@@ -852,12 +858,37 @@ bid_lock_status <- function() {
       fmt_hm(lock_min), fmt_hm(reopen_min))
   )
 }
-parse_ext_prices <- function() {
-  rows <- tryCatch(
-    db_query("SELECT id, label, hours, tokens FROM extension_options WHERE COALESCE(active,1)=1 ORDER BY hours DESC;"),
-    error = function(e) data.frame())
-  if (!nrow(rows)) return(data.frame(id=integer(0), label=character(0), hours=numeric(0), tokens=numeric(0)))
-  rows
+extension_pricing_settings <- function(setting_getter = get_setting) {
+  number_setting <- function(key, default) {
+    value <- suppressWarnings(as.numeric(tryCatch(
+      setting_getter(key, as.character(default)), error = function(e) default)))
+    if (!length(value) || is.na(value) || !is.finite(value)) default else value
+  }
+  base_hours  <- number_setting("extension_base_hours", 24)
+  base_tokens <- number_setting("extension_base_tokens", 3)
+  exponent    <- number_setting("extension_cost_exponent", 1.35)
+  max_hours   <- number_setting("extension_max_hours", 168)
+  step_hours  <- number_setting("extension_step_hours", 1)
+  if (base_hours <= 0) base_hours <- 24
+  if (base_tokens <= 0) base_tokens <- 3
+  if (exponent <= 1) exponent <- 1.35
+  if (step_hours <= 0) step_hours <- 1
+  if (max_hours < step_hours) max_hours <- max(168, step_hours)
+
+  shortcuts_raw <- tryCatch(setting_getter("extension_shortcuts", "24,48,72"),
+                            error = function(e) "24,48,72")
+  shortcuts <- suppressWarnings(as.numeric(trimws(strsplit(shortcuts_raw %||% "", ",")[[1]])))
+  shortcut_ok <- is.finite(shortcuts) & shortcuts > 0 & shortcuts <= max_hours &
+    abs(shortcuts / step_hours - round(shortcuts / step_hours)) < 1e-8
+  shortcuts <- sort(unique(shortcuts[shortcut_ok]))
+  list(base_hours=base_hours, base_tokens=base_tokens, exponent=exponent,
+       max_hours=max_hours, step_hours=step_hours, shortcuts=shortcuts)
+}
+
+extension_cost_for_hours <- function(hours, settings = extension_pricing_settings()) {
+  hours <- suppressWarnings(as.numeric(hours))
+  if (!length(hours) || is.na(hours) || !is.finite(hours) || hours <= 0) return(NA_real_)
+  max(1, ceiling(settings$base_tokens * (hours / settings$base_hours)^settings$exponent))
 }
 
 # Safely evaluate an arithmetic expression (admin-set only) with one named variable
@@ -1585,6 +1616,7 @@ server <- function(input, output, session) {
     jobs_ver       = 0L,    # bumped after any job-post or category mutation
     students_ver   = 0L,    # bumped after any student roster mutation
     gradebook_ver  = 0L,    # bumped after any gradebook category/item mutation
+    extensions_ver = 0L,    # bumped after extension pricing or assignment mutation
     policy_ver     = 0L     # bumped after policy-group assignment import
   )
 
@@ -3115,7 +3147,7 @@ server <- function(input, output, session) {
         div(class = "spend-cards",
           div(class = "spend-card",
             div(class = "spend-card-icon", "\U0001f4c5"),
-            div(class = "spend-card-label", "Problem Set Extension"),
+            div(class = "spend-card-label", "Assignment Extension"),
             div(class = "spend-card-desc", "Purchase extra time on a problem set before the deadline."),
             div(class = "spend-card-meta", "Cost varies by length"),
             div(class = "spend-card-foot",
@@ -3165,21 +3197,33 @@ server <- function(input, output, session) {
     mode <- rv$spend_mode %||% ""
 
     if (mode == "extension") {
+      rv$extensions_ver
       ps_rows <- tryCatch(db_query(
-        "SELECT * FROM problem_sets WHERE COALESCE(active,1)=1 ORDER BY original_deadline DESC LIMIT 20;"),
+        "SELECT * FROM problem_sets WHERE COALESCE(active,1)=1 ORDER BY original_deadline DESC;"),
         error = function(e) data.frame())
-      opts <- parse_ext_prices()
-      if (!nrow(ps_rows) || !nrow(opts))
+      pricing <- extension_pricing_settings()
+      if (!nrow(ps_rows))
         return(div(class = "spend-form-box",
-                   "No extension options are configured yet. Ask your instructor to set them up."))
-      opt_choices <- setNames(opts$id,
-                              paste0(opts$label, " (", as.integer(opts$tokens), " tokens)"))
+                   "No assignments are currently available for extensions."))
+      default_hours <- if (length(pricing$shortcuts)) pricing$shortcuts[1] else
+        min(pricing$max_hours,
+            max(pricing$step_hours, floor(24 / pricing$step_hours) * pricing$step_hours))
       tagList(
         div(class = "spend-form-box",
-          tags$h6(style = "color:#951829;font-weight:700;", "\U0001f4c5 Problem Set Extension"),
-          selectInput("ext_ps", "Problem set:",
+          tags$h6(style = "color:#951829;font-weight:700;", "\U0001f4c5 Assignment Extension"),
+          selectInput("ext_ps", "Assignment:",
                       setNames(ps_rows$id, ps_rows$name)),
-          selectInput("ext_option", "Extension length:", choices = opt_choices),
+          sliderInput("ext_hours", "Extension hours:", min = pricing$step_hours,
+                      max = pricing$max_hours, value = default_hours, step = pricing$step_hours),
+          if (length(pricing$shortcuts))
+            div(style = "display:flex;gap:.35rem;flex-wrap:wrap;margin-top:-.35rem;margin-bottom:.55rem;",
+              lapply(pricing$shortcuts, function(hours) {
+                tags$button(type = "button", class = "btn btn-sm btn-outline-secondary",
+                  onclick = sprintf(
+                    "Shiny.setInputValue('ext_shortcut_hours',%s,{priority:'event'});",
+                    format(hours, scientific=FALSE, trim=TRUE)),
+                  sprintf("%g hours", hours))
+              })),
           uiOutput("ext_cost_preview"),
           actionButton("submit_extension", "Purchase extension", class = "btn btn-warning")
         )
@@ -3250,16 +3294,24 @@ server <- function(input, output, session) {
 
   output$ext_cost_preview <- renderUI({
     req(rv$authed)
-    opt_id <- suppressWarnings(as.integer(input$ext_option %||% 0))
-    if (is.na(opt_id) || opt_id <= 0) return(NULL)
-    opt  <- tryCatch(db_query("SELECT tokens FROM extension_options WHERE id=?;", list(opt_id)),
-                     error = function(e) data.frame())
-    cost <- if (nrow(opt)) as.numeric(opt$tokens[1]) else 0
+    rv$extensions_ver
+    hours <- suppressWarnings(as.numeric(input$ext_hours %||% NA_real_))
+    pricing <- extension_pricing_settings()
+    cost <- extension_cost_for_hours(hours, pricing)
+    if (is.na(cost)) return(NULL)
     bal  <- token_bal()
     div(style = "font-size:.86rem;color:#555;margin:.4rem 0 .6rem;",
-        sprintf("Cost: %d tokens  ·  Balance: %d  ·  After: %d",
-                as.integer(cost), as.integer(bal), as.integer(bal - cost)))
+        sprintf("%g hours costs %d tokens  ·  Balance: %d  ·  After: %d",
+                hours, as.integer(cost), as.integer(bal), as.integer(bal - cost)))
   })
+
+  observeEvent(input$ext_shortcut_hours, {
+    req(rv$authed)
+    pricing <- extension_pricing_settings()
+    hours <- suppressWarnings(as.numeric(input$ext_shortcut_hours %||% NA_real_))
+    if (is.finite(hours) && hours > 0 && hours <= pricing$max_hours)
+      updateSliderInput(session, "ext_hours", value = hours)
+  }, ignoreNULL = TRUE)
 
   output$rw_selectors <- renderUI({
     req(rv$authed, identical(rv$spend_mode, "reweight"))
@@ -3509,28 +3561,34 @@ server <- function(input, output, session) {
   observeEvent(input$submit_extension, {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
-    opt_id <- suppressWarnings(as.integer(input$ext_option %||% 0))
-    if (is.na(opt_id) || opt_id <= 0) { showNotification("Select an extension option.", type = "error"); return() }
-    opt <- tryCatch(db_query("SELECT * FROM extension_options WHERE id=?;", list(opt_id)),
-                    error = function(e) data.frame())
-    if (!nrow(opt)) { showNotification("Invalid extension option.", type = "error"); return() }
-    cost <- as.numeric(opt$tokens[1])
-    hrs  <- as.numeric(opt$hours[1])
-    lbl  <- as.character(opt$label[1])
+    pricing <- extension_pricing_settings()
+    hrs <- suppressWarnings(as.numeric(input$ext_hours %||% NA_real_))
+    if (!is.finite(hrs) || hrs <= 0 || hrs > pricing$max_hours) {
+      showNotification(sprintf("Choose between %g and %g hours.", pricing$step_hours, pricing$max_hours),
+                       type = "error"); return()
+    }
+    step_multiple <- hrs / pricing$step_hours
+    if (abs(step_multiple - round(step_multiple)) > 1e-8) {
+      showNotification(sprintf("Hours must use %g-hour increments.", pricing$step_hours),
+                       type = "error"); return()
+    }
+    cost <- extension_cost_for_hours(hrs, pricing)
     bal  <- isolate(token_bal())
-    if (cost <= 0) { showNotification("Cost not set for this option.", type = "error"); return() }
+    if (!is.finite(cost) || cost <= 0) { showNotification("Extension cost is not configured.", type = "error"); return() }
     if (bal < cost) {
       showNotification(sprintf("Not enough tokens (need %d, have %d).", as.integer(cost), as.integer(bal)),
                        type = "error"); return()
     }
     ps_id <- as.integer(input$ext_ps %||% 0)
-    if (ps_id <= 0) { showNotification("Select a problem set.", type = "error"); return() }
+    ps <- tryCatch(db_query("SELECT name FROM problem_sets WHERE id=? AND COALESCE(active,1)=1;", list(ps_id)),
+                   error = function(e) data.frame())
+    if (ps_id <= 0 || !nrow(ps)) { showNotification("Select an active assignment.", type = "error"); return() }
     lid <- token_debit(rv$user_id, rv$name, cost, "extension", ps_id,
-                       note = sprintf("%s extension", lbl))
+                       note = sprintf("%g-hour extension for %s", hrs, ps$name[1]))
     db_exec(
       "INSERT INTO extension_purchases(problem_set_id,user_id,hours,cost,ledger_id) VALUES(?,?,?,?,?);",
       list(ps_id, rv$user_id, hrs, cost, as.integer(lid %||% NA_integer_)))
-    showNotification(sprintf("Extension purchased: %s for %d tokens.", lbl, as.integer(cost)),
+    showNotification(sprintf("Purchased a %g-hour extension for %d tokens.", hrs, as.integer(cost)),
                      type = "message")
     rv$spend_mode <- NULL
   })
@@ -5463,26 +5521,58 @@ server <- function(input, output, session) {
     showNotification(sprintf("Removed category '%s'.", nm), type = "message")
   }, ignoreNULL = TRUE)
 
-  observeEvent(input$add_ext_option_btn, {
+  output$extension_formula_preview <- renderUI({
     req(rv$is_admin)
-    lbl    <- trimws(input$new_ext_label %||% "")
-    hrs    <- suppressWarnings(as.numeric(input$new_ext_hours %||% 0))
-    tokens <- suppressWarnings(as.numeric(input$new_ext_tokens %||% 0))
-    if (!nzchar(lbl)) { showNotification("Label required.", type = "error"); return() }
-    if (is.na(hrs) || hrs <= 0) { showNotification("Hours must be positive.", type = "error"); return() }
-    if (is.na(tokens) || tokens <= 0) { showNotification("Token cost must be positive.", type = "error"); return() }
-    db_exec("INSERT INTO extension_options(label,hours,tokens) VALUES(?,?,?);",
-            list(lbl, hrs, tokens))
-    showNotification("Extension option added.", type = "message")
+    base_hours  <- suppressWarnings(as.numeric(input$ext_base_hours_input %||% NA_real_))
+    base_tokens <- suppressWarnings(as.numeric(input$ext_base_tokens_input %||% NA_real_))
+    exponent    <- suppressWarnings(as.numeric(input$ext_exponent_input %||% NA_real_))
+    if (!all(is.finite(c(base_hours, base_tokens, exponent))) ||
+        base_hours <= 0 || base_tokens <= 0 || exponent <= 1)
+      return(div(style="color:#b00020;font-size:.84rem;",
+                 "Enter positive base values and an exponent greater than 1."))
+    settings <- list(base_hours=base_hours, base_tokens=base_tokens, exponent=exponent)
+    examples <- c(base_hours, base_hours * 2, base_hours * 3)
+    costs <- vapply(examples, extension_cost_for_hours, numeric(1), settings=settings)
+    div(style="background:#f7f7f7;border-radius:5px;padding:.45rem .65rem;font-size:.84rem;",
+        tags$strong("Price preview: "),
+        paste(sprintf("%g hours = %d tokens", examples, as.integer(costs)), collapse="  ·  "))
   })
 
-  observeEvent(input$delete_ext_option_btn, {
+  observeEvent(input$save_extension_pricing_btn, {
     req(rv$is_admin)
-    oid <- suppressWarnings(as.integer(input$delete_ext_option_btn %||% 0))
-    if (is.na(oid) || oid <= 0) return()
-    db_exec("UPDATE extension_options SET active=0 WHERE id=?;", list(oid))
-    showNotification("Extension option removed.", type = "message")
-  }, ignoreNULL = TRUE)
+    vals <- c(
+      base_hours=suppressWarnings(as.numeric(input$ext_base_hours_input %||% NA_real_)),
+      base_tokens=suppressWarnings(as.numeric(input$ext_base_tokens_input %||% NA_real_)),
+      exponent=suppressWarnings(as.numeric(input$ext_exponent_input %||% NA_real_)),
+      max_hours=suppressWarnings(as.numeric(input$ext_max_hours_input %||% NA_real_)),
+      step_hours=suppressWarnings(as.numeric(input$ext_step_hours_input %||% NA_real_)))
+    if (any(!is.finite(vals)) || any(vals <= 0)) {
+      showNotification("All pricing values must be positive numbers.", type="error"); return()
+    }
+    if (vals["exponent"] <= 1) {
+      showNotification("The exponent must be greater than 1 so pricing is convex.", type="error"); return()
+    }
+    if (vals["step_hours"] > vals["max_hours"]) {
+      showNotification("The slider increment cannot exceed the maximum hours.", type="error"); return()
+    }
+    shortcuts_text <- trimws(input$ext_shortcuts_input %||% "")
+    shortcuts <- if (nzchar(shortcuts_text))
+      suppressWarnings(as.numeric(trimws(strsplit(shortcuts_text, ",")[[1]]))) else numeric(0)
+    if (any(!is.finite(shortcuts)) || any(shortcuts <= 0) || any(shortcuts > vals["max_hours"]) ||
+        any(abs(shortcuts / vals["step_hours"] - round(shortcuts / vals["step_hours"])) > 1e-8)) {
+      showNotification("Shortcuts must be positive, within the maximum, and aligned to the slider increment.",
+                       type="error"); return()
+    }
+    keys <- c("extension_base_hours", "extension_base_tokens", "extension_cost_exponent",
+              "extension_max_hours", "extension_step_hours")
+    for (i in seq_along(keys))
+      db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES(?,?);",
+              list(keys[i], as.character(vals[i])))
+    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('extension_shortcuts',?);",
+            list(paste(sort(unique(shortcuts)), collapse=",")))
+    rv$extensions_ver <- rv$extensions_ver + 1L
+    showNotification("Extension pricing saved.", type="message")
+  })
 
   observeEvent(input$save_flex_cost_btn, {
     req(rv$is_admin)
@@ -6390,6 +6480,7 @@ server <- function(input, output, session) {
   output$config_panel <- renderUI({
     req(rv$is_admin)
     rv$jobs_ver  # invalidate when any job/category/template/round mutation fires
+    rv$extensions_ver
     act <- input$config_action %||% "jobs"
 
     if (act == "jobs") {
@@ -7040,73 +7131,75 @@ server <- function(input, output, session) {
       )
 
     } else if (act == "extensions") {
-      ps   <- tryCatch(db_query("SELECT * FROM problem_sets ORDER BY original_deadline DESC LIMIT 20;"),
+      rv$extensions_ver
+      ps   <- tryCatch(db_query("SELECT * FROM problem_sets ORDER BY original_deadline DESC;"),
                        error = function(e) data.frame())
-      opts <- tryCatch(db_query("SELECT * FROM extension_options ORDER BY hours DESC;"),
-                       error = function(e) data.frame())
+      pricing <- extension_pricing_settings()
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;",
-                "Extension Options"),
+                "Extension Pricing"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "Define the lengths students can purchase. Label is shown to students; Hours is recorded; Tokens is the cost."),
-        if (nrow(opts)) {
-          tags$table(class = "table table-sm",
-            tags$thead(tags$tr(
-              tags$th("Label"), tags$th("Hours"), tags$th("Tokens"), tags$th("Active"), tags$th("")
-            )),
-            tags$tbody(lapply(seq_len(nrow(opts)), function(i) {
-              r <- opts[i, ]
-              is_active <- isTRUE(as.integer(r$active %||% 1L) == 1L)
-              tags$tr(
-                tags$td(r$label %||% ""),
-                tags$td(sprintf("%g", as.numeric(r$hours))),
-                tags$td(sprintf("%g", as.numeric(r$tokens))),
-                tags$td(if (is_active) "✓" else ""),
-                tags$td(
-                  tags$button(
-                    class = "btn btn-xs btn-outline-danger",
-                    style = "padding:.1rem .35rem;font-size:.72rem;",
-                    onclick = sprintf(
-                      "Shiny.setInputValue('delete_ext_option_btn',%d,{priority:'event'});",
-                      as.integer(r$id)),
-                    "Remove"))
-              )
-            }))
-          )
-        } else div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;", "No extension options yet."),
-        tags$details(
-          tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
-                       "Add option"),
-          div(style = "padding:.5rem 0;",
-            fluidRow(
-              column(3, textInput("new_ext_label", "Label:", placeholder = "e.g. 24-hour")),
-              column(2, numericInput("new_ext_hours", "Hours:", value = 24, min = 0.5, step = 0.5)),
-              column(2, numericInput("new_ext_tokens", "Token cost:", value = 3, min = 1, step = 1)),
-              column(3, tags$br(),
-                     actionButton("add_ext_option_btn", "Add", class = "btn btn-sm btn-primary"))
-            )
-          )
+               "Student cost is ceiling(base tokens × (hours ÷ base hours)^exponent). The exponent must be greater than 1, so cost grows at an increasing rate."),
+        fluidRow(
+          column(3, numericInput("ext_base_hours_input", "Base hours:",
+                                 value=pricing$base_hours, min=.25, step=.25)),
+          column(3, numericInput("ext_base_tokens_input", "Tokens at base:",
+                                 value=pricing$base_tokens, min=.01, step=.25)),
+          column(3, numericInput("ext_exponent_input", "Convexity exponent:",
+                                 value=pricing$exponent, min=1.01, step=.05)),
+          column(3, numericInput("ext_max_hours_input", "Maximum hours:",
+                                 value=pricing$max_hours, min=1, step=1))
         ),
+        fluidRow(
+          column(3, numericInput("ext_step_hours_input", "Slider increment:",
+                                 value=pricing$step_hours, min=.25, step=.25)),
+          column(5, textInput("ext_shortcuts_input", "Shortcut hours (comma-separated):",
+                              value=paste(pricing$shortcuts, collapse=","))),
+          column(4, tags$br(), actionButton("save_extension_pricing_btn", "Save pricing",
+                                            class="btn btn-sm btn-primary"))
+        ),
+        uiOutput("extension_formula_preview"),
         tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Problem Sets"),
+        tags$h6(style = "font-weight:700;color:#951829;", "Assignments"),
         div(style = "margin-top:.25rem;",
           if (nrow(ps)) {
             tags$table(class = "table table-sm",
-              tags$thead(tags$tr(tags$th("Name"), tags$th("Deadline"), tags$th("Active"))),
+              tags$thead(tags$tr(tags$th("Name"), tags$th("Deadline"), tags$th("Solutions posted"),
+                                  tags$th("Active"), tags$th(""))),
               tags$tbody(lapply(seq_len(nrow(ps)), function(i) {
                 r <- ps[i, ]
-                tags$tr(tags$td(r$name), tags$td(r$original_deadline %||% ""),
-                        tags$td(if (isTRUE(as.integer(r$active %||% 1L) == 1L)) "✓" else ""))
+                tags$tr(
+                  tags$td(r$name), tags$td(r$original_deadline %||% ""),
+                  tags$td(r$solutions_posted_at %||% ""),
+                  tags$td(if (isTRUE(as.integer(r$active %||% 1L) == 1L)) "✓" else ""),
+                  tags$td(tags$button(class="btn btn-xs btn-outline-secondary",
+                    style="padding:.1rem .35rem;font-size:.72rem;",
+                    onclick=sprintf("Shiny.setInputValue('edit_problem_set_btn',%d,{priority:'event'});",
+                                    as.integer(r$id)), "Edit")))
               }))
             )
-          } else div(style = "color:#999;", "No problem sets yet.")
+          } else div(style = "color:#999;", "No assignments yet.")
         ),
-        tags$h6(style = "margin-top:.75rem;", "Add Problem Set"),
+        tags$h6(style = "margin-top:.75rem;", "Add Assignment"),
         fluidRow(
           column(5, textInput("new_ps_name", "Name:")),
           column(4, dateInput("new_ps_deadline", "Original deadline:")),
           column(3, tags$br(),
                  actionButton("add_ps_btn", "Add", class = "btn btn-sm btn-primary"))
+        ),
+        tags$details(style="margin-top:.75rem;",
+          tags$summary(style="cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
+                       "Bulk upload assignments"),
+          tags$p(style="color:#555;font-size:.82rem;margin-top:.5rem;",
+                 "Upload or paste CSV with name, original_deadline, solutions_posted_at, and active. An optional id updates that exact assignment; otherwise matching names are updated and new names are added."),
+          downloadButton("dl_problem_sets_template", "Download CSV template",
+                         class="btn btn-sm btn-outline-secondary"),
+          fileInput("problem_sets_csv_file", NULL, accept=c(".csv","text/csv"),
+                    buttonLabel="Choose CSV", placeholder="No file chosen"),
+          textAreaInput("problem_sets_csv_text", "Or paste CSV:", rows=4, width="100%",
+                        placeholder="name,original_deadline,solutions_posted_at,active\nProblem Set 1,2026-09-30,,1"),
+          actionButton("import_problem_sets_btn", "Import assignments",
+                       class="btn btn-sm btn-primary")
         )
       )
 
@@ -7905,6 +7998,18 @@ server <- function(input, output, session) {
         stringsAsFactors = FALSE),
       file, row.names = FALSE)
   )
+  output$dl_problem_sets_template <- downloadHandler(
+    filename = function() "extension_assignments_template.csv",
+    content = function(file) write.csv(
+      data.frame(
+        id = c(NA, NA),
+        name = c("Problem Set 1", "Problem Set 2"),
+        original_deadline = c("2026-09-30", "2026-10-14"),
+        solutions_posted_at = c("", ""),
+        active = c(1, 1),
+        stringsAsFactors = FALSE),
+      file, row.names = FALSE, na = "")
+  )
   output$dl_participation_events <- downloadHandler(
     filename = function() paste0("participation_events_", Sys.Date(), ".csv"),
     content  = function(file) write.csv(tryCatch(db_query(
@@ -8207,8 +8312,122 @@ server <- function(input, output, session) {
     if (!nzchar(nm)) { showNotification("Enter a name.", type = "error"); return() }
     db_exec("INSERT INTO problem_sets(name, original_deadline) VALUES(?,?);",
             list(nm, as.character(input$new_ps_deadline %||% "")))
-    showNotification("Problem set added.", type = "message")
+    rv$extensions_ver <- rv$extensions_ver + 1L
+    showNotification("Assignment added.", type = "message")
   })
+
+  observeEvent(input$edit_problem_set_btn, {
+    req(rv$is_admin)
+    ps_id <- suppressWarnings(as.integer(input$edit_problem_set_btn %||% 0))
+    row <- tryCatch(db_query("SELECT * FROM problem_sets WHERE id=?;", list(ps_id)), error=function(e) data.frame())
+    if (!nrow(row)) { showNotification("Assignment not found.", type="error"); return() }
+    deadline <- trimws(as.character(row$original_deadline[1] %||% ""))
+    solutions <- trimws(as.character(row$solutions_posted_at[1] %||% ""))
+    showModal(modalDialog(
+      title="Edit assignment",
+      hidden(numericInput("edit_ps_id", NULL, value=ps_id)),
+      textInput("edit_ps_name", "Name:", value=row$name[1] %||% ""),
+      dateInput("edit_ps_deadline", "Original deadline:",
+                value=if (nzchar(deadline)) as.Date(substr(deadline, 1, 10)) else NULL),
+      dateInput("edit_ps_solutions", "Solutions posted date (optional):",
+                value=if (nzchar(solutions)) as.Date(substr(solutions, 1, 10)) else NULL),
+      checkboxInput("edit_ps_active", "Available for extension purchases",
+                    value=isTRUE(as.integer(row$active[1] %||% 1L) == 1L)),
+      footer=tagList(modalButton("Cancel"), actionButton("save_problem_set_btn", "Save", class="btn btn-primary")),
+      easyClose=TRUE
+    ))
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$save_problem_set_btn, {
+    req(rv$is_admin)
+    ps_id <- suppressWarnings(as.integer(input$edit_ps_id %||% 0))
+    nm <- trimws(input$edit_ps_name %||% "")
+    if (ps_id <= 0 || !nzchar(nm)) {
+      showNotification("Assignment name is required.", type="error"); return()
+    }
+    db_exec("UPDATE problem_sets SET name=?, original_deadline=?, solutions_posted_at=?, active=? WHERE id=?;",
+            list(nm, as.character(input$edit_ps_deadline %||% ""),
+                 as.character(input$edit_ps_solutions %||% ""),
+                 if (isTRUE(input$edit_ps_active)) 1L else 0L, ps_id))
+    removeModal()
+    rv$extensions_ver <- rv$extensions_ver + 1L
+    showNotification("Assignment updated.", type="message")
+  })
+
+  observeEvent(input$import_problem_sets_btn, {
+    req(rv$is_admin)
+    upload <- input$problem_sets_csv_file
+    pasted <- trimws(input$problem_sets_csv_text %||% "")
+    parsed <- tryCatch({
+      if (!is.null(upload) && nrow(upload) && file.exists(upload$datapath[1]))
+        read.csv(upload$datapath[1], stringsAsFactors=FALSE, check.names=FALSE, na.strings=c("", "NA"))
+      else if (nzchar(pasted))
+        read.csv(text=pasted, stringsAsFactors=FALSE, check.names=FALSE, na.strings=c("", "NA"))
+      else stop("Choose a CSV file or paste CSV data.")
+    }, error=function(e) e)
+    if (inherits(parsed, "error")) {
+      showNotification(paste("Could not read assignments:", conditionMessage(parsed)), type="error", duration=8); return()
+    }
+    if (!nrow(parsed)) { showNotification("The CSV has no assignment rows.", type="error"); return() }
+
+    names(parsed) <- tolower(gsub("[^a-z0-9]+", "_", trimws(names(parsed))))
+    aliases <- c(assignment="name", title="name", deadline="original_deadline",
+                 solutions_posted="solutions_posted_at", solutions_date="solutions_posted_at")
+    for (old in names(aliases))
+      if (old %in% names(parsed) && !aliases[[old]] %in% names(parsed))
+        names(parsed)[names(parsed) == old] <- aliases[[old]]
+    if (!"name" %in% names(parsed)) {
+      showNotification("CSV must include a name column.", type="error"); return()
+    }
+    for (col in c("id", "original_deadline", "solutions_posted_at", "active"))
+      if (!col %in% names(parsed)) parsed[[col]] <- NA
+
+    clean_date <- function(value, label) {
+      text <- trimws(as.character(value %||% ""))
+      if (is.na(value) || !nzchar(text)) return("")
+      date <- suppressWarnings(as.Date(text))
+      if (is.na(date)) stop(sprintf("invalid %s '%s'", label, text))
+      as.character(date)
+    }
+    parse_active <- function(value) {
+      text <- tolower(trimws(as.character(value %||% "")))
+      if (is.na(value) || !nzchar(text)) return(1L)
+      if (text %in% c("1","true","yes","y","active")) return(1L)
+      if (text %in% c("0","false","no","n","inactive")) return(0L)
+      stop(sprintf("invalid active value '%s'", text))
+    }
+
+    imported <- 0L
+    errors <- character(0)
+    for (i in seq_len(nrow(parsed))) {
+      tryCatch({
+        nm <- trimws(as.character(parsed$name[i] %||% ""))
+        if (is.na(parsed$name[i]) || !nzchar(nm)) stop("name is blank")
+        deadline <- clean_date(parsed$original_deadline[i], "original_deadline")
+        solutions <- clean_date(parsed$solutions_posted_at[i], "solutions_posted_at")
+        active <- parse_active(parsed$active[i])
+        ps_id <- suppressWarnings(as.integer(parsed$id[i]))
+        existing <- if (!is.na(ps_id))
+          db_query("SELECT id FROM problem_sets WHERE id=?;", list(ps_id)) else
+          db_query("SELECT id FROM problem_sets WHERE lower(name)=lower(?);", list(nm))
+        if (nrow(existing) > 1) stop("more than one existing assignment has this name; provide id")
+        if (nrow(existing))
+          db_exec("UPDATE problem_sets SET name=?, original_deadline=?, solutions_posted_at=?, active=? WHERE id=?;",
+                  list(nm, deadline, solutions, active, existing$id[1]))
+        else
+          db_exec("INSERT INTO problem_sets(name,original_deadline,solutions_posted_at,active) VALUES(?,?,?,?);",
+                  list(nm, deadline, solutions, active))
+        imported <- imported + 1L
+      }, error=function(e) errors <<- c(errors, sprintf("Row %d: %s", i + 1L, conditionMessage(e))))
+    }
+    if (imported) rv$extensions_ver <- rv$extensions_ver + 1L
+    if (length(errors))
+      showModal(modalDialog(title=sprintf("Imported %d; %d need attention", imported, length(errors)),
+                            tags$ul(lapply(errors, tags$li)), easyClose=TRUE))
+    else showNotification(sprintf("Imported %d assignment%s.", imported, if (imported == 1L) "" else "s"),
+                          type="message")
+  })
+
   observeEvent(input$add_pg_btn, {
     req(rv$is_admin)
     nm <- trimws(input$new_pg_name %||% "")
