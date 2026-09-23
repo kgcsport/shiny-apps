@@ -1488,6 +1488,9 @@ body.tutorial-off .tab-howto, body.tutorial-off .tutorial-note { display:none !i
 .dr { color: #b00020; }
 .profile-panel { background: #fff; border-radius: 10px; padding: 1.1rem;
                  border: 1px solid #e8e8e8; height: 100%; }
+.account-jobs-panel { border-left: 4px solid #951829; height: auto;
+                      margin-bottom: 1rem; }
+.account-jobs-panel h4 { color: #951829; font-weight: 700; margin-top: 0; }
 .grade-section { margin: .25rem 0 1.25rem; }
 .grade-section .sec-label { margin-bottom: .6rem; }
 .grade-overall-row { display:flex; align-items:center; gap:1.25rem; margin-bottom:.85rem; flex-wrap:wrap; }
@@ -1542,6 +1545,9 @@ body.tutorial-off .tab-howto, body.tutorial-off .tutorial-note { display:none !i
                 border: 1px solid #e8e8e8; border-radius: 10px; padding: .75rem;
                 margin-bottom: .8rem; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
 .live-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .65rem; }
+.reveal-action { margin-top:-.7rem; }
+.reveal-action .btn { width:100%; }
+.reveal-hint { color:#888; font-size:.76rem; margin-top:.25rem; }
 .live-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px;
              padding: .75rem .85rem; }
 .live-card-name { font-size: 1.05rem; font-weight: 700; line-height: 1.2; }
@@ -2154,7 +2160,7 @@ server <- function(input, output, session) {
         pending_tokens_expr  <- if (nzchar(pending_join)) "pse.tokens" else "0"
         tryCatch(db_query(sprintf(
           "SELECT ja.id, ja.user_id, u.display_name, u.course, u.section, jp.job_name,
-                  COALESCE(NULLIF(jp.selection_time,''),'start') AS selection_time,
+                  COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time,
                   COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0) AS assigned_wage,
                   %s AS outcome,
                   %s AS tokens_awarded,
@@ -2265,7 +2271,7 @@ server <- function(input, output, session) {
                 END AS assigned_wage,
                 wr.label AS round_label,
                 COALESCE(jp.description,'') AS description,
-                COALESCE(NULLIF(jp.selection_time,''),'start') AS selection_time
+                COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time
          FROM job_assignments ja
          JOIN job_posts jp ON jp.id=ja.job_post_id
          LEFT JOIN job_categories jc ON jc.id=jp.category_id
@@ -2279,7 +2285,10 @@ server <- function(input, output, session) {
               SELECT 1 FROM live_score_events lse
               WHERE lse.job_assignment_id=ja.id
             )
-          ORDER BY ja.created_at DESC LIMIT 1;",
+          ORDER BY CASE
+                     WHEN LOWER(COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start'))
+                          IN ('during','during class') THEN 1 ELSE 0
+                   END, ja.created_at DESC LIMIT 1;",
         list(uid, rid)), error = function(e) data.frame())
 
       all_assign <- tryCatch(db_query(
@@ -2288,7 +2297,7 @@ server <- function(input, output, session) {
                 CASE WHEN COALESCE(ja.outcome,'')<>'' THEN ja.assigned_wage
                      ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
                 END AS assigned_wage,
-                COALESCE(NULLIF(jp.selection_time,''),'start') AS selection_time
+                COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time
          FROM job_assignments ja
          JOIN users u ON u.user_id=ja.user_id
          JOIN job_posts jp ON jp.id=ja.job_post_id
@@ -2326,6 +2335,7 @@ server <- function(input, output, session) {
       posts <- tryCatch(db_query(
         "SELECT jp.id, jp.job_name, jp.slots,
                 COALESCE(jp.description,'') AS description,
+                COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time,
                 COALESCE(jp.wage_override, jc.default_wage) AS wage,
                 jc.name AS category_name,
                 COALESCE(fill.n, 0) AS filled
@@ -2437,8 +2447,14 @@ server <- function(input, output, session) {
     jp     <- jobs_poll()
     mode   <- if (nrow(jp$round)) jp$round$assignment_mode[1] %||% "random" else "random"
     wage_mode <- identical(mode, "wage_bidding")
-    my_assignment_timing <- if (nrow(jp$my_assign)) as.character(jp$my_assign$selection_time[1] %||% "start") else ""
-    if (my_assignment_timing %in% c("any", "during")) my_assignment_timing <- "start"
+    today_my_assign <- if (!is.null(jp$my_assign)) jp$my_assign else data.frame()
+    if (nrow(today_my_assign)) {
+      today_my_assign <- today_my_assign[
+        !norm_key(today_my_assign$selection_time) %in% c("during", "during class"),
+        , drop = FALSE]
+    }
+    my_assignment_timing <- if (nrow(today_my_assign)) as.character(today_my_assign$selection_time[1] %||% "start") else ""
+    if (my_assignment_timing == "any") my_assignment_timing <- "start"
     section_revealed <- FALSE
     reveal_timing <- ""
     if (nrow(jp$round)) {
@@ -2455,6 +2471,17 @@ server <- function(input, output, session) {
     }
     revealed <- isTRUE(section_revealed && identical(my_assignment_timing, reveal_timing))
 
+    today_posts <- if (!is.null(jp$posts)) jp$posts else data.frame()
+    if (nrow(today_posts)) {
+      post_timing <- norm_key(today_posts$selection_time)
+      post_category <- norm_key(today_posts$category_name)
+      post_name <- norm_key(today_posts$job_name)
+      today_posts <- today_posts[
+        !post_timing %in% c("during", "during class") &
+          post_category != "cold call" & !grepl("^cold call", post_name),
+        , drop = FALSE]
+    }
+
     revealed_jobs <- if (!is.null(jp$all_assign)) jp$all_assign else data.frame()
     viewer_course <- trimws(if (isTRUE(rv$is_admin)) rv$active_course %||% "" else rv$course %||% "")
     viewer_section <- trimws(if (isTRUE(rv$is_admin)) rv$active_section %||% "" else rv$section %||% "")
@@ -2467,6 +2494,11 @@ server <- function(input, output, session) {
       revealed_jobs <- revealed_jobs[
         !is.na(revealed_jobs$section) & norm_key(revealed_jobs$section) == norm_key(viewer_section),
         , drop = FALSE]
+    }
+    if (nrow(revealed_jobs)) {
+      timing_key <- norm_key(revealed_jobs$selection_time)
+      revealed_jobs <- revealed_jobs[
+        !timing_key %in% c("during", "during class"), , drop = FALSE]
     }
     if (nrow(revealed_jobs)) {
       timing_key <- norm_key(revealed_jobs$selection_time)
@@ -2560,12 +2592,16 @@ server <- function(input, output, session) {
 
       # My Job Today — only visible once instructor reveals
       div(class = "sec-label", "My Job Today"),
-      if (!revealed) {
+      if (!nrow(today_my_assign)) {
+        div(class = "today-card",
+            style = "color:#888;font-style:italic;",
+            "No assigned job.")
+      } else if (!revealed) {
         div(class = "today-card",
             style = "color:#888;font-style:italic;",
             "Assignments will be revealed by your instructor at the start of class.")
-      } else if (nrow(jp$my_assign)) {
-        r <- jp$my_assign[1, ]
+      } else {
+        r <- today_my_assign[1, ]
         div(class = "job-tile",
           div(class = "job-tile-name", "\U0001f4cb ", r$job_name %||% "—"),
           div(class = "job-tile-meta",
@@ -2575,17 +2611,14 @@ server <- function(input, output, session) {
               else ""),
           job_description_details(r$description, "Instructions")
         )
-      } else {
-        div(style = "color:#999;font-size:.9rem;padding:.4rem 0;",
-            "No assignment for this round yet.")
       },
 
       # Job Pools — always visible; wages shown only in wage-bidding mode
       div(class = "sec-label", "Job Pools"),
-      if (nrow(jp$posts)) {
+      if (nrow(today_posts)) {
         div(class = "pool-grid",
-          lapply(seq_len(nrow(jp$posts)), function(i) {
-            r     <- jp$posts[i, ]
+          lapply(seq_len(nrow(today_posts)), function(i) {
+            r     <- today_posts[i, ]
             fill  <- as.integer(r$filled %||% 0)
             slots <- as.integer(r$slots %||% 0)
             full  <- fill >= slots && slots > 0
@@ -3852,8 +3885,55 @@ server <- function(input, output, session) {
        WHERE p.policy_team=? ORDER BY COALESCE(u.display_name, p.user_id);",
       list(policy_row$policy_team[1])), error = function(e) data.frame()) else data.frame()
 
+    job_history_ui <- div(
+      class = "profile-panel account-jobs-panel",
+      tags$h4("Your Jobs"),
+      tags$p(style = "color:#777;font-size:.82rem;",
+             "Outstanding jobs remain here after later classes are drawn until an outcome is recorded."),
+      if (nrow(job_rows)) {
+        tags$table(class = "table table-sm",
+          tags$thead(tags$tr(
+            tags$th("Job"), tags$th("Status"),
+            tags$th(style = "text-align:right;", "Tokens")
+          )),
+          tags$tbody(lapply(seq_len(nrow(job_rows)), function(i) {
+            r <- job_rows[i, ]
+            state <- assignment_history_state(
+              outcome = r$outcome %||% "",
+              assignment_status = r$assignment_status %||% "assigned",
+              pending_outcome = r$pending_outcome %||% ""
+            )
+            earned <- as.numeric(r$tokens_awarded %||% 0)
+            potential <- suppressWarnings(as.numeric(r$wage %||% NA))
+            token_text <- if (norm_key(r$outcome %||% "") %in% c("complete", "tried", "missed")) {
+              sprintf("%g", earned)
+            } else if (!is.na(potential) && state$code %in% c("outstanding", "pending")) {
+              sprintf("up to %g", potential)
+            } else "—"
+            round_date <- paste(Filter(nzchar, c(
+              as.character(r$round_label %||% ""), as.character(r$job_date %||% "")
+            )), collapse = " · ")
+            tags$tr(
+              tags$td(
+                div(style = "font-weight:600;", r$job %||% ""),
+                div(style = "color:#888;font-size:.78rem;", round_date)
+              ),
+              tags$td(span(class = paste("job-status", paste0("job-status-", state$code)),
+                           state$label)),
+              tags$td(style = "text-align:right;font-size:.82rem;white-space:nowrap;",
+                      token_text)
+            )
+          }))
+        )
+      } else {
+        tags$p(style = "color:#999;font-size:.9em;margin-bottom:0;", "No assigned jobs yet.")
+      }
+    )
+
     tagList(
-      div(class = "tab-howto", "Your token summary, transaction history, and profile."),
+      div(class = "tab-howto", "Your assigned jobs, token summary, transaction history, and profile."),
+
+      job_history_ui,
 
       div(class = "bal-tiles",
         div(class = "bal-tile bal-tile-toke",
@@ -3867,8 +3947,6 @@ server <- function(input, output, session) {
           div(class = "bal-tile-sub",   "after spending")
         )
       ),
-
-      uiOutput("account_grade_breakdown"),
 
       fluidRow(
         column(6,
@@ -3896,7 +3974,7 @@ server <- function(input, output, session) {
           }
         ),
 
-        # ── Right column: profile + job history ──
+        # ── Right column: profile ──
         column(6,
           div(class = "profile-panel",
             tags$h6(style = "color:#951829;font-weight:700;", "Display Name"),
@@ -3923,52 +4001,12 @@ server <- function(input, output, session) {
               )
             } else {
               tags$p(style = "color:#999;font-size:.9em;", "No policy group assigned yet.")
-            },
-            tags$hr(style = "margin:.75rem 0;"),
-            tags$h6(style = "color:#951829;font-weight:700;", "Job History"),
-            tags$p(style = "color:#777;font-size:.8rem;",
-                   "Outstanding jobs stay here after later classes are drawn until an outcome is recorded."),
-            if (nrow(job_rows)) {
-              tags$table(class = "table table-sm",
-                tags$thead(tags$tr(
-                  tags$th("Job"), tags$th("Status"),
-                  tags$th(style = "text-align:right;", "Tokens")
-                )),
-                tags$tbody(lapply(seq_len(nrow(job_rows)), function(i) {
-                  r <- job_rows[i, ]
-                  state <- assignment_history_state(
-                    outcome = r$outcome %||% "",
-                    assignment_status = r$assignment_status %||% "assigned",
-                    pending_outcome = r$pending_outcome %||% ""
-                  )
-                  earned <- as.numeric(r$tokens_awarded %||% 0)
-                  potential <- suppressWarnings(as.numeric(r$wage %||% NA))
-                  token_text <- if (norm_key(r$outcome %||% "") %in% c("complete", "tried", "missed")) {
-                    sprintf("%g", earned)
-                  } else if (!is.na(potential) && state$code %in% c("outstanding", "pending")) {
-                    sprintf("up to %g", potential)
-                  } else "—"
-                  round_date <- paste(Filter(nzchar, c(
-                    as.character(r$round_label %||% ""), as.character(r$job_date %||% "")
-                  )), collapse = " · ")
-                  tags$tr(
-                    tags$td(
-                      div(style = "font-weight:600;", r$job %||% ""),
-                      div(style = "color:#888;font-size:.78rem;", round_date)
-                    ),
-                    tags$td(span(class = paste("job-status", paste0("job-status-", state$code)),
-                                 state$label)),
-                    tags$td(style = "text-align:right;font-size:.82rem;white-space:nowrap;",
-                            token_text)
-                  )
-                }))
-              )
-            } else {
-              tags$p(style = "color:#999;font-size:.9em;", "No job history yet.")
             }
           )
         )
-      )
+      ),
+
+      uiOutput("account_grade_breakdown")
     )
   })
 
@@ -4034,6 +4072,7 @@ server <- function(input, output, session) {
   observeEvent(input$active_section_sel, {
     req(rv$is_admin)
     sec <- input$active_section_sel %||% ""
+    if (identical(norm_key(sec), norm_key(rv$active_section %||% ""))) return()
     rv$active_section <- sec
     db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('active_section',?);",
             list(sec))
@@ -4042,6 +4081,7 @@ server <- function(input, output, session) {
   observeEvent(input$active_course_sel, {
     req(rv$is_admin)
     course <- input$active_course_sel %||% ""
+    if (identical(norm_key(course), norm_key(rv$active_course %||% ""))) return()
     rv$active_course <- course
     rv$active_section <- ""
     db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('active_course',?);",
@@ -5901,6 +5941,30 @@ server <- function(input, output, session) {
 
   # quick_award_btn removed — use Settings → Token Admin for awards
 
+  live_course_values <- function() {
+    tryCatch(sort(unique_ci(db_query(
+      "SELECT DISTINCT course FROM users
+       WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
+         AND COALESCE(is_demo,0)=0 AND trim(COALESCE(course,''))<>'';"
+    )$course)), error = function(e) character(0))
+  }
+
+  live_section_values <- function(course = "") {
+    tryCatch(sort(unique_ci(
+      if (nzchar(course)) {
+        db_query(
+          "SELECT DISTINCT section FROM users
+           WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
+             AND COALESCE(is_demo,0)=0 AND trim(COALESCE(section,''))<>''
+             AND LOWER(course)=LOWER(?);", list(course))$section
+      } else {
+        db_query(
+          "SELECT DISTINCT section FROM users
+           WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
+             AND COALESCE(is_demo,0)=0 AND trim(COALESCE(section,''))<>'';")$section
+      }
+    )), error = function(e) character(0))
+  }
   # ── Live Tracker tab (admin) ──────────────────────────────────────────────────
   output$live_tracker_tab <- renderUI({
     req(rv$authed, rv$is_admin || rv$is_demo)
@@ -5911,21 +5975,10 @@ server <- function(input, output, session) {
     wage_mode <- identical(mode, "wage_bidding")
 
     # Class/section picker data
-    all_courses <- tryCatch(
-      sort(unique_ci(
-        db_query("SELECT DISTINCT course FROM users WHERE COALESCE(active,1)=1;")$course)),
-      error = function(e) character(0))
+    all_courses <- live_course_values()
     course_choices <- c("(All classes)" = "", setNames(all_courses, all_courses))
     cur_course <- rv$active_course %||% ""
-    all_sections <- tryCatch(
-      sort(unique_ci(
-        if (nzchar(cur_course)) {
-          db_query("SELECT DISTINCT section FROM users WHERE COALESCE(active,1)=1 AND LOWER(course)=LOWER(?);",
-                   list(cur_course))$section
-        } else {
-          db_query("SELECT DISTINCT section FROM users WHERE COALESCE(active,1)=1;")$section
-        })),
-      error = function(e) character(0))
+    all_sections <- live_section_values(cur_course)
     sec_choices <- c("(All sections)" = "", setNames(all_sections, all_sections))
     cur_sec <- rv$active_section %||% ""
 
@@ -6163,26 +6216,25 @@ server <- function(input, output, session) {
                 actionButton("preview_draw_btn", "\U0001f441 Preview",
                              class = "btn btn-outline-secondary btn-sm",
                              title = "Preview assignments without saving")),
-              column(3,
+              column(4,
                 selectInput("section_reveal_timing", "Reveal group:",
                             choices = c("Start of class" = "start",
                                         "End of class" = "end",
                                         "All assignments" = "all"),
-                            selected = selected_reveal_timing, width = "100%")),
-              column(2,
-                if (nzchar(cur_sec)) {
-                  if (section_revealed)
-                    actionButton("toggle_section_reveal_btn", "Hide",
-                                 class = "btn btn-outline-secondary btn-sm",
-                                 title = "Hide the selected assignment group for this section")
-                  else
-                    actionButton("toggle_section_reveal_btn", "Reveal",
-                                 class = "btn btn-success btn-sm",
-                                 title = "Reveal the selected assignment group for this section")
-                } else {
-                  tags$span(style = "color:#999;font-size:.8rem;", "Pick section")
-                }),
-              column(3,
+                            selected = selected_reveal_timing, width = "100%"),
+                div(class = "reveal-action",
+                  actionButton(
+                    "toggle_section_reveal_btn", if (section_revealed) "Hide" else "Reveal",
+                    class = if (section_revealed) "btn btn-outline-secondary btn-sm" else "btn btn-success btn-sm",
+                    title = if (nzchar(cur_sec))
+                      sprintf("%s the selected assignment group for %s",
+                              if (section_revealed) "Hide" else "Reveal", cur_sec)
+                    else "Tap Reveal to choose a section"
+                  )
+                ),
+                if (!nzchar(cur_sec)) div(class = "reveal-hint", "Tap Reveal to choose a section")
+              ),
+              column(4,
                 if (!tok_rev && n_pending > 0)
                   actionButton("release_tokens_btn",
                                "Release",
@@ -9465,7 +9517,21 @@ server <- function(input, output, session) {
   observeEvent(input$toggle_section_reveal_btn, {
     req(rv$is_admin)
     sec <- trimws(rv$active_section %||% "")
-    if (!nzchar(sec)) { showNotification("Pick a section first.", type = "warning"); return() }
+    if (!nzchar(sec)) {
+      sections <- live_section_values(rv$active_course %||% "")
+      if (!length(sections)) {
+        showNotification("No non-demo class sections are available.", type = "warning")
+        return()
+      }
+      showModal(modalDialog(
+        title = "Choose a section",
+        selectInput("reveal_section_prompt", "Reveal jobs for:",
+                    choices = setNames(sections, sections), selected = sections[1]),
+        footer = tagList(modalButton("Cancel"), actionButton("choose_reveal_section_btn", "Select & reveal", class = "btn-primary")),
+        easyClose = TRUE
+      ))
+      return()
+    }
     rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
                         error=function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
@@ -9495,6 +9561,40 @@ server <- function(input, output, session) {
       sprintf("%s assignments %s (%s).", sec, if (new_val == 1L) "revealed" else "hidden",
               scope_label),
       type = "message")
+  }, ignoreNULL = TRUE)
+  observeEvent(input$choose_reveal_section_btn, {
+    req(rv$is_admin)
+    sec <- trimws(input$reveal_section_prompt %||% "")
+    valid_sections <- live_section_values(rv$active_course %||% "")
+    if (!nzchar(sec) || !sec %in% valid_sections) {
+      showNotification("Choose a valid non-demo section.", type = "warning")
+      return()
+    }
+    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                        error=function(e) data.frame())
+    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    scope <- input$section_reveal_timing %||% "start"
+    timings <- reveal_timings_for_scope(scope)
+    rv$active_section <- sec
+    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('active_section',?);",
+            list(sec))
+    updateSelectInput(session, "active_section_sel", selected = sec)
+    for (timing in timings) {
+      db_exec(
+        "INSERT INTO assignment_timing_reveals(round_id, section, revealed, timing, updated_at)
+         VALUES(?,?,1,?,CURRENT_TIMESTAMP)
+         ON CONFLICT(round_id, section, timing)
+         DO UPDATE SET revealed=1,
+                       updated_at=CURRENT_TIMESTAMP;",
+        list(rid_row$id[1], sec, timing))
+    }
+    db_exec("UPDATE arcade_state SET assignments_revealed=0, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    removeModal()
+    scope_label <- switch(scope, end = "end of class", all = "all assignments", "start of class")
+    showNotification(
+      sprintf("%s assignments revealed (%s).", sec, scope_label),
+      type = "message"
+    )
   }, ignoreNULL = TRUE)
 
 }

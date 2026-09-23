@@ -160,6 +160,15 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-23** — Keep the Live Tracker's chosen class and section stable
+  across polling re-renders. Reveal/Hide always targets the selected timing
+  group; when no section is active, Reveal opens a non-demo section picker and
+  applies the reveal immediately.
+
+- **2026-09-23** — Put student job status first on Account, keep grade details
+  below the account/profile content, and reserve Today for start/end jobs.
+  During-class cold calls remain in their dedicated live workflow.
+
 - **2026-09-23** — Preserve assigned jobs as student-visible history across
   later class draws. Derive display state from committed and pending outcomes:
   unscored is Outstanding, complete is Completed, tried is Tried, missed is Not
@@ -298,6 +307,16 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-23** (Codex) - Stabilized Live Tracker class/section selection,
+  filtered demo identities from its pickers, restored a persistent
+  start/end/all Reveal/Hide toggle, and added a section-selection prompt when
+  Reveal is clicked without an active section.
+
+- **2026-09-23** (Codex) - Moved Your Jobs to a prominent Account panel above
+  balances and profile content, moved Grade Breakdown to the bottom, added the
+  explicit "No assigned job." Today state, and removed during-class cold-call
+  assignments from Today's job boxes.
 
 - **2026-09-23** (Codex) - Expanded Account → Job History to 20 assignments
   with round/date context, status badges, pending-review states, and earned or
