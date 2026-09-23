@@ -126,6 +126,16 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_equal(policy$assigned_rank, 1L)
     expect_true(is.na(policy$allocation_seed))
 
+    expect_equal(app$assignment_history_state()$label, "Outstanding")
+    expect_equal(app$assignment_history_state("complete")$label, "Completed")
+    expect_equal(app$assignment_history_state("tried")$label, "Tried")
+    expect_equal(app$assignment_history_state("missed")$label, "Not completed")
+    expect_equal(
+      app$assignment_history_state(pending_outcome = "complete")$label,
+      "Pending: Completed"
+    )
+    expect_equal(app$assignment_history_state(assignment_status = "absent_redrawn")$code, "absent")
+
     expect_match(app$ARCADE_CSS, "min-height: 44px", fixed=TRUE)
     expect_match(app$ARCADE_CSS, "max-width: 1100px", fixed=TRUE)
     expect_match(app$ARCADE_CSS, "overflow-wrap: normal", fixed=TRUE)

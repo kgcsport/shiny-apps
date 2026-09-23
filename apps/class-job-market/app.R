@@ -1529,6 +1529,15 @@ body.tutorial-off .tab-howto, body.tutorial-off .tutorial-note { display:none !i
 .jm-bid-label { flex: 1; font-size: .9rem; }
 .jm-bid-input { width: 100px; flex-shrink: 0; }
 .jm-history { font-size: .84rem; color: #555; }
+/* ── Student job history ────────────────────────────────────────────────── */
+.job-status { display:inline-block; padding:.2rem .45rem; border-radius:999px;
+              font-size:.76rem; font-weight:700; white-space:nowrap; }
+.job-status-outstanding { background:#fff3cd; color:#725400; }
+.job-status-completed { background:#dff2e5; color:#166534; }
+.job-status-tried { background:#e8f0fe; color:#1e4f91; }
+.job-status-not-completed { background:#f8d7da; color:#842029; }
+.job-status-absent { background:#eceff1; color:#455a64; }
+.job-status-pending { background:#eee8ff; color:#5b3b8c; }
 .live-toolbar { position: sticky; top: 0; z-index: 10; background: #fff;
                 border: 1px solid #e8e8e8; border-radius: 10px; padding: .75rem;
                 margin-bottom: .8rem; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
@@ -1681,6 +1690,40 @@ tutorial_note <- function(title, steps, open = FALSE) {
     tags$summary(title),
     tags$ol(lapply(steps, tags$li))
   )
+}
+
+assignment_history_state <- function(outcome = "", assignment_status = "assigned",
+                                     pending_outcome = "") {
+  outcome <- norm_key(outcome)
+  assignment_status <- norm_key(assignment_status)
+  pending_outcome <- norm_key(pending_outcome)
+
+  outcome_label <- function(value) switch(value,
+    complete = "Completed",
+    tried = "Tried",
+    missed = "Not completed",
+    "Outstanding"
+  )
+
+  if (nzchar(pending_outcome)) {
+    return(list(
+      code = "pending",
+      label = paste0("Pending: ", outcome_label(pending_outcome)),
+      finalized = FALSE
+    ))
+  }
+  if (nzchar(outcome)) {
+    return(list(
+      code = switch(outcome, complete = "completed", tried = "tried",
+                    missed = "not-completed", "outstanding"),
+      label = outcome_label(outcome),
+      finalized = outcome %in% c("complete", "tried", "missed")
+    ))
+  }
+  if (assignment_status %in% c("absent_redrawn", "absent", "redrawn")) {
+    return(list(code = "absent", label = "Absent / redrawn", finalized = TRUE))
+  }
+  list(code = "outstanding", label = "Outstanding", finalized = FALSE)
 }
 
 # ── Server ────────────────────────────────────────────────────────────────────
@@ -3774,15 +3817,28 @@ server <- function(input, output, session) {
   output$account_tab <- renderUI({
     req(rv$authed)
     rv$policy_ver
+    jobs_poll()
     tp  <- token_poll()
     bal <- token_bal()
 
     job_rows <- tryCatch(db_query(
-      "SELECT jp.job_name AS job, ja.created_at AS logged_date, ja.assigned_wage AS wage
+      "SELECT wr.label AS round_label, jp.job_name AS job,
+              COALESCE(NULLIF(ja.scheduled_date,''), substr(ja.created_at,1,10)) AS job_date,
+              ja.assigned_wage AS wage,
+              COALESCE(ja.status,'assigned') AS assignment_status,
+              COALESCE(ja.outcome,'') AS outcome,
+              COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
+              COALESCE((
+                SELECT lse.outcome FROM live_score_events lse
+                WHERE lse.job_assignment_id=ja.id
+                  AND lse.event_kind='assignment' AND lse.committed_at IS NULL
+                ORDER BY lse.id DESC LIMIT 1
+              ),'') AS pending_outcome
        FROM job_assignments ja
+       LEFT JOIN weekly_rounds wr ON wr.id=ja.round_id
        JOIN job_posts jp ON jp.id=ja.job_post_id
        WHERE ja.user_id=?
-       ORDER BY ja.created_at DESC LIMIT 8;",
+       ORDER BY ja.round_id DESC, ja.created_at DESC LIMIT 20;",
       list(rv$user_id)), error = function(e) data.frame())
 
     policy_row <- tryCatch(db_query(
@@ -3870,19 +3926,40 @@ server <- function(input, output, session) {
             },
             tags$hr(style = "margin:.75rem 0;"),
             tags$h6(style = "color:#951829;font-weight:700;", "Job History"),
+            tags$p(style = "color:#777;font-size:.8rem;",
+                   "Outstanding jobs stay here after later classes are drawn until an outcome is recorded."),
             if (nrow(job_rows)) {
               tags$table(class = "table table-sm",
+                tags$thead(tags$tr(
+                  tags$th("Job"), tags$th("Status"),
+                  tags$th(style = "text-align:right;", "Tokens")
+                )),
                 tags$tbody(lapply(seq_len(nrow(job_rows)), function(i) {
                   r <- job_rows[i, ]
+                  state <- assignment_history_state(
+                    outcome = r$outcome %||% "",
+                    assignment_status = r$assignment_status %||% "assigned",
+                    pending_outcome = r$pending_outcome %||% ""
+                  )
+                  earned <- as.numeric(r$tokens_awarded %||% 0)
+                  potential <- suppressWarnings(as.numeric(r$wage %||% NA))
+                  token_text <- if (norm_key(r$outcome %||% "") %in% c("complete", "tried", "missed")) {
+                    sprintf("%g", earned)
+                  } else if (!is.na(potential) && state$code %in% c("outstanding", "pending")) {
+                    sprintf("up to %g", potential)
+                  } else "—"
+                  round_date <- paste(Filter(nzchar, c(
+                    as.character(r$round_label %||% ""), as.character(r$job_date %||% "")
+                  )), collapse = " · ")
                   tags$tr(
-                    tags$td(r$job %||% ""),
-                    tags$td(style = "color:#888;font-size:.83em;",
-                            as.character(r$logged_date %||% "")),
-                    if (!is.null(r$wage) && !is.na(r$wage %||% NA))
-                      tags$td(style = "text-align:right;color:#1a6e3c;font-size:.85em;",
-                              sprintf("%d tokens", as.integer(r$wage)))
-                    else
-                      tags$td("")
+                    tags$td(
+                      div(style = "font-weight:600;", r$job %||% ""),
+                      div(style = "color:#888;font-size:.78rem;", round_date)
+                    ),
+                    tags$td(span(class = paste("job-status", paste0("job-status-", state$code)),
+                                 state$label)),
+                    tags$td(style = "text-align:right;font-size:.82rem;white-space:nowrap;",
+                            token_text)
                   )
                 }))
               )

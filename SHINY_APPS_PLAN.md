@@ -159,6 +159,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 `tests/smoke-class-job-market.R` (run `Rscript tests/smoke-class-job-market.R` from repo root; needs DBI + RSQLite) exercises the seed migration, template auto-copy, idempotence across restarts, bid-lock windows, and all three clearing-wage rules against a scratch SQLite DB by extracting the relevant functions from `app.R`. The testthat suite in `tests/unit/` has 20 pre-existing failures unrelated to this work (regex/locale issues in the test environment).
 
 ## Decision Log
+
+- **2026-09-23** — Preserve assigned jobs as student-visible history across
+  later class draws. Derive display state from committed and pending outcomes:
+  unscored is Outstanding, complete is Completed, tried is Tried, missed is Not
+  completed, and absent redraws remain explicit rather than disappearing.
+
 - **2026-09-21** — Never split short control labels character by character.
   Wrap buttons only between words, keep native file-picker buttons on one line,
   and allocate grid width according to the control rather than leaving unused
@@ -292,6 +298,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-23** (Codex) - Expanded Account → Job History to 20 assignments
+  with round/date context, status badges, pending-review states, and earned or
+  potential token values. Connected Account to the assignment poll so new draws
+  and scores appear automatically, and added status-model regression coverage.
+
 - **2026-09-21** (Codex) - Removed arbitrary mid-word button wrapping, gave the
   Live Tracker Clear/Release slot the unused width beside Reveal/Hide, replaced
   repeated volunteer outcomes with large S/T/M buttons and a visible key,
@@ -463,14 +475,16 @@ k is capped at the number of bids; with no bids the post's default wage is used.
    seconds; confirm automatic reconnect and persisted volunteer scores. At
    110–140% text scale, verify Clear/Hide remain whole, S/T/M stays keyed and
    tappable, file buttons remain horizontal, and checkbox labels have a gap.
-2. Confirm a manual policy-group reassignment appears immediately when viewing
+2. In the deployed demo, draw a later round and confirm the prior job remains in
+   Account with the correct Outstanding, completed, tried, or missed state.
+3. Confirm a manual policy-group reassignment appears immediately when viewing
    that student's Account profile in the deployed demo.
-3. Exercise extension pricing and assignment CSV import in the deployed demo,
+4. Exercise extension pricing and assignment CSV import in the deployed demo,
    including an inactive assignment and a non-default slider increment.
-4. Classroom-test the Cloudflare live poll from two phones and clear the QA
+5. Classroom-test the Cloudflare live poll from two phones and clear the QA
    responses through its password-protected instructor view.
-5. Port `tax-incidence` as the first static-JavaScript visualizer.
-6. Decide whether `review-quiz` and `supply-auction-game` need canonical
+6. Port `tax-incidence` as the first static-JavaScript visualizer.
+7. Decide whether `review-quiz` and `supply-auction-game` need canonical
    participation credit before moving either away from Reclaim.
 
 ## Questions for Kyle
