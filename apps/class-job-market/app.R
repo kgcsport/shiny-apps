@@ -7810,6 +7810,33 @@ server <- function(input, output, session) {
           ") and ", tags$code("assignment"), " (or ", tags$code("assignment_name"), "). ",
           "Optional: ", tags$code("score"), ", ", tags$code("max_score"), ", ",
           tags$code("grade_pct"), " (0–100). Assignment names should match your item names above."),
+        tags$details(
+          open = NA,
+          style = "margin:.4rem 0 .8rem;background:#f8f9fa;border:1px solid #e2e5e8;border-radius:8px;padding:.65rem .8rem;",
+          tags$summary(style = "cursor:pointer;color:#951829;font-weight:700;",
+                       "CSV rubric — one row per student and assignment"),
+          tags$table(class = "table table-sm", style = "font-size:.8rem;margin:.55rem 0 .25rem;",
+            tags$thead(tags$tr(tags$th("Column"), tags$th("Required?"), tags$th("What to enter"))),
+            tags$tbody(
+              tags$tr(tags$td(tags$code("user_id")), tags$td("Yes"),
+                      tags$td("Exact student login/username. The template prefills this; do not replace it with the display name.")),
+              tags$tr(tags$td(tags$code("assignment")), tags$td("Yes"),
+                      tags$td("Exact gradebook item name shown in Section 1. The template prefills it.")),
+              tags$tr(tags$td(tags$code("score")), tags$td("One grading method"),
+                      tags$td("Points earned. Use with a positive max_score.")),
+              tags$tr(tags$td(tags$code("max_score")), tags$td("With score"),
+                      tags$td("Points possible. The template prefills the configured maximum.")),
+              tags$tr(tags$td(tags$code("grade_pct")), tags$td("One grading method"),
+                      tags$td("Percentage from 0 to 100. If supplied, it takes precedence over score/max_score.")),
+              tags$tr(tags$td(tags$code("week_tag")), tags$td("No"),
+                      tags$td("Optional label such as Week 3. The upload-panel value is used when this cell is blank.")),
+              tags$tr(tags$td(tags$code("student_name"), ", ", tags$code("section")), tags$td("No"),
+                      tags$td("Reference-only columns included in the template; the importer ignores them."))
+            )
+          ),
+          tags$p(style = "font-size:.8rem;color:#555;margin:.35rem 0 0;",
+                 tags$b("Fill either"), " score (with max_score) ", tags$b("or"),
+                 " grade_pct. Rows with neither are ignored. Do not rename the headers.")),
         fluidRow(
           column(5, fileInput("grade_file_upload", NULL,
                               accept = c(".csv",".xls",".xlsx"), width = "100%")),
@@ -7847,14 +7874,14 @@ server <- function(input, output, session) {
             fluidRow(
               column(4, selectInput("gb_template_section", "Section:", choices = sec_choices)),
               column(8, tags$br(),
-                downloadButton("dl_gradebook_template", "Blank template",
+                downloadButton("dl_gradebook_template", "Upload template",
                                class = "btn btn-sm btn-outline-secondary"),
                 " ",
                 downloadButton("dl_gradebook_filled", "Filled gradebook",
                                class = "btn btn-sm btn-outline-primary"))
             ),
             tags$p(style = "color:#888;font-size:.78rem;margin-top:.25rem;",
-              tags$b("Blank template:"), " headers + participation pre-filled, manual columns empty. ",
+              tags$b("Upload template:"), " upload-ready long format with user_id, assignment, and max_score pre-filled; enter score or grade_pct. ",
               tags$b("Filled gradebook:"), " all uploaded scores filled in, category averages and weighted total appended."),
 
             # Online grade summary (if grades uploaded)
@@ -8404,76 +8431,65 @@ server <- function(input, output, session) {
   )
 
   output$dl_gradebook_template <- downloadHandler(
-    filename = function() paste0("gradebook_template_", Sys.Date(), ".csv"),
+    filename = function() paste0("gradebook_upload_template_", Sys.Date(), ".csv"),
     content  = function(file) {
-      sec   <- isolate(input$gb_template_section %||% "all")
-      cats  <- tryCatch(db_query(
+      sec <- isolate(input$gb_template_section %||% "all")
+      cats <- tryCatch(db_query(
         "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
         error = function(e) data.frame())
       inames_df <- tryCatch(db_query(
         "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
         error = function(e) data.frame())
       students <- tryCatch({
-        q <- if (identical(sec, "all"))
-          "SELECT u.user_id, u.display_name, u.section,
-                  COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned
-           FROM users u LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
-           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
-           GROUP BY u.user_id ORDER BY u.section, u.display_name;"
+        q <- "SELECT u.user_id, u.display_name, u.section
+              FROM users u
+              WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
+                AND COALESCE(u.is_demo,0)=0"
+        if (identical(sec, "all"))
+          db_query(paste0(q, " ORDER BY u.section, u.display_name;"))
         else
-          "SELECT u.user_id, u.display_name, u.section,
-                  COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned
-           FROM users u LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
-           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
-             AND LOWER(u.section)=LOWER(?)
-           GROUP BY u.user_id ORDER BY u.section, u.display_name;"
-        if (identical(sec, "all")) db_query(q) else db_query(q, list(sec))
+          db_query(paste0(q, " AND LOWER(u.section)=LOWER(?) ORDER BY u.section, u.display_name;"), list(sec))
       }, error = function(e) data.frame())
-      if (!nrow(cats) || !nrow(students)) { write.csv(data.frame(), file, row.names=FALSE); return() }
 
-      # Build column names + max-points row
-      col_names  <- character(0)
-      col_maxpts <- character(0)
-      col_weight <- character(0)
-      for (i in seq_len(nrow(cats))) {
-        r   <- cats[i, ]
-        specs <- gradebook_item_specs(r, inames_df)
-        n   <- nrow(specs)
-        is_part <- identical(r$source %||% "manual", "participation")
-        for (j in seq_len(n)) {
-          nm <- specs$item_name[j]
-          col_names  <- c(col_names,  nm)
-          col_maxpts <- c(col_maxpts, if (is_part) "(from app)" else as.character(as.integer(r$max_points %||% 100)))
-          col_weight <- c(col_weight, sprintf("%.4g%%", as.numeric(specs$item_weight[j] %||% 0)))
-        }
+      empty_template <- data.frame(
+        user_id = character(0), student_name = character(0), section = character(0),
+        assignment = character(0), score = numeric(0), max_score = numeric(0),
+        grade_pct = numeric(0), week_tag = character(0),
+        stringsAsFactors = FALSE)
+      if (!nrow(cats) || !nrow(students)) {
+        write.csv(empty_template, file, row.names = FALSE, na = "")
+        return()
       }
 
-      # Build data frame: header + max-pts row + weight row + student rows
-      n_cols   <- length(col_names)
-      part_idx <- which(sapply(seq_len(nrow(cats)), function(i)
-        identical(cats$source[i] %||% "manual", "participation")))
-      # Column offsets: cumulative item counts per category
-      cat_col_start <- c(1L, cumsum(as.integer(cats$item_count %||% 1)) + 1L)
-
-      out_rows <- vector("list", nrow(students))
-      for (s in seq_len(nrow(students))) {
-        stu   <- students[s, ]
-        cells <- rep("", n_cols)
-        for (pi in part_idx) {
-          span_start <- cat_col_start[pi]
-          span_end   <- cat_col_start[pi] + as.integer(cats$item_count[pi] %||% 1) - 1L
-          cells[span_start:span_end] <- as.character(as.integer(stu$tokens_earned %||% 0))
-        }
-        out_rows[[s]] <- c(stu$display_name %||% stu$user_id, stu$section %||% "", cells)
+      manual_items <- do.call(rbind, lapply(seq_len(nrow(cats)), function(i) {
+        category <- cats[i, ]
+        if (identical(category$source %||% "manual", "participation")) return(NULL)
+        specs <- gradebook_item_specs(category, inames_df)
+        if (!nrow(specs)) return(NULL)
+        data.frame(
+          assignment = as.character(specs$item_name),
+          max_score = rep(as.numeric(category$max_points %||% 100), nrow(specs)),
+          stringsAsFactors = FALSE)
+      }))
+      if (is.null(manual_items) || !nrow(manual_items)) {
+        write.csv(empty_template, file, row.names = FALSE, na = "")
+        return()
       }
 
-      meta_row1 <- c("(Max Points)", "", col_maxpts)
-      meta_row2 <- c("(Weight)",     "", col_weight)
-      header    <- c("Student", "Section", col_names)
-      all_rows  <- c(list(header, meta_row1, meta_row2), out_rows)
-      df_out    <- as.data.frame(do.call(rbind, all_rows), stringsAsFactors = FALSE)
-      colnames(df_out) <- header
-      write.csv(df_out[-1, ], file, row.names = FALSE)
+      rows <- do.call(rbind, lapply(seq_len(nrow(students)), function(i) {
+        student <- students[i, ]
+        data.frame(
+          user_id = rep(as.character(student$user_id), nrow(manual_items)),
+          student_name = rep(as.character(student$display_name %||% student$user_id), nrow(manual_items)),
+          section = rep(as.character(student$section %||% ""), nrow(manual_items)),
+          assignment = manual_items$assignment,
+          score = rep(NA_real_, nrow(manual_items)),
+          max_score = manual_items$max_score,
+          grade_pct = rep(NA_real_, nrow(manual_items)),
+          week_tag = rep("", nrow(manual_items)),
+          stringsAsFactors = FALSE)
+      }))
+      write.csv(rows, file, row.names = FALSE, na = "")
     }
   )
 
@@ -8979,22 +8995,31 @@ server <- function(input, output, session) {
     # Resolve week tag (optional input or file column)
     week_tag_val <- trimws(input$grade_week_tag %||% "")
     n_ins <- 0L
+    n_invalid <- 0L
     for (i in seq_len(nrow(df))) {
-      uid    <- as.character(df[[uid_col]][i])
-      asgn   <- as.character(df[[asgn_col]][i])
+      uid    <- trimws(as.character(df[[uid_col]][i] %||% ""))
+      asgn   <- trimws(as.character(df[[asgn_col]][i] %||% ""))
       scr    <- if (!is.na(scr_col))  suppressWarnings(as.numeric(df[[scr_col]][i]))  else NA_real_
       mx     <- if (!is.na(max_col))  suppressWarnings(as.numeric(df[[max_col]][i]))  else NA_real_
       pct    <- if (!is.na(pct_col))  suppressWarnings(as.numeric(df[[pct_col]][i]))  else NA_real_
-      wk     <- if (!is.na(week_col)) as.character(df[[week_col]][i]) else week_tag_val
+      wk_file <- if (!is.na(week_col)) trimws(as.character(df[[week_col]][i] %||% "")) else ""
+      wk     <- if (nzchar(wk_file)) wk_file else week_tag_val
+      if (!nzchar(uid) || !nzchar(asgn)) { n_invalid <- n_invalid + 1L; next }
+      # Empty template rows are intentional and should not create blank grades.
+      if (all(is.na(c(scr, pct)))) next
       if (is.na(pct) && !is.na(scr) && !is.na(mx) && mx > 0) pct <- round(100 * scr / mx, 2)
-      if (!nzchar(uid) || !nzchar(asgn)) next
+      if (is.na(pct) || pct < 0 || pct > 100) { n_invalid <- n_invalid + 1L; next }
       db_exec(
         "INSERT INTO student_grades(user_id, assignment_name, score, max_score, grade_pct, week_tag)
          VALUES(?,?,?,?,?,?);",
         list(uid, asgn, scr, mx, pct, if (nzchar(wk)) wk else NA_character_))
       n_ins <- n_ins + 1L
     }
-    showNotification(sprintf("Imported %d grade rows.", n_ins), type="message")
+    msg <- sprintf("Imported %d grade row%s.", n_ins, if (n_ins == 1L) "" else "s")
+    if (n_invalid > 0L)
+      msg <- paste0(msg, sprintf(" Skipped %d invalid row%s.", n_invalid,
+                                if (n_invalid == 1L) "" else "s"))
+    showNotification(msg, type = if (n_invalid > 0L) "warning" else "message")
     rv$gradebook_ver <- rv$gradebook_ver + 1L
   }, ignoreNULL=TRUE)
 

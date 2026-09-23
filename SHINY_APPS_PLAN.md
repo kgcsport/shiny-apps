@@ -160,6 +160,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-23** — Grade-upload templates use the same long-form schema as
+  the importer: one row per student and assignment, keyed by persistent
+  `user_id`. Display names and sections are reference-only; grading may use
+  either `score` plus `max_score` or a 0–100 `grade_pct`.
+
 - **2026-09-23** — Keep the Live Tracker's chosen class and section stable
   across polling re-renders. Reveal/Hide always targets the selected timing
   group; when no section is active, Reveal opens a non-demo section picker and
@@ -307,6 +312,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-23** (Codex) - Replaced the incompatible wide blank gradebook
+  download with an upload-ready long-form CSV containing prefilled user IDs,
+  assignment names, and maximum scores. Added an on-screen column rubric and
+  made imports ignore untouched rows, validate percentages, and honor the
+  upload-panel week tag when a row leaves week_tag blank.
 
 - **2026-09-23** (Codex) - Stabilized Live Tracker class/section selection,
   filtered demo identities from its pickers, restored a persistent
