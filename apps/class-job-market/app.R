@@ -401,6 +401,33 @@ db_exec("CREATE TABLE IF NOT EXISTS student_grades(
   week_tag        TEXT,
   uploaded_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+# A grade is the current value for one student and assignment, not an attempt
+# history. Repair legacy duplicates by keeping the most recently inserted row.
+db_exec("DELETE FROM student_grades
+         WHERE id NOT IN (
+           SELECT MAX(id) FROM student_grades
+           GROUP BY LOWER(user_id), LOWER(assignment_name)
+         );")
+db_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_student_grades_student_assignment
+         ON student_grades(user_id COLLATE NOCASE, assignment_name COLLATE NOCASE);")
+
+upsert_student_grade <- function(user_id, assignment_name, score = NA_real_,
+                                 max_score = NA_real_, grade_pct = NA_real_,
+                                 week_tag = NA_character_) {
+  db_exec(
+    "INSERT INTO student_grades(user_id, assignment_name, score, max_score, grade_pct, week_tag)
+     VALUES(?,?,?,?,?,?)
+     ON CONFLICT DO UPDATE SET
+       user_id=excluded.user_id,
+       assignment_name=excluded.assignment_name,
+       score=excluded.score,
+       max_score=excluded.max_score,
+       grade_pct=excluded.grade_pct,
+       week_tag=excluded.week_tag,
+       uploaded_at=CURRENT_TIMESTAMP;",
+    list(user_id, assignment_name, score, max_score, grade_pct, week_tag)
+  )
+}
 db_exec("CREATE TABLE IF NOT EXISTS policy_group_assignments(
   user_id           TEXT PRIMARY KEY,
   policy_team       TEXT NOT NULL,
@@ -7645,6 +7672,21 @@ server <- function(input, output, session) {
         "SELECT DISTINCT section FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND section IS NOT NULL AND section != '';"),
         error = function(e) data.frame())
       sec_choices <- c("All sections" = "all", sort(sections_df$section %||% character(0)))
+      grade_students <- tryCatch(db_query(
+        "SELECT user_id, display_name, section FROM users
+         WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
+         ORDER BY section, display_name;"), error = function(e) data.frame())
+      grade_student_choices <- if (nrow(grade_students)) setNames(
+        grade_students$user_id,
+        sprintf("%s — %s%s",
+                grade_students$display_name %||% grade_students$user_id,
+                grade_students$user_id,
+                ifelse(nzchar(grade_students$section %||% ""),
+                       paste0(" (", grade_students$section, ")"), ""))
+      ) else character(0)
+      manual_grade_items <- manual_grade_catalog()
+      manual_grade_choices <- if (nrow(manual_grade_items))
+        setNames(manual_grade_items$assignment, manual_grade_items$assignment) else character(0)
 
       get_item_names_for_cat <- function(cat_row) {
         gradebook_item_specs(cat_row, inames)$item_name
@@ -7847,6 +7889,35 @@ server <- function(input, output, session) {
                  actionButton("clear_grades_btn", "Clear All",
                               class = "btn btn-sm btn-outline-danger",
                               onclick = "if(!confirm('Delete all grade records?')) return false;"))
+        ),
+
+        tags$details(
+          style = "margin:.65rem 0;",
+          tags$summary(style = "cursor:pointer;color:#951829;font-weight:700;",
+                       "Enter or correct one grade manually"),
+          if (!length(grade_student_choices) || !length(manual_grade_choices)) {
+            tags$p(style = "color:#999;font-size:.85rem;margin-top:.5rem;",
+                   "Add active students and at least one manual gradebook item first.")
+          } else {
+            tagList(
+              fluidRow(
+                column(6, selectizeInput("manual_grade_uid", "Student:",
+                                         choices = grade_student_choices, options = list(maxOptions = 1000))),
+                column(6, selectInput("manual_grade_assignment", "Assignment:",
+                                      choices = manual_grade_choices))
+              ),
+              fluidRow(
+                column(3, textInput("manual_grade_score", "Score:", placeholder = "e.g. 50")),
+                column(3, textInput("manual_grade_max", "Max score:",
+                                    value = as.character(manual_grade_items$max_score[1] %||% 100))),
+                column(3, textInput("manual_grade_pct", "Grade % (optional):", placeholder = "0–100")),
+                column(3, textInput("manual_grade_week", "Week tag (optional):", placeholder = "e.g. Week 3"))
+              ),
+              tags$p(style = "color:#777;font-size:.8rem;margin:.1rem 0 .5rem;",
+                     "Enter score and max score, or enter Grade %. Saving replaces any existing grade for this student and assignment."),
+              actionButton("save_manual_grade_btn", "Save grade", class = "btn btn-sm btn-primary")
+            )
+          }
         ),
 
         tags$hr(),
@@ -8964,6 +9035,28 @@ server <- function(input, output, session) {
                              if (n_released == 1L) "" else "s"), type="message")
   }, ignoreNULL=TRUE)
 
+  manual_grade_catalog <- function() {
+    cats <- tryCatch(db_query(
+      "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
+      error = function(e) data.frame())
+    inames <- tryCatch(db_query(
+      "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
+      error = function(e) data.frame())
+    if (!nrow(cats)) return(data.frame(assignment = character(0), max_score = numeric(0)))
+    rows <- lapply(seq_len(nrow(cats)), function(i) {
+      category <- cats[i, ]
+      if (identical(category$source %||% "manual", "participation")) return(NULL)
+      specs <- gradebook_item_specs(category, inames)
+      if (!nrow(specs)) return(NULL)
+      data.frame(assignment = as.character(specs$item_name),
+                 max_score = rep(as.numeric(category$max_points %||% 100), nrow(specs)),
+                 stringsAsFactors = FALSE)
+    })
+    rows <- Filter(Negate(is.null), rows)
+    if (!length(rows)) return(data.frame(assignment = character(0), max_score = numeric(0)))
+    do.call(rbind, rows)
+  }
+
   # ── Grade upload ──────────────────────────────────────────────────────────────
   observeEvent(input$upload_grades_btn, {
     req(rv$is_admin)
@@ -9009,10 +9102,9 @@ server <- function(input, output, session) {
       if (all(is.na(c(scr, pct)))) next
       if (is.na(pct) && !is.na(scr) && !is.na(mx) && mx > 0) pct <- round(100 * scr / mx, 2)
       if (is.na(pct) || pct < 0 || pct > 100) { n_invalid <- n_invalid + 1L; next }
-      db_exec(
-        "INSERT INTO student_grades(user_id, assignment_name, score, max_score, grade_pct, week_tag)
-         VALUES(?,?,?,?,?,?);",
-        list(uid, asgn, scr, mx, pct, if (nzchar(wk)) wk else NA_character_))
+      upsert_student_grade(
+        uid, asgn, scr, mx, pct, if (nzchar(wk)) wk else NA_character_
+      )
       n_ins <- n_ins + 1L
     }
     msg <- sprintf("Imported %d grade row%s.", n_ins, if (n_ins == 1L) "" else "s")
@@ -9022,6 +9114,73 @@ server <- function(input, output, session) {
     showNotification(msg, type = if (n_invalid > 0L) "warning" else "message")
     rv$gradebook_ver <- rv$gradebook_ver + 1L
   }, ignoreNULL=TRUE)
+
+  observeEvent(list(input$manual_grade_uid, input$manual_grade_assignment), {
+    req(rv$is_admin)
+    uid <- trimws(input$manual_grade_uid %||% "")
+    assignment <- trimws(input$manual_grade_assignment %||% "")
+    if (!nzchar(uid) || !nzchar(assignment)) return()
+    existing <- tryCatch(db_query(
+      "SELECT score, max_score, grade_pct, COALESCE(week_tag,'') AS week_tag
+       FROM student_grades
+       WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?)
+       ORDER BY id DESC LIMIT 1;", list(uid, assignment)), error = function(e) data.frame())
+    catalog <- manual_grade_catalog()
+    configured_max <- catalog$max_score[match(norm_key(assignment), norm_key(catalog$assignment))]
+    if (!length(configured_max) || is.na(configured_max)) configured_max <- 100
+    updateTextInput(session, "manual_grade_score",
+                    value = if (nrow(existing) && !is.na(existing$score[1])) as.character(existing$score[1]) else "")
+    updateTextInput(session, "manual_grade_max",
+                    value = if (nrow(existing) && !is.na(existing$max_score[1])) as.character(existing$max_score[1]) else as.character(configured_max))
+    updateTextInput(session, "manual_grade_pct",
+                    value = if (nrow(existing) && !is.na(existing$grade_pct[1])) as.character(existing$grade_pct[1]) else "")
+    updateTextInput(session, "manual_grade_week",
+                    value = if (nrow(existing)) as.character(existing$week_tag[1] %||% "") else "")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$save_manual_grade_btn, {
+    req(rv$is_admin)
+    uid <- trimws(input$manual_grade_uid %||% "")
+    assignment <- trimws(input$manual_grade_assignment %||% "")
+    student <- tryCatch(db_query(
+      "SELECT user_id FROM users WHERE LOWER(user_id)=LOWER(?)
+       AND COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;",
+      list(uid)), error = function(e) data.frame())
+    catalog <- manual_grade_catalog()
+    matched_assignment <- catalog$assignment[match(norm_key(assignment), norm_key(catalog$assignment))]
+    if (!nrow(student) || !length(matched_assignment) || is.na(matched_assignment)) {
+      showNotification("Choose a valid active student and manual gradebook item.", type = "error")
+      return()
+    }
+    parse_optional_number <- function(value) {
+      value <- trimws(value %||% "")
+      if (!nzchar(value)) return(NA_real_)
+      suppressWarnings(as.numeric(value))
+    }
+    score <- parse_optional_number(input$manual_grade_score)
+    max_score <- parse_optional_number(input$manual_grade_max)
+    grade_pct <- parse_optional_number(input$manual_grade_pct)
+    if (is.na(grade_pct)) {
+      if (is.na(score) || is.na(max_score) || max_score <= 0) {
+        showNotification("Enter Grade %, or enter both Score and a positive Max score.", type = "error")
+        return()
+      }
+      grade_pct <- round(100 * score / max_score, 2)
+    }
+    if (!is.finite(grade_pct) || grade_pct < 0 || grade_pct > 100) {
+      showNotification("Grade % must be between 0 and 100.", type = "error")
+      return()
+    }
+    week_tag <- trimws(input$manual_grade_week %||% "")
+    upsert_student_grade(
+      student$user_id[1], matched_assignment[1], score, max_score, grade_pct,
+      if (nzchar(week_tag)) week_tag else NA_character_
+    )
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification(sprintf("Saved %s for %s: %.1f%%.",
+                             matched_assignment[1], student$user_id[1], grade_pct),
+                     type = "message")
+  }, ignoreNULL = TRUE)
 
   observeEvent(input$clear_grades_btn, {
     req(rv$is_admin)

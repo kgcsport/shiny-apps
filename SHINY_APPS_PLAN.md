@@ -160,6 +160,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-24** — Treat each student-assignment grade as current state, not
+  attempt history. Reimports and manual corrections overwrite the prior value;
+  legacy duplicates collapse to the newest record.
+
 - **2026-09-23** — Grade-upload templates use the same long-form schema as
   the importer: one row per student and assignment, keyed by persistent
   `user_id`. Display names and sections are reference-only; grading may use
@@ -312,6 +316,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-24** (Codex) - Added a case-insensitive unique grade key, startup
+  cleanup that keeps the newest duplicate, CSV upserts, and a manual grade
+  editor that loads and replaces an existing student-assignment grade.
 
 - **2026-09-23** (Codex) - Replaced the incompatible wide blank gradebook
   download with an upload-ready long-form CSV containing prefilled user IDs,
