@@ -1357,6 +1357,24 @@ compute_clearing_wage <- function(category_id, round_id, slots, job_post_id = NA
   as.numeric(bids$min_wage[n])
 }
 
+# Creating the next bidding round must not hide still-current assignments.
+# Prefer the newest round with a pending, displayable assignment; fall back to
+# the newest configured round when no such assignment exists.
+active_assignment_round_id <- function(fallback_round_id = NA_integer_, query_fn = db_query) {
+  row <- tryCatch(query_fn(
+    "SELECT MAX(ja.round_id) AS id
+     FROM job_assignments ja
+     WHERE COALESCE(ja.status,\"assigned\")=\"assigned\"
+       AND COALESCE(ja.outcome,\"\")=\"\"
+       AND COALESCE(ja.display_on_today,1)=1
+       AND (COALESCE(ja.scheduled_date,\"\")=\"\" OR ja.scheduled_date=date(\"now\",\"localtime\"))
+       AND NOT EXISTS (
+         SELECT 1 FROM live_score_events lse WHERE lse.job_assignment_id=ja.id
+       );"), error = function(e) data.frame())
+  if (nrow(row) && !is.na(row$id[1] %||% NA)) as.integer(row$id[1])
+  else as.integer(fallback_round_id %||% NA_integer_)
+}
+
 APP_NAME <- get_config("app_name", "Classroom Economy")
 
 # ── Game catalog ──────────────────────────────────────────────────────────────
@@ -2320,9 +2338,13 @@ server <- function(input, output, session) {
              SELECT current_round FROM olig_settings WHERE id=1);"),
           error = function(e) data.frame())
       } else data.frame()
-      round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
-                        error = function(e) data.frame())
-      rid <- if (nrow(round)) round$id[1] else NA_integer_
+      latest_round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                               error = function(e) data.frame())
+      fallback_rid <- if (nrow(latest_round)) latest_round$id[1] else NA_integer_
+      rid <- active_assignment_round_id(fallback_rid)
+      round <- if (!is.na(rid)) tryCatch(
+        db_query("SELECT * FROM weekly_rounds WHERE id=?;", list(rid)),
+        error = function(e) data.frame()) else data.frame()
       section_reveals <- if (!is.na(rid)) {
         tryCatch(db_query(
           "SELECT round_id, section, COALESCE(revealed,0) AS revealed,
@@ -2466,7 +2488,8 @@ server <- function(input, output, session) {
     },
     valueFunc = function() {
       uid <- rv$user_id
-      empty <- list(round = data.frame(), my_assign = data.frame(),
+      empty <- list(round = data.frame(), assignment_round_id = NA_integer_,
+                    my_assign = data.frame(),
                     all_assign = data.frame(), section_reveals = data.frame(),
                     categories = data.frame(), posts = data.frame(),
                     wage_posts = data.frame(), my_wage_bids = data.frame(),
@@ -2479,6 +2502,7 @@ server <- function(input, output, session) {
 
       if (!nrow(round)) return(empty)
       rid <- round$id[1]
+      assignment_rid <- active_assignment_round_id(rid)
 
       my_assign <- tryCatch(db_query(
         "SELECT jp.job_name,
@@ -2505,7 +2529,7 @@ server <- function(input, output, session) {
                      WHEN LOWER(COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start'))
                           IN ('during','during class') THEN 1 ELSE 0
                    END, ja.created_at DESC LIMIT 1;",
-        list(uid, rid)), error = function(e) data.frame())
+        list(uid, assignment_rid)), error = function(e) data.frame())
 
       all_assign <- tryCatch(db_query(
         "SELECT ja.user_id, u.display_name, u.course, u.section, jp.job_name,
@@ -2528,14 +2552,14 @@ server <- function(input, output, session) {
              WHERE lse.job_assignment_id=ja.id
            )
          ORDER BY u.course, u.section, jp.display_order, u.display_name;",
-        list(rid)), error = function(e) data.frame())
+        list(assignment_rid)), error = function(e) data.frame())
 
       section_reveals <- tryCatch(db_query(
         "SELECT section, COALESCE(timing,'start') AS timing,
                 COALESCE(revealed,0) AS revealed
          FROM assignment_timing_reveals
          WHERE round_id=?;",
-        list(rid)), error = function(e) data.frame())
+        list(assignment_rid)), error = function(e) data.frame())
 
       # Every category with an active post is biddable — including volunteer
       # and cold-call categories, so wage bidding can cover them when it goes
@@ -2611,7 +2635,8 @@ server <- function(input, output, session) {
         "SELECT category_id, tickets FROM application_bids WHERE user_id=? AND round_id=?;",
         list(uid, rid)), error = function(e) data.frame())
 
-      list(round = round, my_assign = my_assign, all_assign = all_assign,
+      list(round = round, assignment_round_id = assignment_rid,
+           my_assign = my_assign, all_assign = all_assign,
            section_reveals = section_reveals, categories = categories,
            posts = posts, wage_posts = wage_posts,
            my_wage_bids = my_wage_bids, my_app_bids = my_app_bids)
@@ -2703,14 +2728,14 @@ server <- function(input, output, session) {
     if (my_assignment_timing == "any") my_assignment_timing <- "start"
     section_revealed <- FALSE
     reveal_timing <- ""
-    if (nrow(jp$round)) {
+    if (!is.na(jp$assignment_round_id %||% NA)) {
       sec <- trimws(rv$section %||% "")
       if (nzchar(sec)) {
         reveal_row <- tryCatch(db_query(
           "SELECT COALESCE(revealed,0) AS revealed, COALESCE(timing,'start') AS timing
            FROM assignment_timing_reveals
            WHERE round_id=? AND LOWER(section)=LOWER(?) AND COALESCE(timing,'start')=?;",
-          list(jp$round$id[1], sec, my_assignment_timing)), error = function(e) data.frame())
+          list(jp$assignment_round_id, sec, my_assignment_timing)), error = function(e) data.frame())
         section_revealed <- isTRUE(nrow(reveal_row) && as.integer(reveal_row$revealed[1] %||% 0L) == 1L)
         if (section_revealed) reveal_timing <- as.character(reveal_row$timing[1] %||% "start")
       }

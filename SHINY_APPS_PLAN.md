@@ -160,6 +160,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-28** — Treat the newest round with pending, displayable job
+  assignments as the active assignment round for Today and Live Tracker. A
+  newer empty bidding round must not hide the current class jobs; Job Market
+  still uses the newest configured round for new bids.
+
 - **2026-09-28** — Store wage bids per individual active job post, including
   regular class roles, volunteer jobs, and cold-call jobs. Retain old
   category-level bids only as a read-compatible migration fallback; draws and
@@ -350,6 +355,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-28** (Codex) - Decoupled the active assignment round from the
+  newest bidding round so creating a future/empty round no longer blanks Today
+  or Live Tracker. Added a regression test that keeps the prior round active
+  until its pending assignment is completed.
 
 - **2026-09-28** (Codex) - Fixed wage bidding to render and save one minimum-
   wage submission for every active job post, calculate draws and clearing wages

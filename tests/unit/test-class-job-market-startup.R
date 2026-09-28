@@ -330,6 +330,38 @@ test_that("custom grade item weights drive category and overall grades", {
   })
 })
 
+test_that("creating a newer empty round does not hide pending Today assignments", {
+  with_app_env({
+    app <- suppressWarnings(source_app())
+    on.exit(suppressWarnings(try(
+      if (!is.null(app$conn) && DBI::dbIsValid(app$conn)) DBI::dbDisconnect(app$conn),
+      silent = TRUE)), add = TRUE)
+    con <- DBI::dbConnect(RSQLite::SQLite(), db_path())
+    on.exit(suppressWarnings(try(DBI::dbDisconnect(con), silent = TRUE)), add = TRUE)
+
+    old_rid <- DBI::dbGetQuery(con, "SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;")$id[1]
+    post_id <- DBI::dbGetQuery(con, "SELECT id FROM job_posts WHERE round_id=? ORDER BY id LIMIT 1;",
+                               params = list(old_rid))$id[1]
+    DBI::dbExecute(con,
+      "INSERT INTO users(user_id,display_name,is_admin,active,is_demo) VALUES(?,?,0,1,0);",
+      params = list("today-test", "Today Test"))
+    DBI::dbExecute(con,
+      "INSERT INTO job_assignments(round_id,user_id,job_post_id,status,outcome,display_on_today) VALUES(?,?,?,\"assigned\",\"\",1);",
+      params = list(old_rid, "today-test", post_id))
+    DBI::dbExecute(con, "INSERT INTO weekly_rounds(label,assignment_mode) VALUES(?,?);",
+                   params = list("Future bidding cycle", "wage_bidding"))
+    new_rid <- DBI::dbGetQuery(con, "SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;")$id[1]
+
+    expect_gt(new_rid, old_rid)
+    expect_equal(app$active_assignment_round_id(new_rid), old_rid)
+
+    DBI::dbExecute(con, "UPDATE job_assignments SET outcome=? WHERE user_id=?;",
+                   params = list("complete", "today-test"))
+    expect_equal(app$active_assignment_round_id(new_rid), new_rid)
+  })
+})
+
+
 test_that("class-job-market migrates an older live DB schema on startup", {
   with_app_env({
     local({
