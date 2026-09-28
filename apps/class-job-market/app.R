@@ -1375,6 +1375,14 @@ active_assignment_round_id <- function(fallback_round_id = NA_integer_, query_fn
   else as.integer(fallback_round_id %||% NA_integer_)
 }
 
+previous_round_id <- function(current_round_id, query_fn = db_query) {
+  if (is.na(current_round_id %||% NA)) return(NA_integer_)
+  row <- tryCatch(query_fn(
+    "SELECT MAX(id) AS id FROM weekly_rounds WHERE id < ?;",
+    list(as.integer(current_round_id))), error = function(e) data.frame())
+  if (nrow(row) && !is.na(row$id[1] %||% NA)) as.integer(row$id[1]) else NA_integer_
+}
+
 APP_NAME <- get_config("app_name", "Classroom Economy")
 
 # ── Game catalog ──────────────────────────────────────────────────────────────
@@ -2491,6 +2499,7 @@ server <- function(input, output, session) {
       empty <- list(round = data.frame(), assignment_round_id = NA_integer_,
                     my_assign = data.frame(),
                     all_assign = data.frame(), section_reveals = data.frame(),
+                    last_class_assign = data.frame(), last_class_reveals = data.frame(),
                     categories = data.frame(), posts = data.frame(),
                     wage_posts = data.frame(), my_wage_bids = data.frame(),
                     my_app_bids = data.frame())
@@ -2502,7 +2511,8 @@ server <- function(input, output, session) {
 
       if (!nrow(round)) return(empty)
       rid <- round$id[1]
-      assignment_rid <- active_assignment_round_id(rid)
+      last_class_rid <- previous_round_id(rid)
+      assignment_rid <- rid
 
       my_assign <- tryCatch(db_query(
         "SELECT jp.job_name,
@@ -2560,6 +2570,30 @@ server <- function(input, output, session) {
          FROM assignment_timing_reveals
          WHERE round_id=?;",
         list(assignment_rid)), error = function(e) data.frame())
+
+      last_class_assign <- if (!is.na(last_class_rid)) tryCatch(db_query(
+        "SELECT ja.user_id, u.display_name, u.course, u.section, jp.job_name,
+                COALESCE(jp.description,\"\") AS description,
+                COALESCE(NULLIF(jp.selection_time,\"\"), NULLIF(jc.selection_time,\"\"), \"start\") AS selection_time,
+                wr.label AS round_label
+         FROM job_assignments ja
+         JOIN users u ON u.user_id=ja.user_id
+         JOIN job_posts jp ON jp.id=ja.job_post_id
+         LEFT JOIN job_categories jc ON jc.id=jp.category_id
+         JOIN weekly_rounds wr ON wr.id=ja.round_id
+         WHERE ja.round_id=?
+           AND COALESCE(ja.status,\"assigned\")=\"assigned\"
+           AND COALESCE(ja.outcome,\"\")=\"\"
+           AND COALESCE(ja.display_on_today,1)=1
+           AND COALESCE(jp.voluntary,COALESCE(jc.voluntary,0),0)=0
+           AND LOWER(COALESCE(NULLIF(jp.selection_time,\"\"), NULLIF(jc.selection_time,\"\"), \"start\"))<>\"volunteer\"
+           AND NOT EXISTS (SELECT 1 FROM live_score_events lse WHERE lse.job_assignment_id=ja.id)
+         ORDER BY u.course, u.section, jp.display_order, u.display_name;",
+        list(last_class_rid)), error = function(e) data.frame()) else data.frame()
+      last_class_reveals <- if (!is.na(last_class_rid)) tryCatch(db_query(
+        "SELECT section, COALESCE(timing,\"start\") AS timing, COALESCE(revealed,0) AS revealed
+         FROM assignment_timing_reveals WHERE round_id=?;",
+        list(last_class_rid)), error = function(e) data.frame()) else data.frame()
 
       # Every category with an active post is biddable — including volunteer
       # and cold-call categories, so wage bidding can cover them when it goes
@@ -2637,7 +2671,9 @@ server <- function(input, output, session) {
 
       list(round = round, assignment_round_id = assignment_rid,
            my_assign = my_assign, all_assign = all_assign,
-           section_reveals = section_reveals, categories = categories,
+           section_reveals = section_reveals,
+           last_class_assign = last_class_assign, last_class_reveals = last_class_reveals,
+           categories = categories,
            posts = posts, wage_posts = wage_posts,
            my_wage_bids = my_wage_bids, my_app_bids = my_app_bids)
     }
@@ -2791,6 +2827,34 @@ server <- function(input, output, session) {
       revealed_jobs <- revealed_jobs[visible, , drop = FALSE]
     }
 
+    last_class_jobs <- if (!is.null(jp$last_class_assign)) jp$last_class_assign else data.frame()
+    if (nrow(last_class_jobs) && nzchar(viewer_course)) {
+      last_class_jobs <- last_class_jobs[
+        !is.na(last_class_jobs$course) & norm_key(last_class_jobs$course) == norm_key(viewer_course), , drop=FALSE]
+    }
+    if (nrow(last_class_jobs) && nzchar(viewer_section)) {
+      last_class_jobs <- last_class_jobs[
+        !is.na(last_class_jobs$section) & norm_key(last_class_jobs$section) == norm_key(viewer_section), , drop=FALSE]
+    }
+    if (nrow(last_class_jobs)) {
+      timing_key <- norm_key(last_class_jobs$selection_time)
+      last_class_jobs$reveal_timing <- ifelse(
+        timing_key %in% c("end", "post", "post class", "after class", "end of class or after class"),
+        "end", "start")
+      sr <- if (!is.null(jp$last_class_reveals)) jp$last_class_reveals else data.frame()
+      visible <- vapply(seq_len(nrow(last_class_jobs)), function(i) {
+        if (!nrow(sr)) return(FALSE)
+        sr_timing <- ifelse(
+          norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
+          "end", "start")
+        any(!is.na(sr$section) &
+            norm_key(sr$section) == norm_key(last_class_jobs$section[i]) &
+            sr_timing == last_class_jobs$reveal_timing[i] &
+            as.integer(sr$revealed %||% 0L) == 1L)
+      }, logical(1))
+      last_class_jobs <- last_class_jobs[visible, , drop=FALSE]
+    }
+
     tagList(
       div(class = "tab-howto",
         "Your daily snapshot: revealed class jobs, active class game, your assignment, and job pools."
@@ -2825,6 +2889,27 @@ server <- function(input, output, session) {
                         job_description_details(r$description, "Instructions")),
                 tags$td(if (identical(as.character(r$reveal_timing %||% "start"), "end"))
                           "End of class" else "Start of class")
+              )
+            }))
+          )
+        )
+      },
+
+      div(class = "sec-label", "Last Class Jobs Still Pending"),
+      if (!nrow(last_class_jobs)) {
+        div(class = "today-card", style = "color:#888;font-style:italic;",
+            "No non-volunteer jobs from the last class are still pending.")
+      } else {
+        div(class = "today-card tracker-wrap",
+          tags$table(class = "table table-sm table-hover", style = "margin-bottom:0;",
+            tags$thead(tags$tr(tags$th("Student"), tags$th("Job"), tags$th("Round"))),
+            tags$tbody(lapply(seq_len(nrow(last_class_jobs)), function(i) {
+              r <- last_class_jobs[i, ]
+              tags$tr(
+                tags$td(r$display_name %||% r$user_id),
+                tags$td(r$job_name %||% "",
+                        job_description_details(r$description, "Instructions")),
+                tags$td(r$round_label %||% "Previous class")
               )
             }))
           )

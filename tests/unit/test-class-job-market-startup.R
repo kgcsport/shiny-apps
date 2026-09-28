@@ -173,6 +173,8 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_match(app_source, "window$scheduled && bl$locked", fixed = TRUE)
     expect_match(app_source, "edit_round_open_time", fixed = TRUE)
     expect_match(app_source, "round_bid_window_values", fixed = TRUE)
+    expect_match(app_source, "Last Class Jobs Still Pending", fixed = TRUE)
+    expect_match(app_source, "COALESCE(jp.voluntary,COALESCE(jc.voluntary,0),0)=0", fixed = TRUE)
     expect_match(app$ARCADE_CSS, ".today-announcement", fixed = TRUE)
     expect_match(app$ARCADE_CSS, ".arc-font-ctrl { display:flex; flex:1; }", fixed=TRUE)
     expect_match(as.character(app$COOKIE_JS), "classJobFontScale", fixed=TRUE)
@@ -330,7 +332,7 @@ test_that("custom grade item weights drive category and overall grades", {
   })
 })
 
-test_that("creating a newer empty round does not hide pending Today assignments", {
+test_that("a newer round retains the prior pending assignment round for Last Class Jobs", {
   with_app_env({
     app <- suppressWarnings(source_app())
     on.exit(suppressWarnings(try(
@@ -353,6 +355,7 @@ test_that("creating a newer empty round does not hide pending Today assignments"
     new_rid <- DBI::dbGetQuery(con, "SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;")$id[1]
 
     expect_gt(new_rid, old_rid)
+    expect_equal(app$previous_round_id(new_rid), old_rid)
     expect_equal(app$active_assignment_round_id(new_rid), old_rid)
 
     DBI::dbExecute(con, "UPDATE job_assignments SET outcome=? WHERE user_id=?;",
