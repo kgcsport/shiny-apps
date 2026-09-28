@@ -173,6 +173,66 @@ demo_settings_panel <- function(is_demo) {
   )
 }
 
+# CREATE TABLE IF NOT EXISTS does not migrate an existing sandbox. Bring the
+# job-market tables up to the columns used by the current Settings and bidding
+# paths before attempting to seed or edit fake jobs.
+reconcile_demo_job_schema <- function(demo_con) {
+  required <- list(
+    job_categories = c(
+      "default_wage REAL DEFAULT 10", "description TEXT",
+      "display_order INTEGER DEFAULT 99", "voluntary INTEGER DEFAULT 0",
+      "in_draw INTEGER DEFAULT 1", "selection_time TEXT",
+      "contribution_type TEXT", "purpose TEXT", "expected_output TEXT",
+      "completion_criterion TEXT"
+    ),
+    weekly_rounds = c(
+      "assignment_mode TEXT DEFAULT 'random'", "bidding_enabled INTEGER DEFAULT 1",
+      "bid_open_date TEXT", "bid_close_date TEXT",
+      "tickets_per_student INTEGER DEFAULT 10", "tokens_revealed INTEGER DEFAULT 1",
+      "tiebreak_method TEXT DEFAULT 'weighted_lottery'"
+    ),
+    job_posts = c(
+      "job_name TEXT", "category_id INTEGER", "slots INTEGER DEFAULT 1",
+      "wage_override REAL", "active INTEGER DEFAULT 1",
+      "display_order INTEGER DEFAULT 99", "voluntary INTEGER DEFAULT 0",
+      "in_draw INTEGER DEFAULT 1", "selection_time TEXT", "description TEXT",
+      "created_at TEXT"
+    ),
+    job_templates = c(
+      "category_id INTEGER", "slots INTEGER DEFAULT 1", "suggested_wage REAL",
+      "active INTEGER DEFAULT 1", "selection_time TEXT",
+      "voluntary INTEGER DEFAULT 0", "in_draw INTEGER DEFAULT 1",
+      "display_order INTEGER DEFAULT 99", "description TEXT", "created_at TEXT"
+    ),
+    job_assignments = c(
+      "job_post_id INTEGER", "assigned_wage REAL", "assignment_mode TEXT",
+      "status TEXT DEFAULT 'assigned'", "outcome TEXT",
+      "tokens_awarded INTEGER DEFAULT 0", "updated_at TEXT",
+      "tokens_credited INTEGER DEFAULT 1", "created_at TEXT",
+      "scheduled_date TEXT", "display_on_today INTEGER DEFAULT 1"
+    ),
+    wage_bids = c("min_wage REAL", "submitted_at TEXT"),
+    application_bids = c("tickets INTEGER DEFAULT 0", "submitted_at TEXT")
+  )
+
+  for (table_name in names(required)) {
+    existing <- DBI::dbGetQuery(
+      demo_con, sprintf("PRAGMA table_info(%s);", table_name))$name
+    if (!length(existing))
+      stop(sprintf("Demo schema is missing required table %s.", table_name))
+    for (column_def in required[[table_name]]) {
+      column_name <- strsplit(column_def, "\\s+")[[1]][1]
+      if (!column_name %in% existing) {
+        DBI::dbExecute(
+          demo_con,
+          sprintf("ALTER TABLE %s ADD COLUMN %s;", table_name, column_def))
+        existing <- c(existing, column_name)
+      }
+    }
+  }
+  invisible(TRUE)
+}
+
 # ── Synthetic job market for the sandbox ─────────────────────────────────────
 # Seed once per disposable demo database. Subsequent browser sessions must not
 # reset these tables or they would erase another student's rehearsal bids.
@@ -267,6 +327,8 @@ demo_db_bootstrap <- function(demo_con, prod_path) {
       "SELECT sql FROM sqlite_master WHERE type IN ('table','index') AND sql IS NOT NULL;")
     for (sql in schema$sql)
       try(DBI::dbExecute(demo_con, sql), silent = TRUE)
+
+    reconcile_demo_job_schema(demo_con)
 
     # CREATE TABLE IF NOT EXISTS does not upgrade an older sandbox schema.
     # Reconcile the login columns explicitly before resetting canonical users;

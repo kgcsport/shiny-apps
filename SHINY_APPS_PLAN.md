@@ -160,6 +160,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-28** — Reconcile every job-market column required by the current
+  sandbox before seeding fake jobs. Copying `CREATE TABLE IF NOT EXISTS` from
+  production is insufficient for older demo tables and must not be treated as
+  a schema migration.
+
 - **2026-09-28** — Seed the demo database once with a synthetic DEMO 101 point-
   bidding round instead of repeatedly mirroring the live job catalog. Later
   demo sessions preserve rehearsal bids and edits; resetting the disposable
@@ -340,6 +345,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-28** (Codex) - Repaired the deployed sandbox upgrade regression:
+  legacy job tables now gain the current category, round, post, template, bid,
+  and assignment columns before fake-job seeding. Added an old-schema
+  reproduction that verifies fake jobs plus the actual Add Job Type and Add Job
+  Post writes, without deleting existing sandbox records.
 
 - **2026-09-28** (Codex) - Added a non-destructive, one-time demo job-market
   seed with four fake bidding categories/posts, an open ten-ticket practice

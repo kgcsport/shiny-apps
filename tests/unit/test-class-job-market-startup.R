@@ -212,6 +212,24 @@ test_that("demo bootstrap upgrades an old users schema and repairs credentials",
     DBI::dbExecute(demo_con, "
       INSERT INTO users(user_id,display_name,pw_hash,is_admin,section)
       VALUES('alice','Old Alice','bad-hash',0,'OLD');")
+    DBI::dbExecute(demo_con, "
+      CREATE TABLE job_categories(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, wage REAL, active INTEGER DEFAULT 1
+      );")
+    DBI::dbExecute(demo_con, "
+      CREATE TABLE weekly_rounds(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT, section TEXT,
+        status TEXT DEFAULT 'open', created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );")
+    DBI::dbExecute(demo_con, "
+      CREATE TABLE job_posts(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER,
+        category_id INTEGER, slots INTEGER DEFAULT 1, wage REAL DEFAULT 0
+      );")
+    DBI::dbExecute(demo_con, "
+      CREATE TABLE job_templates(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT
+      );")
 
     expect_error(app$demo_db_bootstrap(demo_con, db_path()), NA)
     expect_true(all(c("course", "active", "is_demo") %in% cols(demo_con, "users")))
@@ -240,6 +258,24 @@ test_that("demo bootstrap upgrades an old users schema and repairs credentials",
       WHERE name IN ('Recap & Synthesis','Notes & Records',
                      'Examples & Evidence','Critique & Questions');")
     expect_equal(nrow(fake_categories), 4L)
+    expect_true(all(c("default_wage", "description", "voluntary", "in_draw") %in%
+                    cols(demo_con, "job_categories")))
+    expect_true(all(c("job_name", "wage_override", "in_draw", "selection_time", "description") %in%
+                    cols(demo_con, "job_posts")))
+
+    # Exercise the same columns used by Settings -> Add job type / Add job post.
+    DBI::dbExecute(demo_con,
+      "INSERT INTO job_categories(name,default_wage,description,voluntary,in_draw)
+       VALUES('Test Job Type',2,'Added after migration',0,1);")
+    added_category <- DBI::dbGetQuery(demo_con,
+      "SELECT id FROM job_categories WHERE name='Test Job Type';")$id[1]
+    DBI::dbExecute(demo_con,
+      "INSERT INTO job_posts(round_id,job_name,category_id,slots,wage_override,
+                             in_draw,selection_time,description)
+       VALUES(?,?,?,1,2,1,'start','Added after migration');",
+      list(practice$id[1], "Test Sandbox Job", added_category))
+    expect_equal(DBI::dbGetQuery(demo_con,
+      "SELECT COUNT(*) n FROM job_posts WHERE job_name='Test Sandbox Job';")$n[1], 1L)
 
     category_id <- DBI::dbGetQuery(demo_con,
       "SELECT id FROM job_categories WHERE name='Recap & Synthesis';")$id[1]
