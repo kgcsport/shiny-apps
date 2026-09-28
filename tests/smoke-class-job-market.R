@@ -21,7 +21,10 @@ app <- parse("apps/class-job-market/app.R")
 # Pull the definitions we need out of app.R without running the whole app
 wanted <- c("seed_class_job_defaults", "get_setting", "bid_lock_status",
             "volunteer_clearing_wage", "assignment_round_for_timing",
-            "reveal_timings_for_scope")
+            "reveal_timings_for_scope", "round_bid_datetime_value",
+            "round_bid_window_values", "round_bid_window_status",
+            "validate_ticket_allocation", "compute_application_pairs",
+            "ensure_column")
 extracted <- 0
 for (ex in app) {
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") &&
@@ -30,6 +33,42 @@ for (ex in app) {
   }
 }
 stopifnot(extracted == length(wanted))
+
+# ── point-bid validation and roster scoping ─────────────────────────────────
+ok <- validate_ticket_allocation(c(6, 4), 10)
+stopifnot(ok$ok, ok$total == 10L, identical(ok$values, c(6L, 4L)))
+stopifnot(!validate_ticket_allocation(c(10, 1), 10)$ok)
+stopifnot(!validate_ticket_allocation(c(1.5, 2), 10)$ok)
+window_values <- round_bid_window_values("2026-09-25", "09:30", "2026-09-25", "17:15")
+stopifnot(window_values$open_at == "2026-09-25 09:30:00")
+stopifnot(window_values$close_at == "2026-09-25 17:15:00")
+stopifnot(inherits(try(round_bid_window_values("2026-09-25", "17:16",
+                                              "2026-09-25", "17:15"), silent=TRUE),
+                   "try-error"))
+stopifnot(inherits(try(round_bid_datetime_value("2026-09-25", "25:00", "00:00"), silent=TRUE),
+                   "try-error"))
+window_row <- data.frame(bidding_enabled=1L,
+                         bid_open_date="2026-09-25 09:30:00",
+                         bid_close_date="2026-09-25 17:15:00")
+stopifnot(round_bid_window_status(window_row, as.POSIXct("2026-09-25 12:00:00", tz="America/New_York"))$open)
+stopifnot(round_bid_window_status(window_row, as.POSIXct("2026-09-25 08:00:00", tz="America/New_York"))$future)
+stopifnot(round_bid_window_status(window_row, as.POSIXct("2026-09-25 18:00:00", tz="America/New_York"))$past)
+window_row$bidding_enabled <- 0L
+stopifnot(round_bid_window_status(window_row, as.POSIXct("2026-09-25 12:00:00", tz="America/New_York"))$paused)
+legacy_window <- data.frame(bid_open_date="2026-09-20", bid_close_date="2026-09-30")
+stopifnot(round_bid_window_status(legacy_window, as.POSIXct("2026-09-25 12:00:00", tz="America/New_York"))$open)
+invalid_window <- data.frame(bidding_enabled=1L, bid_open_date="not-a-date", bid_close_date="")
+stopifnot(round_bid_window_status(invalid_window)$invalid,
+          !round_bid_window_status(invalid_window)$open)
+
+set.seed(42)
+point_posts <- data.frame(id=c(1L,2L), category_id=c(1L,2L), slots=c(1L,1L), wage=c(2,3))
+point_students <- data.frame(user_id=c("s01-a","s01-b"))
+point_bids <- data.frame(user_id=c("s01-a","s01-b","s02-outsider"),
+                         category_id=c(1L,2L,1L), tickets=c(10L,10L,1000L))
+point_pairs <- compute_application_pairs(point_posts, point_students, point_bids)
+stopifnot(length(point_pairs) == 2L)
+stopifnot(all(vapply(point_pairs, function(x) x[["uid"]], character(1)) %in% point_students$user_id))
 
 # End-of-class jobs, especially lecture notes, belong to the class session
 # that just ended. Timing must never advance their lecture/round index.
@@ -50,6 +89,9 @@ run_exec_calls <- function(ex) {
     if (grepl("job_|weekly_rounds|labor_settings|wage_bids|application_bids|users|arcade|volunteer_demand", sql)) {
       db_exec(sql); sql_run <<- sql_run + 1
     }
+  } else if (fn == "ensure_column" && length(ex) >= 3 &&
+             is.character(ex[[2]]) && is.character(ex[[3]])) {
+    ensure_column(ex[[2]], ex[[3]])
   } else if (fn == "try" && length(ex) >= 2) {
     run_exec_calls(ex[[2]])
   }
@@ -84,15 +126,15 @@ cats <- db_query("SELECT name, voluntary, in_draw, default_wage FROM job_categor
 cat("categories after seed:\n"); print(cats)
 stopifnot(setequal(
   cats$name,
-  c("Class roles", "Answer a question", "Ask a question", "Board work", "My custom category")))
-stopifnot(cats$voluntary[cats$name == "Ask a question"] == 1)
-stopifnot(cats$in_draw[cats$name == "Ask a question"] == 0)
+  c("Class roles", "Volunteer", "Cold Call", "My custom category")))
+stopifnot(cats$voluntary[cats$name == "Volunteer"] == 1)
+stopifnot(cats$in_draw[cats$name == "Volunteer"] == 0)
 
 tpl <- db_query("SELECT name, active, voluntary, in_draw, selection_time, slots, suggested_wage
                  FROM job_templates ORDER BY display_order;")
 cat("\ntemplates after seed:\n"); print(tpl)
 stopifnot(nrow(tpl[tpl$name == "Materials summary" & tpl$active == 1 & tpl$selection_time == "start", ]) == 1)
-stopifnot(nrow(tpl[tpl$name == "Cold call: answer a question" & tpl$active == 0 & tpl$selection_time == "during", ]) == 1)
+stopifnot(nrow(tpl[tpl$name == "Cold call: answer a question" & tpl$active == 1 & tpl$selection_time == "during", ]) == 1)
 stopifnot(nrow(tpl[tpl$name == "Volunteer: ask a question" & tpl$voluntary == 1 & tpl$in_draw == 0 & tpl$slots == 99, ]) == 1)
 # Old 'Opening recap' template deactivated, 'Discussion lead' kept + normalized
 stopifnot(tpl$active[tpl$name == "Opening recap"] == 0)
@@ -105,7 +147,7 @@ stopifnot(nrow(posts[posts$job_name == "Note taker" & posts$in_draw == 1, ]) == 
 stopifnot(nrow(posts[posts$job_name == "Volunteer: answer a question" & posts$voluntary == 1, ]) == 1)
 stopifnot(posts$active[posts$job_name == "Opening recap"] == 0)
 # Cold-call templates are inactive so they should NOT have been copied
-stopifnot(nrow(posts[grepl("^Cold call", posts$job_name), ]) == 0)
+stopifnot(nrow(posts[grepl("^Cold call", posts$job_name) & posts$in_draw == 1, ]) == 2)
 
 # Old category's bid migrated to Class roles, old category deleted
 bid_cat <- db_query("SELECT jc.name FROM wage_bids wb JOIN job_categories jc ON jc.id=wb.category_id WHERE wb.user_id='alice';")
@@ -120,7 +162,7 @@ stopifnot(db_query("SELECT COUNT(*) n FROM job_templates;")$n[1] == n_tpl_before
 tpl2 <- db_query("SELECT name, active, selection_time FROM job_templates;")
 stopifnot(tpl2$active[tpl2$name == "Critic/skeptic"] == 0)          # edit preserved
 stopifnot(tpl2$selection_time[tpl2$name == "Discussion lead"] == "start")
-stopifnot(db_query("SELECT COUNT(*) n FROM job_categories;")$n[1] == 5)
+stopifnot(db_query("SELECT COUNT(*) n FROM job_categories;")$n[1] == 4)
 
 # ── bid_lock_status ──────────────────────────────────────────────────────────
 set_setting <- function(k, v) db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES(?,?);", list(k, v))
@@ -143,7 +185,7 @@ cat("default schedule:", bl$schedule_label, "\n")
 stopifnot(bl$lock_at == "11:00 AM", bl$class_at == "12:00 PM", bl$reopen_at == "5:00 PM")
 
 # ── volunteer_clearing_wage ──────────────────────────────────────────────────
-cat_ans <- db_query("SELECT id FROM job_categories WHERE name='Answer a question';")$id[1]
+cat_ans <- db_query("SELECT id FROM job_categories WHERE name='Volunteer';")$id[1]
 rid2 <- db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;")$id[1]
 for (u in c("u1","u2","u3"))
   db_exec("INSERT INTO wage_bids(round_id, category_id, user_id, min_wage) VALUES(?,?,?,?);",

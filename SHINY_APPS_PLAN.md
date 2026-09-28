@@ -119,7 +119,7 @@ A one-time migration (guarded by the `job_catalog_v2_migrated` key in `labor_set
 
 A **round = one class session**. Settings → Round Setup:
 
-- Create/edit/delete rounds (label, assignment mode, bid window dates, tickets, tie-break, delayed token reveal).
+- Create/edit/delete rounds (label, assignment mode, manual bidding enable/pause, precise opening/closing date and time, tickets, tie-break, delayed token reveal). Newly auto-created rounds start with bidding paused.
 - **Create next round**: increments the label, carries the previous round's mode/tie-break/tickets/token settings, and copies every Auto-copy template as a job post with its timing/wage/slots/voluntary/in-draw flags.
 - Assignment modes: `random` (first ~2 weeks), `application_bidding` (point/ticket bids), `wage_bidding` (lowest-wage bids).
 
@@ -159,6 +159,30 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 `tests/smoke-class-job-market.R` (run `Rscript tests/smoke-class-job-market.R` from repo root; needs DBI + RSQLite) exercises the seed migration, template auto-copy, idempotence across restarts, bid-lock windows, and all three clearing-wage rules against a scratch SQLite DB by extracting the relevant functions from `app.R`. The testthat suite in `tests/unit/` has 20 pre-existing failures unrelated to this work (regex/locale issues in the test environment).
 
 ## Decision Log
+
+- **2026-09-28** — Seed the demo database once with a synthetic DEMO 101 point-
+  bidding round instead of repeatedly mirroring the live job catalog. Later
+  demo sessions preserve rehearsal bids and edits; resetting the disposable
+  demo database recreates the fake market.
+
+- **2026-09-28** — Give each round an explicit instructor-controlled bidding
+  switch plus local opening and closing hours. The switch and window are both
+  enforced on the server; the recurring class-time lock remains an additional
+  safety layer. Auto-created next rounds begin paused.
+
+- **2026-09-28** — Keep one global class announcement in App Settings and show
+  it near the top of Today for every signed-in student. Saving a blank message
+  hides the card; open sessions poll for changes so no restart is required.
+
+- **2026-09-25** — Point/ticket bids are accepted only for the active point-bidding
+  round and open bid window, must be non-negative whole numbers within budget,
+  and apply only to categories with a non-during drawable post. Allocation reads
+  bids only from the instructor's selected course/section roster.
+
+- **2026-09-24** — Route server-funded Demo Kit generations to GPT-6 Luna
+  and user-funded OpenAI generations and exports to GPT-6 Sol. Use the
+  Responses API for direct OpenAI traffic, retain Chat Completions for
+  OpenRouter, and keep GPT-6 Astra configurable as an escalation model.
 
 - **2026-09-24** — Treat each student-assignment grade as current state, not
   attempt history. Reimports and manual corrections overwrite the prior value;
@@ -316,6 +340,34 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-28** (Codex) - Added a non-destructive, one-time demo job-market
+  seed with four fake bidding categories/posts, an open ten-ticket practice
+  round, DEMO 101 rosters, and regressions proving later sessions neither
+  duplicate the round nor erase a submitted rehearsal bid.
+
+- **2026-09-28** (Codex) - Added per-round manual bidding enable/pause controls
+  and exact opening/closing hours, made wage and point saves enforce them,
+  refreshed open student sessions after round edits, preserved legacy date-only
+  windows, and added schema/time-window regressions.
+
+- **2026-09-28** (Codex) - Added a persistent class-announcement editor to App
+  Settings and a student-facing announcement card on Today, including blank-to-
+  clear behavior, live polling, a length guard, and startup/source regressions.
+
+- **2026-09-25** (Codex) - Launch-hardened point bidding: fixed cross-section
+  assignments, removed volunteer/during-only categories from the point form,
+  enforced mode/date/budget rules server-side, prevented failed draws from
+  clearing prior assignments, repaired a missing catalog-seed SQL parameter,
+  and made shared helpers testable in isolated app environments. Expanded the
+  scratch-DB regression test; all 210 unit assertions and the market smoke test
+  pass.
+
+- **2026-09-24** (Codex) - Migrated Demo Kit direct OpenAI traffic to the
+  Responses API with GPT-6 Luna/Sol workload routing, typed streaming and
+  output parsing, environment overrides, updated UI copy, and Node contract
+  tests. Migrated the secondary R generator to GPT-6 and retained OpenRouter
+  on its existing Chat Completions contract.
 
 - **2026-09-24** (Codex) - Added a case-insensitive unique grade key, startup
   cleanup that keeps the newest duplicate, CSV upserts, and a manual grade
@@ -509,21 +561,14 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Phone-test Live Tracker after locking or backgrounding for more than 15
-   seconds; confirm automatic reconnect and persisted volunteer scores. At
-   110–140% text scale, verify Clear/Hide remain whole, S/T/M stays keyed and
-   tappable, file buttons remain horizontal, and checkbox labels have a gap.
-2. In the deployed demo, draw a later round and confirm the prior job remains in
-   Account with the correct Outstanding, completed, tried, or missed state.
-3. Confirm a manual policy-group reassignment appears immediately when viewing
-   that student's Account profile in the deployed demo.
-4. Exercise extension pricing and assignment CSV import in the deployed demo,
-   including an inactive assignment and a non-default slider increment.
-5. Classroom-test the Cloudflare live poll from two phones and clear the QA
-   responses through its password-protected instructor view.
-6. Port `tax-incidence` as the first static-JavaScript visualizer.
-7. Decide whether `review-quiz` and `supply-auction-game` need canonical
-   participation credit before moving either away from Reclaim.
+1. Deploy the hardened class-job-market build to the sandbox and run one
+   two-browser point-bidding rehearsal with students in different sections;
+   also verify that saving and clearing an announcement updates an open Today
+   page within one polling interval.
+2. Back up/export the live SQLite database, then create the next live round in
+   application_bidding mode with the intended dates and ticket budget.
+3. Preview the section-scoped draw before committing it; reveal assignments
+   only after checking the roster, job counts, and point-bid export.
 
 ## Questions for Kyle
 

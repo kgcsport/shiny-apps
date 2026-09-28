@@ -57,6 +57,7 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true(file.exists(db_path()))
     expect_true(all(c("user_id", "display_name", "pw_hash", "course", "section", "active", "is_demo") %in% cols(con, "users")))
     expect_true("assignments_revealed" %in% cols(con, "arcade_state"))
+    expect_true("bidding_enabled" %in% cols(con, "weekly_rounds"))
     expect_true(all(c("round_id", "user_id", "marked_at") %in% cols(con, "round_absences")))
     expect_true(all(c("tokens_awarded", "tokens_credited", "status", "job_post_id",
                       "scheduled_date", "display_on_today") %in% cols(con, "job_assignments")))
@@ -80,10 +81,16 @@ test_that("class-job-market starts against a fresh DB with required tables and c
 
     settings <- DBI::dbGetQuery(con, "
       SELECT key, value FROM labor_settings
-      WHERE key IN ('active_course', 'active_section', 'hide_archived_students')
+      WHERE key IN ('active_course', 'active_section', 'hide_archived_students',
+                    'today_announcement')
       ORDER BY key;")
-    expect_equal(settings$key, c("active_course", "active_section", "hide_archived_students"))
-    expect_equal(settings$value, c("", "", "0"))
+    expect_equal(settings$key, c("active_course", "active_section", "hide_archived_students",
+                                 "today_announcement"))
+    expect_equal(settings$value, c("", "", "0", ""))
+    expect_gte(app$set_setting("today_announcement", "Bring worksheet 3."), 0L)
+    expect_equal(app$get_setting("today_announcement", ""), "Bring worksheet 3.")
+    expect_gte(app$set_setting("today_announcement", ""), 0L)
+    expect_equal(app$get_setting("today_announcement", "missing"), "")
 
     extension_settings <- DBI::dbGetQuery(con, "
       SELECT key, value FROM labor_settings
@@ -157,6 +164,12 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_match(app_source, "upsert_student_grade", fixed = TRUE)
     expect_match(app_source, "save_manual_grade_btn", fixed = TRUE)
     expect_match(app_source, "Saving replaces any existing grade", fixed = TRUE)
+    expect_match(app_source, "save_today_announcement_btn", fixed = TRUE)
+    expect_match(app_source, "announcement_poll <- reactivePoll", fixed = TRUE)
+    expect_match(app_source, "edit_round_bidding_enabled", fixed = TRUE)
+    expect_match(app_source, "edit_round_open_time", fixed = TRUE)
+    expect_match(app_source, "round_bid_window_values", fixed = TRUE)
+    expect_match(app$ARCADE_CSS, ".today-announcement", fixed = TRUE)
     expect_match(app$ARCADE_CSS, ".arc-font-ctrl { display:flex; flex:1; }", fixed=TRUE)
     expect_match(as.character(app$COOKIE_JS), "classJobFontScale", fixed=TRUE)
   })
@@ -203,12 +216,41 @@ test_that("demo bootstrap upgrades an old users schema and repairs credentials",
     expect_error(app$demo_db_bootstrap(demo_con, db_path()), NA)
     expect_true(all(c("course", "active", "is_demo") %in% cols(demo_con, "users")))
     repaired <- DBI::dbGetQuery(demo_con, "
-      SELECT user_id, display_name, pw_hash, is_admin, section, active, is_demo
+      SELECT user_id, display_name, pw_hash, is_admin, course, section, active, is_demo
       FROM users WHERE user_id IN ('alice','instructor') ORDER BY user_id;")
     expect_equal(repaired$user_id, c("alice", "instructor"))
     expect_true(bcrypt::checkpw("test123", repaired$pw_hash[repaired$user_id == "alice"]))
     expect_true(bcrypt::checkpw("admin123", repaired$pw_hash[repaired$user_id == "instructor"]))
+    expect_true(all(repaired$course == "DEMO 101"))
     expect_true(all(repaired$active == 1L))
+
+    practice <- DBI::dbGetQuery(demo_con, "
+      SELECT wr.id, wr.label, wr.assignment_mode, wr.bidding_enabled,
+             COUNT(jp.id) AS jobs
+      FROM weekly_rounds wr
+      LEFT JOIN job_posts jp ON jp.round_id=wr.id
+      WHERE wr.label='Demo Practice Round'
+      GROUP BY wr.id, wr.label, wr.assignment_mode, wr.bidding_enabled;")
+    expect_equal(nrow(practice), 1L)
+    expect_equal(practice$assignment_mode[1], "application_bidding")
+    expect_equal(practice$bidding_enabled[1], 1L)
+    expect_equal(practice$jobs[1], 4L)
+    fake_categories <- DBI::dbGetQuery(demo_con, "
+      SELECT name FROM job_categories
+      WHERE name IN ('Recap & Synthesis','Notes & Records',
+                     'Examples & Evidence','Critique & Questions');")
+    expect_equal(nrow(fake_categories), 4L)
+
+    category_id <- DBI::dbGetQuery(demo_con,
+      "SELECT id FROM job_categories WHERE name='Recap & Synthesis';")$id[1]
+    DBI::dbExecute(demo_con,
+      "INSERT INTO application_bids(round_id,category_id,user_id,tickets)
+       VALUES(?,?,?,?);", list(practice$id[1], category_id, "alice", 10L))
+    expect_error(app$demo_db_bootstrap(demo_con, db_path()), NA)
+    expect_equal(DBI::dbGetQuery(demo_con,
+      "SELECT COUNT(*) n FROM weekly_rounds WHERE label='Demo Practice Round';")$n[1], 1L)
+    expect_equal(DBI::dbGetQuery(demo_con,
+      "SELECT COUNT(*) n FROM application_bids WHERE user_id='alice';")$n[1], 1L)
   })
 })
 
@@ -277,6 +319,7 @@ test_that("class-job-market migrates an older live DB schema on startup", {
 
     expect_true(all(c("pw_hash", "course", "section", "active", "is_demo") %in% cols(con, "users")))
     expect_true("assignments_revealed" %in% cols(con, "arcade_state"))
+    expect_true("bidding_enabled" %in% cols(con, "weekly_rounds"))
     expect_true(all(c("round_id", "user_id", "job_assignment_id", "job_post_id", "event_kind", "outcome", "tokens", "logged_by", "committed_at", "created_at") %in% cols(con, "live_score_events")))
     expect_true(all(c("default_wage", "description", "voluntary", "in_draw") %in% cols(con, "job_categories")))
     expect_true(all(c("job_name", "wage_override", "active", "display_order", "selection_time", "description") %in% cols(con, "job_posts")))
