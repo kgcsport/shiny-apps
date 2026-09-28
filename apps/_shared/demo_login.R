@@ -212,6 +212,8 @@ reconcile_demo_job_schema <- function(demo_con) {
       "scheduled_date TEXT", "display_on_today INTEGER DEFAULT 1"
     ),
     wage_bids = c("min_wage REAL", "submitted_at TEXT"),
+    job_wage_bids = c("round_id INTEGER", "job_post_id INTEGER", "user_id TEXT",
+                      "min_wage REAL", "submitted_at TEXT"),
     application_bids = c("tickets INTEGER DEFAULT 0", "submitted_at TEXT")
   )
 

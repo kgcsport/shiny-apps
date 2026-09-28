@@ -551,6 +551,19 @@ db_exec("CREATE TABLE IF NOT EXISTS wage_bids(
 );")
 ensure_column("wage_bids", "min_wage REAL")
 ensure_column("wage_bids", "submitted_at TEXT")
+# Current wage bidding is per job post. Keep wage_bids as a read-only legacy
+# fallback so category-level bids saved by earlier releases still work.
+db_exec("CREATE TABLE IF NOT EXISTS job_wage_bids(
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id     INTEGER NOT NULL,
+  job_post_id  INTEGER NOT NULL,
+  user_id      TEXT NOT NULL,
+  min_wage     REAL NOT NULL,
+  submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(round_id, job_post_id, user_id)
+);")
+db_exec("CREATE INDEX IF NOT EXISTS idx_job_wage_bids_round_post
+         ON job_wage_bids(round_id, job_post_id);")
 db_exec("CREATE TABLE IF NOT EXISTS application_bids(
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id     INTEGER,
@@ -1288,14 +1301,26 @@ compute_student_grade <- function(uid) {
 #              back to the post's slots when none is posted.
 # k is capped at the number of bids. NA when there are no bids (caller falls
 # back to the post wage).
-volunteer_clearing_wage <- function(round_id, category_id, slots, query_fn = db_query) {
+volunteer_clearing_wage <- function(round_id, category_id, slots, query_fn = db_query,
+                                    job_post_id = NA_integer_) {
   if (is.na(round_id %||% NA) || is.na(category_id %||% NA)) return(NA_real_)
-  bids <- tryCatch(query_fn(
-    "SELECT min_wage FROM wage_bids
-     WHERE round_id=? AND category_id=? AND min_wage IS NOT NULL
-     ORDER BY min_wage ASC;",
+  bids <- if (!is.na(job_post_id %||% NA)) tryCatch(query_fn(
+    "SELECT min_wage FROM job_wage_bids
+     WHERE round_id=? AND job_post_id=? AND min_wage IS NOT NULL
+     ORDER BY min_wage ASC, submitted_at ASC;",
+    list(as.integer(round_id), as.integer(job_post_id))),
+    error = function(e) data.frame()) else tryCatch(query_fn(
+    "SELECT MIN(jwb.min_wage) AS min_wage
+     FROM job_wage_bids jwb JOIN job_posts jp ON jp.id=jwb.job_post_id
+     WHERE jwb.round_id=? AND jp.category_id=? AND jwb.min_wage IS NOT NULL
+     GROUP BY jwb.user_id ORDER BY min_wage ASC;",
     list(as.integer(round_id), as.integer(category_id))),
     error = function(e) data.frame())
+  if (!nrow(bids)) bids <- tryCatch(query_fn(
+    "SELECT min_wage FROM wage_bids
+     WHERE round_id=? AND category_id=? AND min_wage IS NOT NULL
+     ORDER BY min_wage ASC, submitted_at ASC;",
+    list(as.integer(round_id), as.integer(category_id))), error = function(e) data.frame())
   if (!nrow(bids)) return(NA_real_)
   rule <- as.character(get_setting("volunteer_clearing_rule", "lowest"))
   k <- if (identical(rule, "demand")) {
@@ -1311,16 +1336,23 @@ volunteer_clearing_wage <- function(round_id, category_id, slots, query_fn = db_
   as.numeric(bids$min_wage[min(nrow(bids), k)])
 }
 
-compute_clearing_wage <- function(category_id, round_id, slots) {
+compute_clearing_wage <- function(category_id, round_id, slots, job_post_id = NA_integer_) {
   if (is.na(category_id %||% NA) || is.na(round_id %||% NA) || is.na(slots %||% NA))
     return(NA_real_)
   n <- max(1L, as.integer(slots))
-  bids <- tryCatch(db_query(
-    "SELECT min_wage FROM wage_bids
-     WHERE round_id=? AND category_id=?
-     ORDER BY min_wage ASC;",
-    list(as.integer(round_id), as.integer(category_id))),
-    error = function(e) data.frame())
+  bids <- if (!is.na(job_post_id %||% NA)) tryCatch(db_query(
+    "SELECT min_wage FROM job_wage_bids WHERE round_id=? AND job_post_id=?
+     ORDER BY min_wage ASC, submitted_at ASC;",
+    list(as.integer(round_id), as.integer(job_post_id))), error = function(e) data.frame())
+  else tryCatch(db_query(
+    "SELECT MIN(jwb.min_wage) AS min_wage
+     FROM job_wage_bids jwb JOIN job_posts jp ON jp.id=jwb.job_post_id
+     WHERE jwb.round_id=? AND jp.category_id=?
+     GROUP BY jwb.user_id ORDER BY min_wage ASC;",
+    list(as.integer(round_id), as.integer(category_id))), error = function(e) data.frame())
+  if (!nrow(bids)) bids <- tryCatch(db_query(
+    "SELECT min_wage FROM wage_bids WHERE round_id=? AND category_id=? ORDER BY min_wage ASC;",
+    list(as.integer(round_id), as.integer(category_id))), error = function(e) data.frame())
   if (!nrow(bids) || nrow(bids) < n) return(NA_real_)
   as.numeric(bids$min_wage[n])
 }
@@ -2427,14 +2459,18 @@ server <- function(input, output, session) {
                          COALESCE(MAX(created_at || COALESCE(committed_at,'')),'') ts
                   FROM live_score_events;")$ts[1] %||% "",
         error = function(e) "")
-      paste(uid, r1, r2, r3, r4, r5, r6, r7, r8, sep = "|")
+      r9 <- tryCatch(
+        db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(submitted_at),'') ts FROM job_wage_bids;")$ts[1] %||% "",
+        error = function(e) "")
+      paste(uid, r1, r2, r3, r4, r5, r6, r7, r8, r9, sep = "|")
     },
     valueFunc = function() {
       uid <- rv$user_id
       empty <- list(round = data.frame(), my_assign = data.frame(),
                     all_assign = data.frame(), section_reveals = data.frame(),
                     categories = data.frame(), posts = data.frame(),
-                    my_wage_bids = data.frame(), my_app_bids = data.frame())
+                    wage_posts = data.frame(), my_wage_bids = data.frame(),
+                    my_app_bids = data.frame())
       if (is.null(uid)) return(empty)
 
       round <- tryCatch(
@@ -2545,9 +2581,31 @@ server <- function(input, output, session) {
          ORDER BY jp.display_order, jp.job_name;",
         list(rid)), error = function(e) data.frame())
 
+      # Wage bids are per individual active post, including voluntary and
+      # during-class jobs. A legacy category bid pre-fills posts until the
+      # student saves job-specific bids.
+      wage_posts <- tryCatch(db_query(
+        "SELECT jp.id AS job_post_id, jp.job_name, jp.category_id,
+                COALESCE(jp.wage_override, jc.default_wage, 0) AS default_wage,
+                COALESCE(jp.description, jc.description, '') AS description,
+                COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time,
+                jc.name AS category_name
+         FROM job_posts jp
+         LEFT JOIN job_categories jc ON jc.id=jp.category_id
+         WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+         ORDER BY jp.display_order, jp.job_name;",
+        list(rid)), error = function(e) data.frame())
+
       my_wage_bids <- tryCatch(db_query(
-        "SELECT category_id, min_wage FROM wage_bids WHERE user_id=? AND round_id=?;",
-        list(uid, rid)), error = function(e) data.frame())
+        "SELECT jp.id AS job_post_id,
+                COALESCE(jwb.min_wage, wb.min_wage) AS min_wage
+         FROM job_posts jp
+         LEFT JOIN job_wage_bids jwb
+           ON jwb.round_id=jp.round_id AND jwb.job_post_id=jp.id AND jwb.user_id=?
+         LEFT JOIN wage_bids wb
+           ON wb.round_id=jp.round_id AND wb.category_id=jp.category_id AND wb.user_id=?
+         WHERE jp.round_id=?;",
+        list(uid, uid, rid)), error = function(e) data.frame())
 
       my_app_bids <- tryCatch(db_query(
         "SELECT category_id, tickets FROM application_bids WHERE user_id=? AND round_id=?;",
@@ -2555,7 +2613,8 @@ server <- function(input, output, session) {
 
       list(round = round, my_assign = my_assign, all_assign = all_assign,
            section_reveals = section_reveals, categories = categories,
-           posts = posts, my_wage_bids = my_wage_bids, my_app_bids = my_app_bids)
+           posts = posts, wage_posts = wage_posts,
+           my_wage_bids = my_wage_bids, my_app_bids = my_app_bids)
     }
   )
 
@@ -2894,7 +2953,7 @@ server <- function(input, output, session) {
           identical(jp$round$assignment_mode[1] %||% "random", "wage_bidding")) {
         vrid <- jp$round$id[1]
         vposts <- tryCatch(db_query(
-          "SELECT jp2.job_name, jp2.category_id, jp2.slots,
+          "SELECT jp2.id AS job_post_id, jp2.job_name, jp2.category_id, jp2.slots,
                   COALESCE(jp2.wage_override, jc.default_wage, 1) AS fallback_wage
            FROM job_posts jp2
            LEFT JOIN job_categories jc ON jc.id=jp2.category_id
@@ -2912,7 +2971,8 @@ server <- function(input, output, session) {
                 vp <- vposts[vi, ]
                 cw <- volunteer_clearing_wage(vrid, vp$category_id,
                                               as.integer(vp$slots %||% 1L),
-                                              query_fn = db_query)
+                                              query_fn = db_query,
+                                              job_post_id = as.integer(vp$job_post_id))
                 w  <- if (!is.na(cw)) cw else as.numeric(vp$fallback_wage %||% 1)
                 div(style = "display:flex;justify-content:space-between;font-size:.88rem;padding:.15rem 0;",
                     span(vp$job_name %||% ""),
@@ -2964,6 +3024,7 @@ server <- function(input, output, session) {
     r    <- jp$round[1, ]
     mode <- r$assignment_mode %||% "random"
     cats <- jp$categories
+    wage_posts <- if (!is.null(jp$wage_posts)) jp$wage_posts else data.frame()
     if (identical(mode, "application_bidding") && nrow(cats))
       cats <- cats[cats$has_point_draw == 1L, , drop=FALSE]
 
@@ -3006,7 +3067,10 @@ server <- function(input, output, session) {
     if (!window$open) {
       return(div(class = "alert alert-secondary", "Bidding is not open right now."))
     }
-    if (!nrow(cats)) {
+    if (identical(mode, "wage_bidding") && !nrow(wage_posts)) {
+      return(div(style = "color:#999;", "No active jobs available for this round."))
+    }
+    if (identical(mode, "application_bidding") && !nrow(cats)) {
       return(div(style = "color:#999;", "No job types available for this round."))
     }
 
@@ -3014,22 +3078,28 @@ server <- function(input, output, session) {
       tagList(
         lock_note,
         tags$p(style = "color:#555;font-size:.88rem;",
-               "Enter the minimum wage you'd accept for each job type.",
+               "Enter the minimum wage you'd accept for every job.",
                "The instructor takes the cheapest bids and reveals the result in class."),
         div(class = "jm-card",
-          lapply(seq_len(nrow(cats)), function(i) {
-            cat <- cats[i, ]
-            prev_bid <- if (nrow(jp$my_wage_bids)) {
-              m <- jp$my_wage_bids[jp$my_wage_bids$category_id == cat$id, , drop = FALSE]
-              if (nrow(m)) as.numeric(m$min_wage[1]) else as.numeric(cat$default_wage %||% 0)
-            } else as.numeric(cat$default_wage %||% 0)
+          lapply(seq_len(nrow(wage_posts)), function(i) {
+            post <- wage_posts[i, ]
+            prev_bid <- as.numeric(post$default_wage %||% 0)
+            if (nrow(jp$my_wage_bids)) {
+              m <- jp$my_wage_bids[
+                jp$my_wage_bids$job_post_id == post$job_post_id &
+                  !is.na(jp$my_wage_bids$min_wage), , drop = FALSE]
+              if (nrow(m)) prev_bid <- as.numeric(m$min_wage[1])
+            }
             div(class = "jm-bid-row",
               div(class = "jm-bid-label",
-                  cat$name,
-                  if (nzchar(cat$description %||% ""))
-                    tags$small(style = "color:#aaa;display:block;", cat$description)),
+                  post$job_name,
+                  tags$small(style = "color:#888;display:block;",
+                             paste0(post$category_name %||% "Uncategorized", " · ",
+                                    post$selection_time %||% "any")),
+                  if (nzchar(post$description %||% ""))
+                    tags$small(style = "color:#aaa;display:block;", post$description)),
               div(class = "jm-bid-input",
-                  numericInput(paste0("wb_", cat$id), NULL,
+                  numericInput(paste0("wbp_", post$job_post_id), NULL,
                                value = prev_bid, min = 0, step = 0.5))
             )
           }),
@@ -3109,10 +3179,10 @@ server <- function(input, output, session) {
     if (rv$is_demo) {
       showNotification("Demo mode — bids are not saved.", type = "warning"); return()
     }
-    jp   <- isolate(jobs_poll())
-    cats <- jp$categories
-    if (!nrow(jp$round) || !nrow(cats)) {
-      showNotification("No active round.", type = "error"); return()
+    jp <- isolate(jobs_poll())
+    wage_posts <- if (!is.null(jp$wage_posts)) jp$wage_posts else data.frame()
+    if (!nrow(jp$round) || !nrow(wage_posts)) {
+      showNotification("No active jobs are available for wage bidding.", type = "error"); return()
     }
     if (!identical(jp$round$assignment_mode[1] %||% "random", "wage_bidding")) {
       showNotification("This round is not accepting wage bids.", type = "error"); return()
@@ -3126,18 +3196,18 @@ server <- function(input, output, session) {
     if (!window$open) {
       showNotification("The wage-bidding window is closed.", type = "warning"); return()
     }
-    rid  <- jp$round$id[1]
+    rid <- jp$round$id[1]
     saved <- 0L
-    for (i in seq_len(nrow(cats))) {
-      cat_id <- cats$id[i]
-      val    <- input[[paste0("wb_", cat_id)]]
-      if (!is.null(val) && !is.na(val) && as.numeric(val) >= 0) {
+    for (i in seq_len(nrow(wage_posts))) {
+      post_id <- as.integer(wage_posts$job_post_id[i])
+      val <- input[[paste0("wbp_", post_id)]]
+      if (!is.null(val) && !is.na(val) && is.finite(as.numeric(val)) && as.numeric(val) >= 0) {
         db_exec(
-          "INSERT INTO wage_bids(round_id, category_id, user_id, min_wage)
+          "INSERT INTO job_wage_bids(round_id, job_post_id, user_id, min_wage)
            VALUES(?,?,?,?)
-           ON CONFLICT(round_id, category_id, user_id)
+           ON CONFLICT(round_id, job_post_id, user_id)
            DO UPDATE SET min_wage=excluded.min_wage, submitted_at=CURRENT_TIMESTAMP;",
-          list(rid, cat_id, rv$user_id, as.numeric(val)))
+          list(rid, post_id, rv$user_id, as.numeric(val)))
         saved <- saved + 1L
       }
     }
@@ -4338,7 +4408,7 @@ server <- function(input, output, session) {
     "public_good_contributions", "flex_purchases", "token_ledger",
     "olig_submissions", "olig_payouts", "pledges", "participation_events",
     "live_score_events", "student_grades", "job_assignments", "round_absences",
-    "wage_bids", "application_bids"
+    "wage_bids", "job_wage_bids", "application_bids"
   )
 
   update_user_references <- function(old_uid, new_uid, display_name) {
@@ -5183,6 +5253,7 @@ server <- function(input, output, session) {
     pid <- suppressWarnings(as.integer(input$delete_job_post_btn %||% 0))
     if (is.na(pid) || pid <= 0) return()
     db_exec("DELETE FROM job_assignments WHERE job_post_id=?;", list(pid))
+    db_exec("DELETE FROM job_wage_bids WHERE job_post_id=?;", list(pid))
     db_exec("DELETE FROM job_posts WHERE id=?;", list(pid))
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Job post deleted.", type = "message")
@@ -5205,6 +5276,7 @@ server <- function(input, output, session) {
     db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(rid))
     db_exec("DELETE FROM round_absences WHERE round_id=?;", list(rid))
     tryCatch(db_exec("DELETE FROM wage_bids WHERE round_id=?;", list(rid)), error = function(e) NULL)
+    tryCatch(db_exec("DELETE FROM job_wage_bids WHERE round_id=?;", list(rid)), error = function(e) NULL)
     db_exec("DELETE FROM job_posts WHERE round_id=?;", list(rid))
     db_exec("DELETE FROM weekly_rounds WHERE id=?;", list(rid))
     rv$jobs_ver <- rv$jobs_ver + 1L
@@ -6296,7 +6368,8 @@ server <- function(input, output, session) {
       for (vi in seq_len(nrow(vol_cats))) {
         cw <- volunteer_clearing_wage(rid, vol_cats$category_id[vi],
                                       as.integer(vol_cats$slots[vi] %||% 1L),
-                                      query_fn = db_query)
+                                      query_fn = db_query,
+                                      job_post_id = as.integer(vol_cats$id[vi]))
         if (!is.na(cw)) vol_cats$tokens[vi] <- cw
       }
     }
@@ -6304,8 +6377,11 @@ server <- function(input, output, session) {
     # Build student choices: bidders for current round first
     bidder_ids <- if (!is.na(rid) && nrow(students_sec)) {
       tryCatch(db_query(
-        "SELECT DISTINCT user_id FROM wage_bids WHERE round_id=?;",
-        list(rid))$user_id, error = function(e) character(0))
+        "SELECT DISTINCT user_id FROM (
+           SELECT user_id FROM job_wage_bids WHERE round_id=?
+           UNION SELECT user_id FROM wage_bids WHERE round_id=?
+         );",
+        list(rid, rid))$user_id, error = function(e) character(0))
     } else character(0)
       stu_nm  <- students_sec$display_name %||% students_sec$user_id
       stu_sec <- students_sec$section %||% ""
@@ -7101,7 +7177,8 @@ server <- function(input, output, session) {
                 is_act   <- isTRUE(as.integer(r$active)  == 1L)
                 in_draw  <- isTRUE(as.integer(r$in_draw) == 1L)
                 is_vol   <- isTRUE(as.integer(r$voluntary) == 1L) || isTRUE(as.integer(r$cat_voluntary) == 1L)
-                clr_wage <- compute_clearing_wage(r$category_id, rid, as.integer(r$slots %||% 1L))
+                clr_wage <- compute_clearing_wage(r$category_id, rid, as.integer(r$slots %||% 1L),
+                                                  job_post_id = as.integer(r$id))
                 tags$tr(
                   tags$td(r$job_name %||% ""),
                   tags$td(style = "color:#888;font-size:.82em;", r$cat_name %||% "—"),
@@ -8633,13 +8710,21 @@ server <- function(input, output, session) {
   output$dl_wage_bids <- downloadHandler(
     filename = function() paste0("wage_bids_", Sys.Date(), ".csv"),
     content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT wr.label round, u.display_name student, jc.name category,
-              wb.min_wage, wb.submitted_at
+      "SELECT wr.label round, u.display_name student, jp.job_name job,
+              jc.name category, jwb.min_wage, jwb.submitted_at
+       FROM job_wage_bids jwb
+       JOIN users u ON u.user_id=jwb.user_id
+       JOIN job_posts jp ON jp.id=jwb.job_post_id
+       LEFT JOIN job_categories jc ON jc.id=jp.category_id
+       JOIN weekly_rounds wr ON wr.id=jwb.round_id
+       UNION ALL
+       SELECT wr.label round, u.display_name student, '(legacy category bid)' job,
+              jc.name category, wb.min_wage, wb.submitted_at
        FROM wage_bids wb
        JOIN users u ON u.user_id=wb.user_id
        JOIN job_categories jc ON jc.id=wb.category_id
        JOIN weekly_rounds wr ON wr.id=wb.round_id
-       ORDER BY wr.id DESC, u.display_name;"), error = function(e) data.frame()),
+       ORDER BY round DESC, student, job;"), error = function(e) data.frame()),
       file, row.names = FALSE)
   )
   output$dl_tokens <- downloadHandler(
@@ -9211,7 +9296,7 @@ server <- function(input, output, session) {
         !is.na(post_row$category_id[1] %||% NA)) {
       cw <- volunteer_clearing_wage(rid, as.integer(post_row$category_id[1]),
                                     as.integer(post_row$slots[1] %||% 1L),
-                                    query_fn = db_query)
+                                    query_fn = db_query, job_post_id = post_id)
       if (!is.na(cw)) wage_val <- cw
     }
     tokens_to_award <- switch(outcome_type,
@@ -9733,29 +9818,38 @@ server <- function(input, output, session) {
     tryCatch({
       if (mode == "wage_bidding") {
         bids_raw <- db_query(
-          "SELECT user_id, category_id, min_wage FROM wage_bids WHERE round_id=? ORDER BY min_wage ASC;",
-          list(rid))
+          "SELECT jwb.user_id, jwb.job_post_id, jp.category_id, jwb.min_wage, jwb.submitted_at
+           FROM job_wage_bids jwb JOIN job_posts jp ON jp.id=jwb.job_post_id
+           WHERE jwb.round_id=?
+           UNION ALL
+           SELECT wb.user_id, NULL AS job_post_id, wb.category_id, wb.min_wage, wb.submitted_at
+           FROM wage_bids wb WHERE wb.round_id=?;",
+          list(rid, rid))
         eligible_ids <- unique(as.character(students$user_id))
         bids_raw <- bids_raw[bids_raw$user_id %in% eligible_ids, , drop=FALSE]
-        # Apply tiebreak within each tied-wage group per category
-        bids <- if (nrow(bids_raw) && tiebreak != "first_submitted") {
-          do.call(rbind, lapply(split(bids_raw, bids_raw$min_wage), function(grp) {
-            .apply_tiebreak(grp, tiebreak)
-          }))
-        } else bids_raw
         assigned_ids <- character(0)
         result <- list()
         for (i in seq_len(nrow(posts))) {
           p  <- posts[i, ]
           n  <- max(1L, as.integer(p$slots %||% 1L))
-          cat_bids <- if (nrow(bids)) bids[bids$category_id == p$category_id & !bids$user_id %in% assigned_ids, ] else data.frame()
-          pool_ids <- if (nrow(cat_bids)) cat_bids$user_id else character(0)
+          exact <- bids_raw[!is.na(bids_raw$job_post_id) & bids_raw$job_post_id == p$id, , drop=FALSE]
+          legacy <- bids_raw[is.na(bids_raw$job_post_id) & bids_raw$category_id == p$category_id &
+                               !bids_raw$user_id %in% exact$user_id, , drop=FALSE]
+          post_bids <- rbind(exact, legacy)
+          post_bids <- post_bids[!post_bids$user_id %in% assigned_ids, , drop=FALSE]
+          if (nrow(post_bids)) {
+            post_bids <- post_bids[order(post_bids$min_wage, post_bids$submitted_at), , drop=FALSE]
+            wage_levels <- sort(unique(post_bids$min_wage))
+            post_bids <- do.call(rbind, lapply(wage_levels, function(w)
+              .apply_tiebreak(post_bids[post_bids$min_wage == w, , drop=FALSE], tiebreak)))
+          }
+          pool_ids <- if (nrow(post_bids)) post_bids$user_id else character(0)
           other_ids <- setdiff(students$user_id, c(assigned_ids, pool_ids))
           pool_ids  <- c(pool_ids, sample(other_ids))
           drawn <- head(pool_ids, n)
-          wages <- if (nrow(cat_bids)) {
+          wages <- if (nrow(post_bids)) {
             sapply(drawn, function(u) {
-              m <- cat_bids[cat_bids$user_id == u, , drop=FALSE]
+              m <- post_bids[post_bids$user_id == u, , drop=FALSE]
               if (nrow(m)) as.numeric(m$min_wage[1]) else as.numeric(p$wage %||% NA)
             })
           } else rep(as.numeric(p$wage %||% NA), length(drawn))

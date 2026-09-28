@@ -160,6 +160,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-28** — Store wage bids per individual active job post, including
+  regular class roles, volunteer jobs, and cold-call jobs. Retain old
+  category-level bids only as a read-compatible migration fallback; draws and
+  clearing wages use post-specific bids whenever they exist.
+
 - **2026-09-28** — Reconcile every job-market column required by the current
   sandbox before seeding fake jobs. Copying `CREATE TABLE IF NOT EXISTS` from
   production is insufficient for older demo tables and must not be treated as
@@ -345,6 +350,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-28** (Codex) - Fixed wage bidding to render and save one minimum-
+  wage submission for every active job post, calculate draws and clearing wages
+  from those post-specific bids, preserve legacy category bids as a fallback,
+  and added fresh/legacy schema plus same-category per-job regression coverage.
 
 - **2026-09-28** (Codex) - Replaced the misleading bid-open checkbox with
   Open now / Open on schedule / Closed states. Open now now bypasses expired or

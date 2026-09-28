@@ -156,6 +156,16 @@ stopifnot(nrow(posts[grepl("^Cold call", posts$job_name) & posts$in_draw == 1, ]
 bid_cat <- db_query("SELECT jc.name FROM wage_bids wb JOIN job_categories jc ON jc.id=wb.category_id WHERE wb.user_id='alice';")
 stopifnot(identical(bid_cat$name, "Class roles"))
 
+# Individual jobs in the same category retain distinct wage submissions.
+class_posts <- db_query("SELECT jp.id FROM job_posts jp JOIN job_categories jc ON jc.id=jp.category_id WHERE jp.round_id=? AND jc.name='Class roles' AND jp.active=1 ORDER BY jp.id LIMIT 2;", list(rid))
+stopifnot(nrow(class_posts) == 2)
+db_exec("INSERT INTO job_wage_bids(round_id, job_post_id, user_id, min_wage) VALUES(?,?,?,?);",
+        list(rid, class_posts$id[1], "alice", 2))
+db_exec("INSERT INTO job_wage_bids(round_id, job_post_id, user_id, min_wage) VALUES(?,?,?,?);",
+        list(rid, class_posts$id[2], "alice", 7))
+job_bids <- db_query("SELECT job_post_id, min_wage FROM job_wage_bids WHERE round_id=? AND user_id='alice' ORDER BY job_post_id;", list(rid))
+stopifnot(nrow(job_bids) == 2, identical(job_bids$min_wage, c(2, 7)))
+
 # ── Idempotence: instructor edits survive a restart re-seed ──────────────────
 db_exec("UPDATE job_templates SET active=0 WHERE name='Critic/skeptic';")
 db_exec("UPDATE job_templates SET active=1, selection_time='start' WHERE name='Discussion lead';")

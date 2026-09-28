@@ -59,6 +59,8 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true("assignments_revealed" %in% cols(con, "arcade_state"))
     expect_true("bidding_enabled" %in% cols(con, "weekly_rounds"))
     expect_true(all(c("round_id", "user_id", "marked_at") %in% cols(con, "round_absences")))
+    expect_true(all(c("round_id", "job_post_id", "user_id", "min_wage", "submitted_at") %in%
+                      cols(con, "job_wage_bids")))
     expect_true(all(c("tokens_awarded", "tokens_credited", "status", "job_post_id",
                       "scheduled_date", "display_on_today") %in% cols(con, "job_assignments")))
     expect_true(all(c("job_post_id", "event_kind", "tokens", "committed_at") %in% cols(con, "live_score_events")))
@@ -365,6 +367,8 @@ test_that("class-job-market migrates an older live DB schema on startup", {
     expect_true(all(c("assigned_wage", "tokens_awarded", "tokens_credited", "status",
                       "scheduled_date", "display_on_today") %in% cols(con, "job_assignments")))
     expect_true(all(c("min_wage", "submitted_at") %in% cols(con, "wage_bids")))
+    expect_true(all(c("round_id", "job_post_id", "user_id", "min_wage", "submitted_at") %in%
+                      cols(con, "job_wage_bids")))
     expect_true("tickets" %in% cols(con, "application_bids"))
 
     cat_row <- DBI::dbGetQuery(con, "SELECT default_wage FROM job_categories WHERE id=1;")
