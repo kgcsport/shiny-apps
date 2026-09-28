@@ -47,17 +47,20 @@ stopifnot(inherits(try(round_bid_window_values("2026-09-25", "17:16",
                    "try-error"))
 stopifnot(inherits(try(round_bid_datetime_value("2026-09-25", "25:00", "00:00"), silent=TRUE),
                    "try-error"))
-window_row <- data.frame(bidding_enabled=1L,
+window_row <- data.frame(bidding_enabled=2L,
                          bid_open_date="2026-09-25 09:30:00",
                          bid_close_date="2026-09-25 17:15:00")
 stopifnot(round_bid_window_status(window_row, as.POSIXct("2026-09-25 12:00:00", tz="America/New_York"))$open)
 stopifnot(round_bid_window_status(window_row, as.POSIXct("2026-09-25 08:00:00", tz="America/New_York"))$future)
 stopifnot(round_bid_window_status(window_row, as.POSIXct("2026-09-25 18:00:00", tz="America/New_York"))$past)
+window_row$bidding_enabled <- 1L
+manual_status <- round_bid_window_status(window_row, as.POSIXct("2026-09-25 18:00:00", tz="America/New_York"))
+stopifnot(manual_status$open, manual_status$manual_open, !manual_status$past)
 window_row$bidding_enabled <- 0L
 stopifnot(round_bid_window_status(window_row, as.POSIXct("2026-09-25 12:00:00", tz="America/New_York"))$paused)
 legacy_window <- data.frame(bid_open_date="2026-09-20", bid_close_date="2026-09-30")
 stopifnot(round_bid_window_status(legacy_window, as.POSIXct("2026-09-25 12:00:00", tz="America/New_York"))$open)
-invalid_window <- data.frame(bidding_enabled=1L, bid_open_date="not-a-date", bid_close_date="")
+invalid_window <- data.frame(bidding_enabled=2L, bid_open_date="not-a-date", bid_close_date="")
 stopifnot(round_bid_window_status(invalid_window)$invalid,
           !round_bid_window_status(invalid_window)$open)
 

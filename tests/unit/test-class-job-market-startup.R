@@ -167,6 +167,8 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_match(app_source, "save_today_announcement_btn", fixed = TRUE)
     expect_match(app_source, "announcement_poll <- reactivePoll", fixed = TRUE)
     expect_match(app_source, "edit_round_bidding_enabled", fixed = TRUE)
+    expect_match(app_source, "Open now (override schedules)", fixed = TRUE)
+    expect_match(app_source, "window$scheduled && bl$locked", fixed = TRUE)
     expect_match(app_source, "edit_round_open_time", fixed = TRUE)
     expect_match(app_source, "round_bid_window_values", fixed = TRUE)
     expect_match(app$ARCADE_CSS, ".today-announcement", fixed = TRUE)

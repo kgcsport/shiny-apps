@@ -956,7 +956,10 @@ round_bid_window_status <- function(round_row, now = Sys.time(),
       value <- paste(value, if (closing) "23:59:59" else "00:00:00")
     suppressWarnings(as.POSIXct(value, tz = tz, format = "%Y-%m-%d %H:%M:%S"))
   }
-  enabled <- isTRUE(as.integer(round_row$bidding_enabled[1] %||% 1L) == 1L)
+  state <- suppressWarnings(as.integer(round_row$bidding_enabled[1] %||% 1L))
+  if (is.na(state) || !state %in% 0:2) state <- 1L
+  manual_open <- identical(state, 1L)
+  scheduled <- identical(state, 2L)
   open_raw <- trimws(as.character(round_row$bid_open_date %||% ""))
   close_raw <- trimws(as.character(round_row$bid_close_date %||% ""))
   open_at  <- parse_at(open_raw, FALSE)
@@ -964,15 +967,18 @@ round_bid_window_status <- function(round_row, now = Sys.time(),
   invalid <- (length(open_raw) && nzchar(open_raw[1]) && is.na(open_at)) ||
              (length(close_raw) && nzchar(close_raw[1]) && is.na(close_at))
   now <- as.POSIXct(now, tz = tz)
-  is_future <- !invalid && !is.na(open_at) && now < open_at
-  is_past   <- !invalid && !is.na(close_at) && now > close_at
+  is_future <- scheduled && !invalid && !is.na(open_at) && now < open_at
+  is_past   <- scheduled && !invalid && !is.na(close_at) && now > close_at
   list(
-    open = enabled && !invalid && !is_future && !is_past,
-    enabled = enabled,
-    paused = !enabled,
-    invalid = invalid,
-    future = enabled && !invalid && is_future,
-    past = enabled && !invalid && is_past,
+    open = manual_open || (scheduled && !invalid && !is_future && !is_past),
+    enabled = state != 0L,
+    state = state,
+    manual_open = manual_open,
+    scheduled = scheduled,
+    paused = state == 0L,
+    invalid = scheduled && invalid,
+    future = is_future,
+    past = is_past,
     open_at = open_at,
     close_at = close_at,
     open_date = open_at,
@@ -2974,11 +2980,11 @@ server <- function(input, output, session) {
     }
 
     bl <- bid_lock_status()
-    if (bl$locked && !rv$is_admin) {
+    if (window$scheduled && bl$locked && !rv$is_admin) {
       return(div(class = "alert alert-warning",
                  tags$strong("Bidding is locked for today's class. "), bl$locked_msg))
     }
-    lock_note <- if (bl$enabled)
+    lock_note <- if (window$scheduled && bl$enabled)
       div(style = "font-size:.82rem;color:#888;margin-bottom:.5rem;", bl$schedule_label)
     else NULL
 
@@ -3103,10 +3109,6 @@ server <- function(input, output, session) {
     if (rv$is_demo) {
       showNotification("Demo mode — bids are not saved.", type = "warning"); return()
     }
-    bl <- bid_lock_status()
-    if (bl$locked && !rv$is_admin) {
-      showNotification(bl$locked_msg, type = "warning"); return()
-    }
     jp   <- isolate(jobs_poll())
     cats <- jp$categories
     if (!nrow(jp$round) || !nrow(cats)) {
@@ -3117,6 +3119,10 @@ server <- function(input, output, session) {
     }
     window <- round_bid_window_status(
       jp$round[1, ], tz = get_setting("class_tz", "America/New_York"))
+    bl <- bid_lock_status()
+    if (window$scheduled && bl$locked && !rv$is_admin) {
+      showNotification(bl$locked_msg, type = "warning"); return()
+    }
     if (!window$open) {
       showNotification("The wage-bidding window is closed.", type = "warning"); return()
     }
@@ -3145,10 +3151,6 @@ server <- function(input, output, session) {
     if (rv$is_demo) {
       showNotification("Demo mode — bids are not saved.", type = "warning"); return()
     }
-    bl <- bid_lock_status()
-    if (bl$locked && !rv$is_admin) {
-      showNotification(bl$locked_msg, type = "warning"); return()
-    }
     jp   <- isolate(jobs_poll())
     cats <- jp$categories
     if (!nrow(jp$round) || !nrow(cats)) {
@@ -3159,6 +3161,10 @@ server <- function(input, output, session) {
     }
     window <- round_bid_window_status(
       jp$round[1, ], tz = get_setting("class_tz", "America/New_York"))
+    bl <- bid_lock_status()
+    if (window$scheduled && bl$locked && !rv$is_admin) {
+      showNotification(bl$locked_msg, type = "warning"); return()
+    }
     if (!window$open) {
       showNotification("The point-bidding window is closed.", type = "warning"); return()
     }
@@ -5744,7 +5750,7 @@ server <- function(input, output, session) {
     mode   <- input$new_round_mode %||% "random"
     tbrk   <- input$new_round_tiebreak %||% "weighted_lottery"
     tok_rv <- if (isTRUE(input$new_round_delayed_tokens)) 0L else 1L
-    bidding_enabled <- as.integer(isTRUE(input$new_round_bidding_enabled))
+    bidding_enabled <- as.integer(input$new_round_bidding_enabled %||% "0")
     bid_window <- tryCatch(
       round_bid_window_values(input$new_round_open, input$new_round_open_time,
                               input$new_round_close, input$new_round_close_time,
@@ -5776,7 +5782,7 @@ server <- function(input, output, session) {
     mode   <- input$edit_round_mode %||% "random"
     tbrk   <- input$edit_round_tiebreak %||% "weighted_lottery"
     tok_rv <- if (isTRUE(input$edit_round_delayed_tokens)) 0L else 1L
-    bidding_enabled <- as.integer(isTRUE(input$edit_round_bidding_enabled))
+    bidding_enabled <- as.integer(input$edit_round_bidding_enabled %||% "0")
     bid_window <- tryCatch(
       round_bid_window_values(input$edit_round_open, input$edit_round_open_time,
                               input$edit_round_close, input$edit_round_close_time,
@@ -7415,8 +7421,10 @@ server <- function(input, output, session) {
               if (!identical(r$assignment_mode %||% "random", "random"))
                 div(style = paste0("font-size:.82em;margin-top:.2rem;color:",
                                    if (window$open) "#1a6e3c" else "#888", ";"),
-                    tags$strong(if (window$open) "Bidding open" else if (window$paused) "Bidding paused" else "Bidding closed"),
-                    if (!is.na(window$open_at) || !is.na(window$close_at))
+                    tags$strong(if (window$manual_open) "Bidding open now"
+                                else if (window$open) "Bidding open on schedule"
+                                else if (window$paused) "Bidding closed" else "Bidding scheduled — currently closed"),
+                    if (window$scheduled && (!is.na(window$open_at) || !is.na(window$close_at)))
                       paste0(" · ", r$bid_open_date %||% "No start", " – ",
                              r$bid_close_date %||% "No end"))
             ),
@@ -7427,8 +7435,11 @@ server <- function(input, output, session) {
                 textInput("edit_round_label", "Label:", value = r$label %||% ""),
                 selectInput("edit_round_mode", "Assignment mode:", choices = mode_choices,
                             selected = r$assignment_mode %||% "random"),
-                checkboxInput("edit_round_bidding_enabled", "Accept bids for this round",
-                              value = isTRUE(as.integer(r$bidding_enabled %||% 1L) == 1L)),
+                selectInput("edit_round_bidding_enabled", "Bidding status:",
+                            choices = c("Open now (override schedules)" = "1",
+                                        "Open on the schedule below" = "2",
+                                        "Closed" = "0"),
+                            selected = as.character(as.integer(r$bidding_enabled %||% 1L))),
                 fluidRow(
                   column(3, dateInput("edit_round_open", "Bid opens date:",
                                       value = open_parts$date)),
@@ -7493,8 +7504,11 @@ server <- function(input, output, session) {
         checkboxInput("new_round_delayed_tokens",
           "Delay token reveal (students see outcome but not amounts until you release)",
           value = TRUE),
-        checkboxInput("new_round_bidding_enabled", "Accept bids immediately",
-                      value = FALSE),
+        selectInput("new_round_bidding_enabled", "Bidding status:",
+                    choices = c("Open now (override schedules)" = "1",
+                                "Open on the schedule below" = "2",
+                                "Closed" = "0"),
+                    selected = "0"),
         fluidRow(
           column(3, dateInput("new_round_open", "Bid opens date:")),
           column(3, textInput("new_round_open_time", "Opens time (24h HH:MM):", value = "08:00")),

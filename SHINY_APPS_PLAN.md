@@ -119,7 +119,7 @@ A one-time migration (guarded by the `job_catalog_v2_migrated` key in `labor_set
 
 A **round = one class session**. Settings → Round Setup:
 
-- Create/edit/delete rounds (label, assignment mode, manual bidding enable/pause, precise opening/closing date and time, tickets, tie-break, delayed token reveal). Newly auto-created rounds start with bidding paused.
+- Create/edit/delete rounds (label, assignment mode, manual bidding state (open now, scheduled, or closed), precise opening/closing date and time, tickets, tie-break, delayed token reveal). Newly auto-created rounds start with bidding paused.
 - **Create next round**: increments the label, carries the previous round's mode/tie-break/tickets/token settings, and copies every Auto-copy template as a job post with its timing/wage/slots/voluntary/in-draw flags.
 - Assignment modes: `random` (first ~2 weeks), `application_bidding` (point/ticket bids), `wage_bidding` (lowest-wage bids).
 
@@ -170,10 +170,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
   demo sessions preserve rehearsal bids and edits; resetting the disposable
   demo database recreates the fake market.
 
-- **2026-09-28** — Give each round an explicit instructor-controlled bidding
-  switch plus local opening and closing hours. The switch and window are both
-  enforced on the server; the recurring class-time lock remains an additional
-  safety layer. Auto-created next rounds begin paused.
+- **2026-09-28** — Give each round three explicit bidding states: **Open now**,
+  **Open on schedule**, and **Closed**. Open now is an instructor override and
+  must bypass both stored hours and the recurring class-time lock. Scheduled
+  mode enforces both; auto-created next rounds begin closed.
 
 - **2026-09-28** — Keep one global class announcement in App Settings and show
   it near the top of Today for every signed-in student. Saving a blank message
@@ -345,6 +345,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-28** (Codex) - Replaced the misleading bid-open checkbox with
+  Open now / Open on schedule / Closed states. Open now now bypasses expired or
+  future hours and the recurring class lock in both rendered forms and
+  server-side wage/point submission handlers; existing value `1` rounds map
+  directly to the manual override.
 
 - **2026-09-28** (Codex) - Repaired the deployed sandbox upgrade regression:
   legacy job tables now gain the current category, round, post, template, bid,
