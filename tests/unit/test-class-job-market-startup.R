@@ -174,6 +174,9 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_match(app_source, "edit_round_open_time", fixed = TRUE)
     expect_match(app_source, "round_bid_window_values", fixed = TRUE)
     expect_match(app_source, "Last Class Jobs Still Pending", fixed = TRUE)
+    expect_match(app_source, "switch_active_round_btn", fixed = TRUE)
+    expect_match(app_source, "observeEvent(input$create_round_btn", fixed = TRUE)
+    expect_match(app_source, "active_round_id", fixed = TRUE)
     expect_match(app_source, "COALESCE(jp.voluntary,COALESCE(jc.voluntary,0),0)=0", fixed = TRUE)
     expect_match(app$ARCADE_CSS, ".today-announcement", fixed = TRUE)
     expect_match(app$ARCADE_CSS, ".arc-font-ctrl { display:flex; flex:1; }", fixed=TRUE)
@@ -332,7 +335,7 @@ test_that("custom grade item weights drive category and overall grades", {
   })
 })
 
-test_that("a newer round retains the prior pending assignment round for Last Class Jobs", {
+test_that("active lecture can move backward without deleting rounds", {
   with_app_env({
     app <- suppressWarnings(source_app())
     on.exit(suppressWarnings(try(
@@ -355,12 +358,12 @@ test_that("a newer round retains the prior pending assignment round for Last Cla
     new_rid <- DBI::dbGetQuery(con, "SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;")$id[1]
 
     expect_gt(new_rid, old_rid)
+    expect_equal(app$active_round_id(), new_rid)
     expect_equal(app$previous_round_id(new_rid), old_rid)
-    expect_equal(app$active_assignment_round_id(new_rid), old_rid)
-
-    DBI::dbExecute(con, "UPDATE job_assignments SET outcome=? WHERE user_id=?;",
-                   params = list("complete", "today-test"))
-    expect_equal(app$active_assignment_round_id(new_rid), new_rid)
+    expect_true(app$set_active_round_id(old_rid))
+    expect_equal(app$active_round_id(), old_rid)
+    expect_equal(app$active_round_row()$id[1], old_rid)
+    expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM weekly_rounds;")$n[1], 2L)
   })
 })
 

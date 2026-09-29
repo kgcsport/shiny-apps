@@ -160,6 +160,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-29** — Store an explicit active lecture ID instead of treating
+  the newest database row as current. Switching lectures preserves posts,
+  assignments, bids, and history; all live operational views follow the selected
+  lecture, while creating a new lecture makes it active automatically.
+
+
 - **2026-09-28** — Keep Today on the newest configured round and show
   unfinished non-volunteer assignments from the immediately preceding round in a
   separate reveal-aware **Last Class Jobs Still Pending** section. Live Tracker
@@ -355,6 +361,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-29** (Codex) - Added an Active Lecture selector to Round Setup,
+  routed Today, Job Market, Live Tracker, Jobs, draws, scoring, imports, and
+  reveal actions through the selected lecture, and blocked switches while a
+  draw preview or uncommitted live scores exist.
+
 
 - **2026-09-28** (Codex) - Added a reveal-aware Last Class Jobs section
   to Today for unfinished non-volunteer assignments from the immediately prior

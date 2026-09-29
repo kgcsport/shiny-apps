@@ -887,6 +887,35 @@ set_setting <- function(key, value) {
     list(key, value))
 }
 
+active_round_id <- function(query_fn = db_query) {
+  configured <- suppressWarnings(as.integer(get_setting("active_round_id", NA_character_)))
+  if (!is.na(configured)) {
+    found <- tryCatch(query_fn("SELECT id FROM weekly_rounds WHERE id=?;", list(configured)),
+                      error = function(e) data.frame())
+    if (nrow(found)) return(as.integer(found$id[1]))
+  }
+  latest <- tryCatch(query_fn("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+                     error = function(e) data.frame())
+  if (nrow(latest)) as.integer(latest$id[1]) else NA_integer_
+}
+
+active_round_row <- function(query_fn = db_query) {
+  rid <- active_round_id(query_fn)
+  if (is.na(rid)) return(data.frame())
+  tryCatch(query_fn("SELECT * FROM weekly_rounds WHERE id=?;", list(rid)),
+           error = function(e) data.frame())
+}
+
+set_active_round_id <- function(round_id) {
+  rid <- suppressWarnings(as.integer(round_id))
+  if (is.na(rid)) return(FALSE)
+  found <- tryCatch(db_query("SELECT id FROM weekly_rounds WHERE id=?;", list(rid)),
+                    error = function(e) data.frame())
+  if (!nrow(found)) return(FALSE)
+  set_setting("active_round_id", as.character(rid))
+  TRUE
+}
+
 # ── Recurring bid lock ────────────────────────────────────────────────────────
 # Bidding is continuous, but on class days bids lock a configurable lead time
 # before class starts and reopen that evening. Returns the current state plus
@@ -1355,24 +1384,6 @@ compute_clearing_wage <- function(category_id, round_id, slots, job_post_id = NA
     list(as.integer(round_id), as.integer(category_id))), error = function(e) data.frame())
   if (!nrow(bids) || nrow(bids) < n) return(NA_real_)
   as.numeric(bids$min_wage[n])
-}
-
-# Creating the next bidding round must not hide still-current assignments.
-# Prefer the newest round with a pending, displayable assignment; fall back to
-# the newest configured round when no such assignment exists.
-active_assignment_round_id <- function(fallback_round_id = NA_integer_, query_fn = db_query) {
-  row <- tryCatch(query_fn(
-    "SELECT MAX(ja.round_id) AS id
-     FROM job_assignments ja
-     WHERE COALESCE(ja.status,\"assigned\")=\"assigned\"
-       AND COALESCE(ja.outcome,\"\")=\"\"
-       AND COALESCE(ja.display_on_today,1)=1
-       AND (COALESCE(ja.scheduled_date,\"\")=\"\" OR ja.scheduled_date=date(\"now\",\"localtime\"))
-       AND NOT EXISTS (
-         SELECT 1 FROM live_score_events lse WHERE lse.job_assignment_id=ja.id
-       );"), error = function(e) data.frame())
-  if (nrow(row) && !is.na(row$id[1] %||% NA)) as.integer(row$id[1])
-  else as.integer(fallback_round_id %||% NA_integer_)
 }
 
 previous_round_id <- function(current_round_id, query_fn = db_query) {
@@ -2298,7 +2309,8 @@ server <- function(input, output, session) {
                   COALESCE(jp.description,'') AS sig
            FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
            ORDER BY jp.id);")$ts[1] %||% "", error=function(e)"")
-      paste(t1, t2, t3, t4, t5, t6, t7)
+      t8 <- tryCatch(as.character(active_round_id()), error = function(e) "")
+      paste(t1, t2, t3, t4, t5, t6, t7, t8)
     },
     valueFunc = function() {
       if (!isTRUE(rv$is_admin)) return(list(
@@ -2346,13 +2358,8 @@ server <- function(input, output, session) {
              SELECT current_round FROM olig_settings WHERE id=1);"),
           error = function(e) data.frame())
       } else data.frame()
-      latest_round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
-                               error = function(e) data.frame())
-      fallback_rid <- if (nrow(latest_round)) latest_round$id[1] else NA_integer_
-      rid <- active_assignment_round_id(fallback_rid)
-      round <- if (!is.na(rid)) tryCatch(
-        db_query("SELECT * FROM weekly_rounds WHERE id=?;", list(rid)),
-        error = function(e) data.frame()) else data.frame()
+      round <- tryCatch(active_round_row(), error = function(e) data.frame())
+      rid <- if (nrow(round)) round$id[1] else NA_integer_
       section_reveals <- if (!is.na(rid)) {
         tryCatch(db_query(
           "SELECT round_id, section, COALESCE(revealed,0) AS revealed,
@@ -2452,12 +2459,7 @@ server <- function(input, output, session) {
       uid <- rv$user_id
       if (is.null(uid)) return("")
       r1 <- tryCatch({
-        round_sig <- db_query(
-          "SELECT id, label, assignment_mode, COALESCE(bidding_enabled,1) AS bidding_enabled,
-                  COALESCE(bid_open_date,'') AS bid_open_date,
-                  COALESCE(bid_close_date,'') AS bid_close_date,
-                  COALESCE(tickets_per_student,0) AS tickets_per_student
-           FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
+        round_sig <- active_round_row()
         if (nrow(round_sig)) paste(unlist(round_sig[1, ], use.names = FALSE), collapse = "-") else ""
       }, error = function(e) "")
       r2 <- tryCatch(
@@ -2506,7 +2508,7 @@ server <- function(input, output, session) {
       if (is.null(uid)) return(empty)
 
       round <- tryCatch(
-        db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+        active_round_row(),
         error = function(e) data.frame())
 
       if (!nrow(round)) return(empty)
@@ -4895,7 +4897,7 @@ server <- function(input, output, session) {
     in_draw <- as.integer(isTRUE(input$new_post_in_draw))
     timing  <- input$new_post_timing %||% "any"
     desc    <- trimws(input$new_post_desc %||% "")
-    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("Create a round first.", type = "error"); return() }
     if (!nzchar(nm)) { showNotification("Post name required.", type = "error"); return() }
@@ -4918,7 +4920,7 @@ server <- function(input, output, session) {
     cat_id <- suppressWarnings(as.integer(input$new_pt_cat %||% 0))
     slots  <- max(1L, as.integer(input$new_pt_slots %||% 99L))
     tokens <- suppressWarnings(as.numeric(input$new_pt_tokens %||% 1))
-    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("Create a round first.", type = "error"); return() }
     if (!nzchar(nm)) { showNotification("Name required.", type = "error"); return() }
@@ -5287,7 +5289,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$clear_live_scores_btn, {
     req(rv$is_admin, !rv$impersonating)
-    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(active_round_row(),
                         error=function(e) data.frame())
     if (!nrow(rid_row)) return()
     cur_sec <- trimws(rv$active_section %||% "")
@@ -5306,7 +5308,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$commit_live_scores_btn, {
     req(rv$is_admin, !rv$impersonating)
-    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(active_round_row(),
                         error=function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
     cur_sec <- trimws(rv$active_section %||% "")
@@ -5403,7 +5405,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$manual_add_assignment_btn, {
     req(rv$is_admin)
-    round <- tryCatch(db_query("SELECT id, assignment_mode FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
     if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
     rid <- as.integer(round$id[1])
@@ -5477,7 +5479,7 @@ server <- function(input, output, session) {
     filename = function() paste0("live-tracker-fallback-", Sys.Date(), ".csv"),
     content = function(file) {
       req(rv$is_admin)
-      rid_row <- db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
+      rid_row <- active_round_row()
       req(nrow(rid_row))
       course <- trimws(rv$active_course %||% "")
       section <- trimws(rv$active_section %||% "")
@@ -5502,7 +5504,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$import_bulk_jobs_btn, {
     req(rv$is_admin, !rv$impersonating)
-    rid_row <- tryCatch(db_query("SELECT id, assignment_mode FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
     upload <- input$bulk_jobs_file
@@ -5648,7 +5650,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     sec <- trimws(rv$active_section %||% "")
     course <- trimws(rv$active_course %||% "")
-    round <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
     if (!nrow(round)) {
       showNotification("No active round for a cold call.", type = "warning")
@@ -5703,7 +5705,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     drawn <- rv$cold_call_draw
     if (!is.list(drawn) || !nzchar(drawn$user_id %||% "")) return()
-    round <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
     if (!nrow(round)) return()
     db_exec(
@@ -5737,7 +5739,7 @@ server <- function(input, output, session) {
       showNotification("Draw a cold-call student first.", type = "warning")
       return()
     }
-    round <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
     if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
     rid <- as.integer(round$id[1])
@@ -5900,7 +5902,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$clear_assignments_btn, {
     req(rv$is_admin)
-    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
     db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(rid_row$id[1]))
@@ -5924,6 +5926,32 @@ server <- function(input, output, session) {
             list(nm, if (is.na(wage)) 0 else wage, desc, vol_cat, draw_cat, cid))
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Category updated.", type = "message")
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$switch_active_round_btn, {
+    req(rv$is_admin)
+    target_rid <- suppressWarnings(as.integer(input$active_round_select %||% NA))
+    current_rid <- active_round_id()
+    if (is.na(target_rid) || identical(target_rid, current_rid)) return()
+    if (!is.null(rv$draw_preview) && length(rv$draw_preview)) {
+      showNotification("Clear or run the current draw preview before switching lectures.", type = "warning")
+      return()
+    }
+    pending_scores <- if (!is.na(current_rid)) tryCatch(db_query(
+      "SELECT COUNT(*) AS n FROM live_score_events WHERE round_id=? AND committed_at IS NULL;",
+      list(current_rid))$n[1], error = function(e) 0L) else 0L
+    if (as.integer(pending_scores %||% 0L) > 0L) {
+      showNotification("Commit or clear pending Live Score Audit entries before switching lectures.", type = "warning")
+      return()
+    }
+    if (!set_active_round_id(target_rid)) {
+      showNotification("That lecture no longer exists.", type = "error")
+      return()
+    }
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    target <- tryCatch(active_round_row(), error = function(e) data.frame())
+    showNotification(sprintf("Active lecture: %s", if (nrow(target)) target$label[1] else target_rid),
+                     type = "message")
   }, ignoreNULL = TRUE)
 
   observeEvent(input$create_round_btn, {
@@ -5950,13 +5978,16 @@ server <- function(input, output, session) {
        VALUES(?,?,?,?,?,?,?,?);",
       list(lbl, mode, tbrk, tok_rv, bidding_enabled,
            bid_window$open_at, bid_window$close_at, tix))
+    new_rid <- tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1],
+                        error = function(e) NA_integer_)
+    if (!is.na(new_rid)) set_active_round_id(new_rid)
     rv$jobs_ver <- rv$jobs_ver + 1L
-    showNotification("Round created.", type = "message")
+    showNotification("Round created and made active.", type = "message")
   })
 
   observeEvent(input$update_round_btn, {
     req(rv$is_admin)
-    round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
     if (!nrow(round)) { showNotification("No round to update.", type = "error"); return() }
     rid    <- round$id[1]
@@ -5987,7 +6018,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$create_next_round_btn, {
     req(rv$is_admin)
-    last <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    last <- tryCatch(active_round_row(),
                      error = function(e) data.frame())
     new_label <- if (nrow(last)) {
       lbl <- last$label[1] %||% "Week 1"
@@ -6012,6 +6043,7 @@ server <- function(input, output, session) {
     if (is.na(new_rid)) {
       showNotification("Round created but could not retrieve ID.", type = "warning"); return()
     }
+    set_active_round_id(new_rid)
     templates <- tryCatch(db_query(
       "SELECT jt.*,
               COALESCE(jt.in_draw,  COALESCE(jc.in_draw,1))   AS eff_in_draw,
@@ -7107,7 +7139,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     preview <- rv$draw_preview
     if (is.null(preview) || !length(preview)) return(NULL)
-    round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
     wage_mode <- nrow(round) > 0 &&
       identical(round$assignment_mode[1] %||% "random", "wage_bidding")
@@ -7209,7 +7241,7 @@ server <- function(input, output, session) {
     act <- input$config_action %||% "jobs"
 
     if (act == "jobs") {
-      rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+      rid_row <- tryCatch(active_round_row(),
                           error = function(e) data.frame())
       rid <- if (nrow(rid_row)) rid_row$id[1] else NA_integer_
 
@@ -7574,8 +7606,11 @@ server <- function(input, output, session) {
       )
 
     } else if (act == "round_setup") {
-      round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+      round <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
+      all_rounds <- tryCatch(db_query(
+        "SELECT id, label, assignment_mode FROM weekly_rounds ORDER BY id DESC;"),
+        error = function(e) data.frame())
       mode_choices <- c("Random"              = "random",
                         "Wage Bidding"         = "wage_bidding",
                         "Application Bidding"  = "application_bidding")
@@ -7589,6 +7624,23 @@ server <- function(input, output, session) {
         )
       }
       tagList(
+        if (nrow(all_rounds)) {
+          round_labels <- sprintf("%s · #%d · %s", all_rounds$label, all_rounds$id,
+                                  all_rounds$assignment_mode)
+          wellPanel(
+            tags$h6(style = "font-weight:700;color:#951829;margin-top:0;", "Active Lecture"),
+            tags$p(style = "color:#555;font-size:.84rem;",
+                   "Switching changes Today, Job Market, Live Tracker, and Jobs without deleting any lecture data."),
+            div(style = "display:flex;gap:.5rem;align-items:flex-end;flex-wrap:wrap;",
+              div(style = "min-width:280px;flex:1;",
+                selectInput("active_round_select", "Lecture:",
+                            choices = setNames(all_rounds$id, round_labels),
+                            selected = if (nrow(round)) round$id[1] else all_rounds$id[1])),
+              actionButton("switch_active_round_btn", "Make active",
+                           class = "btn btn-sm btn-primary", style = "margin-bottom:15px;")
+            )
+          )
+        },
         if (nrow(round)) {
           r <- round[1, ]
           open_parts <- bid_parts(r$bid_open_date, "00:00")
@@ -9375,7 +9427,7 @@ server <- function(input, output, session) {
     if (!nzchar(uid) || is.na(post_id) || post_id <= 0) {
       showNotification("Select a student and event type.", type = "error"); return()
     }
-    rid_row <- tryCatch(db_query("SELECT id, assignment_mode FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
     if (!nrow(rid_row)) {
       showNotification("No active round.", type = "error"); return()
@@ -9437,7 +9489,7 @@ server <- function(input, output, session) {
   # ── Release tokens (delayed reward) ──────────────────────────────────────────
   observeEvent(input$release_tokens_btn, {
     req(rv$is_admin)
-    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(active_round_row(),
                         error=function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("No active round.", type="error"); return() }
     rid <- rid_row$id[1]
@@ -9842,7 +9894,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$post_vol_demand_btn, {
     req(rv$is_admin)
-    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
     rid <- rid_row$id[1]
@@ -10006,7 +10058,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$run_draw_btn, {
     req(rv$is_admin)
-    round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
     if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
     rid    <- round$id[1]
@@ -10086,7 +10138,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$preview_draw_btn, {
     req(rv$is_admin)
-    round <- tryCatch(db_query("SELECT * FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
     if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
     rid  <- round$id[1]
@@ -10166,7 +10218,7 @@ server <- function(input, output, session) {
       ))
       return()
     }
-    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(active_round_row(),
                         error=function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
     scope <- input$section_reveal_timing %||% "start"
@@ -10204,7 +10256,7 @@ server <- function(input, output, session) {
       showNotification("Choose a valid non-demo section.", type = "warning")
       return()
     }
-    rid_row <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
+    rid_row <- tryCatch(active_round_row(),
                         error=function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
     scope <- input$section_reveal_timing %||% "start"
