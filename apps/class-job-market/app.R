@@ -482,6 +482,8 @@ db_exec("CREATE TABLE IF NOT EXISTS weekly_rounds(
   bid_open_date       TEXT,
   bid_close_date      TEXT,
   tickets_per_student INTEGER DEFAULT 10,
+  allow_multiple_jobs INTEGER DEFAULT 1,
+  wage_pricing_rule TEXT DEFAULT 'pay_as_bid',
   created_at          TEXT DEFAULT CURRENT_TIMESTAMP
 );")
 ensure_column("weekly_rounds", "assignment_mode TEXT DEFAULT 'random'")
@@ -491,6 +493,8 @@ ensure_column("weekly_rounds", "bid_close_date TEXT")
 ensure_column("weekly_rounds", "tickets_per_student INTEGER DEFAULT 10")
 ensure_column("weekly_rounds", "tokens_revealed INTEGER DEFAULT 1")
 ensure_column("weekly_rounds", "tiebreak_method TEXT DEFAULT 'weighted_lottery'")
+ensure_column("weekly_rounds", "allow_multiple_jobs INTEGER DEFAULT 1")
+ensure_column("weekly_rounds", "wage_pricing_rule TEXT DEFAULT 'pay_as_bid'")
 db_exec("CREATE TABLE IF NOT EXISTS job_posts(
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id      INTEGER,
@@ -1117,32 +1121,57 @@ order_job_posts_for_clearing <- function(posts) {
   posts[order(clear_order, post_id, na.last = TRUE), , drop = FALSE]
 }
 
+normalize_wage_pricing_rule <- function(rule) {
+  rule <- tolower(trimws(as.character(rule %||% "pay_as_bid")))
+  if (rule %in% c("uniform_second_price", "second_price", "uniform"))
+    "uniform_second_price" else "pay_as_bid"
+}
+
+uniform_procurement_wage <- function(post_bids, winners, fallback_wage) {
+  fallback_wage <- suppressWarnings(as.numeric(fallback_wage %||% NA_real_))
+  if (!nrow(post_bids)) return(fallback_wage)
+  winner_bids <- suppressWarnings(as.numeric(
+    post_bids$min_wage[post_bids$user_id %in% winners]))
+  loser_bids <- suppressWarnings(as.numeric(
+    post_bids$min_wage[!post_bids$user_id %in% winners]))
+  winner_floor <- if (length(winner_bids)) max(winner_bids, na.rm = TRUE) else NA_real_
+  next_losing <- if (length(loser_bids)) min(loser_bids, na.rm = TRUE) else fallback_wage
+  candidates <- c(winner_floor, next_losing)
+  candidates <- candidates[is.finite(candidates)]
+  if (length(candidates)) max(candidates) else fallback_wage
+}
+
 # Pure point-bid allocator used by the live draw and scratch-DB tests. Students
 # outside the selected roster must never enter the draw, even if they submitted
 # bids earlier in the same round for another section. Jobs clear independently,
 # so the same student may win more than one distinct job.
-compute_application_pairs <- function(posts, students, bids) {
+compute_application_pairs <- function(posts, students, bids, allow_multiple_jobs = TRUE) {
   eligible_ids <- unique(as.character(students$user_id))
   if (!length(eligible_ids) || !nrow(posts)) return(list())
   posts <- order_job_posts_for_clearing(posts)
   if (nrow(bids)) {
     bids <- bids[bids$user_id %in% eligible_ids & bids$tickets > 0, , drop=FALSE]
   }
+  assigned_ids <- character(0)
   result <- list()
   for (i in seq_len(nrow(posts))) {
     p <- posts[i, ]
     slots <- max(1L, as.integer(p$slots %||% 1L))
     cat_bids <- if (nrow(bids))
-      bids[bids$category_id == p$category_id, , drop=FALSE]
+      bids[bids$category_id == p$category_id &
+             (isTRUE(allow_multiple_jobs) | !bids$user_id %in% assigned_ids), , drop=FALSE]
     else data.frame()
     pool <- if (nrow(cat_bids)) rep(as.character(cat_bids$user_id), cat_bids$tickets) else character(0)
-    other_ids <- setdiff(eligible_ids, if (nrow(cat_bids)) as.character(cat_bids$user_id) else character(0))
+    other_ids <- setdiff(eligible_ids, c(if (nrow(cat_bids)) as.character(cat_bids$user_id) else character(0),
+                                        if (isTRUE(allow_multiple_jobs)) character(0) else assigned_ids))
     pool <- c(pool, other_ids)
+    if (!isTRUE(allow_multiple_jobs)) pool <- pool[!pool %in% assigned_ids]
     drawn <- if (length(pool)) {
       unique_pool <- unique(pool)
       sample(unique_pool, min(slots, length(unique_pool)),
              prob=tabulate(match(pool, unique_pool)))
     } else character(0)
+    if (!isTRUE(allow_multiple_jobs)) assigned_ids <- c(assigned_ids, drawn)
     for (uid in drawn) {
       result[[length(result) + 1L]] <- list(
         uid=uid, post_id=p$id, wage=as.numeric(p$wage %||% NA))
@@ -1976,10 +2005,9 @@ assignment_round_for_timing <- function(current_round_id, timing_filter) {
   as.integer(current_round_id)
 }
 
-exclude_existing_assignments_for_timing <- function(timing_filter) {
-  # Distinct regular jobs may now be held by the same student. The unique
-  # assignment key prevents only a duplicate of the same job post.
-  FALSE
+exclude_existing_assignments_for_timing <- function(timing_filter, allow_multiple_jobs = TRUE) {
+  timing <- norm_key(timing_filter %||% "all")
+  !isTRUE(allow_multiple_jobs) && !timing %in% c("all", "during", "during class")
 }
 
 reveal_timings_for_scope <- function(scope) {
@@ -2470,7 +2498,10 @@ server <- function(input, output, session) {
         tryCatch(db_query(sprintf(
           "SELECT ja.id, ja.user_id, u.display_name, u.course, u.section, jp.job_name,
                   COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time,
-                  COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0) AS assigned_wage,
+                  CASE WHEN ja.assignment_mode='wage_bidding' AND ja.assigned_wage IS NOT NULL
+                       THEN ja.assigned_wage
+                       ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
+                  END AS assigned_wage,
                   %s AS outcome,
                   %s AS tokens_awarded,
                   %s AS pending_outcome,
@@ -2596,7 +2627,8 @@ server <- function(input, output, session) {
 
       my_assign <- tryCatch(db_query(
         "SELECT jp.job_name,
-                CASE WHEN COALESCE(ja.outcome,'')<>'' THEN ja.assigned_wage
+                CASE WHEN ja.assignment_mode='wage_bidding' AND ja.assigned_wage IS NOT NULL THEN ja.assigned_wage
+                     WHEN COALESCE(ja.outcome,'')<>'' THEN ja.assigned_wage
                      ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
                 END AS assigned_wage,
                 wr.label AS round_label,
@@ -2621,7 +2653,8 @@ server <- function(input, output, session) {
       all_assign <- tryCatch(db_query(
         "SELECT ja.user_id, u.display_name, u.course, u.section, jp.job_name,
                 COALESCE(jp.description,'') AS description,
-                CASE WHEN COALESCE(ja.outcome,'')<>'' THEN ja.assigned_wage
+                CASE WHEN ja.assignment_mode='wage_bidding' AND ja.assigned_wage IS NOT NULL THEN ja.assigned_wage
+                     WHEN COALESCE(ja.outcome,'')<>'' THEN ja.assigned_wage
                      ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
                 END AS assigned_wage,
                 COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time
@@ -5323,7 +5356,10 @@ server <- function(input, output, session) {
       cur <- tryCatch(db_query(
         "SELECT COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
                 COALESCE(ja.outcome,'') AS outcome,
-                COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0) AS current_wage
+                CASE WHEN ja.assignment_mode='wage_bidding' AND ja.assigned_wage IS NOT NULL
+                     THEN ja.assigned_wage
+                     ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
+                END AS current_wage
          FROM job_assignments ja
          JOIN job_posts jp ON jp.id=ja.job_post_id
          LEFT JOIN job_categories jc ON jc.id=jp.category_id
@@ -6060,6 +6096,8 @@ server <- function(input, output, session) {
     mode   <- input$new_round_mode %||% "random"
     tbrk   <- input$new_round_tiebreak %||% "weighted_lottery"
     tok_rv <- if (isTRUE(input$new_round_delayed_tokens)) 0L else 1L
+    allow_multiple <- as.integer(isTRUE(input$new_round_allow_multiple))
+    pricing_rule <- normalize_wage_pricing_rule(input$new_round_wage_pricing %||% "pay_as_bid")
     bidding_enabled <- as.integer(input$new_round_bidding_enabled %||% "0")
     bid_window <- tryCatch(
       round_bid_window_values(input$new_round_open, input$new_round_open_time,
@@ -6074,10 +6112,11 @@ server <- function(input, output, session) {
     if (is.null(bid_window)) return()
     db_exec(
       "INSERT INTO weekly_rounds(label, assignment_mode, tiebreak_method, tokens_revealed,
-                                  bidding_enabled, bid_open_date, bid_close_date, tickets_per_student)
-       VALUES(?,?,?,?,?,?,?,?);",
+                                  bidding_enabled, bid_open_date, bid_close_date, tickets_per_student,
+                                  allow_multiple_jobs, wage_pricing_rule)
+       VALUES(?,?,?,?,?,?,?,?,?,?);",
       list(lbl, mode, tbrk, tok_rv, bidding_enabled,
-           bid_window$open_at, bid_window$close_at, tix))
+           bid_window$open_at, bid_window$close_at, tix, allow_multiple, pricing_rule))
     new_rid <- tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1],
                         error = function(e) NA_integer_)
     if (!is.na(new_rid)) set_active_round_id(new_rid)
@@ -6095,6 +6134,8 @@ server <- function(input, output, session) {
     mode   <- input$edit_round_mode %||% "random"
     tbrk   <- input$edit_round_tiebreak %||% "weighted_lottery"
     tok_rv <- if (isTRUE(input$edit_round_delayed_tokens)) 0L else 1L
+    allow_multiple <- as.integer(isTRUE(input$edit_round_allow_multiple))
+    pricing_rule <- normalize_wage_pricing_rule(input$edit_round_wage_pricing %||% "pay_as_bid")
     bidding_enabled <- as.integer(input$edit_round_bidding_enabled %||% "0")
     bid_window <- tryCatch(
       round_bid_window_values(input$edit_round_open, input$edit_round_open_time,
@@ -6109,9 +6150,10 @@ server <- function(input, output, session) {
     if (is.null(bid_window)) return()
     db_exec(
       "UPDATE weekly_rounds SET label=?, assignment_mode=?, tiebreak_method=?, tokens_revealed=?,
-       bidding_enabled=?, bid_open_date=?, bid_close_date=?, tickets_per_student=? WHERE id=?;",
+       bidding_enabled=?, bid_open_date=?, bid_close_date=?, tickets_per_student=?,
+       allow_multiple_jobs=?, wage_pricing_rule=? WHERE id=?;",
       list(lbl, mode, tbrk, tok_rv, bidding_enabled,
-           bid_window$open_at, bid_window$close_at, tix, rid))
+           bid_window$open_at, bid_window$close_at, tix, allow_multiple, pricing_rule, rid))
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Round updated.", type = "message")
   })
@@ -6131,13 +6173,15 @@ server <- function(input, output, session) {
     # Carry the last round's settings forward so "advance round" is one click
     db_exec(
       "INSERT INTO weekly_rounds(label, assignment_mode, tiebreak_method, tokens_revealed,
-                                  bidding_enabled, tickets_per_student)
-       VALUES(?,?,?,?,?,?);",
+                                  bidding_enabled, tickets_per_student, allow_multiple_jobs, wage_pricing_rule)
+       VALUES(?,?,?,?,?,?,?,?);",
       list(new_label, mode,
            if (nrow(last)) last$tiebreak_method[1] %||% "weighted_lottery" else "weighted_lottery",
            if (nrow(last)) as.integer(last$tokens_revealed[1] %||% 0L) else 0L,
            0L,
-           if (nrow(last)) as.integer(last$tickets_per_student[1] %||% 10L) else 10L))
+           if (nrow(last)) as.integer(last$tickets_per_student[1] %||% 10L) else 10L,
+           if (nrow(last)) as.integer(last$allow_multiple_jobs[1] %||% 1L) else 1L,
+           if (nrow(last)) normalize_wage_pricing_rule(last$wage_pricing_rule[1] %||% "pay_as_bid") else "pay_as_bid"))
     new_rid <- tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1],
                         error = function(e) NA_integer_)
     if (is.na(new_rid)) {
@@ -6231,14 +6275,16 @@ server <- function(input, output, session) {
   create_next_round_from <- function(round) {
     db_exec(
       "INSERT INTO weekly_rounds(label, assignment_mode, tiebreak_method, tokens_revealed,
-                                  bidding_enabled, tickets_per_student)
-       VALUES(?,?,?,?,?,?);",
+                                  bidding_enabled, tickets_per_student, allow_multiple_jobs, wage_pricing_rule)
+       VALUES(?,?,?,?,?,?,?,?);",
       list(next_round_label(round$label[1] %||% "Week 1"),
            round$assignment_mode[1] %||% "random",
            round$tiebreak_method[1] %||% "weighted_lottery",
            as.integer(round$tokens_revealed[1] %||% 0L),
            0L,
-           as.integer(round$tickets_per_student[1] %||% 10L)))
+           as.integer(round$tickets_per_student[1] %||% 10L),
+           as.integer(round$allow_multiple_jobs[1] %||% 1L),
+           normalize_wage_pricing_rule(round$wage_pricing_rule[1] %||% "pay_as_bid")))
     new_rid <- tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1],
                         error = function(e) NA_integer_)
     if (!is.na(new_rid)) copy_active_templates_to_round(new_rid)
@@ -7776,6 +7822,15 @@ server <- function(input, output, session) {
                 textInput("edit_round_label", "Label:", value = r$label %||% ""),
                 selectInput("edit_round_mode", "Assignment mode:", choices = mode_choices,
                             selected = r$assignment_mode %||% "random"),
+                checkboxInput("edit_round_allow_multiple",
+                  "Allow a student to receive multiple distinct jobs",
+                  value = isTRUE(as.integer(r$allow_multiple_jobs %||% 1L) == 1L)),
+                selectInput("edit_round_wage_pricing", "Wage auction pricing:",
+                  choices = c(
+                    "Pay as bid (winner receives own minimum)" = "pay_as_bid",
+                    "Uniform second price (winners receive next losing bid)" = "uniform_second_price"
+                  ),
+                  selected = normalize_wage_pricing_rule(r$wage_pricing_rule %||% "pay_as_bid")),
                 selectInput("edit_round_bidding_enabled", "Bidding status:",
                             choices = c("Open now (override schedules)" = "1",
                                         "Open on the schedule below" = "2",
@@ -7832,6 +7887,13 @@ server <- function(input, output, session) {
         ),
         textInput("new_round_label", "Label (e.g. Week 3):"),
         selectInput("new_round_mode", "Assignment mode:", choices = mode_choices),
+        checkboxInput("new_round_allow_multiple",
+          "Allow a student to receive multiple distinct jobs", value = TRUE),
+        selectInput("new_round_wage_pricing", "Wage auction pricing:",
+          choices = c(
+            "Pay as bid (winner receives own minimum)" = "pay_as_bid",
+            "Uniform second price (winners receive next losing bid)" = "uniform_second_price"
+          ), selected = "pay_as_bid"),
         selectInput("new_round_tiebreak", "Bid tie-break method:",
           choices = c(
           "First submitted"           = "first_submitted",
@@ -9479,7 +9541,10 @@ server <- function(input, output, session) {
     }
     row <- db_query(
       "SELECT ja.user_id, u.display_name,
-              COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0) AS current_wage,
+              CASE WHEN ja.assignment_mode='wage_bidding' AND ja.assigned_wage IS NOT NULL
+                     THEN ja.assigned_wage
+                     ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
+                END AS current_wage,
               COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
               COALESCE(ja.outcome,'') AS outcome,
               ja.round_id
@@ -10078,7 +10143,9 @@ server <- function(input, output, session) {
     }
   }
 
-  compute_draw_pairs <- function(rid, mode, posts, students, tiebreak = "weighted_lottery") {
+  compute_draw_pairs <- function(rid, mode, posts, students, tiebreak = "weighted_lottery",
+                                 allow_multiple_jobs = TRUE,
+                                 wage_pricing_rule = "pay_as_bid") {
     tryCatch({
       posts <- order_job_posts_for_clearing(posts)
       if (mode == "wage_bidding") {
@@ -10092,6 +10159,8 @@ server <- function(input, output, session) {
           list(rid, rid))
         eligible_ids <- unique(as.character(students$user_id))
         bids_raw <- bids_raw[bids_raw$user_id %in% eligible_ids, , drop=FALSE]
+        assigned_ids <- character(0)
+        pricing_rule <- normalize_wage_pricing_rule(wage_pricing_rule)
         result <- list()
         for (i in seq_len(nrow(posts))) {
           p  <- posts[i, ]
@@ -10100,6 +10169,8 @@ server <- function(input, output, session) {
           legacy <- bids_raw[is.na(bids_raw$job_post_id) & bids_raw$category_id == p$category_id &
                                !bids_raw$user_id %in% exact$user_id, , drop=FALSE]
           post_bids <- rbind(exact, legacy)
+          if (!isTRUE(allow_multiple_jobs))
+            post_bids <- post_bids[!post_bids$user_id %in% assigned_ids, , drop=FALSE]
           if (nrow(post_bids)) {
             post_bids <- post_bids[order(post_bids$min_wage, post_bids$submitted_at), , drop=FALSE]
             wage_levels <- sort(unique(post_bids$min_wage))
@@ -10107,15 +10178,20 @@ server <- function(input, output, session) {
               .apply_tiebreak(post_bids[post_bids$min_wage == w, , drop=FALSE], tiebreak)))
           }
           pool_ids <- if (nrow(post_bids)) post_bids$user_id else character(0)
-          other_ids <- setdiff(students$user_id, pool_ids)
+          other_ids <- setdiff(students$user_id, c(pool_ids,
+            if (isTRUE(allow_multiple_jobs)) character(0) else assigned_ids))
           pool_ids  <- c(pool_ids, sample(other_ids))
           drawn <- head(pool_ids, n)
-          wages <- if (nrow(post_bids)) {
+          wages <- if (identical(pricing_rule, "uniform_second_price")) {
+            clearing_wage <- uniform_procurement_wage(post_bids, drawn, p$wage %||% NA)
+            rep(clearing_wage, length(drawn))
+          } else if (nrow(post_bids)) {
             sapply(drawn, function(u) {
               m <- post_bids[post_bids$user_id == u, , drop=FALSE]
               if (nrow(m)) as.numeric(m$min_wage[1]) else as.numeric(p$wage %||% NA)
             })
           } else rep(as.numeric(p$wage %||% NA), length(drawn))
+          if (!isTRUE(allow_multiple_jobs)) assigned_ids <- c(assigned_ids, drawn)
           for (j in seq_along(drawn))
             result[[length(result)+1]] <- list(uid=drawn[j], post_id=p$id, wage=wages[j])
         }
@@ -10124,13 +10200,16 @@ server <- function(input, output, session) {
         bids <- tryCatch(db_query(
           "SELECT user_id, category_id, tickets FROM application_bids WHERE round_id=? AND tickets>0;",
           list(rid)), error=function(e) data.frame())
-        compute_application_pairs(posts, students, bids)
+        compute_application_pairs(posts, students, bids, allow_multiple_jobs)
       } else {
+        assigned_ids <- character(0)
         result <- list()
         for (i in seq_len(nrow(posts))) {
           p <- posts[i, ]
-          n <- min(length(students$user_id), max(1L, as.integer(p$slots %||% 1L)))
-          drawn <- if (n > 0L) sample(students$user_id, n) else character(0)
+          available <- if (isTRUE(allow_multiple_jobs)) students$user_id else setdiff(students$user_id, assigned_ids)
+          n <- min(length(available), max(1L, as.integer(p$slots %||% 1L)))
+          drawn <- if (n > 0L) sample(available, n) else character(0)
+          if (!isTRUE(allow_multiple_jobs)) assigned_ids <- c(assigned_ids, drawn)
           for (uid in drawn) {
             result[[length(result) + 1L]] <- list(
               uid=uid, post_id=p$id, wage=as.numeric(p$wage %||% NA))
@@ -10167,6 +10246,8 @@ server <- function(input, output, session) {
     rid    <- round$id[1]
     mode   <- round$assignment_mode[1] %||% "random"
     tbrk   <- round$tiebreak_method[1] %||% "weighted_lottery"
+    allow_multiple <- isTRUE(as.integer(round$allow_multiple_jobs[1] %||% 1L) == 1L)
+    pricing_rule <- normalize_wage_pricing_rule(round$wage_pricing_rule[1] %||% "pay_as_bid")
 
     posts <- tryCatch(db_query(
       "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
@@ -10204,7 +10285,7 @@ server <- function(input, output, session) {
       students <- students[!is.na(students$course) & norm_key(students$course) == norm_key(course_filter), , drop = FALSE]
     }
     if (!nrow(students)) { showNotification("No eligible students found.", type = "error"); return() }
-    if (exclude_existing_assignments_for_timing(timing_filter)) {
+    if (exclude_existing_assignments_for_timing(timing_filter, allow_multiple)) {
       already <- tryCatch(db_query(
         "SELECT user_id FROM job_assignments
          WHERE round_id=? AND COALESCE(status,'assigned')='assigned';",
@@ -10213,7 +10294,9 @@ server <- function(input, output, session) {
       if (!nrow(students)) { showNotification("No unassigned students available for this timed draw.", type = "warning"); return() }
     }
 
-    pairs <- compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
+    pairs <- compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk,
+                                allow_multiple_jobs = allow_multiple,
+                                wage_pricing_rule = pricing_rule)
     if (!length(pairs)) { showNotification("Draw produced no assignments.", type = "error"); return() }
 
     # Compute first: a query/allocation failure must not erase the last usable
@@ -10249,6 +10332,8 @@ server <- function(input, output, session) {
     rid  <- round$id[1]
     mode <- round$assignment_mode[1] %||% "random"
     tbrk <- round$tiebreak_method[1] %||% "weighted_lottery"
+    allow_multiple2 <- isTRUE(as.integer(round$allow_multiple_jobs[1] %||% 1L) == 1L)
+    pricing_rule2 <- normalize_wage_pricing_rule(round$wage_pricing_rule[1] %||% "pay_as_bid")
     posts <- tryCatch(db_query(
       "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
               COALESCE(jp.display_order,99) AS display_order,
@@ -10286,7 +10371,7 @@ server <- function(input, output, session) {
     if (!nrow(students)) {
       showNotification("No eligible students found.", type = "error"); return()
     }
-    if (exclude_existing_assignments_for_timing(timing_filter2)) {
+    if (exclude_existing_assignments_for_timing(timing_filter2, allow_multiple2)) {
       already <- tryCatch(db_query(
         "SELECT user_id FROM job_assignments
          WHERE round_id=? AND COALESCE(status,'assigned')='assigned';",
@@ -10294,7 +10379,9 @@ server <- function(input, output, session) {
       students <- students[!(students$user_id %in% already), , drop = FALSE]
       if (!nrow(students)) { showNotification("No unassigned students available for this timed draw.", type = "warning"); return() }
     }
-    pairs <- compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
+    pairs <- compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk,
+                                allow_multiple_jobs = allow_multiple2,
+                                wage_pricing_rule = pricing_rule2)
     if (!length(pairs)) {
       showNotification("Preview produced no assignments.", type = "error")
       rv$draw_preview <- NULL

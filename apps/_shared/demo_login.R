@@ -189,7 +189,9 @@ reconcile_demo_job_schema <- function(demo_con) {
       "assignment_mode TEXT DEFAULT 'random'", "bidding_enabled INTEGER DEFAULT 1",
       "bid_open_date TEXT", "bid_close_date TEXT",
       "tickets_per_student INTEGER DEFAULT 10", "tokens_revealed INTEGER DEFAULT 1",
-      "tiebreak_method TEXT DEFAULT 'weighted_lottery'"
+      "tiebreak_method TEXT DEFAULT 'weighted_lottery'",
+      "allow_multiple_jobs INTEGER DEFAULT 1",
+      "wage_pricing_rule TEXT DEFAULT 'pay_as_bid'"
     ),
     job_posts = c(
       "job_name TEXT", "category_id INTEGER", "slots INTEGER DEFAULT 1",

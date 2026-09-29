@@ -135,8 +135,8 @@ Bidding is continuous but locks around class sessions (Settings → Round Setup 
 Live Tracker → Job Assignments:
 
 - Draw filter: All timings / Start of class / During class (cold call) / End-post class.
-- The **All timings** draw clears and redraws the full assigned-job round but **excludes `during` posts**. Assigned jobs remain one per student per round; live cold calls and voluntary contributions are independent, repeatable score events and may stack with assigned jobs or each other.
-- In `wage_bidding` mode, draws take the cheapest bids per category and pay each drawn student their bid. Tie-breaks per the round's method.
+- The **All timings** draw clears and redraws the full assigned-job round but **excludes `during` posts**. Each lecture can allow multiple distinct regular jobs per student or limit each student to one, in which case the editable job clearing order determines which post gets first claim. Live cold calls and voluntary contributions are independent, repeatable score events and may stack with assigned jobs or each other.
+- In `wage_bidding` mode, draws take the cheapest bids per category. Each lecture can pay winners their own bids or use uniform reverse-second-price pricing, where every winner on a post receives the next losing bid (with the posted wage as the no-loser fallback). Tie-breaks follow the round's method.
 
 ### Volunteer clearing wage
 
@@ -159,6 +159,14 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 `tests/smoke-class-job-market.R` (run `Rscript tests/smoke-class-job-market.R` from repo root; needs DBI + RSQLite) exercises the seed migration, template auto-copy, idempotence across restarts, bid-lock windows, and all three clearing-wage rules against a scratch SQLite DB by extracting the relevant functions from `app.R`. The testthat suite in `tests/unit/` has 20 pre-existing failures unrelated to this work (regex/locale issues in the test environment).
 
 ## Decision Log
+
+- **2026-09-29** — Make regular-job multiplicity and wage-auction pricing
+  lecture-level controls. When multiple jobs are disabled, posts clear in the
+  editable clearing order and each winner leaves the remaining regular-job
+  pool; cold calls stay independently eligible. Wage bidding can use either
+  pay-as-bid or a uniform reverse-second-price rule: the lowest bidders win and
+  receive the next losing bid, falling back to the posted wage when every bid
+  wins.
 
 - **2026-09-29** — Allow a student to hold multiple distinct class jobs in one
   lecture. Jobs clear independently in an instructor-controlled order; the same
@@ -372,6 +380,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-29** (Codex) - Added per-lecture controls for allowing multiple
+  regular jobs and choosing pay-as-bid or uniform reverse-second-price wage
+  allocation. Applied the multiplicity rule across wage, point, and random
+  draws; kept cold calls independent; made auction-assigned wages authoritative
+  through scoring; and carried both settings into newly created lectures.
 
 - **2026-09-29** (Codex) - Migrated assignment uniqueness from one row
   per student/lecture to one row per student/job/lecture, updated random, wage,

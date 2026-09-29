@@ -23,7 +23,8 @@ wanted <- c("seed_class_job_defaults", "get_setting", "bid_lock_status",
             "volunteer_clearing_wage", "assignment_round_for_timing",
             "reveal_timings_for_scope", "round_bid_datetime_value",
             "round_bid_window_values", "round_bid_window_status",
-            "validate_ticket_allocation", "order_job_posts_for_clearing", "compute_application_pairs",
+            "validate_ticket_allocation", "order_job_posts_for_clearing",
+            "normalize_wage_pricing_rule", "uniform_procurement_wage", "compute_application_pairs",
             "ensure_column")
 extracted <- 0
 for (ex in app) {
@@ -82,6 +83,11 @@ point_multi_pairs <- compute_application_pairs(point_multi_posts, point_multi_st
 stopifnot(length(point_multi_pairs) == 2L)
 stopifnot(identical(vapply(point_multi_pairs, function(x) x$post_id, integer(1)), c(1L,2L)))
 stopifnot(all(vapply(point_multi_pairs, function(x) x$uid, character(1)) == "s01-a"))
+point_single_pairs <- compute_application_pairs(point_multi_posts, point_multi_students, point_multi_bids, FALSE)
+stopifnot(length(point_single_pairs) == 1L, point_single_pairs[[1]]$post_id == 1L)
+second_price_bids <- data.frame(user_id=c("a","b","c"), min_wage=c(1,2,4))
+stopifnot(uniform_procurement_wage(second_price_bids, c("a","b"), 2) == 4)
+stopifnot(normalize_wage_pricing_rule("second_price") == "uniform_second_price")
 
 # End-of-class jobs, especially lecture notes, belong to the class session
 # that just ended. Timing must never advance their lecture/round index.
