@@ -527,7 +527,7 @@ db_exec("CREATE TABLE IF NOT EXISTS job_assignments(
   assignment_mode TEXT,
   status          TEXT DEFAULT 'assigned',
   created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(round_id, user_id)
+  UNIQUE(round_id, user_id, job_post_id)
 );")
 ensure_column("job_assignments", "job_post_id INTEGER")
 ensure_column("job_assignments", "assigned_wage REAL")
@@ -629,6 +629,50 @@ if ("wage" %in% ja_cols) {
 if ("tokens" %in% ja_cols) {
   db_exec("UPDATE job_assignments SET tokens_awarded=CAST(tokens AS INTEGER) WHERE tokens IS NOT NULL AND (tokens_awarded IS NULL OR tokens_awarded=0);")
 }
+
+migrate_job_assignments_multi_job <- function(connection = get_con()) {
+  indexes <- DBI::dbGetQuery(connection, "PRAGMA index_list(job_assignments);")
+  index_columns <- function(index_name) {
+    quoted <- as.character(DBI::dbQuoteIdentifier(connection, index_name))
+    DBI::dbGetQuery(connection, sprintf("PRAGMA index_info(%s);", quoted))$name
+  }
+  unique_names <- if (nrow(indexes)) indexes$name[as.integer(indexes[["unique"]]) == 1L] else character(0)
+  unique_keys <- lapply(unique_names, index_columns)
+  has_one_job_constraint <- any(vapply(unique_keys, function(x) identical(x, c("round_id", "user_id")), logical(1)))
+  has_multi_job_constraint <- any(vapply(unique_keys, function(x) identical(x, c("round_id", "user_id", "job_post_id")), logical(1)))
+
+  if (has_one_job_constraint) {
+    DBI::dbWithTransaction(connection, {
+      DBI::dbExecute(connection, "ALTER TABLE job_assignments RENAME TO job_assignments_one_job;")
+      DBI::dbExecute(connection, "CREATE TABLE job_assignments(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER, user_id TEXT,
+        job_post_id INTEGER, assigned_wage REAL, assignment_mode TEXT,
+        status TEXT DEFAULT 'assigned', created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        outcome TEXT, tokens_awarded INTEGER DEFAULT 0, updated_at TEXT,
+        tokens_credited INTEGER DEFAULT 1, scheduled_date TEXT,
+        display_on_today INTEGER DEFAULT 1,
+        UNIQUE(round_id, user_id, job_post_id)
+      );")
+      DBI::dbExecute(connection, "INSERT INTO job_assignments(
+        id,round_id,user_id,job_post_id,assigned_wage,assignment_mode,status,created_at,
+        outcome,tokens_awarded,updated_at,tokens_credited,scheduled_date,display_on_today)
+        SELECT id,round_id,user_id,job_post_id,assigned_wage,assignment_mode,status,created_at,
+               outcome,tokens_awarded,updated_at,tokens_credited,scheduled_date,display_on_today
+        FROM job_assignments_one_job;")
+      DBI::dbExecute(connection, "DROP TABLE job_assignments_one_job;")
+    })
+    has_multi_job_constraint <- TRUE
+  }
+  if (!has_multi_job_constraint) {
+    DBI::dbExecute(connection, "CREATE UNIQUE INDEX IF NOT EXISTS idx_job_assignments_round_user_post
+                                ON job_assignments(round_id,user_id,job_post_id);")
+  }
+  DBI::dbExecute(connection, "CREATE INDEX IF NOT EXISTS idx_job_assignments_round_post
+                              ON job_assignments(round_id,job_post_id);")
+  invisible(TRUE)
+}
+
+migrate_job_assignments_multi_job()
 db_exec("UPDATE job_assignments SET status='assigned' WHERE status IS NULL OR trim(status)='';")
 # Expected demand for volunteer jobs, posted per round (e.g. at the start of
 # class). Used by the 'posted' volunteer clearing rule.
@@ -676,8 +720,8 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
   # them in the next round. Timing codes: start / during / end / volunteer.
   templates <- list(
     # Every class — assigned at the start of class
-    list(name = "Materials summary",    cat = "Class roles", timing = "start", slots = 1L, wage = 2, vol = 0L, draw = 1L, active = 1L, order = 1L),
-    list(name = "Last class recap",     cat = "Class roles", timing = "start", slots = 1L, wage = 2, vol = 0L, draw = 1L, active = 1L, order = 2L),
+    list(name = "Materials summary",    cat = "Class roles", timing = "start", slots = 1L, wage = 2, vol = 0L, draw = 1L, active = 1L, order = 2L),
+    list(name = "Last class recap",     cat = "Class roles", timing = "start", slots = 1L, wage = 2, vol = 0L, draw = 1L, active = 1L, order = 1L),
     # Every class — assigned after class
     list(name = "Note taker",           cat = "Class roles", timing = "end",   slots = 1L, wage = 2, vol = 0L, draw = 1L, active = 1L, order = 3L),
     list(name = "Critic/skeptic",       cat = "Class roles", timing = "end",   slots = 1L, wage = 2, vol = 0L, draw = 1L, active = 1L, order = 4L),
@@ -793,6 +837,26 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
          VALUES(?,?,?,?,?,?,?,?,?);",
         list(tt$name, cid, tt$slots, tt$wage, tt$active, tt$timing, tt$vol, tt$draw, tt$order))
     }
+  }
+
+
+  clearing_order_migrated <- tryCatch(
+    db_query("SELECT value FROM labor_settings WHERE key=?;", list("job_clearing_order_v1_migrated")),
+    error = function(e) data.frame())
+  if (!nrow(clearing_order_migrated)) {
+    default_order <- c(
+      "last class recap" = 1L, "last class summary" = 1L,
+      "materials summary" = 2L, "note taker" = 3L,
+      "critic/skeptic" = 4L, "critique/skeptic" = 4L,
+      "policy/example scout" = 5L, "policy example scout" = 5L)
+    for (job_key in names(default_order)) {
+      db_exec("UPDATE job_templates SET display_order=? WHERE lower(name)=?;",
+              list(default_order[[job_key]], job_key))
+      db_exec("UPDATE job_posts SET display_order=? WHERE lower(job_name)=?;",
+              list(default_order[[job_key]], job_key))
+    }
+    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES(?,?);",
+            list("job_clearing_order_v1_migrated", "1"))
   }
 
   latest_round <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
@@ -1043,34 +1107,42 @@ validate_ticket_allocation <- function(values, budget) {
   list(ok=TRUE, values=as.integer(raw), total=as.integer(total), budget=budget)
 }
 
+order_job_posts_for_clearing <- function(posts) {
+  if (!nrow(posts)) return(posts)
+  clear_order <- if ("display_order" %in% names(posts)) {
+    suppressWarnings(as.numeric(posts$display_order))
+  } else rep(99, nrow(posts))
+  clear_order[is.na(clear_order)] <- 99
+  post_id <- if ("id" %in% names(posts)) suppressWarnings(as.numeric(posts$id)) else seq_len(nrow(posts))
+  posts[order(clear_order, post_id, na.last = TRUE), , drop = FALSE]
+}
+
 # Pure point-bid allocator used by the live draw and scratch-DB tests. Students
 # outside the selected roster must never enter the draw, even if they submitted
-# bids earlier in the same round for another section.
+# bids earlier in the same round for another section. Jobs clear independently,
+# so the same student may win more than one distinct job.
 compute_application_pairs <- function(posts, students, bids) {
   eligible_ids <- unique(as.character(students$user_id))
   if (!length(eligible_ids) || !nrow(posts)) return(list())
+  posts <- order_job_posts_for_clearing(posts)
   if (nrow(bids)) {
     bids <- bids[bids$user_id %in% eligible_ids & bids$tickets > 0, , drop=FALSE]
   }
-  assigned_ids <- character(0)
   result <- list()
   for (i in seq_len(nrow(posts))) {
     p <- posts[i, ]
     slots <- max(1L, as.integer(p$slots %||% 1L))
     cat_bids <- if (nrow(bids))
-      bids[bids$category_id == p$category_id & !bids$user_id %in% assigned_ids, , drop=FALSE]
+      bids[bids$category_id == p$category_id, , drop=FALSE]
     else data.frame()
     pool <- if (nrow(cat_bids)) rep(as.character(cat_bids$user_id), cat_bids$tickets) else character(0)
-    other_ids <- setdiff(eligible_ids,
-                         c(assigned_ids, if (nrow(cat_bids)) as.character(cat_bids$user_id) else character(0)))
+    other_ids <- setdiff(eligible_ids, if (nrow(cat_bids)) as.character(cat_bids$user_id) else character(0))
     pool <- c(pool, other_ids)
-    pool <- pool[!pool %in% assigned_ids]
     drawn <- if (length(pool)) {
       unique_pool <- unique(pool)
       sample(unique_pool, min(slots, length(unique_pool)),
              prob=tabulate(match(pool, unique_pool)))
     } else character(0)
-    assigned_ids <- c(assigned_ids, drawn)
     for (uid in drawn) {
       result[[length(result) + 1L]] <- list(
         uid=uid, post_id=p$id, wage=as.numeric(p$wage %||% NA))
@@ -1905,12 +1977,9 @@ assignment_round_for_timing <- function(current_round_id, timing_filter) {
 }
 
 exclude_existing_assignments_for_timing <- function(timing_filter) {
-  timing <- if (is.null(timing_filter) || !length(timing_filter) ||
-                is.na(timing_filter[1])) "all" else as.character(timing_filter[1])
-  # Cold calls are repeatable participation events, not exclusive class jobs.
-  # A student who already has a materials summary (or another assigned job)
-  # must remain eligible to be cold called.
-  !(tolower(trimws(timing)) %in% c("all", "during", "during class"))
+  # Distinct regular jobs may now be held by the same student. The unique
+  # assignment key prevents only a duplicate of the same job post.
+  FALSE
 }
 
 reveal_timings_for_scope <- function(scope) {
@@ -2546,10 +2615,7 @@ server <- function(input, output, session) {
               SELECT 1 FROM live_score_events lse
               WHERE lse.job_assignment_id=ja.id
             )
-          ORDER BY CASE
-                     WHEN LOWER(COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start'))
-                          IN ('during','during class') THEN 1 ELSE 0
-                   END, ja.created_at DESC LIMIT 1;",
+          ORDER BY COALESCE(jp.display_order,99), jp.id;",
         list(uid, assignment_rid)), error = function(e) data.frame())
 
       all_assign <- tryCatch(db_query(
@@ -2771,23 +2837,27 @@ server <- function(input, output, session) {
         !norm_key(today_my_assign$selection_time) %in% c("during", "during class"),
         , drop = FALSE]
     }
-    my_assignment_timing <- if (nrow(today_my_assign)) as.character(today_my_assign$selection_time[1] %||% "start") else ""
-    if (my_assignment_timing == "any") my_assignment_timing <- "start"
-    section_revealed <- FALSE
-    reveal_timing <- ""
-    if (!is.na(jp$assignment_round_id %||% NA)) {
+    visible_my_assign <- today_my_assign
+    hidden_my_assign_n <- 0L
+    if (nrow(today_my_assign)) {
+      timing_key <- norm_key(today_my_assign$selection_time)
+      today_my_assign$reveal_timing <- ifelse(
+        timing_key %in% c("end", "post", "post class", "after class", "end of class or after class"),
+        "end", "start")
+      sr <- if (!is.null(jp$section_reveals)) jp$section_reveals else data.frame()
       sec <- trimws(rv$section %||% "")
-      if (nzchar(sec)) {
-        reveal_row <- tryCatch(db_query(
-          "SELECT COALESCE(revealed,0) AS revealed, COALESCE(timing,'start') AS timing
-           FROM assignment_timing_reveals
-           WHERE round_id=? AND LOWER(section)=LOWER(?) AND COALESCE(timing,'start')=?;",
-          list(jp$assignment_round_id, sec, my_assignment_timing)), error = function(e) data.frame())
-        section_revealed <- isTRUE(nrow(reveal_row) && as.integer(reveal_row$revealed[1] %||% 0L) == 1L)
-        if (section_revealed) reveal_timing <- as.character(reveal_row$timing[1] %||% "start")
-      }
+      visible <- vapply(seq_len(nrow(today_my_assign)), function(i) {
+        if (!nrow(sr) || !nzchar(sec)) return(FALSE)
+        sr_timing <- ifelse(
+          norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
+          "end", "start")
+        any(!is.na(sr$section) & norm_key(sr$section) == norm_key(sec) &
+              sr_timing == today_my_assign$reveal_timing[i] &
+              as.integer(sr$revealed %||% 0L) == 1L)
+      }, logical(1))
+      visible_my_assign <- today_my_assign[visible, , drop = FALSE]
+      hidden_my_assign_n <- sum(!visible)
     }
-    revealed <- isTRUE(section_revealed && identical(my_assignment_timing, reveal_timing))
 
     today_posts <- if (!is.null(jp$posts)) jp$posts else data.frame()
     if (nrow(today_posts)) {
@@ -2868,11 +2938,11 @@ server <- function(input, output, session) {
 
     tagList(
       div(class = "tab-howto",
-        "Your daily snapshot: revealed class jobs, active class game, your assignment, and job pools."
+        "Your daily snapshot: revealed class jobs, active class game, your assignments, and job pools."
       ),
       tutorial_note("How to use Today", c(
         "Check Today's Revealed Jobs to see which classmates are handling each role.",
-        "Open Instructions beneath your assignment before starting the job.",
+        "Open Instructions beneath each assignment before starting the work.",
         "Use Job Pools to see which roles exist and whether their slots are filled."
       )),
 
@@ -2963,26 +3033,30 @@ server <- function(input, output, session) {
         }
       },
 
-      # My Job Today — only visible once instructor reveals
-      div(class = "sec-label", "My Job Today"),
+      # My Jobs Today — each job follows its own start/end reveal.
+      div(class = "sec-label", "My Jobs Today"),
       if (!nrow(today_my_assign)) {
         div(class = "today-card",
             style = "color:#888;font-style:italic;",
-            "No assigned job.")
-      } else if (!revealed) {
-        div(class = "today-card",
-            style = "color:#888;font-style:italic;",
-            "Assignments will be revealed by your instructor at the start of class.")
+            "No assigned jobs.")
       } else {
-        r <- today_my_assign[1, ]
-        div(class = "job-tile",
-          div(class = "job-tile-name", "\U0001f4cb ", r$job_name %||% "—"),
-          div(class = "job-tile-meta",
-              r$round_label %||% "Current round",
-              if (wage_mode && !is.na(r$assigned_wage %||% NA))
-                paste0("  ·  Wage: ", sprintf("%d tokens", as.integer(r$assigned_wage)))
-              else ""),
-          job_description_details(r$description, "Instructions")
+        tagList(
+          if (hidden_my_assign_n > 0L)
+            div(class = "today-card", style = "color:#888;font-style:italic;",
+                sprintf("%d assignment%s not revealed yet.", hidden_my_assign_n,
+                        if (hidden_my_assign_n == 1L) " is" else "s are")),
+          lapply(seq_len(nrow(visible_my_assign)), function(i) {
+            r <- visible_my_assign[i, ]
+            div(class = "job-tile",
+              div(class = "job-tile-name", "\U0001f4cb ", r$job_name %||% "—"),
+              div(class = "job-tile-meta",
+                  r$round_label %||% "Current round",
+                  if (wage_mode && !is.na(r$assigned_wage %||% NA))
+                    paste0("  ·  Wage: ", sprintf("%d tokens", as.integer(r$assigned_wage)))
+                  else ""),
+              job_description_details(r$description, "Instructions")
+            )
+          })
         )
       },
 
@@ -3041,13 +3115,13 @@ server <- function(input, output, session) {
 
     tagList(
       div(class = "tab-howto",
-        "Submit bids for your class job each round. The mode (random / wage bid / ticket allocation) is set by your instructor."
+        "Submit bids for class jobs each round. The mode (random / wage bid / ticket allocation) is set by your instructor."
       ),
       tutorial_note("How to use the Job Market", c(
         "Read the current round and assignment mode at the top.",
         "Expand job descriptions before deciding which work fits you.",
         "Enter wages or allocate tickets, then submit before the bid window closes.",
-        "Return here after the draw to confirm your assignment and instructions."
+        "Return here after the draw to confirm your assignments and instructions."
       )),
 
       # Round info pill
@@ -3104,21 +3178,23 @@ server <- function(input, output, session) {
         }
       },
 
-      # Current assignment
-      div(class = "sec-label", "Your Assignment This Round"),
+      # Current assignments
+      div(class = "sec-label", "Your Assignments This Round"),
       if (nrow(jp$my_assign)) {
-        r <- jp$my_assign[1, ]
-        div(class = "jm-assignment",
-          div(style = "font-weight:700;font-size:1rem;",
-              "\U0001f4cb ", r$job_name %||% ""),
-          div(style = "color:#888;font-size:.83rem;margin-top:.15rem;",
-              if (!is.na(r$assigned_wage %||% NA))
-                paste0("Wage: ", sprintf("%d tokens", as.integer(r$assigned_wage)))
-              else "Wage pending"),
-          job_description_details(r$description, "Instructions")
-        )
+        tagList(lapply(seq_len(nrow(jp$my_assign)), function(i) {
+          r <- jp$my_assign[i, ]
+          div(class = "jm-assignment",
+            div(style = "font-weight:700;font-size:1rem;",
+                "\U0001f4cb ", r$job_name %||% ""),
+            div(style = "color:#888;font-size:.83rem;margin-top:.15rem;",
+                if (!is.na(r$assigned_wage %||% NA))
+                  paste0("Wage: ", sprintf("%d tokens", as.integer(r$assigned_wage)))
+                else "Wage pending"),
+            job_description_details(r$description, "Instructions")
+          )
+        }))
       } else {
-        div(style = "color:#999;font-size:.9rem;", "No assignment for this round yet.")
+        div(style = "color:#999;font-size:.9rem;", "No assignments for this round yet.")
       },
 
       # Bid form
@@ -3183,7 +3259,7 @@ server <- function(input, output, session) {
       return(div(class = "alert alert-secondary",
                  paste0("Bidding closed on ",
                         format(close_d, "%B %d at %I:%M %p", tz = bid_tz),
-                        ". See your assignment above.")))
+                        ". See your assignments above.")))
     }
     if (!window$open) {
       return(div(class = "alert alert-secondary", "Bidding is not open right now."))
@@ -4911,14 +4987,17 @@ server <- function(input, output, session) {
     if (!nrow(rid_row)) { showNotification("Create a round first.", type = "error"); return() }
     if (!nzchar(nm)) { showNotification("Post name required.", type = "error"); return() }
     rid <- rid_row$id[1]
+    next_order <- tryCatch(as.integer(db_query(
+      "SELECT COALESCE(MAX(display_order),0)+1 AS n FROM job_posts WHERE round_id=?;",
+      list(rid))$n[1]), error = function(e) 99L)
     db_exec(
-      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw, selection_time, description)
-       VALUES(?,?,?,?,?,?,?,?);",
+      "INSERT INTO job_posts(round_id, job_name, category_id, slots, wage_override, in_draw, selection_time, description, display_order)
+       VALUES(?,?,?,?,?,?,?,?,?);",
       list(rid, nm,
            if (!is.na(cat_id) && cat_id > 0) cat_id else NA_integer_,
            slots,
            if (!is.null(wage) && !is.na(wage) && wage > 0) wage else NA_real_,
-           in_draw, timing, desc))
+           in_draw, timing, desc, next_order))
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Job post added.", type = "message")
   })
@@ -4956,14 +5035,17 @@ server <- function(input, output, session) {
     vol    <- as.integer(isTRUE(input$new_tpl_voluntary))
     idraw  <- as.integer(!isTRUE(input$new_tpl_not_in_draw))
     if (!nzchar(nm)) { showNotification("Template name required.", type = "error"); return() }
+    next_order <- tryCatch(as.integer(db_query(
+      "SELECT COALESCE(MAX(display_order),0)+1 AS n FROM job_templates;")$n[1]),
+      error = function(e) 99L)
     db_exec(
-      "INSERT INTO job_templates(name, category_id, slots, suggested_wage, selection_time, voluntary, in_draw, description)
-       VALUES(?,?,?,?,?,?,?,?);",
+      "INSERT INTO job_templates(name, category_id, slots, suggested_wage, selection_time, voluntary, in_draw, description, display_order)
+       VALUES(?,?,?,?,?,?,?,?,?);",
       list(nm,
            if (!is.na(cat_id) && cat_id > 0) cat_id else NA_integer_,
            slots,
            if (!is.null(wage) && !is.na(wage) && wage >= 0) wage else NA_real_,
-           timing, vol, idraw, desc))
+           timing, vol, idraw, desc, next_order))
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Template added.", type = "message")
   })
@@ -4999,6 +5081,7 @@ server <- function(input, output, session) {
               COALESCE(jp.in_draw,1) AS in_draw,
               COALESCE(jp.voluntary,0) AS voluntary,
               COALESCE(jp.active,1) AS active,
+              COALESCE(jp.display_order,99) AS display_order,
               COALESCE(NULLIF(jp.selection_time,''),'any') AS selection_time
        FROM job_posts jp
        LEFT JOIN job_categories jc ON jc.id=jp.category_id
@@ -5017,10 +5100,12 @@ server <- function(input, output, session) {
       selectInput("edit_post_cat", "Category:", choices = job_category_choices(post$category_id[1]),
                   selected = post$category_id[1]),
       fluidRow(
-        column(4, numericInput("edit_post_slots", "Slots:", value = as.integer(post$slots[1] %||% 1L), min = 1, step = 1)),
-        column(4, numericInput("edit_post_wage", "Wage:", value = as.numeric(post$wage[1] %||% 0), min = 0, step = 1)),
-        column(4, selectInput("edit_post_timing", "Timing:", choices = job_timing_choices,
-                              selected = post$selection_time[1] %||% "any"))
+        column(3, numericInput("edit_post_slots", "Slots:", value = as.integer(post$slots[1] %||% 1L), min = 1, step = 1)),
+        column(3, numericInput("edit_post_wage", "Wage:", value = as.numeric(post$wage[1] %||% 0), min = 0, step = 1)),
+        column(3, selectInput("edit_post_timing", "Timing:", choices = job_timing_choices,
+                              selected = post$selection_time[1] %||% "any")),
+        column(3, numericInput("edit_post_order", "Clear order:",
+                               value = as.integer(post$display_order[1] %||% 99L), min = 1, step = 1))
       ),
       fluidRow(
         column(4, checkboxInput("edit_post_in_draw", "In draw", value = isTRUE(as.integer(post$in_draw[1]) == 1L))),
@@ -5040,6 +5125,7 @@ server <- function(input, output, session) {
     slots <- max(1L, as.integer(input$edit_post_slots %||% 1L))
     wage <- suppressWarnings(as.numeric(input$edit_post_wage %||% 0))
     timing <- input$edit_post_timing %||% "any"
+    clear_order <- max(1L, as.integer(input$edit_post_order %||% 99L))
     desc <- trimws(input$edit_post_desc %||% "")
     if (is.na(pid) || pid <= 0 || !nzchar(nm)) {
       showNotification("Name is required.", type = "error"); return()
@@ -5047,13 +5133,13 @@ server <- function(input, output, session) {
     db_exec(
       "UPDATE job_posts
        SET job_name=?, category_id=?, slots=?, wage_override=?, selection_time=?, description=?,
-           in_draw=?, voluntary=?, active=?
+           in_draw=?, voluntary=?, active=?, display_order=?
        WHERE id=?;",
       list(nm, if (!is.na(cat_id) && cat_id > 0) cat_id else NA_integer_,
            slots, if (!is.na(wage)) wage else NA_real_, timing, desc,
            as.integer(isTRUE(input$edit_post_in_draw)),
            as.integer(isTRUE(input$edit_post_voluntary)),
-           as.integer(isTRUE(input$edit_post_active)), pid))
+           as.integer(isTRUE(input$edit_post_active)), clear_order, pid))
     removeModal()
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Job post updated.", type = "message")
@@ -5069,6 +5155,7 @@ server <- function(input, output, session) {
               COALESCE(active,1) AS active,
               COALESCE(voluntary,0) AS voluntary,
               COALESCE(in_draw,1) AS in_draw,
+              COALESCE(display_order,99) AS display_order,
               COALESCE(NULLIF(selection_time,''),'any') AS selection_time
        FROM job_templates
        WHERE id=?;",
@@ -5086,10 +5173,12 @@ server <- function(input, output, session) {
       selectInput("edit_tpl_cat", "Category:", choices = job_category_choices(tpl$category_id[1]),
                   selected = tpl$category_id[1]),
       fluidRow(
-        column(4, numericInput("edit_tpl_slots", "Slots:", value = as.integer(tpl$slots[1] %||% 1L), min = 1, step = 1)),
-        column(4, numericInput("edit_tpl_wage", "Suggested wage:", value = as.numeric(tpl$suggested_wage[1] %||% 0), min = 0, step = 1)),
-        column(4, selectInput("edit_tpl_timing", "Timing:", choices = job_timing_choices,
-                              selected = tpl$selection_time[1] %||% "any"))
+        column(3, numericInput("edit_tpl_slots", "Slots:", value = as.integer(tpl$slots[1] %||% 1L), min = 1, step = 1)),
+        column(3, numericInput("edit_tpl_wage", "Suggested wage:", value = as.numeric(tpl$suggested_wage[1] %||% 0), min = 0, step = 1)),
+        column(3, selectInput("edit_tpl_timing", "Timing:", choices = job_timing_choices,
+                              selected = tpl$selection_time[1] %||% "any")),
+        column(3, numericInput("edit_tpl_order", "Clear order:",
+                               value = as.integer(tpl$display_order[1] %||% 99L), min = 1, step = 1))
       ),
       fluidRow(
         column(4, checkboxInput("edit_tpl_in_draw", "In draw", value = isTRUE(as.integer(tpl$in_draw[1]) == 1L))),
@@ -5109,6 +5198,7 @@ server <- function(input, output, session) {
     slots <- max(1L, as.integer(input$edit_tpl_slots %||% 1L))
     wage <- suppressWarnings(as.numeric(input$edit_tpl_wage %||% 0))
     timing <- input$edit_tpl_timing %||% "any"
+    clear_order <- max(1L, as.integer(input$edit_tpl_order %||% 99L))
     desc <- trimws(input$edit_tpl_desc %||% "")
     if (is.na(tid) || tid <= 0 || !nzchar(nm)) {
       showNotification("Name is required.", type = "error"); return()
@@ -5116,13 +5206,13 @@ server <- function(input, output, session) {
     db_exec(
       "UPDATE job_templates
        SET name=?, category_id=?, slots=?, suggested_wage=?, selection_time=?, description=?,
-           in_draw=?, voluntary=?, active=?
+           in_draw=?, voluntary=?, active=?, display_order=?
        WHERE id=?;",
       list(nm, if (!is.na(cat_id) && cat_id > 0) cat_id else NA_integer_,
            slots, if (!is.na(wage)) wage else NA_real_, timing, desc,
            as.integer(isTRUE(input$edit_tpl_in_draw)),
            as.integer(isTRUE(input$edit_tpl_voluntary)),
-           as.integer(isTRUE(input$edit_tpl_active)), tid))
+           as.integer(isTRUE(input$edit_tpl_active)), clear_order, tid))
     removeModal()
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Template updated.", type = "message")
@@ -5270,7 +5360,7 @@ server <- function(input, output, session) {
     } else {
       # Voluntary contributions are independent, repeatable score events.
       # Do not upsert job_assignments: that table intentionally represents the
-      # student's single assigned job for the round.
+      # student's assigned class jobs for the round.
       post_id <- as.integer(ev$job_post_id[1])
       if (tokens_to_award > 0 && tokens_revealed) {
         token_credit(uid, dname, tokens_to_award, 1L, "participation",
@@ -5448,8 +5538,8 @@ server <- function(input, output, session) {
     if (!nrow(post)) { showNotification("Job is not active for the current round.", type = "error"); return() }
 
     old <- tryCatch(db_query(
-      "SELECT id FROM job_assignments WHERE round_id=? AND user_id=? LIMIT 1;",
-      list(rid, uid)),
+      "SELECT id FROM job_assignments WHERE round_id=? AND user_id=? AND job_post_id=? LIMIT 1;",
+      list(rid, uid, post_id)),
       error = function(e) data.frame())
     if (nrow(old)) {
       db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;",
@@ -5460,7 +5550,7 @@ server <- function(input, output, session) {
               assignment_mode, status, outcome, tokens_awarded, tokens_credited,
               scheduled_date, display_on_today, updated_at)
        VALUES(?,?,?,?,?,'assigned','',0,1,?,?,datetime('now'))
-       ON CONFLICT(round_id, user_id)
+       ON CONFLICT(round_id, user_id, job_post_id)
        DO UPDATE SET job_post_id=excluded.job_post_id,
                      assigned_wage=excluded.assigned_wage,
                      assignment_mode=excluded.assignment_mode,
@@ -5625,20 +5715,21 @@ server <- function(input, output, session) {
         next
       }
 
-      # Only assigned jobs use the one-row-per-student round constraint.
-      if (uid %in% seen) { errors <- c(errors, sprintf("Row %d: duplicate assigned job for student: %s", i, rows$student_key[i])); next }
-      seen <- c(seen, uid)
-      queued <- db_query(
+      # A student may hold several jobs, but the same post is assigned only once.
+      assignment_key <- paste(uid, as.integer(pm$id[1]), sep = "|")
+      if (assignment_key %in% seen) { errors <- c(errors, sprintf("Row %d: duplicate student/job pair: %s — %s", i, rows$student_key[i], rows$job[i])); next }
+      seen <- c(seen, assignment_key)
+      old <- db_query("SELECT id, COALESCE(outcome,'') AS outcome, COALESCE(tokens_awarded,0) AS tokens_awarded FROM job_assignments WHERE round_id=? AND user_id=? AND job_post_id=? LIMIT 1;", list(rid, uid, as.integer(pm$id[1])))
+      queued <- if (nrow(old)) db_query(
         "SELECT id FROM live_score_events
-         WHERE round_id=? AND user_id=? AND event_kind='assignment'
-           AND committed_at IS NULL LIMIT 1;", list(rid, uid))
-      if (nrow(queued)) { errors <- c(errors, sprintf("Row %d: assigned job is already in Audit", i)); next }
-      old <- db_query("SELECT id, COALESCE(outcome,'') AS outcome, COALESCE(tokens_awarded,0) AS tokens_awarded FROM job_assignments WHERE round_id=? AND user_id=? LIMIT 1;", list(rid, uid))
+         WHERE job_assignment_id=? AND event_kind='assignment'
+           AND committed_at IS NULL LIMIT 1;", list(as.integer(old$id[1]))) else data.frame()
+      if (nrow(queued)) { errors <- c(errors, sprintf("Row %d: this student/job pair is already in Audit", i)); next }
       if (nrow(old) && (nzchar(as.character(old$outcome[1] %||% "")) || as.numeric(old$tokens_awarded[1] %||% 0) > 0)) { errors <- c(errors, sprintf("Row %d: assigned job is already committed", i)); next }
       db_exec(
         "INSERT INTO job_assignments(round_id,user_id,job_post_id,assigned_wage,assignment_mode,status,outcome,tokens_awarded,tokens_credited,updated_at)
          VALUES(?,?,?,?,?,'assigned','',0,1,datetime('now'))
-         ON CONFLICT(round_id,user_id) DO UPDATE SET job_post_id=excluded.job_post_id,assigned_wage=excluded.assigned_wage,assignment_mode=excluded.assignment_mode,status='assigned',outcome='',tokens_awarded=0,tokens_credited=1,updated_at=datetime('now');",
+         ON CONFLICT(round_id,user_id,job_post_id) DO UPDATE SET job_post_id=excluded.job_post_id,assigned_wage=excluded.assigned_wage,assignment_mode=excluded.assignment_mode,status='assigned',outcome='',tokens_awarded=0,tokens_credited=1,updated_at=datetime('now');",
         list(rid, uid, as.integer(pm$id[1]), as.numeric(pm$wage[1] %||% 0), rid_row$assignment_mode[1] %||% "manual"))
       aid <- if (nrow(old)) as.integer(old$id[1]) else as.integer(db_query("SELECT last_insert_rowid() AS id;")$id[1])
       if (nzchar(outcome)) {
@@ -5862,10 +5953,10 @@ server <- function(input, output, session) {
              AND LOWER(u.user_id)<>LOWER(?)
              AND NOT EXISTS (
                SELECT 1 FROM job_assignments ja
-               WHERE ja.round_id=? AND ja.user_id=u.user_id
+               WHERE ja.round_id=? AND ja.user_id=u.user_id AND ja.job_post_id=?
              )
            ORDER BY RANDOM() LIMIT 1;",
-          list(sec, old$user_id[1], old$round_id[1]))
+          list(sec, old$user_id[1], old$round_id[1], old$job_post_id[1]))
       } else {
         db_query(
           "SELECT u.user_id, u.display_name
@@ -5875,14 +5966,14 @@ server <- function(input, output, session) {
              AND LOWER(u.user_id)<>LOWER(?)
              AND NOT EXISTS (
                SELECT 1 FROM job_assignments ja
-               WHERE ja.round_id=? AND ja.user_id=u.user_id
+               WHERE ja.round_id=? AND ja.user_id=u.user_id AND ja.job_post_id=?
              )
            ORDER BY RANDOM() LIMIT 1;",
-          list(old$user_id[1], old$round_id[1]))
+          list(old$user_id[1], old$round_id[1], old$job_post_id[1]))
       },
       error = function(e) data.frame())
     if (!nrow(candidates)) {
-      showNotification("No unassigned replacement student found.", type = "warning")
+      showNotification("No replacement student without this job was found.", type = "warning")
       return()
     }
     db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;", list(aid))
@@ -7272,6 +7363,7 @@ server <- function(input, output, session) {
           "SELECT jp.id, jp.job_name, jp.slots, jp.category_id, jc.name AS cat_name,
                   COALESCE(jp.wage_override, jc.default_wage) AS eff_wage,
                   COALESCE(jp.active,1) AS active,
+                  COALESCE(jp.display_order,99) AS display_order,
                   COALESCE(jp.in_draw,1) AS in_draw,
                   COALESCE(jp.voluntary,0) AS voluntary,
                   COALESCE(jc.voluntary,0) AS cat_voluntary,
@@ -7319,7 +7411,7 @@ server <- function(input, output, session) {
           div(style = "overflow-x:auto;",
             tags$table(class = "table table-sm",
               tags$thead(tags$tr(
-                tags$th("Post"), tags$th("Cat"), tags$th("Slots"),
+                tags$th("Order"), tags$th("Post"), tags$th("Cat"), tags$th("Slots"),
                 tags$th("Wage"), tags$th("Timing"), tags$th("Clearing Wage"),
                 tags$th("In Draw"), tags$th("Voluntary"), tags$th("Active"), tags$th("")
               )),
@@ -7331,6 +7423,7 @@ server <- function(input, output, session) {
                 clr_wage <- compute_clearing_wage(r$category_id, rid, as.integer(r$slots %||% 1L),
                                                   job_post_id = as.integer(r$id))
                 tags$tr(
+                  tags$td(as.integer(r$display_order %||% 99L)),
                   tags$td(r$job_name %||% ""),
                   tags$td(style = "color:#888;font-size:.82em;", r$cat_name %||% "—"),
                   tags$td(r$slots %||% 1),
@@ -9987,6 +10080,7 @@ server <- function(input, output, session) {
 
   compute_draw_pairs <- function(rid, mode, posts, students, tiebreak = "weighted_lottery") {
     tryCatch({
+      posts <- order_job_posts_for_clearing(posts)
       if (mode == "wage_bidding") {
         bids_raw <- db_query(
           "SELECT jwb.user_id, jwb.job_post_id, jp.category_id, jwb.min_wage, jwb.submitted_at
@@ -9998,7 +10092,6 @@ server <- function(input, output, session) {
           list(rid, rid))
         eligible_ids <- unique(as.character(students$user_id))
         bids_raw <- bids_raw[bids_raw$user_id %in% eligible_ids, , drop=FALSE]
-        assigned_ids <- character(0)
         result <- list()
         for (i in seq_len(nrow(posts))) {
           p  <- posts[i, ]
@@ -10007,7 +10100,6 @@ server <- function(input, output, session) {
           legacy <- bids_raw[is.na(bids_raw$job_post_id) & bids_raw$category_id == p$category_id &
                                !bids_raw$user_id %in% exact$user_id, , drop=FALSE]
           post_bids <- rbind(exact, legacy)
-          post_bids <- post_bids[!post_bids$user_id %in% assigned_ids, , drop=FALSE]
           if (nrow(post_bids)) {
             post_bids <- post_bids[order(post_bids$min_wage, post_bids$submitted_at), , drop=FALSE]
             wage_levels <- sort(unique(post_bids$min_wage))
@@ -10015,7 +10107,7 @@ server <- function(input, output, session) {
               .apply_tiebreak(post_bids[post_bids$min_wage == w, , drop=FALSE], tiebreak)))
           }
           pool_ids <- if (nrow(post_bids)) post_bids$user_id else character(0)
-          other_ids <- setdiff(students$user_id, c(assigned_ids, pool_ids))
+          other_ids <- setdiff(students$user_id, pool_ids)
           pool_ids  <- c(pool_ids, sample(other_ids))
           drawn <- head(pool_ids, n)
           wages <- if (nrow(post_bids)) {
@@ -10024,7 +10116,6 @@ server <- function(input, output, session) {
               if (nrow(m)) as.numeric(m$min_wage[1]) else as.numeric(p$wage %||% NA)
             })
           } else rep(as.numeric(p$wage %||% NA), length(drawn))
-          assigned_ids <- c(assigned_ids, drawn)
           for (j in seq_along(drawn))
             result[[length(result)+1]] <- list(uid=drawn[j], post_id=p$id, wage=wages[j])
         }
@@ -10035,14 +10126,17 @@ server <- function(input, output, session) {
           list(rid)), error=function(e) data.frame())
         compute_application_pairs(posts, students, bids)
       } else {
-        shuffled <- sample(students$user_id)
-        slots_list <- do.call(c, lapply(seq_len(nrow(posts)), function(i) {
-          p <- posts[i,]
-          rep(list(list(post_id=p$id, wage=as.numeric(p$wage %||% NA))),
-              max(1L, as.integer(p$slots %||% 1L)))
-        }))
-        lapply(seq_len(min(length(shuffled), length(slots_list))), function(i)
-          list(uid=shuffled[i], post_id=slots_list[[i]]$post_id, wage=slots_list[[i]]$wage))
+        result <- list()
+        for (i in seq_len(nrow(posts))) {
+          p <- posts[i, ]
+          n <- min(length(students$user_id), max(1L, as.integer(p$slots %||% 1L)))
+          drawn <- if (n > 0L) sample(students$user_id, n) else character(0)
+          for (uid in drawn) {
+            result[[length(result) + 1L]] <- list(
+              uid=uid, post_id=p$id, wage=as.numeric(p$wage %||% NA))
+          }
+        }
+        result
       }
     }, error = function(e) { message("draw error: ", e$message); list() })
   }
@@ -10076,11 +10170,13 @@ server <- function(input, output, session) {
 
     posts <- tryCatch(db_query(
       "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
+              COALESCE(jp.display_order,99) AS display_order,
               COALESCE(jp.wage_override, jc.default_wage) AS wage,
               COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time
        FROM job_posts jp
        LEFT JOIN job_categories jc ON jc.id=jp.category_id
-       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1;",
+       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1
+       ORDER BY COALESCE(jp.display_order,99), jp.id;",
       list(rid)),
       error = function(e) data.frame())
     timing_filter <- input$draw_timing_filter %||% "all"
@@ -10155,11 +10251,13 @@ server <- function(input, output, session) {
     tbrk <- round$tiebreak_method[1] %||% "weighted_lottery"
     posts <- tryCatch(db_query(
       "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
+              COALESCE(jp.display_order,99) AS display_order,
               COALESCE(jp.wage_override, jc.default_wage) AS wage,
               COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time
        FROM job_posts jp
        LEFT JOIN job_categories jc ON jc.id=jp.category_id
-       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1;",
+       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1
+       ORDER BY COALESCE(jp.display_order,99), jp.id;",
       list(rid)),
       error = function(e) data.frame())
     timing_filter2 <- input$draw_timing_filter %||% "all"

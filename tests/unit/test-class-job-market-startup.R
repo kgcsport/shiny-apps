@@ -81,6 +81,43 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_gt(posts$n[1], 0)
     expect_gt(cold_posts$n[1], 0)
 
+    ordered_templates <- DBI::dbGetQuery(con, "
+      SELECT name, display_order FROM job_templates
+      WHERE lower(name) IN (
+        \x27last class recap\x27,\x27materials summary\x27,\x27note taker\x27,
+        \x27critic/skeptic\x27,\x27policy/example scout\x27)
+      ORDER BY display_order;")
+    expect_equal(ordered_templates$name,
+                 c("Last class recap", "Materials summary", "Note taker",
+                   "Critic/skeptic", "Policy/example scout"))
+    expect_equal(ordered_templates$display_order, 1:5)
+
+    post_ids <- DBI::dbGetQuery(con,
+      "SELECT id, display_order FROM job_posts WHERE round_id=(SELECT MAX(id) FROM weekly_rounds) ORDER BY display_order, id LIMIT 2;")
+    DBI::dbExecute(con,
+      "INSERT OR IGNORE INTO users(user_id,display_name,is_admin,active,is_demo) VALUES(\x27multi-job-student\x27,\x27Multiple Jobs\x27,0,1,0);")
+    for (post_id in post_ids$id) {
+      DBI::dbExecute(con,
+        "INSERT INTO job_assignments(round_id,user_id,job_post_id,status) VALUES((SELECT MAX(id) FROM weekly_rounds),?,?,\x27assigned\x27);",
+        params = list("multi-job-student", post_id))
+    }
+    expect_equal(DBI::dbGetQuery(con,
+      "SELECT COUNT(*) n FROM job_assignments WHERE user_id=\x27multi-job-student\x27;")$n[1], 2L)
+    expect_error(DBI::dbExecute(con,
+      "INSERT INTO job_assignments(round_id,user_id,job_post_id) VALUES((SELECT MAX(id) FROM weekly_rounds),?,?);",
+      params = list("multi-job-student", post_ids$id[1])), "UNIQUE")
+
+    point_posts <- data.frame(id = c(2L, 1L), category_id = c(2L, 1L),
+                              slots = c(1L, 1L), wage = c(2, 2),
+                              display_order = c(2L, 1L))
+    point_students <- data.frame(user_id = "multi-job-student")
+    point_bids <- data.frame(user_id = c("multi-job-student", "multi-job-student"),
+                             category_id = c(1L, 2L), tickets = c(5L, 5L))
+    point_pairs <- app$compute_application_pairs(point_posts, point_students, point_bids)
+    expect_equal(vapply(point_pairs, function(x) x$post_id, integer(1)), c(1L, 2L))
+    expect_equal(vapply(point_pairs, function(x) x$uid, character(1)),
+                 rep("multi-job-student", 2))
+
     settings <- DBI::dbGetQuery(con, "
       SELECT key, value FROM labor_settings
       WHERE key IN ('active_course', 'active_section', 'hide_archived_students',
@@ -147,8 +184,8 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_false(app$exclude_existing_assignments_for_timing("all"))
     expect_false(app$exclude_existing_assignments_for_timing("during"))
     expect_false(app$exclude_existing_assignments_for_timing("during class"))
-    expect_true(app$exclude_existing_assignments_for_timing("start"))
-    expect_true(app$exclude_existing_assignments_for_timing("end"))
+    expect_false(app$exclude_existing_assignments_for_timing("start"))
+    expect_false(app$exclude_existing_assignments_for_timing("end"))
 
     expect_match(app$ARCADE_CSS, "min-height: 44px", fixed=TRUE)
     expect_match(app$ARCADE_CSS, "max-width: 1100px", fixed=TRUE)
@@ -159,7 +196,7 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_match(app_source, "session$allowReconnect(TRUE)", fixed = TRUE)
     expect_match(app_source, "choose_reveal_section_btn", fixed = TRUE)
     expect_match(app_source, "COALESCE(is_demo,0)=0", fixed = TRUE)
-    expect_match(app_source, "No assigned job.", fixed = TRUE)
+    expect_match(app_source, "No assigned jobs.", fixed = TRUE)
     expect_match(app_source, "account-jobs-panel", fixed = TRUE)
     expect_match(app_source, "!timing_key %in% c(\"during\", \"during class\")", fixed = TRUE)
     expect_match(app_source, "gradebook_upload_template_", fixed = TRUE)
@@ -391,7 +428,7 @@ test_that("class-job-market migrates an older live DB schema on startup", {
       DBI::dbExecute(con, "CREATE TABLE wage_bids(id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER, user_id TEXT, category_id INTEGER, wage REAL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);")
       DBI::dbExecute(con, "INSERT INTO wage_bids(round_id, user_id, category_id, wage, created_at) VALUES(1, 'alice', 1, 5, '2026-08-01 09:00:00');")
       DBI::dbExecute(con, "CREATE TABLE application_bids(id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER, user_id TEXT, category_id INTEGER, rank INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP);")
-      DBI::dbExecute(con, "CREATE TABLE job_assignments(id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER, user_id TEXT, category_id INTEGER, wage REAL, tokens REAL DEFAULT 0, outcome TEXT, awarded_ledger_id INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP);")
+      DBI::dbExecute(con, "CREATE TABLE job_assignments(id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER, user_id TEXT, category_id INTEGER, wage REAL, tokens REAL DEFAULT 0, outcome TEXT, awarded_ledger_id INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(round_id,user_id));")
       DBI::dbExecute(con, "INSERT INTO job_assignments(round_id, user_id, category_id, wage, tokens) VALUES(1, 'alice', 1, 6, 4);")
     })
 
@@ -427,6 +464,14 @@ test_that("class-job-market migrates an older live DB schema on startup", {
     expect_equal(assign_row$assigned_wage[1], 6)
     expect_equal(assign_row$tokens_awarded[1], 4)
     expect_equal(assign_row$status[1], "assigned")
+
+    migrated_post <- DBI::dbGetQuery(con,
+      "SELECT id, round_id FROM job_posts WHERE job_name IS NOT NULL ORDER BY id DESC LIMIT 1;")
+    DBI::dbExecute(con,
+      "INSERT INTO job_assignments(round_id,user_id,job_post_id,status) VALUES(?,?,?,\x27assigned\x27);",
+      params = list(migrated_post$round_id[1], "alice", migrated_post$id[1]))
+    expect_gte(DBI::dbGetQuery(con,
+      "SELECT COUNT(*) n FROM job_assignments WHERE user_id=\x27alice\x27;")$n[1], 2L)
   })
 })
 

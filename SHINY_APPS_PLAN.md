@@ -160,6 +160,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-29** — Allow a student to hold multiple distinct class jobs in one
+  lecture. Jobs clear independently in an instructor-controlled order; the same
+  student/job pair remains unique. The default order is Last class recap,
+  Materials summary, Note taker, Critic/skeptic, Policy/example scout, then
+  instructor-added jobs.
+
 - **2026-09-29** — Treat cold calls as repeatable participation events, not
   exclusive class-job assignments. Students remain eligible for cold calls even
   when they hold a materials summary or another regular job; only absences and
@@ -366,6 +372,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-29** (Codex) - Migrated assignment uniqueness from one row
+  per student/lecture to one row per student/job/lecture, updated random, wage,
+  and point allocators plus imports/redraws/student views for multiple jobs, and
+  added editable clearing order to current posts and reusable templates.
 
 - **2026-09-29** (Codex) - Removed existing regular-job assignees from the
   timed-draw exclusion only for during-class cold calls, kept start/end job

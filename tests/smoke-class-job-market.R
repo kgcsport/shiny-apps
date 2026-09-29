@@ -23,7 +23,7 @@ wanted <- c("seed_class_job_defaults", "get_setting", "bid_lock_status",
             "volunteer_clearing_wage", "assignment_round_for_timing",
             "reveal_timings_for_scope", "round_bid_datetime_value",
             "round_bid_window_values", "round_bid_window_status",
-            "validate_ticket_allocation", "compute_application_pairs",
+            "validate_ticket_allocation", "order_job_posts_for_clearing", "compute_application_pairs",
             "ensure_column")
 extracted <- 0
 for (ex in app) {
@@ -72,6 +72,16 @@ point_bids <- data.frame(user_id=c("s01-a","s01-b","s02-outsider"),
 point_pairs <- compute_application_pairs(point_posts, point_students, point_bids)
 stopifnot(length(point_pairs) == 2L)
 stopifnot(all(vapply(point_pairs, function(x) x[["uid"]], character(1)) %in% point_students$user_id))
+
+point_multi_posts <- data.frame(id=c(2L,1L), category_id=c(2L,1L), slots=c(1L,1L),
+                                wage=c(3,2), display_order=c(2L,1L))
+point_multi_students <- data.frame(user_id="s01-a")
+point_multi_bids <- data.frame(user_id=c("s01-a","s01-a"),
+                               category_id=c(1L,2L), tickets=c(5L,5L))
+point_multi_pairs <- compute_application_pairs(point_multi_posts, point_multi_students, point_multi_bids)
+stopifnot(length(point_multi_pairs) == 2L)
+stopifnot(identical(vapply(point_multi_pairs, function(x) x$post_id, integer(1)), c(1L,2L)))
+stopifnot(all(vapply(point_multi_pairs, function(x) x$uid, character(1)) == "s01-a"))
 
 # End-of-class jobs, especially lecture notes, belong to the class session
 # that just ended. Timing must never advance their lecture/round index.
