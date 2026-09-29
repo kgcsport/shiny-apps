@@ -144,6 +144,11 @@ test_that("class-job-market starts against a fresh DB with required tables and c
       "Pending: Completed"
     )
     expect_equal(app$assignment_history_state(assignment_status = "absent_redrawn")$code, "absent")
+    expect_false(app$exclude_existing_assignments_for_timing("all"))
+    expect_false(app$exclude_existing_assignments_for_timing("during"))
+    expect_false(app$exclude_existing_assignments_for_timing("during class"))
+    expect_true(app$exclude_existing_assignments_for_timing("start"))
+    expect_true(app$exclude_existing_assignments_for_timing("end"))
 
     expect_match(app$ARCADE_CSS, "min-height: 44px", fixed=TRUE)
     expect_match(app$ARCADE_CSS, "max-width: 1100px", fixed=TRUE)

@@ -160,6 +160,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-09-29** — Treat cold calls as repeatable participation events, not
+  exclusive class-job assignments. Students remain eligible for cold calls even
+  when they hold a materials summary or another regular job; only absences and
+  duplicate selection within the same cold-call batch constrain eligibility.
+
 - **2026-09-29** — Store an explicit active lecture ID instead of treating
   the newest database row as current. Switching lectures preserves posts,
   assignments, bids, and history; all live operational views follow the selected
@@ -361,6 +366,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-29** (Codex) - Removed existing regular-job assignees from the
+  timed-draw exclusion only for during-class cold calls, kept start/end job
+  exclusivity, and added regression coverage for the timing-specific rule.
 
 - **2026-09-29** (Codex) - Added an Active Lecture selector to Round Setup,
   routed Today, Job Market, Live Tracker, Jobs, draws, scoring, imports, and

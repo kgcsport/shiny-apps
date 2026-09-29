@@ -1904,6 +1904,15 @@ assignment_round_for_timing <- function(current_round_id, timing_filter) {
   as.integer(current_round_id)
 }
 
+exclude_existing_assignments_for_timing <- function(timing_filter) {
+  timing <- if (is.null(timing_filter) || !length(timing_filter) ||
+                is.na(timing_filter[1])) "all" else as.character(timing_filter[1])
+  # Cold calls are repeatable participation events, not exclusive class jobs.
+  # A student who already has a materials summary (or another assigned job)
+  # must remain eligible to be cold called.
+  !(tolower(trimws(timing)) %in% c("all", "during", "during class"))
+}
+
 reveal_timings_for_scope <- function(scope) {
   scope <- if (is.null(scope) || !length(scope) || is.na(scope[1])) "start" else as.character(scope[1])
   if (identical(scope, "all")) c("start", "end")
@@ -10099,7 +10108,7 @@ server <- function(input, output, session) {
       students <- students[!is.na(students$course) & norm_key(students$course) == norm_key(course_filter), , drop = FALSE]
     }
     if (!nrow(students)) { showNotification("No eligible students found.", type = "error"); return() }
-    if (!identical(timing_filter, "all")) {
+    if (exclude_existing_assignments_for_timing(timing_filter)) {
       already <- tryCatch(db_query(
         "SELECT user_id FROM job_assignments
          WHERE round_id=? AND COALESCE(status,'assigned')='assigned';",
@@ -10179,7 +10188,7 @@ server <- function(input, output, session) {
     if (!nrow(students)) {
       showNotification("No eligible students found.", type = "error"); return()
     }
-    if (!identical(timing_filter2, "all")) {
+    if (exclude_existing_assignments_for_timing(timing_filter2)) {
       already <- tryCatch(db_query(
         "SELECT user_id FROM job_assignments
          WHERE round_id=? AND COALESCE(status,'assigned')='assigned';",
