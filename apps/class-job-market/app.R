@@ -482,6 +482,7 @@ db_exec("CREATE TABLE IF NOT EXISTS weekly_rounds(
   bid_open_date       TEXT,
   bid_close_date      TEXT,
   tickets_per_student INTEGER DEFAULT 10,
+  class_date         TEXT,
   allow_multiple_jobs INTEGER DEFAULT 1,
   wage_pricing_rule TEXT DEFAULT 'pay_as_bid',
   created_at          TEXT DEFAULT CURRENT_TIMESTAMP
@@ -491,10 +492,13 @@ ensure_column("weekly_rounds", "bidding_enabled INTEGER DEFAULT 1")
 ensure_column("weekly_rounds", "bid_open_date TEXT")
 ensure_column("weekly_rounds", "bid_close_date TEXT")
 ensure_column("weekly_rounds", "tickets_per_student INTEGER DEFAULT 10")
+ensure_column("weekly_rounds", "class_date TEXT")
 ensure_column("weekly_rounds", "tokens_revealed INTEGER DEFAULT 1")
 ensure_column("weekly_rounds", "tiebreak_method TEXT DEFAULT 'weighted_lottery'")
 ensure_column("weekly_rounds", "allow_multiple_jobs INTEGER DEFAULT 1")
 ensure_column("weekly_rounds", "wage_pricing_rule TEXT DEFAULT 'pay_as_bid'")
+db_exec("UPDATE weekly_rounds SET class_date=substr(COALESCE(created_at,CURRENT_TIMESTAMP),1,10) WHERE class_date IS NULL OR trim(class_date)='';")
+db_exec("CREATE INDEX IF NOT EXISTS idx_weekly_rounds_class_date ON weekly_rounds(class_date);")
 db_exec("UPDATE weekly_rounds SET bidding_enabled=0 WHERE assignment_mode='random' AND COALESCE(bidding_enabled,0)<>0;")
 db_exec("CREATE TABLE IF NOT EXISTS job_posts(
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -688,12 +692,22 @@ db_exec("CREATE TABLE IF NOT EXISTS volunteer_demand(
   updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (round_id, category_id)
 );")
+db_exec("CREATE TABLE IF NOT EXISTS class_wage_snapshots(
+  round_id       INTEGER NOT NULL,
+  snapshot_key   TEXT NOT NULL,
+  job_post_id    INTEGER,
+  category_id    INTEGER,
+  wage           REAL NOT NULL,
+  source          TEXT,
+  snapshotted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (round_id, snapshot_key)
+);")
 # Job assignment outcome tracking (safe on re-run via try; must come AFTER the
 # CREATE TABLE statements above so a fresh database gets the columns too)
 # Template-level defaults above make every copied post carry timing/voluntary/in-draw.
 
 # Recurring bid-lock window: bids lock shortly before each class session and
-# reopen that evening (all editable in Settings > Round Setup)
+# reopen that evening (all editable in Settings > Job Market Controls)
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('bid_lock_enabled','1');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('class_days','Mon,Wed');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('class_start_time','12:00');")
@@ -1007,10 +1021,13 @@ bid_lock_status <- function() {
   lock_min   <- max(0L, start_min - lead)
   tz  <- as.character(get_setting("class_tz", "America/New_York"))
   now <- tryCatch(as.POSIXlt(Sys.time(), tz = tz), error = function(e) as.POSIXlt(Sys.time()))
+  draw_until_raw <- trimws(as.character(get_setting("bid_draw_locked_until", "")))
+  draw_until <- suppressWarnings(as.POSIXct(draw_until_raw, tz = tz, format = "%Y-%m-%d %H:%M:%S"))
+  draw_locked <- !is.na(draw_until) && Sys.time() < draw_until
   today <- c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")[now$wday + 1L]
   is_class_day <- today %in% days
   now_min <- now$hour * 60L + now$min
-  locked  <- enabled && is_class_day && now_min >= lock_min && now_min < reopen_min
+  locked  <- draw_locked || (enabled && is_class_day && now_min >= lock_min && now_min < reopen_min)
   list(
     enabled  = enabled,
     locked   = locked,
@@ -1025,6 +1042,24 @@ bid_lock_status <- function() {
       "Bids are locked for today's class (locked at %s, reopen at %s). Your last saved bids will be used.",
       fmt_hm(lock_min), fmt_hm(reopen_min))
   )
+}
+
+close_bidding_after_draw <- function(round_id, now = Sys.time()) {
+  enabled <- identical(as.character(get_setting("bid_lock_enabled", "1")), "1")
+  if (!enabled) {
+    db_exec("UPDATE weekly_rounds SET bidding_enabled=0 WHERE id=?;", list(as.integer(round_id)))
+    return("closed until manually reopened")
+  }
+  tz <- as.character(get_setting("class_tz", "America/New_York"))
+  reopen_text <- trimws(as.character(get_setting("bid_reopen_time", "17:00")))
+  if (!grepl("^([01][0-9]|2[0-3]):[0-5][0-9]$", reopen_text)) reopen_text <- "17:00"
+  today <- format(now, "%Y-%m-%d", tz = tz)
+  unlock_at <- as.POSIXct(paste(today, paste0(reopen_text, ":00")), tz = tz,
+                          format = "%Y-%m-%d %H:%M:%S")
+  if (is.na(unlock_at) || unlock_at <= now) unlock_at <- now + 60 * 60
+  set_setting("bid_draw_locked_until", format(unlock_at, "%Y-%m-%d %H:%M:%S", tz = tz))
+  db_exec("UPDATE weekly_rounds SET bidding_enabled=2 WHERE id=?;", list(as.integer(round_id)))
+  sprintf("locked until %s unless manually reopened", format(unlock_at, "%I:%M %p", tz = tz))
 }
 
 # Convert the date and instructor-entered 24-hour time into the value stored on
@@ -1482,6 +1517,51 @@ volunteer_clearing_wage <- function(round_id, category_id, slots, query_fn = db_
     else max(1L, as.integer(slots %||% 1L))
   } else 1L
   as.numeric(bids$min_wage[min(nrow(bids), k)])
+}
+
+class_wage_snapshot <- function(round_id, job_post_id, fallback_wage = NA_real_, query_fn = db_query) {
+  if (is.na(round_id %||% NA) || is.na(job_post_id %||% NA)) return(as.numeric(fallback_wage))
+  row <- tryCatch(query_fn(
+    "SELECT wage FROM class_wage_snapshots WHERE round_id=? AND snapshot_key=? LIMIT 1;",
+    list(as.integer(round_id), paste0("post:", as.integer(job_post_id)))),
+    error = function(e) data.frame())
+  if (nrow(row) && !is.na(row$wage[1] %||% NA)) as.numeric(row$wage[1]) else as.numeric(fallback_wage)
+}
+
+freeze_class_wages <- function(round_id, query_fn = db_query, exec_fn = db_exec) {
+  round <- tryCatch(query_fn("SELECT assignment_mode FROM weekly_rounds WHERE id=?;",
+                             list(as.integer(round_id))), error = function(e) data.frame())
+  if (!nrow(round)) return(0L)
+  posts <- tryCatch(query_fn(
+    "SELECT jp.id, jp.category_id, jp.slots, jp.job_name,
+            COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time,
+            COALESCE(jp.voluntary,0) AS voluntary, COALESCE(jc.voluntary,0) AS category_voluntary,
+            COALESCE(jp.wage_override,jc.default_wage,0) AS fallback_wage
+     FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
+     WHERE jp.round_id=? AND COALESCE(jp.active,1)=1;", list(as.integer(round_id))),
+    error = function(e) data.frame())
+  if (!nrow(posts)) return(0L)
+  wage_mode <- identical(as.character(round$assignment_mode[1] %||% "random"), "wage_bidding")
+  for (i in seq_len(nrow(posts))) {
+    post <- posts[i, ]
+    wage <- as.numeric(post$fallback_wage %||% 0)
+    auction_priced <- wage_mode && !is.na(post$category_id %||% NA)
+    if (auction_priced) {
+      cleared <- volunteer_clearing_wage(
+        as.integer(round_id), as.integer(post$category_id),
+        as.integer(post$slots %||% 1L), query_fn = query_fn,
+        job_post_id = as.integer(post$id))
+      if (!is.na(cleared)) wage <- cleared
+    }
+    exec_fn(
+      "INSERT INTO class_wage_snapshots(round_id,snapshot_key,job_post_id,category_id,wage,source,snapshotted_at)
+       VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
+       ON CONFLICT(round_id,snapshot_key) DO NOTHING;",
+      list(as.integer(round_id), paste0("post:", as.integer(post$id)), as.integer(post$id),
+           if (is.na(post$category_id %||% NA)) NA_integer_ else as.integer(post$category_id),
+           wage, if (auction_priced) "bid_snapshot" else "posted_snapshot"))
+  }
+  nrow(posts)
 }
 
 compute_clearing_wage <- function(category_id, round_id, slots, job_post_id = NA_integer_) {
@@ -2187,7 +2267,7 @@ server <- function(input, output, session) {
             tags$ul(
               tags$li(tags$strong("Sign in"), " using your school Google account. Your instructor must add your email to the class roster first."),
               tags$li(tags$strong("Today"), " shows your current job assignment, prevailing wages, and any active class game."),
-              tags$li(tags$strong("Job Market"), " is where you submit wage bids or ticket allocations each round."),
+              tags$li(tags$strong("Job Market"), " is where you submit wage bids or ticket allocations for each class date."),
               tags$li(tags$strong("Games & Demos"), " shows the active game, the full game catalog, and interactive economic demos — always available."),
               tags$li(tags$strong("Account"), " tracks your Flex Pass balance, Participation Tokens, and transaction history.")
             )
@@ -3108,7 +3188,7 @@ server <- function(input, output, session) {
             div(class = "job-tile",
               div(class = "job-tile-name", "\U0001f4cb ", r$job_name %||% "—"),
               div(class = "job-tile-meta",
-                  r$round_label %||% "Current round",
+                  r$round_label %||% "Selected class date",
                   if (wage_mode && !is.na(r$assigned_wage %||% NA))
                     paste0("  ·  Wage: ", sprintf("%d tokens", as.integer(r$assigned_wage)))
                   else ""),
@@ -3141,7 +3221,7 @@ server <- function(input, output, session) {
           })
         )
       } else {
-        div(style = "color:#999;font-size:.9rem;", "No jobs configured for the current round.")
+        div(style = "color:#999;font-size:.9rem;", "No jobs configured for the selected class date.")
       },
 
       div(style = "margin-top:1.5rem;"),
@@ -3173,10 +3253,10 @@ server <- function(input, output, session) {
 
     tagList(
       div(class = "tab-howto",
-        "Submit bids for class jobs each round. The mode (random / wage bid / ticket allocation) is set by your instructor."
+        "Submit bids for class jobs for each class date. The mode (random / wage bid / ticket allocation) is set by your instructor."
       ),
       tutorial_note("How to use the Job Market", c(
-        "Read the current round and assignment mode at the top.",
+        "Read the selected class date and assignment mode at the top.",
         "Expand job descriptions before deciding which work fits you.",
         "Enter wages or allocate tickets, then submit before the bid window closes.",
         "Return here after the draw to confirm your assignments and instructions."
@@ -3216,16 +3296,16 @@ server <- function(input, output, session) {
           error = function(e) data.frame())
         if (nrow(vposts)) {
           tagList(
-            div(class = "sec-label", "Volunteer Wages This Round"),
+            div(class = "sec-label", "Volunteer Wages For This Class"),
             div(class = "jm-card",
               tags$p(style = "color:#555;font-size:.83rem;margin:0 0 .4rem;",
-                     "Everyone who volunteers for a job earns the same market wage, set by this round's bids."),
+                     "Everyone who volunteers for a job earns the same market wage. It is frozen from the current bids when the first draw runs."),
               lapply(seq_len(nrow(vposts)), function(vi) {
                 vp <- vposts[vi, ]
-                cw <- volunteer_clearing_wage(vrid, vp$category_id,
-                                              as.integer(vp$slots %||% 1L),
-                                              query_fn = db_query,
-                                              job_post_id = as.integer(vp$job_post_id))
+                cw <- class_wage_snapshot(vrid, as.integer(vp$job_post_id), NA_real_)
+                if (is.na(cw)) cw <- volunteer_clearing_wage(
+                  vrid, vp$category_id, as.integer(vp$slots %||% 1L),
+                  query_fn = db_query, job_post_id = as.integer(vp$job_post_id))
                 w  <- if (!is.na(cw)) cw else as.numeric(vp$fallback_wage %||% 1)
                 div(style = "display:flex;justify-content:space-between;font-size:.88rem;padding:.15rem 0;",
                     span(vp$job_name %||% ""),
@@ -3237,7 +3317,7 @@ server <- function(input, output, session) {
       },
 
       # Current assignments
-      div(class = "sec-label", "Your Assignments This Round"),
+      div(class = "sec-label", "Your Assignments For This Class"),
       if (nrow(jp$my_assign)) {
         tagList(lapply(seq_len(nrow(jp$my_assign)), function(i) {
           r <- jp$my_assign[i, ]
@@ -3252,7 +3332,7 @@ server <- function(input, output, session) {
           )
         }))
       } else {
-        div(style = "color:#999;font-size:.9rem;", "No assignments for this round yet.")
+        div(style = "color:#999;font-size:.9rem;", "No assignments for this class date yet.")
       },
 
       # Bid form
@@ -3274,7 +3354,7 @@ server <- function(input, output, session) {
   output$jm_bid_form <- renderUI({
     req(rv$authed)
     jp   <- jobs_poll()
-    if (!nrow(jp$round)) return(div(style = "color:#999;", "No active round configured."))
+    if (!nrow(jp$round)) return(div(style = "color:#999;", "No selected class date configured."))
 
     r    <- jp$round[1, ]
     mode <- r$assignment_mode %||% "random"
@@ -3292,7 +3372,7 @@ server <- function(input, output, session) {
     if (mode == "random") {
       return(div(class = "jm-card",
         tags$p(style = "color:#555;margin:0;",
-               "Assignments this round are random — no bids required. Your job will be announced after the round closes.")))
+               "Assignments use a random draw — no bids required. Your job will be announced after the draw.")))
     }
 
     bl <- bid_lock_status()
@@ -3323,10 +3403,10 @@ server <- function(input, output, session) {
       return(div(class = "alert alert-secondary", "Bidding is not open right now."))
     }
     if (identical(mode, "wage_bidding") && !nrow(wage_posts)) {
-      return(div(style = "color:#999;", "No active jobs available for this round."))
+      return(div(style = "color:#999;", "No active jobs available for this class date."))
     }
     if (identical(mode, "application_bidding") && !nrow(cats)) {
-      return(div(style = "color:#999;", "No job types available for this round."))
+      return(div(style = "color:#999;", "No job types available for this class date."))
     }
 
     if (mode == "wage_bidding") {
@@ -3440,7 +3520,7 @@ server <- function(input, output, session) {
       showNotification("No active jobs are available for wage bidding.", type = "error"); return()
     }
     if (!identical(jp$round$assignment_mode[1] %||% "random", "wage_bidding")) {
-      showNotification("This round is not accepting wage bids.", type = "error"); return()
+      showNotification("This class date is not accepting wage bids.", type = "error"); return()
     }
     window <- round_bid_window_status(
       jp$round[1, ], tz = get_setting("class_tz", "America/New_York"))
@@ -3479,10 +3559,10 @@ server <- function(input, output, session) {
     jp   <- isolate(jobs_poll())
     cats <- jp$categories
     if (!nrow(jp$round) || !nrow(cats)) {
-      showNotification("No active round.", type = "error"); return()
+      showNotification("No selected class date.", type = "error"); return()
     }
     if (!identical(jp$round$assignment_mode[1] %||% "random", "application_bidding")) {
-      showNotification("This round is not accepting point bids.", type = "error"); return()
+      showNotification("This class date is not accepting point bids.", type = "error"); return()
     }
     window <- round_bid_window_status(
       jp$round[1, ], tz = get_setting("class_tz", "America/New_York"))
@@ -5042,7 +5122,7 @@ server <- function(input, output, session) {
     desc    <- trimws(input$new_post_desc %||% "")
     rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
-    if (!nrow(rid_row)) { showNotification("Create a round first.", type = "error"); return() }
+    if (!nrow(rid_row)) { showNotification("Choose a class date first.", type = "error"); return() }
     if (!nzchar(nm)) { showNotification("Post name required.", type = "error"); return() }
     rid <- rid_row$id[1]
     next_order <- tryCatch(as.integer(db_query(
@@ -5068,7 +5148,7 @@ server <- function(input, output, session) {
     tokens <- suppressWarnings(as.numeric(input$new_pt_tokens %||% 1))
     rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
-    if (!nrow(rid_row)) { showNotification("Create a round first.", type = "error"); return() }
+    if (!nrow(rid_row)) { showNotification("Choose a class date first.", type = "error"); return() }
     if (!nzchar(nm)) { showNotification("Name required.", type = "error"); return() }
     rid <- rid_row$id[1]
     db_exec(
@@ -5079,7 +5159,7 @@ server <- function(input, output, session) {
            slots,
            if (!is.null(tokens) && !is.na(tokens) && tokens >= 0) tokens else NA_real_))
     rv$jobs_ver <- rv$jobs_ver + 1L
-    showNotification("Participation type added to current round.", type = "message")
+    showNotification("Participation type added to selected class date.", type = "message")
   })
 
   observeEvent(input$add_template_btn, {
@@ -5227,7 +5307,7 @@ server <- function(input, output, session) {
       textInput("edit_tpl_name", "Name:", value = tpl$name[1] %||% ""),
       textAreaInput("edit_tpl_desc", "Quick description / instructions:",
                     value = tpl$description[1] %||% "", rows = 3,
-                    placeholder = "This is copied into each round's job post."),
+                    placeholder = "This is copied into each class date's job post."),
       selectInput("edit_tpl_cat", "Category:", choices = job_category_choices(tpl$category_id[1]),
                   selected = tpl$category_id[1]),
       fluidRow(
@@ -5470,7 +5550,7 @@ server <- function(input, output, session) {
     req(rv$is_admin, !rv$impersonating)
     rid_row <- tryCatch(active_round_row(),
                         error=function(e) data.frame())
-    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    if (!nrow(rid_row)) { showNotification("No selected class date.", type = "error"); return() }
     cur_sec <- trimws(rv$active_section %||% "")
     pending <- if (nzchar(cur_sec)) {
       tryCatch(db_query(
@@ -5567,7 +5647,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
-    if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
+    if (!nrow(round)) { showNotification("No selected class date.", type = "error"); return() }
     rid <- as.integer(round$id[1])
     uid <- trimws(input$manual_assign_uid %||% "")
     post_id <- suppressWarnings(as.integer(input$manual_assign_post_id %||% 0))
@@ -5596,7 +5676,7 @@ server <- function(input, output, session) {
        LIMIT 1;",
       list(post_id, rid)),
       error = function(e) data.frame())
-    if (!nrow(post)) { showNotification("Job is not active for the current round.", type = "error"); return() }
+    if (!nrow(post)) { showNotification("Job is not active for the selected class date.", type = "error"); return() }
 
     old <- tryCatch(db_query(
       "SELECT id FROM job_assignments WHERE round_id=? AND user_id=? AND job_post_id=? LIMIT 1;",
@@ -5666,7 +5746,7 @@ server <- function(input, output, session) {
     req(rv$is_admin, !rv$impersonating)
     rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
-    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    if (!nrow(rid_row)) { showNotification("No selected class date.", type = "error"); return() }
     upload <- input$bulk_jobs_file
     rows <- data.frame()
     pasted <- trimws(input$bulk_jobs_text %||% "")
@@ -5814,10 +5894,13 @@ server <- function(input, output, session) {
     round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
     if (!nrow(round)) {
-      showNotification("No active round for a cold call.", type = "warning")
+      showNotification("No selected class date for a cold call.", type = "warning")
       return()
     }
     rid <- as.integer(round$id[1])
+    freeze_class_wages(rid)
+    close_bidding_after_draw(rid)
+    rv$jobs_ver <- rv$jobs_ver + 1L
     pool <- tryCatch(
       if (nzchar(sec)) {
         db_query(
@@ -5877,20 +5960,26 @@ server <- function(input, output, session) {
     rv$cold_call_draw <- NULL
     draw_cold_call()
     showNotification(
-      sprintf("Marked %s absent for this round and redrew.", absent_name),
+      sprintf("Marked %s absent for this class date and redrew.", absent_name),
       type = "message")
   }
   observeEvent(input$cold_call_absent_btn, mark_cold_call_absent(), ignoreNULL = TRUE)
   observeEvent(input$slide_cold_call_absent_btn, mark_cold_call_absent(), ignoreNULL = TRUE)
 
-  cold_call_wage <- function() {
-    category <- tryCatch(db_query(
-      "SELECT COALESCE(default_wage,1) AS wage
-       FROM job_categories
-       WHERE lower(name)='cold call'
-       ORDER BY id LIMIT 1;"),
+  cold_call_wage <- function(round_id, kind = "answer") {
+    post <- tryCatch(db_query(
+      "SELECT jp.id, COALESCE(jp.wage_override,jc.default_wage,1) AS fallback_wage
+       FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
+       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+         AND (LOWER(COALESCE(jp.selection_time,'')) IN ('during','during class')
+              OR LOWER(COALESCE(jc.name,''))='cold call')
+       ORDER BY CASE WHEN LOWER(jp.job_name) LIKE ? THEN 0 ELSE 1 END, jp.display_order, jp.id
+       LIMIT 1;",
+      list(as.integer(round_id), paste0("%", tolower(kind), "%"))),
       error = function(e) data.frame())
-    if (nrow(category)) as.numeric(category$wage[1] %||% 1) else 1
+    if (!nrow(post)) return(1)
+    class_wage_snapshot(round_id, as.integer(post$id[1]),
+                        as.numeric(post$fallback_wage[1] %||% 1))
   }
 
   record_cold_call <- function(kind) {
@@ -5902,10 +5991,10 @@ server <- function(input, output, session) {
     }
     round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
-    if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
+    if (!nrow(round)) { showNotification("No selected class date.", type = "error"); return() }
     rid <- as.integer(round$id[1])
     uid <- drawn$user_id
-    tokens <- cold_call_wage()
+    tokens <- cold_call_wage(rid, kind)
     db_exec(
       "INSERT INTO live_score_events(round_id, user_id, event_kind,
               outcome, tokens, logged_by)
@@ -6065,10 +6154,10 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
-    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    if (!nrow(rid_row)) { showNotification("No selected class date.", type = "error"); return() }
     db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(rid_row$id[1]))
     rv$jobs_ver <- rv$jobs_ver + 1L
-    showNotification("All assignments for this round cleared.", type = "message")
+    showNotification("All assignments for this class date cleared.", type = "message")
   })
 
   observeEvent(input$edit_cat_btn, {
@@ -6088,6 +6177,87 @@ server <- function(input, output, session) {
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Category updated.", type = "message")
   }, ignoreNULL = TRUE)
+
+  activate_class_date <- function(date_value) {
+    date_text <- as.character(suppressWarnings(as.Date(date_value)))
+    if (is.na(date_text) || !nzchar(date_text)) return(FALSE)
+    current <- tryCatch(active_round_row(), error = function(e) data.frame())
+    if (nrow(current) && identical(as.character(current$class_date[1] %||% ""), date_text)) return(TRUE)
+    current_rid <- if (nrow(current)) as.integer(current$id[1]) else NA_integer_
+    if (!is.null(rv$draw_preview) && length(rv$draw_preview)) {
+      showNotification("Clear or run the current draw preview before changing the class date.", type = "warning")
+      updateDateInput(session, "market_class_date", value = current$class_date[1] %||% Sys.Date())
+      return(FALSE)
+    }
+    pending_scores <- if (!is.na(current_rid)) tryCatch(db_query(
+      "SELECT COUNT(*) AS n FROM live_score_events WHERE round_id=? AND committed_at IS NULL;",
+      list(current_rid))$n[1], error = function(e) 0L) else 0L
+    if (as.integer(pending_scores %||% 0L) > 0L) {
+      showNotification("Commit or clear pending Live Score Audit entries before changing the class date.", type = "warning")
+      updateDateInput(session, "market_class_date", value = current$class_date[1] %||% Sys.Date())
+      return(FALSE)
+    }
+    existing <- tryCatch(db_query(
+      "SELECT * FROM weekly_rounds WHERE class_date=? ORDER BY id DESC LIMIT 1;", list(date_text)),
+      error = function(e) data.frame())
+    if (nrow(existing)) {
+      set_active_round_id(existing$id[1])
+      rv$jobs_ver <- rv$jobs_ver + 1L
+      return(TRUE)
+    }
+    if (!nrow(current)) return(FALSE)
+    next_mode <- normalize_assignment_mode(current$assignment_mode[1] %||% "random")
+    requested_bid_state <- if (identical(as.character(get_setting("bid_lock_enabled", "1")), "1")) 2L else 1L
+    bid_state <- round_bidding_enabled_for_mode(next_mode, requested_bid_state)
+    db_exec(
+      "INSERT INTO weekly_rounds(label,class_date,assignment_mode,tiebreak_method,tokens_revealed,
+                                  bidding_enabled,tickets_per_student,allow_multiple_jobs,wage_pricing_rule)
+       VALUES(?,?,?,?,?,?,?,?,?);",
+      list(format(as.Date(date_text), "%B %d, %Y"), date_text,
+           next_mode,
+           current$tiebreak_method[1] %||% "weighted_lottery",
+           as.integer(current$tokens_revealed[1] %||% 0L), bid_state,
+           as.integer(current$tickets_per_student[1] %||% 10L),
+           as.integer(current$allow_multiple_jobs[1] %||% 1L),
+           normalize_wage_pricing_rule(current$wage_pricing_rule[1] %||% "pay_as_bid")))
+    new_rid <- as.integer(db_query("SELECT last_insert_rowid() AS id;")$id[1])
+    old_rid <- as.integer(current$id[1])
+    db_exec(
+      "INSERT INTO job_posts(round_id,job_name,category_id,slots,wage_override,active,display_order,voluntary,in_draw,selection_time,description)
+       SELECT ?,job_name,category_id,slots,wage_override,active,display_order,voluntary,in_draw,selection_time,description
+       FROM job_posts WHERE round_id=?;", list(new_rid, old_rid))
+    post_map <- tryCatch(db_query(
+      "SELECT old.id AS old_id, new.id AS new_id
+       FROM job_posts old JOIN job_posts new
+         ON new.round_id=? AND new.job_name=old.job_name
+        AND COALESCE(new.display_order,99)=COALESCE(old.display_order,99)
+        AND COALESCE(new.category_id,-1)=COALESCE(old.category_id,-1)
+       WHERE old.round_id=?;", list(new_rid, old_rid)), error = function(e) data.frame())
+    if (nrow(post_map)) for (i in seq_len(nrow(post_map))) {
+      db_exec(
+        "INSERT OR REPLACE INTO job_wage_bids(round_id,job_post_id,user_id,min_wage,submitted_at)
+         SELECT ?,?,user_id,min_wage,submitted_at FROM job_wage_bids
+         WHERE round_id=? AND job_post_id=?;",
+        list(new_rid, as.integer(post_map$new_id[i]), old_rid, as.integer(post_map$old_id[i])))
+    }
+    db_exec(
+      "INSERT OR REPLACE INTO application_bids(round_id,category_id,user_id,tickets,submitted_at)
+       SELECT ?,category_id,user_id,tickets,submitted_at FROM application_bids WHERE round_id=?;",
+      list(new_rid, old_rid))
+    db_exec(
+      "INSERT OR REPLACE INTO wage_bids(round_id,category_id,user_id,min_wage,submitted_at)
+       SELECT ?,category_id,user_id,min_wage,submitted_at FROM wage_bids WHERE round_id=?;",
+      list(new_rid, old_rid))
+    set_active_round_id(new_rid)
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification(sprintf("Class date: %s. Jobs and standing bids carried forward.", date_text), type = "message")
+    TRUE
+  }
+
+  observeEvent(input$market_class_date, {
+    req(rv$is_admin)
+    activate_class_date(input$market_class_date)
+  }, ignoreInit = FALSE, ignoreNULL = TRUE)
 
   observeEvent(input$active_round_select, {
     req(rv$is_admin)
@@ -6159,7 +6329,7 @@ server <- function(input, output, session) {
                       error = function(e) data.frame())
     if (!nrow(round)) { showNotification("No round to update.", type = "error"); return() }
     rid    <- round$id[1]
-    lbl    <- trimws(input$edit_round_label %||% "")
+    lbl    <- as.character(round$label[1] %||% round$class_date[1] %||% as.character(Sys.Date()))
     mode   <- normalize_assignment_mode(input$edit_round_mode %||% "random")
     tbrk   <- input$edit_round_tiebreak %||% "weighted_lottery"
     tok_rv <- if (isTRUE(input$edit_round_delayed_tokens)) 0L else 1L
@@ -6176,8 +6346,7 @@ server <- function(input, output, session) {
         NULL
       })
     tix <- max(1L, as.integer(input$edit_round_tix %||% 10L))
-    if (!nzchar(lbl)) { showNotification("Label required.", type = "error"); return() }
-    if (is.null(bid_window)) return()
+        if (is.null(bid_window)) return()
     db_exec(
       "UPDATE weekly_rounds SET label=?, assignment_mode=?, tiebreak_method=?, tokens_revealed=?,
        bidding_enabled=?, bid_open_date=?, bid_close_date=?, tickets_per_student=?,
@@ -6690,15 +6859,15 @@ server <- function(input, output, session) {
     # so show that amount on the logging buttons instead of the post default.
     if (nrow(vol_cats) && identical(mode, "wage_bidding")) {
       for (vi in seq_len(nrow(vol_cats))) {
-        cw <- volunteer_clearing_wage(rid, vol_cats$category_id[vi],
-                                      as.integer(vol_cats$slots[vi] %||% 1L),
-                                      query_fn = db_query,
-                                      job_post_id = as.integer(vol_cats$id[vi]))
+        cw <- class_wage_snapshot(rid, as.integer(vol_cats$id[vi]), NA_real_)
+        if (is.na(cw)) cw <- volunteer_clearing_wage(
+          rid, vol_cats$category_id[vi], as.integer(vol_cats$slots[vi] %||% 1L),
+          query_fn = db_query, job_post_id = as.integer(vol_cats$id[vi]))
         if (!is.na(cw)) vol_cats$tokens[vi] <- cw
       }
     }
 
-    # Build student choices: bidders for current round first
+    # Build student choices: bidders for selected class date first
     bidder_ids <- if (!is.na(rid) && nrow(students_sec)) {
       tryCatch(db_query(
         "SELECT DISTINCT user_id FROM (
@@ -6807,7 +6976,7 @@ server <- function(input, output, session) {
                 "\U0001f4cb Job Assignments"),
         if (!nrow(round)) {
           tags$p(style = "color:#999;margin:0;",
-                 "No active round configured. Set one up in Settings → Round Setup.")
+                 "No selected class date configured. Set one up in Settings → Job Market Controls.")
         } else {
           mode_label <- switch(mode,
             random              = "Random draw",
@@ -6835,7 +7004,7 @@ server <- function(input, output, session) {
             } else 0L
             tagList(
             tags$p(style = "color:#555;font-size:.88rem;margin-bottom:.6rem;",
-                   sprintf("Round: %s  ·  %s%s  ·  Tokens: %s",
+                   sprintf("Class date: %s  ·  %s%s  ·  Tokens: %s",
                            round$label[1] %||% paste("Round", round$id[1]),
                            mode_label,
                            if (nzchar(cur_sec)) paste0("  ·  Section: ", cur_sec) else "",
@@ -6877,8 +7046,8 @@ server <- function(input, output, session) {
                 else if (n_show > 0)
                   actionButton("clear_assignments_btn", "Clear",
                                class = "btn btn-outline-danger btn-sm",
-                               title = "Delete all assignments for current round",
-                               onclick = "if(!confirm('Delete all job assignments for this round?')) return false;")
+                               title = "Delete all assignments for selected class date",
+                               onclick = "if(!confirm('Delete all job assignments for this class date?')) return false;")
               )
             ),
             if (n_show > 0)
@@ -6891,7 +7060,7 @@ server <- function(input, output, session) {
                     "Add Assignment Back"),
             if (!length(assignment_stu_choices) || !length(manual_post_choices)) {
               tags$p(style = "color:#999;margin:0;font-size:.86rem;",
-                     "No eligible students or active jobs available for this round.")
+                     "No eligible students or active jobs available for this class date.")
             } else {
               tagList(
                 fluidRow(
@@ -7180,7 +7349,7 @@ server <- function(input, output, session) {
                   "\U0001f3ae Coordination Game — by Section"),
           tags$p(style = "color:#555;font-size:.85em;margin-bottom:.5rem;",
             tags$strong("Game: "), toupper(cur_game), "  ",
-            tags$strong("Round: "), cur_round, "  ",
+            tags$strong("Class date: "), cur_round, "  ",
             tags$strong("Status: "),
             span(style = if (cur_status == "open") "color:#1a6e3c;font-weight:600;"
                          else "color:#b00020;font-weight:600;",
@@ -7369,8 +7538,8 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     tagList(
       tutorial_note("How to configure the app", c(
-        "Jobs: edit reusable templates, instructions, wages, timing, and current-round posts.",
-        "Round Setup: create the next lecture only when the current lecture is complete.",
+        "Jobs: edit reusable templates, instructions, wages, timing, and posts for the selected class date.",
+        "Job Market Controls: choose the class date and adjust allocation or bidding at any time.",
         "Students: add, archive, restore, or impersonate roster members.",
         "Token Admin and Grades: make audited corrections and import course records.",
         "App Settings and Demo / Testing: change shared behavior or rehearse without affecting students."
@@ -7378,7 +7547,7 @@ server <- function(input, output, session) {
       wellPanel(
         selectInput("config_action", "Settings section:", width = "100%", choices = c(
           "Jobs"                  = "jobs",
-          "Round Setup"           = "round_setup",
+          "Job Market Controls"    = "round_setup",
           "Students"              = "students",
           "Token Admin"           = "token_admin",
           "Grades & Gradebook"    = "gradebook",
@@ -7402,7 +7571,7 @@ server <- function(input, output, session) {
                     "Run coordination-games once to initialize settings."))
     tags$p(style = "margin-bottom:.5rem;",
       tags$strong("Game: "), toupper(s$current_game[1] %||% "—"), "   ",
-      tags$strong("Round: "), s$current_round[1], "   ",
+      tags$strong("Class date: "), s$current_round[1], "   ",
       tags$strong("Status: "),
       span(style = if (s$round_status[1] == "open") "color:#1a6e3c;font-weight:600;"
                    else "color:#b00020;font-weight:600;",
@@ -7479,7 +7648,7 @@ server <- function(input, output, session) {
 
         # ── Job Posts ─────────────────────────────────────────────────────────────
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;",
-                "Job Posts (Current Round)"),
+                "Job Posts (Selected Class)"),
         div(style = paste0("background:#f0f4ff;border-left:3px solid #4a6fa5;padding:.5rem .8rem;",
                            "border-radius:0 4px 4px 0;margin-bottom:.6rem;font-size:.85rem;color:#333;"),
           tags$strong("How flags work:"), " ",
@@ -7488,7 +7657,7 @@ server <- function(input, output, session) {
           "A category can be both in-draw and voluntary."
         ),
         if (is.na(rid)) {
-          div(style = "color:#999;font-size:.9em;", "Create a round first (Round Setup).")
+          div(style = "color:#999;font-size:.9em;", "Choose a class date first.")
         } else if (nrow(all_posts)) {
           div(style = "overflow-x:auto;",
             tags$table(class = "table table-sm",
@@ -7560,7 +7729,7 @@ server <- function(input, output, session) {
           )
         } else {
           div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;",
-              "No job posts for this round.")
+              "No job posts for this class date.")
         },
 
         if (!is.na(rid)) {
@@ -7678,7 +7847,7 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Volunteer Clearing Wage"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "In wage-bidding rounds, every volunteer in a job type is paid the same equilibrium wage from that round's bids — not their own bid, and nobody is rationed out. ",
+               "With wage bidding, every volunteer in a job type is paid the same equilibrium wage from the class-date bids — not their own bid, and nobody is rationed out. The wage freezes when the first draw runs. ",
                tags$b("Lowest bid"), " pays the cheapest bid in the job type. ",
                tags$b("Demand-based"), " pays the k-th lowest bid, where k is the volunteer post's slots — a standing demand you set once. ",
                tags$b("Posted demand"), " is the same k-th-lowest rule, but you post k for today's class in the Live Tracker (Voluntary Participation panel), e.g. at the start of class; it falls back to the post's slots until you post one. ",
@@ -7694,9 +7863,8 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Templates"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               'Templates with Auto-copy ON are copied as job posts each time you click "Create next round" — ',
-               "with their timing, wage, slots, and voluntary/in-draw flags. ",
-               "Keep every-class jobs ON and toggle some-session jobs (discussion lead, cold calls) on only for the rounds you want them."),
+               "Templates with Auto-copy ON are carried into each new class date with their timing, wage, slots, and voluntary/in-draw flags. ",
+               "Keep every-class jobs ON and toggle occasional jobs (discussion lead, cold calls) only when you want them."),
         if (nrow(templates)) {
           div(style = "overflow-x:auto;",
             tags$table(class = "table table-sm",
@@ -7783,7 +7951,7 @@ server <- function(input, output, session) {
               ),
               textAreaInput("new_tpl_desc", "Quick description / instructions:",
                             rows = 2, width = "100%",
-                            placeholder = "Copied into each round's job post.")
+                            placeholder = "Copied into each class date's job post.")
             )
           )
         }
@@ -7792,9 +7960,6 @@ server <- function(input, output, session) {
     } else if (act == "round_setup") {
       round <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
-      all_rounds <- tryCatch(db_query(
-        "SELECT id, label, assignment_mode FROM weekly_rounds ORDER BY id DESC;"),
-        error = function(e) data.frame())
       mode_choices <- c("Random"              = "random",
                         "Wage Bidding"         = "wage_bidding",
                         "Application Bidding"  = "application_bidding")
@@ -7808,22 +7973,14 @@ server <- function(input, output, session) {
         )
       }
       tagList(
-        if (nrow(all_rounds)) {
-          round_labels <- sprintf("%s · #%d · %s", all_rounds$label, all_rounds$id,
-                                  all_rounds$assignment_mode)
-          wellPanel(
-            tags$h6(style = "font-weight:700;color:#951829;margin-top:0;", "Active Lecture"),
-            tags$p(style = "color:#555;font-size:.84rem;",
-                   "Selecting a lecture switches Today, Job Market, Live Tracker, and Jobs immediately without deleting any lecture data."),
-            div(style = "display:flex;gap:.5rem;align-items:flex-end;flex-wrap:wrap;",
-              div(style = "min-width:280px;flex:1;",
-                selectInput("active_round_select", "Lecture:",
-                            choices = setNames(all_rounds$id, round_labels),
-                            selected = if (nrow(round)) round$id[1] else all_rounds$id[1],
-                            selectize = FALSE))
-            )
-          )
-        },
+        wellPanel(
+          tags$h6(style = "font-weight:700;color:#951829;margin-top:0;", "Class Date"),
+          tags$p(style = "color:#555;font-size:.84rem;",
+                 "Dates replace rounds. Choosing a new date carries jobs and standing bids forward automatically."),
+          dateInput("market_class_date", "Class date:",
+                    value = if (nrow(round) && nzchar(round$class_date[1] %||% ""))
+                      as.Date(round$class_date[1]) else Sys.Date())
+        ),
         if (nrow(round)) {
           r <- round[1, ]
           open_parts <- bid_parts(r$bid_open_date, "00:00")
@@ -7831,9 +7988,9 @@ server <- function(input, output, session) {
           window <- round_bid_window_status(
             r, tz = get_setting("class_tz", "America/New_York"))
           tagList(
-            tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Active Lecture Details"),
+            tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Class Job Controls"),
             div(style = "background:#f8f8f8;border-radius:6px;padding:.7rem 1rem;margin-bottom:.75rem;",
-              tags$strong(r$label %||% paste("Round", r$id)),
+              tags$strong(format(as.Date(r$class_date[1] %||% Sys.Date()), "%B %d, %Y")),
               tags$span(style = "color:#888;font-size:.85em;margin-left:.5rem;",
                 switch(r$assignment_mode %||% "random",
                   random              = "Random assignment",
@@ -7852,9 +8009,8 @@ server <- function(input, output, session) {
             ),
             tags$details(
               tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
-                           "Edit active lecture"),
+                           "Allocation and bidding"),
               div(style = "padding:.5rem 0;",
-                textInput("edit_round_label", "Label:", value = r$label %||% ""),
                 selectInput("edit_round_mode", "Assignment mode:", choices = mode_choices,
                             selected = r$assignment_mode %||% "random"),
                 checkboxInput("edit_round_allow_multiple",
@@ -7899,70 +8055,14 @@ server <- function(input, output, session) {
                   "Delay token reveal (students see pass/try/miss but not amounts until you release)",
                   value = isTRUE(as.integer(r$tokens_revealed %||% 1L) == 0L)),
                 div(style = "display:flex;gap:.5rem;margin-top:.3rem;",
-                  actionButton("update_round_btn", "Update round", class = "btn btn-sm btn-primary"),
-                  tags$button(
-                    class = "btn btn-sm btn-outline-danger",
-                    onclick = sprintf(
-                      "if(confirm('Delete round \"%s\"? This also removes all its job posts, assignments, and bids.')){Shiny.setInputValue('delete_round_btn',%d,{priority:'event'})}",
-                      r$label %||% paste("Round", r$id), as.integer(r$id)),
-                    "Delete round")
+                  actionButton("update_round_btn", "Save controls", class = "btn btn-sm btn-primary")
                 )
               )
             )
           )
         } else {
-          div(style = "color:#999;font-size:.9em;margin-top:.5rem;", "No rounds yet.")
+          div(style = "color:#999;font-size:.9em;margin-top:.5rem;", "No class date configured yet.")
         },
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Create New Round"),
-        div(style = paste0("background:#f0f4ff;border-left:3px solid #4a6fa5;padding:.4rem .7rem;",
-                           "border-radius:0 4px 4px 0;margin-bottom:.5rem;font-size:.84rem;"),
-          tags$b("Random draw"), " runs per section — select a section in Live Tracker before drawing. ",
-          tags$b("Bidding"), " collects bids weekly from all students; the draw then resolves ties by the method below."
-        ),
-        textInput("new_round_label", "Label (e.g. Week 3):"),
-        selectInput("new_round_mode", "Assignment mode:", choices = mode_choices),
-        checkboxInput("new_round_allow_multiple",
-          "Allow a student to receive multiple distinct jobs", value = TRUE),
-        selectInput("new_round_wage_pricing", "Wage auction pricing:",
-          choices = c(
-            "Pay as bid (winner receives own minimum)" = "pay_as_bid",
-            "Uniform second price (winners receive next losing bid)" = "uniform_second_price"
-          ), selected = "pay_as_bid"),
-        selectInput("new_round_tiebreak", "Bid tie-break method:",
-          choices = c(
-          "First submitted"           = "first_submitted",
-          "Random"                    = "random",
-          "Lowest grade"              = "lowest_grade",
-          "Fewest tokens"             = "lowest_tokens",
-          "Weighted lottery"          = "weighted_lottery",
-          "Most misses"               = "most_misses",
-          "Alphabetical"              = "alphabetical"
-        ), selected = "weighted_lottery"),
-        checkboxInput("new_round_delayed_tokens",
-          "Delay token reveal (students see outcome but not amounts until you release)",
-          value = TRUE),
-        selectInput("new_round_bidding_enabled", "Bidding status:",
-                    choices = c("Open now (override schedules)" = "1",
-                                "Open on the schedule below" = "2",
-                                "Closed" = "0"),
-                    selected = "0"),
-        fluidRow(
-          column(3, dateInput("new_round_open", "Bid opens date:")),
-          column(3, textInput("new_round_open_time", "Opens time (24h HH:MM):", value = "08:00")),
-          column(3, dateInput("new_round_close", "Bid closes date:")),
-          column(3, textInput("new_round_close_time", "Closes time (24h HH:MM):", value = "23:59"))
-        ),
-        numericInput("new_round_tix", "Tickets/student:", value = 10L, min = 1, step = 1,
-                     width = "33%"),
-        actionButton("create_round_btn", "Create round", class = "btn btn-sm btn-primary"),
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Auto-Create Next Round"),
-        tags$p(style = "color:#555;font-size:.85rem;",
-               "A round is one class session. This increments the label, keeps the last round's settings, and copies every Auto-copy template as a job post."),
-        actionButton("create_next_round_btn", "Create next round",
-                     class = "btn btn-sm btn-success"),
-
         # ── Bid lock schedule ─────────────────────────────────────────────────
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Bid Lock Schedule"),
@@ -9632,7 +9732,7 @@ server <- function(input, output, session) {
     rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
     if (!nrow(rid_row)) {
-      showNotification("No active round.", type = "error"); return()
+      showNotification("No selected class date.", type = "error"); return()
     }
     rid   <- rid_row$id[1]
     u_row <- tryCatch(db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid)),
@@ -9652,11 +9752,13 @@ server <- function(input, output, session) {
     }
     post_id   <- as.integer(post_row$id[1])
     wage_val  <- as.numeric(post_row$tokens[1] %||% 0)
+    snap_wage <- class_wage_snapshot(rid, post_id, NA_real_)
+    if (!is.na(snap_wage)) wage_val <- snap_wage
     # In wage-bidding rounds every volunteer in a category is paid the same
     # equilibrium wage from that round's bids — not their own bid. The rule is
     # either the lowest bid, or (demand-based) the k-th lowest where k is the
     # post's slots: the instructor's demand for that job over the session.
-    if (identical(rid_row$assignment_mode[1] %||% "random", "wage_bidding") &&
+    if (is.na(snap_wage) && identical(rid_row$assignment_mode[1] %||% "random", "wage_bidding") &&
         !is.na(post_row$category_id[1] %||% NA)) {
       cw <- volunteer_clearing_wage(rid, as.integer(post_row$category_id[1]),
                                     as.integer(post_row$slots[1] %||% 1L),
@@ -9693,7 +9795,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     rid_row <- tryCatch(active_round_row(),
                         error=function(e) data.frame())
-    if (!nrow(rid_row)) { showNotification("No active round.", type="error"); return() }
+    if (!nrow(rid_row)) { showNotification("No selected class date.", type="error"); return() }
     rid <- rid_row$id[1]
     pending <- tryCatch(db_query(
       "SELECT ja.id, ja.user_id, ja.tokens_awarded, ja.outcome, ja.job_post_id,
@@ -10098,7 +10200,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     rid_row <- tryCatch(active_round_row(),
                         error = function(e) data.frame())
-    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    if (!nrow(rid_row)) { showNotification("No selected class date.", type = "error"); return() }
     rid <- rid_row$id[1]
     dcats <- tryCatch(db_query(
       "SELECT DISTINCT jc.id, jc.name
@@ -10277,7 +10379,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
-    if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
+    if (!nrow(round)) { showNotification("No selected class date.", type = "error"); return() }
     rid    <- round$id[1]
     mode   <- round$assignment_mode[1] %||% "random"
     tbrk   <- round$tiebreak_method[1] %||% "weighted_lottery"
@@ -10297,7 +10399,7 @@ server <- function(input, output, session) {
       error = function(e) data.frame())
     timing_filter <- input$draw_timing_filter %||% "all"
     posts <- filter_posts_for_draw_timing(posts, timing_filter)
-    if (!nrow(posts)) { showNotification("No active job posts marked 'In Draw' for this round.", type = "error"); return() }
+    if (!nrow(posts)) { showNotification("No active job posts marked 'In Draw' for this class date.", type = "error"); return() }
     target_rid <- assignment_round_for_timing(rid, timing_filter)
     target_label <- round$label[1] %||% paste("Round", rid)
 
@@ -10348,13 +10450,18 @@ server <- function(input, output, session) {
              if (is.na(p$wage %||% NA)) NA_real_ else as.numeric(p$wage),
              mode))
     }
+    freeze_class_wages(rid)
+    bid_close_note <- if (timing_filter %in% c("all", "start"))
+      close_bidding_after_draw(rid) else ""
+    rv$jobs_ver <- rv$jobs_ver + 1L
     db_exec("UPDATE arcade_state SET assignments_revealed=0, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
     rv$draw_preview <- NULL
     msg <- if (identical(timing_filter, "end")) {
       sprintf("Drew %d end-of-class assignment%s for the lecture just completed (%s).",
               length(pairs), if (length(pairs) == 1) "" else "s", target_label)
     } else {
-      sprintf("Drew %d assignments (hidden from students).", length(pairs))
+      sprintf("Drew %d assignments (hidden from students); wages frozen and bidding %s.",
+              length(pairs), bid_close_note)
     }
     showNotification(msg, type = "message")
   })
@@ -10363,7 +10470,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
-    if (!nrow(round)) { showNotification("No active round.", type = "error"); return() }
+    if (!nrow(round)) { showNotification("No selected class date.", type = "error"); return() }
     rid  <- round$id[1]
     mode <- round$assignment_mode[1] %||% "random"
     tbrk <- round$tiebreak_method[1] %||% "weighted_lottery"
@@ -10383,7 +10490,7 @@ server <- function(input, output, session) {
     timing_filter2 <- input$draw_timing_filter %||% "all"
     posts <- filter_posts_for_draw_timing(posts, timing_filter2)
     if (!nrow(posts)) {
-      showNotification("No active job posts marked 'In Draw' for this round.", type = "error"); return()
+      showNotification("No active job posts marked 'In Draw' for this class date.", type = "error"); return()
     }
     sec_filter2 <- rv$active_section %||% ""
     students <- tryCatch(
@@ -10449,7 +10556,7 @@ server <- function(input, output, session) {
     }
     rid_row <- tryCatch(active_round_row(),
                         error=function(e) data.frame())
-    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    if (!nrow(rid_row)) { showNotification("No selected class date.", type = "error"); return() }
     scope <- input$section_reveal_timing %||% "start"
     timings <- reveal_timings_for_scope(scope)
     cur <- tryCatch(db_query(
@@ -10487,7 +10594,7 @@ server <- function(input, output, session) {
     }
     rid_row <- tryCatch(active_round_row(),
                         error=function(e) data.frame())
-    if (!nrow(rid_row)) { showNotification("No active round.", type = "error"); return() }
+    if (!nrow(rid_row)) { showNotification("No selected class date.", type = "error"); return() }
     scope <- input$section_reveal_timing %||% "start"
     timings <- reveal_timings_for_scope(scope)
     rv$active_section <- sec

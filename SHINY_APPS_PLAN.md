@@ -115,20 +115,20 @@ Timing codes on posts/templates: `any` / `start` / `during` / `end` / `volunteer
 
 A one-time migration (guarded by the `job_catalog_v2_migrated` key in `labor_settings`) runs at app startup: old seeded per-job categories are merged into the new four (posts, templates, and bids move with them, then the old categories are deleted), and old seeded job names are deactivated. Instructor-created categories are untouched. After the marker is set, restarts only insert missing rows and never overwrite instructor edits.
 
-### Rounds
+### Date-based class sessions
 
-A **round = one class session**. Settings → Round Setup:
+Rounds are no longer an instructor-facing workflow. Settings → Job Market Controls uses a **Class date** plus direct toggles for assignment mode, multiple jobs, auction pricing, bidding state, tickets, tie-break, and token reveal. Choosing a date immediately switches Today, Job Market, Live Tracker, and Jobs. A new date carries the prior date's job posts and standing wage/ticket bids forward; existing assignments and score events remain attached to their original date. Internal `round_id` columns remain only as compatibility keys.
 
-- Create/edit/delete rounds (label, assignment mode, manual bidding state (open now, scheduled, or closed), precise opening/closing date and time, tickets, tie-break, delayed token reveal). Newly auto-created rounds start with bidding paused.
-- **Create next round**: increments the label, carries the previous round's mode/tie-break/tickets/token settings, and copies every Auto-copy template as a job post with its timing/wage/slots/voluntary/in-draw flags.
-- Assignment modes: `random` (first ~2 weeks), `application_bidding` (point/ticket bids), `wage_bidding` (lowest-wage bids).
+Assignment modes are `random`, `application_bidding` (point/ticket bids), and `wage_bidding` (lowest-wage bids).
 
-### Bid lock schedule
+### Bid lock schedule and manual override
 
-Bidding is continuous but locks around class sessions (Settings → Round Setup → Bid Lock Schedule; stored in `labor_settings`):
+Bidding is continuous between classes. Settings → Job Market Controls → Bid Lock Schedule stores the recurring class schedule in `labor_settings`:
 
 - Defaults: class days Mon/Wed, class starts 12:00, lock 60 minutes before (11:00 AM), reopen 5:00 PM, timezone America/New_York, enabled.
-- Enforced server-side on both wage-bid and ticket-bid submission; students see a lock banner (and the schedule when open) in the Job Market tab. Admins are exempt.
+- The first main-job or cold-call draw freezes every active post's wage in `class_wage_snapshots` and closes bidding. With the recurring schedule enabled, bids reopen at the configured time; with it disabled, they remain closed until manually reopened.
+- **Open now** is an explicit instructor override of both scheduled and draw-triggered locks.
+- Both wage and ticket submission handlers enforce the effective lock server-side; students see the lock status in Job Market.
 
 ### Draws and cold calls
 
@@ -140,13 +140,13 @@ Live Tracker → Job Assignments:
 
 ### Volunteer clearing wage
 
-In `wage_bidding` rounds, every volunteer in a category is paid the **same equilibrium wage** derived from that round's bids — never their own bid, and nobody is rationed out. Rule selected in Settings → Jobs → Volunteer Clearing Wage (`volunteer_clearing_rule`):
+With wage bidding, every volunteer in a category is paid the **same equilibrium wage** derived from the selected class date's bids — never their own bid, and nobody is rationed out. The first draw snapshots this wage, so later bid edits cannot change volunteer or cold-call pay during class. Rule selected in Settings → Jobs → Volunteer Clearing Wage (`volunteer_clearing_rule`):
 
 1. **Lowest bid** (default): the cheapest bid in the category (k = 1).
 2. **Demand-based**: the k-th lowest bid, k = the volunteer post's slots (standing demand).
-3. **Posted demand**: the k-th lowest bid, k = expected demand posted per round in the Live Tracker's Voluntary Participation panel (e.g. at the start of class); falls back to post slots until posted. Stored in `volunteer_demand(round_id, category_id)`.
+3. **Posted demand**: the k-th lowest bid, k = expected demand posted for the class date in Live Tracker; it falls back to post slots until posted. Stored in `volunteer_demand(round_id, category_id)`.
 
-k is capped at the number of bids; with no bids the post's default wage is used. Students see "Volunteer Wages This Round" on the Job Market tab in wage-bidding rounds. Because bids lock before class, the clearing wage is fixed for the session. In `random`/`application_bidding` rounds, volunteers earn the post's default wage.
+k is capped at the number of bids; with no bids the post's default wage is used. Students see "Volunteer Wages For This Class" on Job Market. In random or application-bidding mode, volunteers earn the snapshotted post default.
 
 ### Fixed bugs (context for why things looked broken before)
 
@@ -380,6 +380,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-09-30** (Codex) - Replaced instructor-facing rounds with date-based Job Market Controls. Selecting a new class date carries job posts and standing bids forward while preserving dated history. Added immutable draw-time wage snapshots for every active post, including volunteer and cold-call wages; both main-job and cold-call Draw close bidding until the configured reopen time (or manual reopen), while Open now remains an explicit override.
 
 - **2026-09-30** (Codex) - Scoped Job Market bid polling to the logged-in student so one student saving wage bids cannot rebuild classmates' dynamic forms and replace their unsaved entries with defaults or zeroes.
 

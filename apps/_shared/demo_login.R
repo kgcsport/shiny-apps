@@ -177,6 +177,11 @@ demo_settings_panel <- function(is_demo) {
 # job-market tables up to the columns used by the current Settings and bidding
 # paths before attempting to seed or edit fake jobs.
 reconcile_demo_job_schema <- function(demo_con) {
+  DBI::dbExecute(demo_con, "CREATE TABLE IF NOT EXISTS class_wage_snapshots(
+    round_id INTEGER NOT NULL, snapshot_key TEXT NOT NULL, job_post_id INTEGER,
+    category_id INTEGER, wage REAL NOT NULL, source TEXT,
+    snapshotted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (round_id, snapshot_key));")
   required <- list(
     job_categories = c(
       "default_wage REAL DEFAULT 10", "description TEXT",
@@ -188,7 +193,7 @@ reconcile_demo_job_schema <- function(demo_con) {
     weekly_rounds = c(
       "assignment_mode TEXT DEFAULT 'random'", "bidding_enabled INTEGER DEFAULT 1",
       "bid_open_date TEXT", "bid_close_date TEXT",
-      "tickets_per_student INTEGER DEFAULT 10", "tokens_revealed INTEGER DEFAULT 1",
+      "tickets_per_student INTEGER DEFAULT 10", "class_date TEXT", "tokens_revealed INTEGER DEFAULT 1",
       "tiebreak_method TEXT DEFAULT 'weighted_lottery'",
       "allow_multiple_jobs INTEGER DEFAULT 1",
       "wage_pricing_rule TEXT DEFAULT 'pay_as_bid'"
@@ -238,6 +243,11 @@ reconcile_demo_job_schema <- function(demo_con) {
     DBI::dbExecute(demo_con,
       "UPDATE weekly_rounds SET bidding_enabled=0 WHERE assignment_mode='random' AND COALESCE(bidding_enabled,0)<>0;"),
     error = function(e) NULL)
+  tryCatch(
+    DBI::dbExecute(demo_con,
+      "UPDATE weekly_rounds SET class_date=substr(COALESCE(created_at,CURRENT_TIMESTAMP),1,10)
+       WHERE class_date IS NULL OR trim(class_date)='';"),
+    error = function(e) NULL)
   invisible(TRUE)
 }
 
@@ -281,9 +291,9 @@ seed_demo_job_market <- function(demo_con) {
     }
 
     DBI::dbExecute(demo_con,
-      "INSERT INTO weekly_rounds(label,assignment_mode,bidding_enabled,bid_open_date,
+      "INSERT INTO weekly_rounds(label,class_date,assignment_mode,bidding_enabled,bid_open_date,
                                   bid_close_date,tickets_per_student,tokens_revealed,tiebreak_method)
-       VALUES('Demo Practice Round','application_bidding',1,NULL,NULL,10,0,'weighted_lottery');")
+       VALUES('Demo Practice',date('now','localtime'),'application_bidding',1,NULL,NULL,10,0,'weighted_lottery');")
     round_id <- DBI::dbGetQuery(demo_con, "SELECT last_insert_rowid() AS id;")$id[1]
 
     for (i in seq_along(fake_jobs)) {

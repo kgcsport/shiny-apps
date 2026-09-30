@@ -57,16 +57,18 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true(file.exists(db_path()))
     expect_true(all(c("user_id", "display_name", "pw_hash", "course", "section", "active", "is_demo") %in% cols(con, "users")))
     expect_true("assignments_revealed" %in% cols(con, "arcade_state"))
-    expect_true(all(c("bidding_enabled", "allow_multiple_jobs", "wage_pricing_rule") %in%
+    expect_true(all(c("bidding_enabled", "class_date", "allow_multiple_jobs", "wage_pricing_rule") %in%
                     cols(con, "weekly_rounds")))
     expect_true(all(c("round_id", "user_id", "marked_at") %in% cols(con, "round_absences")))
     expect_true(all(c("round_id", "job_post_id", "user_id", "min_wage", "submitted_at") %in%
                       cols(con, "job_wage_bids")))
+    expect_true(all(c("round_id", "snapshot_key", "job_post_id", "category_id", "wage", "source") %in%
+                      cols(con, "class_wage_snapshots")))
     expect_true(all(c("tokens_awarded", "tokens_credited", "status", "job_post_id",
                       "scheduled_date", "display_on_today") %in% cols(con, "job_assignments")))
     expect_true(all(c("job_post_id", "event_kind", "tokens", "committed_at") %in% cols(con, "live_score_events")))
 
-    round <- DBI::dbGetQuery(con, "SELECT label, tokens_revealed FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
+    round <- DBI::dbGetQuery(con, "SELECT label, class_date, tokens_revealed FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
     posts <- DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM job_posts;")
     cats <- DBI::dbGetQuery(con, "SELECT name FROM job_categories ORDER BY display_order, name;")
     cold_posts <- DBI::dbGetQuery(con, "
@@ -78,10 +80,31 @@ test_that("class-job-market starts against a fresh DB with required tables and c
         AND job_name LIKE 'Cold call:%';")
     expect_equal(round$label[1], "Current Class")
     expect_equal(round$tokens_revealed[1], 0)
+    expect_equal(round$class_date[1], as.character(Sys.Date()))
     round_rules <- DBI::dbGetQuery(con, "SELECT allow_multiple_jobs,wage_pricing_rule,bidding_enabled FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
     expect_equal(round_rules$allow_multiple_jobs[1], 1L)
     expect_equal(round_rules$wage_pricing_rule[1], "pay_as_bid")
     expect_equal(round_rules$bidding_enabled[1], 0L)
+
+    snapshot_post <- DBI::dbGetQuery(con,
+      "SELECT id, category_id FROM job_posts WHERE round_id=(SELECT MAX(id) FROM weekly_rounds) AND active=1 ORDER BY id LIMIT 1;")
+    snapshot_rid <- DBI::dbGetQuery(con, "SELECT MAX(id) AS id FROM weekly_rounds;")$id[1]
+    DBI::dbExecute(con, "UPDATE weekly_rounds SET assignment_mode='wage_bidding' WHERE id=?;",
+                   params=list(snapshot_rid))
+    DBI::dbExecute(con,
+      "INSERT INTO job_wage_bids(round_id,job_post_id,user_id,min_wage) VALUES(?,?,?,?);",
+      params=list(snapshot_rid, snapshot_post$id[1], "snapshot-student", 4))
+    app$set_setting("volunteer_clearing_rule", "lowest")
+    expect_gt(app$freeze_class_wages(snapshot_rid), 0L)
+    expect_equal(app$class_wage_snapshot(snapshot_rid, snapshot_post$id[1]), 4)
+    DBI::dbExecute(con,
+      "UPDATE job_wage_bids SET min_wage=1 WHERE round_id=? AND job_post_id=? AND user_id=?;",
+      params=list(snapshot_rid, snapshot_post$id[1], "snapshot-student"))
+    expect_gt(app$freeze_class_wages(snapshot_rid), 0L)
+    expect_equal(app$class_wage_snapshot(snapshot_rid, snapshot_post$id[1]), 4)
+    DBI::dbExecute(con, "UPDATE weekly_rounds SET assignment_mode='random' WHERE id=?;",
+                   params=list(snapshot_rid))
+
     expect_equal(cats$name, c("Class roles", "Volunteer", "Cold Call"))
     expect_gt(posts$n[1], 0)
     expect_gt(cold_posts$n[1], 0)
@@ -244,13 +267,12 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_match(app_source, "edit_round_open_time", fixed = TRUE)
     expect_match(app_source, "round_bid_window_values", fixed = TRUE)
     expect_match(app_source, "Last Class Jobs Still Pending", fixed = TRUE)
-    expect_match(app_source, "observeEvent(input$active_round_select", fixed = TRUE)
-    expect_match(app_source, "ignoreInit = FALSE, ignoreNULL = TRUE", fixed = TRUE)
-    expect_match(app_source, "selectize = FALSE", fixed = TRUE)
-    expect_match(app_source, "Active Lecture Details", fixed = TRUE)
-    expect_false(grepl("switch_active_round_btn", app_source, fixed = TRUE))
-    expect_match(app_source, "Selecting a lecture switches", fixed = TRUE)
-    expect_match(app_source, "observeEvent(input$create_round_btn", fixed = TRUE)
+    expect_match(app_source, "observeEvent(input$market_class_date", fixed = TRUE)
+    expect_match(app_source, "activate_class_date", fixed = TRUE)
+    expect_match(app_source, "Dates replace rounds", fixed = TRUE)
+    expect_match(app_source, "Class Job Controls", fixed = TRUE)
+    expect_match(app_source, "freeze_class_wages(rid)", fixed = TRUE)
+    expect_match(app_source, "close_bidding_after_draw(rid)", fixed = TRUE)
     expect_match(app_source, "active_round_id", fixed = TRUE)
     expect_match(app_source, "COALESCE(jp.voluntary,COALESCE(jc.voluntary,0),0)=0", fixed = TRUE)
     expect_match(app$ARCADE_CSS, ".today-announcement", fixed = TRUE)
@@ -332,7 +354,7 @@ test_that("demo bootstrap upgrades an old users schema and repairs credentials",
              COUNT(jp.id) AS jobs
       FROM weekly_rounds wr
       LEFT JOIN job_posts jp ON jp.round_id=wr.id
-      WHERE wr.label='Demo Practice Round'
+      WHERE wr.label='Demo Practice'
       GROUP BY wr.id, wr.label, wr.assignment_mode, wr.bidding_enabled;")
     expect_equal(nrow(practice), 1L)
     expect_equal(practice$assignment_mode[1], "application_bidding")
@@ -372,7 +394,7 @@ test_that("demo bootstrap upgrades an old users schema and repairs credentials",
        VALUES(?,?,?,?);", list(practice$id[1], category_id, "alice", 10L))
     expect_error(app$demo_db_bootstrap(demo_con, db_path()), NA)
     expect_equal(DBI::dbGetQuery(demo_con,
-      "SELECT COUNT(*) n FROM weekly_rounds WHERE label='Demo Practice Round';")$n[1], 1L)
+      "SELECT COUNT(*) n FROM weekly_rounds WHERE label='Demo Practice';")$n[1], 1L)
     expect_equal(DBI::dbGetQuery(demo_con,
       "SELECT COUNT(*) n FROM application_bids WHERE user_id='alice';")$n[1], 1L)
   })

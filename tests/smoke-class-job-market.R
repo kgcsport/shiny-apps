@@ -20,7 +20,8 @@ db_exec <- function(sql, params = NULL) {
 app <- parse("apps/class-job-market/app.R")
 # Pull the definitions we need out of app.R without running the whole app
 wanted <- c("seed_class_job_defaults", "get_setting", "bid_lock_status",
-            "volunteer_clearing_wage", "assignment_round_for_timing",
+            "volunteer_clearing_wage", "class_wage_snapshot", "freeze_class_wages",
+            "close_bidding_after_draw", "assignment_round_for_timing",
             "reveal_timings_for_scope", "round_bid_datetime_value",
             "round_bid_window_values", "round_bid_window_status",
             "validate_ticket_allocation", "order_job_posts_for_clearing",
@@ -105,7 +106,7 @@ run_exec_calls <- function(ex) {
   fn <- as.character(ex[[1]])[1]
   if (fn %in% c("db_exec") && length(ex) >= 2 && is.character(ex[[2]])) {
     sql <- ex[[2]]
-    if (grepl("job_|weekly_rounds|labor_settings|wage_bids|application_bids|users|arcade|volunteer_demand", sql)) {
+    if (grepl("job_|weekly_rounds|labor_settings|wage_bids|application_bids|users|arcade|volunteer_demand|class_wage_snapshots", sql)) {
       db_exec(sql); sql_run <<- sql_run + 1
     }
   } else if (fn == "ensure_column" && length(ex) >= 3 &&
@@ -233,5 +234,28 @@ stopifnot(volunteer_clearing_wage(rid2, cat_ans, 1L, query_fn = db_query) == 4) 
 db_exec("UPDATE volunteer_demand SET demand=50 WHERE round_id=? AND category_id=?;", list(rid2, cat_ans))
 stopifnot(volunteer_clearing_wage(rid2, cat_ans, 1L, query_fn = db_query) == 6)  # capped at n bids
 set_setting("volunteer_clearing_rule", "lowest")
+
+# The first class draw freezes every post wage. Later bid edits cannot alter
+# cold-call, volunteer, or other displayed wages during class.
+db_exec("UPDATE weekly_rounds SET assignment_mode='wage_bidding' WHERE id=?;", list(rid))
+freeze_class_wages(rid, query_fn=db_query, exec_fn=db_exec)
+frozen_post <- class_posts$id[1]
+frozen_wage <- class_wage_snapshot(rid, frozen_post, query_fn=db_query)
+stopifnot(frozen_wage == 2)
+db_exec("UPDATE job_wage_bids SET min_wage=9 WHERE round_id=? AND job_post_id=? AND user_id='alice';",
+        list(rid, frozen_post))
+freeze_class_wages(rid, query_fn=db_query, exec_fn=db_exec)
+stopifnot(class_wage_snapshot(rid, frozen_post, query_fn=db_query) == frozen_wage)
+
+# Drawing closes bids until an instructor manually reopens them. With a
+# recurring schedule enabled, it records a one-off lock and returns to schedule.
+set_setting("bid_lock_enabled", "0")
+db_exec("UPDATE weekly_rounds SET bidding_enabled=1 WHERE id=?;", list(rid))
+stopifnot(close_bidding_after_draw(rid) == "closed until manually reopened")
+stopifnot(db_query("SELECT bidding_enabled FROM weekly_rounds WHERE id=?;", list(rid))$bidding_enabled[1] == 0)
+set_setting("bid_lock_enabled", "1")
+close_bidding_after_draw(rid, as.POSIXct("2026-09-30 12:00:00", tz="America/New_York"))
+stopifnot(db_query("SELECT bidding_enabled FROM weekly_rounds WHERE id=?;", list(rid))$bidding_enabled[1] == 2)
+stopifnot(nzchar(get_setting("bid_draw_locked_until", "")))
 
 cat("\nALL SMOKE TESTS PASSED\n")
