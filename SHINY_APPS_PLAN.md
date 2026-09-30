@@ -381,6 +381,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-09-30** (Codex) - Scoped Job Market bid polling to the logged-in student so one student saving wage bids cannot rebuild classmates' dynamic forms and replace their unsaved entries with defaults or zeroes.
+
 - **2026-09-30** (Codex) - Made the Active Lecture selector switch immediately instead of requiring a separate, easily missed button. Random assignment now forces bidding closed on create, update, and startup reconciliation while preserving existing bids for a later switch back. Fixed Live Tracker cache invalidation so changes to a lecture's assignment mode immediately replace its prior wage- or point-bidding display and drive the next draw. Reconciled browser-restored lecture selections on initialization so the selector and active lecture details cannot point at different lecture IDs.
 
 - **2026-09-29** (Codex) - Added per-lecture controls for allowing multiple

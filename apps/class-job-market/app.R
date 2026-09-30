@@ -2622,8 +2622,11 @@ server <- function(input, output, session) {
                          COALESCE(MAX(created_at || COALESCE(committed_at,'')),'') ts
                   FROM live_score_events;")$ts[1] %||% "",
         error = function(e) "")
+      # Scope bid invalidation to this login. A global bid signature rebuilds every
+      # student's dynamic form whenever any classmate saves and wipes unsaved input.
       r9 <- tryCatch(
-        db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(submitted_at),'') ts FROM job_wage_bids;")$ts[1] %||% "",
+        db_query("SELECT COUNT(*) || '-' || COALESCE(MAX(submitted_at),'') ts FROM job_wage_bids WHERE user_id=?;",
+                 list(uid))$ts[1] %||% "",
         error = function(e) "")
       paste(uid, r1, r2, r3, r4, r5, r6, r7, r8, r9, sep = "|")
     },
