@@ -1138,6 +1138,13 @@ round_bidding_enabled_for_mode <- function(mode, requested) {
   else as.integer(requested %||% 0L)
 }
 
+round_state_signature <- function(round) {
+  if (is.null(round) || !nrow(round)) return("")
+  values <- vapply(round[1, , drop = FALSE], function(x)
+    as.character(x[1] %||% ""), character(1))
+  paste(names(values), values, sep = "=", collapse = "|")
+}
+
 uniform_procurement_wage <- function(post_bids, winners, fallback_wage) {
   fallback_wage <- suppressWarnings(as.numeric(fallback_wage %||% NA_real_))
   if (!nrow(post_bids)) return(fallback_wage)
@@ -2426,8 +2433,12 @@ server <- function(input, output, session) {
                   COALESCE(jp.description,'') AS sig
            FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
            ORDER BY jp.id);")$ts[1] %||% "", error=function(e)"")
-      t8 <- tryCatch(as.character(active_round_id()), error = function(e) "")
-      paste(t1, t2, t3, t4, t5, t6, t7, t8)
+      t8 <- tryCatch({
+        round_sig <- active_round_row()
+        round_state_signature(round_sig)
+      }, error = function(e) "")
+      t9 <- rv$jobs_ver
+      paste(t1, t2, t3, t4, t5, t6, t7, t8, t9)
     },
     valueFunc = function() {
       if (!isTRUE(rv$is_admin)) return(list(
