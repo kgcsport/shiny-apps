@@ -78,9 +78,10 @@ test_that("class-job-market starts against a fresh DB with required tables and c
         AND job_name LIKE 'Cold call:%';")
     expect_equal(round$label[1], "Current Class")
     expect_equal(round$tokens_revealed[1], 0)
-    round_rules <- DBI::dbGetQuery(con, "SELECT allow_multiple_jobs,wage_pricing_rule FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
+    round_rules <- DBI::dbGetQuery(con, "SELECT allow_multiple_jobs,wage_pricing_rule,bidding_enabled FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
     expect_equal(round_rules$allow_multiple_jobs[1], 1L)
     expect_equal(round_rules$wage_pricing_rule[1], "pay_as_bid")
+    expect_equal(round_rules$bidding_enabled[1], 0L)
     expect_equal(cats$name, c("Class roles", "Volunteer", "Cold Call"))
     expect_gt(posts$n[1], 0)
     expect_gt(cold_posts$n[1], 0)
@@ -194,6 +195,10 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true(app$exclude_existing_assignments_for_timing("end", FALSE))
     expect_false(app$exclude_existing_assignments_for_timing("during", FALSE))
     expect_equal(app$normalize_wage_pricing_rule("second_price"), "uniform_second_price")
+    expect_equal(app$normalize_assignment_mode("RANDOM"), "random")
+    expect_equal(app$normalize_assignment_mode("bogus"), "random")
+    expect_equal(app$round_bidding_enabled_for_mode("random", 1L), 0L)
+    expect_equal(app$round_bidding_enabled_for_mode("wage_bidding", 1L), 1L)
     wage_bids <- data.frame(user_id=c("a","b","c"), min_wage=c(1,2,4))
     expect_equal(app$uniform_procurement_wage(wage_bids, c("a","b"), 2), 4)
     expect_equal(app$uniform_procurement_wage(wage_bids, "a", 2), 2)
@@ -233,7 +238,9 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_match(app_source, "edit_round_open_time", fixed = TRUE)
     expect_match(app_source, "round_bid_window_values", fixed = TRUE)
     expect_match(app_source, "Last Class Jobs Still Pending", fixed = TRUE)
-    expect_match(app_source, "switch_active_round_btn", fixed = TRUE)
+    expect_match(app_source, "observeEvent(input$active_round_select", fixed = TRUE)
+    expect_false(grepl("switch_active_round_btn", app_source, fixed = TRUE))
+    expect_match(app_source, "Selecting a lecture switches", fixed = TRUE)
     expect_match(app_source, "observeEvent(input$create_round_btn", fixed = TRUE)
     expect_match(app_source, "active_round_id", fixed = TRUE)
     expect_match(app_source, "COALESCE(jp.voluntary,COALESCE(jc.voluntary,0),0)=0", fixed = TRUE)
@@ -289,6 +296,7 @@ test_that("demo bootstrap upgrades an old users schema and repairs credentials",
         id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT, section TEXT,
         status TEXT DEFAULT 'open', created_at TEXT DEFAULT CURRENT_TIMESTAMP
       );")
+    DBI::dbExecute(demo_con, "INSERT INTO weekly_rounds(label) VALUES('Legacy Random');")
     DBI::dbExecute(demo_con, "
       CREATE TABLE job_posts(
         id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER,
@@ -320,6 +328,9 @@ test_that("demo bootstrap upgrades an old users schema and repairs credentials",
     expect_equal(nrow(practice), 1L)
     expect_equal(practice$assignment_mode[1], "application_bidding")
     expect_equal(practice$bidding_enabled[1], 1L)
+    legacy_random <- DBI::dbGetQuery(demo_con, "SELECT assignment_mode,bidding_enabled FROM weekly_rounds WHERE label='Legacy Random';")
+    expect_equal(legacy_random$assignment_mode[1], "random")
+    expect_equal(legacy_random$bidding_enabled[1], 0L)
     expect_equal(practice$jobs[1], 4L)
     fake_categories <- DBI::dbGetQuery(demo_con, "
       SELECT name FROM job_categories

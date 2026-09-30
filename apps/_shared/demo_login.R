@@ -234,6 +234,10 @@ reconcile_demo_job_schema <- function(demo_con) {
       }
     }
   }
+  tryCatch(
+    DBI::dbExecute(demo_con,
+      "UPDATE weekly_rounds SET bidding_enabled=0 WHERE assignment_mode='random' AND COALESCE(bidding_enabled,0)<>0;"),
+    error = function(e) NULL)
   invisible(TRUE)
 }
 

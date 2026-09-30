@@ -495,6 +495,7 @@ ensure_column("weekly_rounds", "tokens_revealed INTEGER DEFAULT 1")
 ensure_column("weekly_rounds", "tiebreak_method TEXT DEFAULT 'weighted_lottery'")
 ensure_column("weekly_rounds", "allow_multiple_jobs INTEGER DEFAULT 1")
 ensure_column("weekly_rounds", "wage_pricing_rule TEXT DEFAULT 'pay_as_bid'")
+db_exec("UPDATE weekly_rounds SET bidding_enabled=0 WHERE assignment_mode='random' AND COALESCE(bidding_enabled,0)<>0;")
 db_exec("CREATE TABLE IF NOT EXISTS job_posts(
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id      INTEGER,
@@ -867,8 +868,8 @@ seed_class_job_defaults <- function(exec_fn = db_exec, query_fn = db_query, ensu
                            error = function(e) data.frame())
   if (isTRUE(ensure_round) && !nrow(latest_round)) {
     db_exec(
-      "INSERT INTO weekly_rounds(label, assignment_mode, tiebreak_method, tokens_revealed, tickets_per_student)
-       VALUES('Current Class', 'random', 'weighted_lottery', 0, 10);")
+      "INSERT INTO weekly_rounds(label, assignment_mode, tiebreak_method, tokens_revealed, tickets_per_student, bidding_enabled)
+       VALUES('Current Class', 'random', 'weighted_lottery', 0, 10, 0);")
     latest_round <- tryCatch(db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;"),
                              error = function(e) data.frame())
   }
@@ -1125,6 +1126,16 @@ normalize_wage_pricing_rule <- function(rule) {
   rule <- tolower(trimws(as.character(rule %||% "pay_as_bid")))
   if (rule %in% c("uniform_second_price", "second_price", "uniform"))
     "uniform_second_price" else "pay_as_bid"
+}
+
+normalize_assignment_mode <- function(mode) {
+  mode <- tolower(trimws(as.character(mode %||% "random")))
+  if (mode %in% c("wage_bidding", "application_bidding")) mode else "random"
+}
+
+round_bidding_enabled_for_mode <- function(mode, requested) {
+  if (identical(normalize_assignment_mode(mode), "random")) 0L
+  else as.integer(requested %||% 0L)
 }
 
 uniform_procurement_wage <- function(post_bids, winners, fallback_wage) {
@@ -6064,13 +6075,14 @@ server <- function(input, output, session) {
     showNotification("Category updated.", type = "message")
   }, ignoreNULL = TRUE)
 
-  observeEvent(input$switch_active_round_btn, {
+  observeEvent(input$active_round_select, {
     req(rv$is_admin)
     target_rid <- suppressWarnings(as.integer(input$active_round_select %||% NA))
     current_rid <- active_round_id()
     if (is.na(target_rid) || identical(target_rid, current_rid)) return()
     if (!is.null(rv$draw_preview) && length(rv$draw_preview)) {
       showNotification("Clear or run the current draw preview before switching lectures.", type = "warning")
+      updateSelectInput(session, "active_round_select", selected = current_rid)
       return()
     }
     pending_scores <- if (!is.na(current_rid)) tryCatch(db_query(
@@ -6078,27 +6090,30 @@ server <- function(input, output, session) {
       list(current_rid))$n[1], error = function(e) 0L) else 0L
     if (as.integer(pending_scores %||% 0L) > 0L) {
       showNotification("Commit or clear pending Live Score Audit entries before switching lectures.", type = "warning")
+      updateSelectInput(session, "active_round_select", selected = current_rid)
       return()
     }
     if (!set_active_round_id(target_rid)) {
       showNotification("That lecture no longer exists.", type = "error")
+      updateSelectInput(session, "active_round_select", selected = current_rid)
       return()
     }
     rv$jobs_ver <- rv$jobs_ver + 1L
     target <- tryCatch(active_round_row(), error = function(e) data.frame())
     showNotification(sprintf("Active lecture: %s", if (nrow(target)) target$label[1] else target_rid),
                      type = "message")
-  }, ignoreNULL = TRUE)
+  }, ignoreInit = TRUE, ignoreNULL = TRUE)
 
   observeEvent(input$create_round_btn, {
     req(rv$is_admin)
     lbl    <- trimws(input$new_round_label %||% "")
-    mode   <- input$new_round_mode %||% "random"
+    mode   <- normalize_assignment_mode(input$new_round_mode %||% "random")
     tbrk   <- input$new_round_tiebreak %||% "weighted_lottery"
     tok_rv <- if (isTRUE(input$new_round_delayed_tokens)) 0L else 1L
     allow_multiple <- as.integer(isTRUE(input$new_round_allow_multiple))
     pricing_rule <- normalize_wage_pricing_rule(input$new_round_wage_pricing %||% "pay_as_bid")
-    bidding_enabled <- as.integer(input$new_round_bidding_enabled %||% "0")
+    bidding_enabled <- round_bidding_enabled_for_mode(
+      mode, input$new_round_bidding_enabled %||% "0")
     bid_window <- tryCatch(
       round_bid_window_values(input$new_round_open, input$new_round_open_time,
                               input$new_round_close, input$new_round_close_time,
@@ -6131,12 +6146,13 @@ server <- function(input, output, session) {
     if (!nrow(round)) { showNotification("No round to update.", type = "error"); return() }
     rid    <- round$id[1]
     lbl    <- trimws(input$edit_round_label %||% "")
-    mode   <- input$edit_round_mode %||% "random"
+    mode   <- normalize_assignment_mode(input$edit_round_mode %||% "random")
     tbrk   <- input$edit_round_tiebreak %||% "weighted_lottery"
     tok_rv <- if (isTRUE(input$edit_round_delayed_tokens)) 0L else 1L
     allow_multiple <- as.integer(isTRUE(input$edit_round_allow_multiple))
     pricing_rule <- normalize_wage_pricing_rule(input$edit_round_wage_pricing %||% "pay_as_bid")
-    bidding_enabled <- as.integer(input$edit_round_bidding_enabled %||% "0")
+    bidding_enabled <- round_bidding_enabled_for_mode(
+      mode, input$edit_round_bidding_enabled %||% "0")
     bid_window <- tryCatch(
       round_bid_window_values(input$edit_round_open, input$edit_round_open_time,
                               input$edit_round_close, input$edit_round_close_time,
@@ -6155,7 +6171,13 @@ server <- function(input, output, session) {
       list(lbl, mode, tbrk, tok_rv, bidding_enabled,
            bid_window$open_at, bid_window$close_at, tix, allow_multiple, pricing_rule, rid))
     rv$jobs_ver <- rv$jobs_ver + 1L
-    showNotification("Round updated.", type = "message")
+    showNotification(
+      sprintf("Round updated: %s%s.",
+              switch(mode, random = "random assignment",
+                     wage_bidding = "wage bidding",
+                     application_bidding = "application bidding"),
+              if (identical(mode, "random")) "; bidding closed" else ""),
+      type = "message")
   })
 
   observeEvent(input$create_next_round_btn, {
@@ -7778,14 +7800,12 @@ server <- function(input, output, session) {
           wellPanel(
             tags$h6(style = "font-weight:700;color:#951829;margin-top:0;", "Active Lecture"),
             tags$p(style = "color:#555;font-size:.84rem;",
-                   "Switching changes Today, Job Market, Live Tracker, and Jobs without deleting any lecture data."),
+                   "Selecting a lecture switches Today, Job Market, Live Tracker, and Jobs immediately without deleting any lecture data."),
             div(style = "display:flex;gap:.5rem;align-items:flex-end;flex-wrap:wrap;",
               div(style = "min-width:280px;flex:1;",
                 selectInput("active_round_select", "Lecture:",
                             choices = setNames(all_rounds$id, round_labels),
-                            selected = if (nrow(round)) round$id[1] else all_rounds$id[1])),
-              actionButton("switch_active_round_btn", "Make active",
-                           class = "btn btn-sm btn-primary", style = "margin-bottom:15px;")
+                            selected = if (nrow(round)) round$id[1] else all_rounds$id[1]))
             )
           )
         },
