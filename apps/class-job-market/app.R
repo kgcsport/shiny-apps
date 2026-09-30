@@ -6113,7 +6113,7 @@ server <- function(input, output, session) {
     target <- tryCatch(active_round_row(), error = function(e) data.frame())
     showNotification(sprintf("Active lecture: %s", if (nrow(target)) target$label[1] else target_rid),
                      type = "message")
-  }, ignoreInit = TRUE, ignoreNULL = TRUE)
+  }, ignoreInit = FALSE, ignoreNULL = TRUE)
 
   observeEvent(input$create_round_btn, {
     req(rv$is_admin)
@@ -7816,7 +7816,8 @@ server <- function(input, output, session) {
               div(style = "min-width:280px;flex:1;",
                 selectInput("active_round_select", "Lecture:",
                             choices = setNames(all_rounds$id, round_labels),
-                            selected = if (nrow(round)) round$id[1] else all_rounds$id[1]))
+                            selected = if (nrow(round)) round$id[1] else all_rounds$id[1],
+                            selectize = FALSE))
             )
           )
         },
@@ -7827,7 +7828,7 @@ server <- function(input, output, session) {
           window <- round_bid_window_status(
             r, tz = get_setting("class_tz", "America/New_York"))
           tagList(
-            tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Current Round"),
+            tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Active Lecture Details"),
             div(style = "background:#f8f8f8;border-radius:6px;padding:.7rem 1rem;margin-bottom:.75rem;",
               tags$strong(r$label %||% paste("Round", r$id)),
               tags$span(style = "color:#888;font-size:.85em;margin-left:.5rem;",
@@ -7848,7 +7849,7 @@ server <- function(input, output, session) {
             ),
             tags$details(
               tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
-                           "Edit current round"),
+                           "Edit active lecture"),
               div(style = "padding:.5rem 0;",
                 textInput("edit_round_label", "Label:", value = r$label %||% ""),
                 selectInput("edit_round_mode", "Assignment mode:", choices = mode_choices,
