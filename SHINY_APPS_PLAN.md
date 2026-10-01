@@ -160,6 +160,13 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-10-01** — Keep the class-job-market app authoritative for extension
+  purchases and the Cloudflare assignment service authoritative for assignment
+  timing. Sync purchases server-to-server with the existing admin bearer token,
+  persistent student ids, and purchase ids for idempotency. A submission
+  extension shifts the due date, solution release, and self-grading close;
+  a corrections extension shifts only the self-grading close.
+
 - **2026-09-29** — Make regular-job multiplicity and wage-auction pricing
   lecture-level controls. When multiple jobs are disabled, posts clear in the
   editable clearing order and each winner leaves the remaining regular-job
@@ -380,6 +387,14 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-10-01** (Codex) - Connected extension purchases to the generic
+  Cloudflare assignment API. Added per-problem-set Cloudflare assignment and
+  extension-target mapping, persisted sync status/errors, automatic sync after
+  purchase, an admin purchases table with student/user ids and retry controls,
+  CSV round-tripping for the new fields, server-only credential handling, and
+  focused unit/startup coverage. Failed or unconfigured syncs do not reverse or
+  duplicate the token purchase and remain visible for safe retry.
 
 - **2026-09-30** (Codex) - Replaced instructor-facing rounds with date-based Job Market Controls. Selecting a new class date carries job posts and standing bids forward while preserving dated history. Added immutable draw-time wage snapshots for every active post, including volunteer and cold-call wages; both main-job and cold-call Draw close bidding until the configured reopen time (or manual reopen), while Open now remains an explicit override.
 
@@ -650,14 +665,13 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Deploy the hardened class-job-market build to the sandbox and run one
-   two-browser point-bidding rehearsal with students in different sections;
-   also verify that saving and clearing an announcement updates an open Today
-   page within one polling interval.
-2. Back up/export the live SQLite database, then create the next live round in
-   application_bidding mode with the intended dates and ticket budget.
-3. Preview the section-scoped draw before committing it; reveal assignments
-   only after checking the roster, job counts, and point-bid export.
+1. Put the same `ASSIGNMENT_ADMIN_TOKEN` used by the Cloudflare Worker in the
+   deployed Shiny server's `.env`, then deploy this build.
+2. Map each active problem-set/corrections shop item to its Cloudflare
+   assignment id and target, then retry any purchases shown as pending or
+   failed in the Extensions admin panel.
+3. Run one end-to-end extension purchase with a test student and verify the
+   personalized due/solution/self-grading dates in the assignment receipt.
 
 ## Questions for Kyle
 

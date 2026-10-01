@@ -27,6 +27,20 @@ Once you have an admin account, manage the whole roster from the
 `flex_pass_actions` app's Admin tab (create/archive/restore users, reset
 passwords, grant flex passes) — no further configuration needed.
 
+The Cloudflare problem-set extension bridge additionally requires the following
+server-side setting in `.env`:
+
+- `ASSIGNMENT_ADMIN_TOKEN` — the same machine token configured on the assignment
+  Worker. It is used only by the Shiny server and is never sent to a browser.
+- `ASSIGNMENT_API_ORIGIN` is optional and defaults to the ECON 342 assignment
+  Worker. Set it only when pointing the app at another deployment.
+
+In **Settings → Extensions**, map each purchasable item to its Cloudflare
+`assignment-id` and choose whether it extends the initial problem-set schedule or
+only the self-grading/corrections close. The purchase table shows every student,
+persistent user ID, hours, and sync result; failed syncs can be retried without
+charging the student again.
+
 Everything else is **optional**, for legacy/extra functionality only:
 
 | Env var | Used by | What it enables |

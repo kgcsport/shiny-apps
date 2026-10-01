@@ -161,6 +161,12 @@ db_exec("CREATE TABLE IF NOT EXISTS extension_purchases(
   ledger_id INTEGER,
   purchased_at TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+ensure_column("problem_sets", "cloudflare_assignment_id TEXT")
+ensure_column("problem_sets", "extension_target TEXT DEFAULT 'submission'")
+ensure_column("extension_purchases", "sync_status TEXT DEFAULT 'pending'")
+ensure_column("extension_purchases", "sync_error TEXT")
+ensure_column("extension_purchases", "synced_at TEXT")
+source(file.path(dirname(shared_sqlite), "assignment_extensions.R"), local = TRUE)
 db_exec("CREATE TABLE IF NOT EXISTS grade_reweight_requests(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT,
@@ -4389,8 +4395,13 @@ server <- function(input, output, session) {
     db_exec(
       "INSERT INTO extension_purchases(problem_set_id,user_id,hours,cost,ledger_id) VALUES(?,?,?,?,?);",
       list(ps_id, rv$user_id, hrs, cost, as.integer(lid %||% NA_integer_)))
-    showNotification(sprintf("Purchased a %g-hour extension for %d tokens.", hrs, as.integer(cost)),
-                     type = "message")
+    purchase_id <- as.integer(db_query("SELECT last_insert_rowid() id;")$id[1])
+    sync <- sync_extension_purchase(purchase_id)
+    rv$extensions_ver <- rv$extensions_ver + 1L
+    if (isTRUE(sync$ok))
+      showNotification(sprintf("Purchased a %g-hour extension for %d tokens. Your online assignment deadline is updated.", hrs, as.integer(cost)), type = "message", duration = 8)
+    else
+      showNotification(sprintf("Extension purchased and recorded, but online deadline sync is pending: %s", sync$error), type = "warning", duration = 12)
     rv$spend_mode <- NULL
   })
 
@@ -8266,6 +8277,7 @@ server <- function(input, output, session) {
       ps   <- tryCatch(db_query("SELECT * FROM problem_sets ORDER BY original_deadline DESC;"),
                        error = function(e) data.frame())
       pricing <- extension_pricing_settings()
+      purchases <- tryCatch(db_query("SELECT ep.id,ep.user_id,COALESCE(u.display_name,ep.user_id) student,ps.name problem_set,COALESCE(ps.extension_target,'submission') extension_target,ep.hours,ep.purchased_at,COALESCE(ep.sync_status,'pending') sync_status,COALESCE(ep.sync_error,'') sync_error FROM extension_purchases ep LEFT JOIN users u ON u.user_id=ep.user_id LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id ORDER BY ep.purchased_at DESC;"), error=function(e) data.frame())
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;",
                 "Extension Pricing"),
@@ -8296,12 +8308,14 @@ server <- function(input, output, session) {
           if (nrow(ps)) {
             tags$table(class = "table table-sm",
               tags$thead(tags$tr(tags$th("Name"), tags$th("Deadline"), tags$th("Solutions posted"),
-                                  tags$th("Active"), tags$th(""))),
+                                  tags$th("Cloudflare mapping"), tags$th("Applies to"), tags$th("Active"), tags$th(""))),
               tags$tbody(lapply(seq_len(nrow(ps)), function(i) {
                 r <- ps[i, ]
                 tags$tr(
                   tags$td(r$name), tags$td(r$original_deadline %||% ""),
                   tags$td(r$solutions_posted_at %||% ""),
+                  tags$td(r$cloudflare_assignment_id %||% "—"),
+                  tags$td(if (identical(r$extension_target %||% "submission", "self_grading")) "Self-grading" else "Problem set"),
                   tags$td(if (isTRUE(as.integer(r$active %||% 1L) == 1L)) "✓" else ""),
                   tags$td(tags$button(class="btn btn-xs btn-outline-secondary",
                     style="padding:.1rem .35rem;font-size:.72rem;",
@@ -8318,20 +8332,36 @@ server <- function(input, output, session) {
           column(3, tags$br(),
                  actionButton("add_ps_btn", "Add", class = "btn btn-sm btn-primary"))
         ),
+        fluidRow(
+          column(7, textInput("new_ps_cloudflare_id", "Cloudflare assignment ID:")),
+          column(5, selectInput("new_ps_extension_target", "Extension applies to:", choices=c("Problem set"="submission", "Self-grading/corrections"="self_grading")))
+        ),
         tags$details(style="margin-top:.75rem;",
           tags$summary(style="cursor:pointer;color:#951829;font-size:.88rem;font-weight:600;",
                        "Bulk upload assignments"),
           tags$p(style="color:#555;font-size:.82rem;margin-top:.5rem;",
-                 "Upload or paste CSV with name, original_deadline, solutions_posted_at, and active. An optional id updates that exact assignment; otherwise matching names are updated and new names are added."),
+                 "Upload or paste CSV with name, original_deadline, solutions_posted_at, active, cloudflare_assignment_id, and extension_target (submission or self_grading)."),
           downloadButton("dl_problem_sets_template", "CSV template",
                          class="btn btn-sm btn-outline-secondary"),
           fileInput("problem_sets_csv_file", NULL, accept=c(".csv","text/csv"),
                     buttonLabel="Browse…", placeholder="No file chosen"),
           textAreaInput("problem_sets_csv_text", "Or paste CSV:", rows=4, width="100%",
-                        placeholder="name,original_deadline,solutions_posted_at,active\nProblem Set 1,2026-09-30,,1"),
+                        placeholder="name,original_deadline,solutions_posted_at,active,cloudflare_assignment_id,extension_target\nProblem Set 2,2026-09-30,,1,econ342-2026-ps02,submission"),
           actionButton("import_problem_sets_btn", "Import CSV",
                        class="btn btn-sm btn-primary")
-        )
+        ),
+        tags$hr(),
+        tags$h6(style="font-weight:700;color:#951829;", "Student Extension Purchases"),
+        tags$p(style="color:#555;font-size:.85rem;", "Purchases sync server-to-server to the assignment portal. Failed or unmapped purchases remain here for retry."),
+        if (nrow(purchases)) tags$table(class="table table-sm",
+          tags$thead(tags$tr(tags$th("Student"), tags$th("Assignment"), tags$th("Applies to"), tags$th("Hours"), tags$th("Purchased"), tags$th("Sync"), tags$th(""))),
+          tags$tbody(lapply(seq_len(nrow(purchases)), function(i) { r <- purchases[i, ]; tags$tr(
+            tags$td(paste0(r$student, " (", r$user_id, ")")), tags$td(r$problem_set),
+            tags$td(if (identical(r$extension_target, "self_grading")) "Self-grading/corrections" else "Problem set"),
+            tags$td(r$hours), tags$td(r$purchased_at),
+            tags$td(tags$span(title=r$sync_error %||% "", r$sync_status)),
+            tags$td(if (!identical(r$sync_status, "synced")) tags$button(class="btn btn-xs btn-outline-primary", style="padding:.1rem .35rem;font-size:.72rem;", onclick=sprintf("Shiny.setInputValue('retry_extension_sync',%d,{priority:'event'});", as.integer(r$id)), "Retry") else "✓")
+          )}))) else div(style="color:#999;", "No extension purchases yet.")
       )
 
     } else if (act == "flex_questions") {
@@ -9225,6 +9255,8 @@ server <- function(input, output, session) {
         name = c("Problem Set 1", "Problem Set 2"),
         original_deadline = c("2026-09-30", "2026-10-14"),
         solutions_posted_at = c("", ""),
+        cloudflare_assignment_id = c("econ342-2026-ps01", "econ342-2026-ps02"),
+        extension_target = c("submission", "submission"),
         active = c(1, 1),
         stringsAsFactors = FALSE),
       file, row.names = FALSE, na = "")
@@ -9243,8 +9275,9 @@ server <- function(input, output, session) {
   output$dl_extensions <- downloadHandler(
     filename = function() paste0("extensions_", Sys.Date(), ".csv"),
     content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT ep.id, ps.name AS problem_set, u.display_name AS student,
-              ep.hours, ep.cost, ep.purchased_at
+      "SELECT ep.id, ep.user_id, ps.name AS problem_set, u.display_name AS student,
+              ps.cloudflare_assignment_id, ps.extension_target, ep.hours, ep.cost, ep.purchased_at,
+              ep.sync_status, ep.sync_error, ep.synced_at
        FROM extension_purchases ep
        LEFT JOIN users u ON u.user_id=ep.user_id
        LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id
@@ -9518,8 +9551,8 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     nm <- trimws(input$new_ps_name %||% "")
     if (!nzchar(nm)) { showNotification("Enter a name.", type = "error"); return() }
-    db_exec("INSERT INTO problem_sets(name, original_deadline) VALUES(?,?);",
-            list(nm, as.character(input$new_ps_deadline %||% "")))
+    db_exec("INSERT INTO problem_sets(name, original_deadline, cloudflare_assignment_id, extension_target) VALUES(?,?,?,?);",
+            list(nm, as.character(input$new_ps_deadline %||% ""), trimws(input$new_ps_cloudflare_id %||% ""), input$new_ps_extension_target %||% "submission"))
     rv$extensions_ver <- rv$extensions_ver + 1L
     showNotification("Assignment added.", type = "message")
   })
@@ -9539,6 +9572,8 @@ server <- function(input, output, session) {
                 value=if (nzchar(deadline)) as.Date(substr(deadline, 1, 10)) else NULL),
       dateInput("edit_ps_solutions", "Solutions posted date (optional):",
                 value=if (nzchar(solutions)) as.Date(substr(solutions, 1, 10)) else NULL),
+      textInput("edit_ps_cloudflare_id", "Cloudflare assignment ID:", value=row$cloudflare_assignment_id[1] %||% ""),
+      selectInput("edit_ps_extension_target", "Extension applies to:", choices=c("Problem set"="submission", "Self-grading/corrections"="self_grading"), selected=row$extension_target[1] %||% "submission"),
       checkboxInput("edit_ps_active", "Available for extension purchases",
                     value=isTRUE(as.integer(row$active[1] %||% 1L) == 1L)),
       footer=tagList(modalButton("Cancel"), actionButton("save_problem_set_btn", "Save", class="btn btn-primary")),
@@ -9553,14 +9588,22 @@ server <- function(input, output, session) {
     if (ps_id <= 0 || !nzchar(nm)) {
       showNotification("Assignment name is required.", type="error"); return()
     }
-    db_exec("UPDATE problem_sets SET name=?, original_deadline=?, solutions_posted_at=?, active=? WHERE id=?;",
+    db_exec("UPDATE problem_sets SET name=?, original_deadline=?, solutions_posted_at=?, active=?, cloudflare_assignment_id=?, extension_target=? WHERE id=?;",
             list(nm, as.character(input$edit_ps_deadline %||% ""),
-                 as.character(input$edit_ps_solutions %||% ""),
-                 if (isTRUE(input$edit_ps_active)) 1L else 0L, ps_id))
+                 as.character(input$edit_ps_solutions %||% ""), if (isTRUE(input$edit_ps_active)) 1L else 0L,
+                 trimws(input$edit_ps_cloudflare_id %||% ""), input$edit_ps_extension_target %||% "submission", ps_id))
     removeModal()
     rv$extensions_ver <- rv$extensions_ver + 1L
     showNotification("Assignment updated.", type="message")
   })
+  observeEvent(input$retry_extension_sync, {
+    req(rv$is_admin)
+    purchase_id <- suppressWarnings(as.integer(input$retry_extension_sync %||% 0))
+    result <- sync_extension_purchase(purchase_id)
+    rv$extensions_ver <- rv$extensions_ver + 1L
+    showNotification(if (isTRUE(result$ok)) "Extension synced to the assignment portal." else paste("Sync failed:", result$error), type=if (isTRUE(result$ok)) "message" else "error", duration=10)
+  }, ignoreNULL=TRUE)
+
 
   observeEvent(input$import_problem_sets_btn, {
     req(rv$is_admin)
@@ -9587,7 +9630,7 @@ server <- function(input, output, session) {
     if (!"name" %in% names(parsed)) {
       showNotification("CSV must include a name column.", type="error"); return()
     }
-    for (col in c("id", "original_deadline", "solutions_posted_at", "active"))
+    for (col in c("id", "original_deadline", "solutions_posted_at", "active", "cloudflare_assignment_id", "extension_target"))
       if (!col %in% names(parsed)) parsed[[col]] <- NA
 
     clean_date <- function(value, label) {
@@ -9614,17 +9657,20 @@ server <- function(input, output, session) {
         deadline <- clean_date(parsed$original_deadline[i], "original_deadline")
         solutions <- clean_date(parsed$solutions_posted_at[i], "solutions_posted_at")
         active <- parse_active(parsed$active[i])
+        cloudflare_id <- trimws(as.character(parsed$cloudflare_assignment_id[i] %||% "")); if (is.na(cloudflare_id)) cloudflare_id <- ""
+        target <- tolower(trimws(as.character(parsed$extension_target[i] %||% "submission"))); if (is.na(target) || !nzchar(target)) target <- "submission"
+        if (!target %in% c("submission", "self_grading")) stop("extension_target must be submission or self_grading")
         ps_id <- suppressWarnings(as.integer(parsed$id[i]))
         existing <- if (!is.na(ps_id))
           db_query("SELECT id FROM problem_sets WHERE id=?;", list(ps_id)) else
           db_query("SELECT id FROM problem_sets WHERE lower(name)=lower(?);", list(nm))
         if (nrow(existing) > 1) stop("more than one existing assignment has this name; provide id")
         if (nrow(existing))
-          db_exec("UPDATE problem_sets SET name=?, original_deadline=?, solutions_posted_at=?, active=? WHERE id=?;",
-                  list(nm, deadline, solutions, active, existing$id[1]))
+          db_exec("UPDATE problem_sets SET name=?, original_deadline=?, solutions_posted_at=?, active=?, cloudflare_assignment_id=?, extension_target=? WHERE id=?;",
+                  list(nm, deadline, solutions, active, cloudflare_id, target, existing$id[1]))
         else
-          db_exec("INSERT INTO problem_sets(name,original_deadline,solutions_posted_at,active) VALUES(?,?,?,?);",
-                  list(nm, deadline, solutions, active))
+          db_exec("INSERT INTO problem_sets(name,original_deadline,solutions_posted_at,active,cloudflare_assignment_id,extension_target) VALUES(?,?,?,?,?,?);",
+                  list(nm, deadline, solutions, active, cloudflare_id, target))
         imported <- imported + 1L
       }, error=function(e) errors <<- c(errors, sprintf("Row %d: %s", i + 1L, conditionMessage(e))))
     }
