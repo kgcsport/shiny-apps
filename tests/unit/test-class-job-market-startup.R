@@ -69,6 +69,28 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true(all(c("tokens_awarded", "tokens_credited", "status", "job_post_id",
                       "scheduled_date", "display_on_today") %in% cols(con, "job_assignments")))
     expect_true(all(c("job_post_id", "event_kind", "tokens", "committed_at") %in% cols(con, "live_score_events")))
+    expect_true(all(c("unlock_cost","unlocked_at","course") %in% cols(con,"flex_questions")))
+    expect_true(all(c("question_id","user_id","amount","ledger_id","contributed_at","scope_key") %in%
+                      cols(con,"flex_question_contributions")))
+    expect_true(all(c("question_id","scope_key","unlock_cost","unlocked_at") %in%
+                      cols(con,"flex_question_scope_state")))
+    expect_true(all(c("course_key","section_key","scope_key","course","section") %in%
+                      cols(con,"section_scope_memberships")))
+    expect_true(all(c("scope_key","course","sections","round_id") %in%
+                      cols(con,"scope_active_rounds")))
+    expect_true(all(c("scope_key","round_id") %in% cols(con,"scope_rounds")))
+    expect_true("scope_key" %in% cols(con,"public_good_contributions"))
+
+    expect_equal(app$section_scope_key("ECON 342",c("B","A","A")),"econ 342::a|b")
+    expect_equal(app$serialize_scope_sections(c("B","A","A")),"A||B")
+    expect_equal(app$parse_scope_sections("B||A||A"),c("A","B"))
+
+    expect_equal(app$question_cost_for_n(1, "N * (1 + (q / 2)^2)", 20), 20L)
+    expect_equal(app$question_cost_for_n(2, "N * (1 + (q / 2)^2)", 20), 25L)
+    expect_equal(app$question_cost_for_n(3, "N * (1 + (q / 2)^2)", 20), 40L)
+    expect_equal(app$question_cost_for_n(4, "N * (1 + (q / 2)^2)", 20), 65L)
+    expect_equal(app$question_cost_for_n(1, "20,25,40,65", 20), 20L)
+    expect_equal(app$question_cost_for_n(4, "20,25,40,65", 20), 65L)
 
     round <- DBI::dbGetQuery(con, "SELECT label, class_date, tokens_revealed FROM weekly_rounds ORDER BY id DESC LIMIT 1;")
     posts <- DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM job_posts;")
@@ -256,6 +278,10 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_match(app_source, "save_manual_grade_btn", fixed = TRUE)
     expect_match(app_source, "Saving replaces any existing grade", fixed = TRUE)
     expect_match(app_source, "save_today_announcement_btn", fixed = TRUE)
+    expect_match(app_source, "selectizeInput(\"active_section_sel\"", fixed = TRUE)
+    expect_match(app_source, "Current selected section scope", fixed = TRUE)
+    expect_match(app_source, "flex_question_scope_state", fixed = TRUE)
+    expect_match(app_source, "public_good_contributions(scope_key,public_good_id)", fixed = TRUE)
     expect_match(app_source, "announcement_poll <- reactivePoll", fixed = TRUE)
     expect_match(app_source, "edit_round_bidding_enabled", fixed = TRUE)
     expect_match(app_source, "edit_round_allow_multiple", fixed = TRUE)

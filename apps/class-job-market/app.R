@@ -35,6 +35,21 @@ nonempty_values <- function(x) {
   x[!is.na(x) & nzchar(x)]
 }
 norm_key <- function(x) tolower(trimws(as.character(x %||% "")))
+normalize_scope_sections <- function(x) {
+  x <- trimws(as.character(x %||% character(0)))
+  sort(unique(x[!is.na(x) & nzchar(x)]))
+}
+section_scope_key <- function(course, sections) {
+  sections <- normalize_scope_sections(sections)
+  paste0(norm_key(course), "::", paste(norm_key(sections), collapse="|"))
+}
+serialize_scope_sections <- function(sections)
+  paste(normalize_scope_sections(sections), collapse="||")
+parse_scope_sections <- function(value) {
+  value <- as.character(value %||% "")
+  if (!length(value) || is.na(value[1]) || !nzchar(value[1])) return(character(0))
+  normalize_scope_sections(strsplit(value[1], "||", fixed=TRUE)[[1]])
+}
 norm_username <- norm_key
 unique_ci <- function(x) {
   x <- nonempty_values(x)
@@ -194,6 +209,9 @@ db_exec("CREATE TABLE IF NOT EXISTS public_good_contributions(
   ledger_id INTEGER,
   contributed_at TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+ensure_column("public_good_contributions", "scope_key TEXT DEFAULT 'legacy::all'")
+db_exec("CREATE INDEX IF NOT EXISTS idx_public_good_contributions_scope
+         ON public_good_contributions(scope_key,public_good_id);")
 db_exec("CREATE TABLE IF NOT EXISTS extension_options(
   id     INTEGER PRIMARY KEY AUTOINCREMENT,
   label  TEXT NOT NULL,
@@ -216,6 +234,32 @@ db_exec("CREATE TABLE IF NOT EXISTS flex_purchases(
   purchased_at TEXT DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(user_id, question_id)
 );")
+# Legacy flex_purchases rows remain readable. New question funding is a shared
+# provision-point mechanism: students contribute tokens and each unlocked
+# question becomes public to the selected section scope.
+ensure_column("flex_questions", "unlock_cost REAL")
+ensure_column("flex_questions", "unlocked_at TEXT")
+ensure_column("flex_questions", "course TEXT")
+db_exec("CREATE TABLE IF NOT EXISTS flex_question_contributions(
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  question_id    INTEGER NOT NULL,
+  user_id        TEXT NOT NULL,
+  amount         REAL NOT NULL,
+  ledger_id      INTEGER,
+  contributed_at TEXT DEFAULT CURRENT_TIMESTAMP
+);")
+ensure_column("flex_question_contributions", "scope_key TEXT DEFAULT 'legacy::all'")
+db_exec("CREATE INDEX IF NOT EXISTS idx_flex_question_contributions_question
+         ON flex_question_contributions(question_id);")
+db_exec("CREATE INDEX IF NOT EXISTS idx_flex_question_contributions_scope
+         ON flex_question_contributions(scope_key,question_id);")
+db_exec("CREATE TABLE IF NOT EXISTS flex_question_scope_state(
+  question_id INTEGER NOT NULL,
+  scope_key TEXT NOT NULL,
+  unlock_cost REAL,
+  unlocked_at TEXT,
+  PRIMARY KEY(question_id,scope_key)
+);")
 db_exec("CREATE TABLE IF NOT EXISTS labor_settings(
   key TEXT PRIMARY KEY,
   value TEXT
@@ -232,6 +276,7 @@ db_exec(paste0("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('particip
   '{"id":"explain","label":"Explanation","tokens":2},',
   '{"id":"correct","label":"Correct Answer","tokens":1}]', "');"))
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('active_section','');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('active_sections','');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('active_course','');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('hide_archived_students','0');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('today_announcement','');")
@@ -307,7 +352,7 @@ db_exec("CREATE TABLE IF NOT EXISTS olig_payouts (
   meta    TEXT,
   section TEXT DEFAULT 'default'
 );")
-db_exec("CREATE TABLE IF NOT EXISTS pledges (
+ db_exec("CREATE TABLE IF NOT EXISTS pledges (
   user_id      TEXT,
   exam_id      TEXT DEFAULT 'exam1',
   round        INTEGER,
@@ -505,6 +550,27 @@ ensure_column("weekly_rounds", "allow_multiple_jobs INTEGER DEFAULT 1")
 ensure_column("weekly_rounds", "wage_pricing_rule TEXT DEFAULT 'pay_as_bid'")
 db_exec("UPDATE weekly_rounds SET class_date=substr(COALESCE(created_at,CURRENT_TIMESTAMP),1,10) WHERE class_date IS NULL OR trim(class_date)='';")
 db_exec("CREATE INDEX IF NOT EXISTS idx_weekly_rounds_class_date ON weekly_rounds(class_date);")
+db_exec("CREATE TABLE IF NOT EXISTS section_scope_memberships(
+  course_key TEXT NOT NULL,
+  section_key TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  course TEXT,
+  section TEXT,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(course_key,section_key)
+);")
+db_exec("CREATE TABLE IF NOT EXISTS scope_active_rounds(
+  scope_key TEXT PRIMARY KEY,
+  course TEXT,
+  sections TEXT,
+  round_id INTEGER NOT NULL,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);")
+db_exec("CREATE TABLE IF NOT EXISTS scope_rounds(
+  scope_key TEXT NOT NULL,
+  round_id INTEGER NOT NULL,
+  PRIMARY KEY(scope_key,round_id)
+);")
 db_exec("UPDATE weekly_rounds SET bidding_enabled=0 WHERE assignment_mode='random' AND COALESCE(bidding_enabled,0)<>0;")
 db_exec("CREATE TABLE IF NOT EXISTS job_posts(
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1282,6 +1348,18 @@ eval_cost_expr <- function(expr_str, var_name, var_value) {
   )
 }
 
+# Flex-question formulas may use q (questions already unlocked, zero-indexed)
+# and N (active non-demo students in the selected course).
+eval_flex_cost_expr <- function(expr_str, q_value, class_size) {
+  env <- new.env(parent = baseenv())
+  assign("q", as.numeric(q_value), envir = env)
+  assign("N", as.numeric(class_size), envir = env)
+  tryCatch(
+    max(0, ceiling(as.numeric(eval(parse(text = expr_str), envir = env)))),
+    error = function(e) NA_real_
+  )
+}
+
 parse_flex_cost <- function(text = NULL) {
   if (is.null(text)) text <- tryCatch(get_setting("flex_cost_schedule", "2,4,6,8,10"), error=function(e)"2,4,6,8,10")
   text <- trimws(text %||% "")
@@ -1290,8 +1368,9 @@ parse_flex_cost <- function(text = NULL) {
   if (!any(is.na(parts))) return(list(type="table", values=parts))
   list(type="expr", expr=text)
 }
-question_cost_for_n <- function(n, schedule_text = NULL) {
+question_cost_for_n <- function(n, schedule_text = NULL, class_size = 1L) {
   n <- max(1L, as.integer(n))
+  class_size <- max(1L, as.integer(class_size))
   sched <- parse_flex_cost(schedule_text)
   if (sched$type == "table") {
     tbl <- sched$values
@@ -1301,8 +1380,7 @@ question_cost_for_n <- function(n, schedule_text = NULL) {
     step <- if (length(tbl) >= 2) (tbl[length(tbl)] - tbl[length(tbl)-1]) else tbl[1]
     return(as.integer(max(1, last + step * (n - length(tbl)))))
   }
-  # Expression: q = questions already owned (0-indexed)
-  val <- eval_cost_expr(sched$expr, "q", n - 1L)
+  val <- eval_flex_cost_expr(sched$expr, n - 1L, class_size)
   as.integer(if (is.na(val)) 2 * n else max(1, val))
 }
 parse_rw_costs <- function() {
@@ -2219,6 +2297,7 @@ server <- function(input, output, session) {
     game_detail_id = NULL,
     bp_contrib_val = NULL,
     pd_choice_val  = NULL,
+    flex_contrib_val = NULL,
     spend_mode     = NULL,   # NULL | "extension" | "reweight" | "flex_question"
     impersonating  = FALSE,
     orig_state     = NULL,
@@ -2227,12 +2306,176 @@ server <- function(input, output, session) {
     cold_call_last = NULL,
     active_course  = get_setting("active_course", ""),
     active_section = get_setting("active_section", ""),
+    active_sections = {
+      stored <- parse_scope_sections(get_setting("active_sections", ""))
+      if (length(stored)) stored else normalize_scope_sections(get_setting("active_section", ""))
+    },
     jobs_ver       = 0L,    # bumped after any job-post or category mutation
     students_ver   = 0L,    # bumped after any student roster mutation
     gradebook_ver  = 0L,    # bumped after any gradebook category/item mutation
     extensions_ver = 0L,    # bumped after extension pricing or assignment mutation
+    flex_ver       = 0L,    # bumped after shared question funding/config changes
     policy_ver     = 0L     # bumped after policy-group assignment import
   )
+
+  # Empty legacy settings must not silently mean every class/section.
+  if (!nzchar(trimws(rv$active_course %||% ""))) {
+    first_course <- tryCatch(db_query(
+      "SELECT course FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
+       AND COALESCE(is_demo,0)=0 AND trim(COALESCE(course,''))<>'' ORDER BY course LIMIT 1;"),
+      error=function(e)data.frame())
+    if(nrow(first_course)) {
+      rv$active_course <- first_course$course[1]
+      set_setting("active_course",rv$active_course)
+    }
+  }
+  if (!length(normalize_scope_sections(rv$active_sections))) {
+    first_section <- tryCatch(db_query(
+      "SELECT section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
+       AND COALESCE(is_demo,0)=0 AND LOWER(COALESCE(course,''))=LOWER(?)
+       AND trim(COALESCE(section,''))<>'' ORDER BY section LIMIT 1;",
+      list(rv$active_course %||% "")),error=function(e)data.frame())
+    if(nrow(first_section)) {
+      rv$active_sections <- first_section$section[1]
+      rv$active_section <- first_section$section[1]
+      set_setting("active_sections",serialize_scope_sections(rv$active_sections))
+      set_setting("active_section",rv$active_section)
+    }
+  }
+
+  global_active_round_id <- active_round_id
+  global_active_round_row <- active_round_row
+  global_set_active_round_id <- set_active_round_id
+
+  scoped_course <- function() {
+    if (isTRUE(rv$is_admin)) trimws(rv$active_course %||% "")
+    else trimws(rv$course %||% "")
+  }
+  scoped_sections <- function(expand_all = TRUE) {
+    if (!isTRUE(rv$is_admin)) {
+      own <- normalize_scope_sections(rv$section %||% "")
+      mapped <- if(length(own)) tryCatch(db_query(
+        "SELECT sar.sections FROM section_scope_memberships sm
+         LEFT JOIN scope_active_rounds sar ON sar.scope_key=sm.scope_key
+         WHERE sm.course_key=? AND sm.section_key=? LIMIT 1;",
+        list(norm_key(rv$course %||% ""),norm_key(own[1]))),error=function(e)data.frame())
+        else data.frame()
+      shared <- if(nrow(mapped)) parse_scope_sections(mapped$sections[1] %||% "") else character(0)
+      return(if(length(shared)) shared else own)
+    }
+    selected <- normalize_scope_sections(rv$active_sections %||% rv$active_section %||% "")
+    if (isTRUE(expand_all) && "__all__" %in% selected) {
+      course <- scoped_course()
+      rows <- tryCatch(if (nzchar(course)) db_query(
+        "SELECT DISTINCT section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0 AND trim(COALESCE(section,''))<>'' AND LOWER(course)=LOWER(?) ORDER BY section;",
+        list(course)) else db_query(
+        "SELECT DISTINCT section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0 AND trim(COALESCE(section,''))<>'' ORDER BY section;"),
+        error=function(e)data.frame())
+      return(normalize_scope_sections(rows$section %||% character(0)))
+    }
+    setdiff(selected, "__all__")
+  }
+  current_scope_key <- function() {
+    course <- scoped_course()
+    sections <- scoped_sections()
+    if (!isTRUE(rv$is_admin) && length(sections) == 1L) {
+      mapped <- tryCatch(db_query(
+        "SELECT scope_key FROM section_scope_memberships WHERE course_key=? AND section_key=? LIMIT 1;",
+        list(norm_key(course), norm_key(sections[1]))), error=function(e)data.frame())
+      if (nrow(mapped) && nzchar(mapped$scope_key[1] %||% "")) return(mapped$scope_key[1])
+    }
+    section_scope_key(course, sections)
+  }
+  get_scoped_setting <- function(key,default=NULL)
+    get_setting(paste0(key,"::",current_scope_key()),get_setting(key,default))
+  set_scoped_setting <- function(key,value)
+    set_setting(paste0(key,"::",current_scope_key()),value)
+  active_round_id <- function(query_fn = db_query) {
+    key <- current_scope_key()
+    mapped <- tryCatch(query_fn(
+      "SELECT sar.round_id FROM scope_active_rounds sar JOIN weekly_rounds wr ON wr.id=sar.round_id WHERE sar.scope_key=? LIMIT 1;",
+      list(key)), error=function(e)data.frame())
+    if (nrow(mapped)) return(as.integer(mapped$round_id[1]))
+    global_active_round_id(query_fn)
+  }
+  active_round_row <- function(query_fn = db_query) {
+    rid <- active_round_id(query_fn)
+    if (is.na(rid)) return(data.frame())
+    tryCatch(query_fn("SELECT * FROM weekly_rounds WHERE id=?;", list(rid)), error=function(e)data.frame())
+  }
+  set_active_round_id <- function(round_id) {
+    rid <- suppressWarnings(as.integer(round_id))
+    if (is.na(rid) || !nrow(tryCatch(db_query("SELECT id FROM weekly_rounds WHERE id=?;", list(rid)), error=function(e)data.frame()))) return(FALSE)
+    course <- scoped_course()
+    sections <- scoped_sections()
+    key <- section_scope_key(course, sections)
+    db_exec(
+      "INSERT INTO scope_active_rounds(scope_key,course,sections,round_id,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(scope_key) DO UPDATE SET course=excluded.course,sections=excluded.sections,round_id=excluded.round_id,updated_at=CURRENT_TIMESTAMP;",
+      list(key, course, serialize_scope_sections(sections), rid))
+    db_exec("INSERT OR IGNORE INTO scope_rounds(scope_key,round_id) VALUES(?,?);",
+            list(key,rid))
+    if (length(sections)) for (section in sections) db_exec(
+      "INSERT INTO section_scope_memberships(course_key,section_key,scope_key,course,section,updated_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(course_key,section_key) DO UPDATE SET scope_key=excluded.scope_key,course=excluded.course,section=excluded.section,updated_at=CURRENT_TIMESTAMP;",
+      list(norm_key(course), norm_key(section), key, course, section))
+    global_set_active_round_id(rid)
+    TRUE
+  }
+  ensure_scope_round <- function() {
+    key <- current_scope_key()
+    mapped <- tryCatch(db_query(
+      "SELECT round_id FROM scope_active_rounds WHERE scope_key=? LIMIT 1;",list(key)),
+      error=function(e)data.frame())
+    if (nrow(mapped)) {
+      set_active_round_id(as.integer(mapped$round_id[1]))
+      return(as.integer(mapped$round_id[1]))
+    }
+    source_id <- global_active_round_id()
+    if (is.na(source_id)) return(NA_integer_)
+    db_exec(
+      "INSERT INTO weekly_rounds(label,assignment_mode,bidding_enabled,bid_open_date,bid_close_date,
+          tickets_per_student,class_date,allow_multiple_jobs,wage_pricing_rule,created_at,
+          tokens_revealed,tiebreak_method)
+       SELECT label,assignment_mode,bidding_enabled,bid_open_date,bid_close_date,
+          tickets_per_student,class_date,allow_multiple_jobs,wage_pricing_rule,CURRENT_TIMESTAMP,
+          tokens_revealed,tiebreak_method
+       FROM weekly_rounds WHERE id=?;",list(source_id))
+    new_id <- as.integer(db_query("SELECT last_insert_rowid() id;")$id[1])
+    db_exec(
+      "INSERT INTO job_posts(round_id,job_name,category_id,slots,wage_override,in_draw,voluntary,
+          selection_time,description,display_order,active)
+       SELECT ?,job_name,category_id,slots,wage_override,in_draw,voluntary,
+          selection_time,description,display_order,active
+       FROM job_posts WHERE round_id=?;",list(new_id,source_id))
+    db_exec(
+      "INSERT OR IGNORE INTO application_bids(round_id,category_id,user_id,tickets,submitted_at)
+       SELECT ?,category_id,user_id,tickets,submitted_at FROM application_bids WHERE round_id=?;",
+      list(new_id,source_id))
+    db_exec(
+      "INSERT OR IGNORE INTO wage_bids(round_id,category_id,user_id,min_wage,submitted_at)
+       SELECT ?,category_id,user_id,min_wage,submitted_at FROM wage_bids WHERE round_id=?;",
+      list(new_id,source_id))
+    post_map <- tryCatch(db_query(
+      "SELECT old.id old_id,new.id new_id FROM job_posts old JOIN job_posts new
+       ON LOWER(new.job_name)=LOWER(old.job_name) WHERE old.round_id=? AND new.round_id=?;",
+      list(source_id,new_id)),error=function(e)data.frame())
+    if(nrow(post_map)) for(i in seq_len(nrow(post_map))) db_exec(
+      "INSERT OR IGNORE INTO job_wage_bids(round_id,job_post_id,user_id,min_wage,submitted_at)
+       SELECT ?,?,user_id,min_wage,submitted_at FROM job_wage_bids
+       WHERE round_id=? AND job_post_id=?;",
+      list(new_id,post_map$new_id[i],source_id,post_map$old_id[i]))
+    set_active_round_id(new_id)
+    new_id
+  }
+
+  scope_filter_rows <- function(df) {
+    if (!nrow(df)) return(df)
+    course <- scoped_course()
+    sections <- scoped_sections()
+    keep <- rep(TRUE, nrow(df))
+    if (nzchar(course) && "course" %in% names(df)) keep <- keep & !is.na(df$course) & norm_key(df$course) == norm_key(course)
+    if (length(sections) && "section" %in% names(df)) keep <- keep & !is.na(df$section) & norm_key(df$section) %in% norm_key(sections)
+    df[keep, , drop=FALSE]
+  }
 
   is_cold_call_slide_view <- reactive({
     grepl("(^|[?&])view=cold-call-slide(&|$)", session$clientData$url_search %||% "")
@@ -2378,6 +2621,7 @@ server <- function(input, output, session) {
     rv$section  <- row$section[1] %||% ""
     rv$is_admin <- isTRUE(as.integer(row$is_admin[1] %||% 0L) == 1L)
     rv$is_demo  <- isTRUE(as.integer(row$is_demo[1]  %||% 0L) == 1L)
+    if (isTRUE(rv$is_admin)) ensure_scope_round()
   }
 
   issue_cookie <- function(user_id) {
@@ -2507,10 +2751,81 @@ server <- function(input, output, session) {
     }
   )
 
+  flex_cost_schedule_for_scope <- function()
+    get_setting(paste0("flex_cost_schedule::",current_scope_key()),
+                get_setting("flex_cost_schedule","2,4,6,8,10"))
+
+  flex_roster_size <- function() {
+    students <- tryCatch(db_query(
+      "SELECT user_id,course,section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0;"),
+      error=function(e)data.frame())
+    max(1L, nrow(scope_filter_rows(students)))
+  }
+
+  flex_question_state <- function() {
+    key <- current_scope_key()
+    course <- scoped_course()
+    questions <- tryCatch(db_query(
+      "SELECT fq.id, fq.question_text, fq.order_index, fq.exam_tag, fq.course,
+              fqs.unlock_cost, fqs.unlocked_at,
+              COALESCE(SUM(fqc.amount),0) AS funded
+       FROM flex_questions fq
+       LEFT JOIN flex_question_scope_state fqs
+         ON fqs.question_id=fq.id AND fqs.scope_key=?
+       LEFT JOIN flex_question_contributions fqc
+         ON fqc.question_id=fq.id AND fqc.scope_key=?
+       WHERE COALESCE(fq.active,1)=1
+         AND (?='' OR trim(COALESCE(fq.course,''))='' OR LOWER(fq.course)=LOWER(?))
+       GROUP BY fq.id
+       ORDER BY fq.order_index ASC, fq.id ASC;",
+      list(key, key, course, course)), error=function(e)data.frame())
+    if (!nrow(questions)) return(list(
+      questions=data.frame(), unlocked=data.frame(), next_question=data.frame(),
+      total=0L, unlocked_n=0L, class_size=max(1L, flex_roster_size()),
+      target=0, funded=0, remaining=0, scope_key=key))
+    unlocked_flag <- !is.na(questions$unlocked_at) & nzchar(as.character(questions$unlocked_at))
+    unlocked <- questions[unlocked_flag, , drop=FALSE]
+    locked <- questions[!unlocked_flag, , drop=FALSE]
+    next_q <- if (nrow(locked)) locked[1, , drop=FALSE] else data.frame()
+    class_size <- max(1L, flex_roster_size())
+    unlocked_n <- nrow(unlocked)
+    target <- 0
+    funded <- 0
+    if (nrow(next_q)) {
+      stored <- suppressWarnings(as.numeric(next_q$unlock_cost[1]))
+      target <- if (is.finite(stored) && stored > 0) stored else
+        question_cost_for_n(unlocked_n + 1L, flex_cost_schedule_for_scope(), class_size)
+      funded <- as.numeric(next_q$funded[1] %||% 0)
+    }
+    list(questions=questions, unlocked=unlocked, next_question=next_q,
+         total=nrow(questions), unlocked_n=unlocked_n, class_size=class_size,
+         target=target, funded=funded, remaining=max(0,target-funded), scope_key=key)
+  }
+
+  flex_poll <- reactivePoll(5000, session,
+    checkFunc = function() {
+      rv$flex_ver
+      c1 <- tryCatch(db_query(
+        "SELECT COUNT(*) n, COALESCE(MAX(contributed_at),'') ts
+         FROM flex_question_contributions;"), error=function(e)data.frame(n=0,ts=""))
+      c2 <- tryCatch(db_query(
+        "SELECT COUNT(*) n, COALESCE(MAX(COALESCE(unlocked_at,created_at)),'') ts
+         FROM flex_questions WHERE COALESCE(active,1)=1;"),
+        error=function(e)data.frame(n=0,ts=""))
+      paste(c1$n[1] %||% 0, c1$ts[1] %||% "", c2$n[1] %||% 0,
+            c2$ts[1] %||% "", flex_cost_schedule_for_scope(), current_scope_key(), sep="|")
+    },
+    valueFunc = flex_question_state
+  )
+
   pubgood_poll <- reactivePoll(10000, session,
     checkFunc = function() {
+      if (!isTRUE(rv$authed)) return("")
       tryCatch(
-        db_query("SELECT MAX(contributed_at) ts FROM public_good_contributions;")$ts[1] %||% "",
+        db_query(
+          "SELECT COUNT(*) || '|' || COALESCE(MAX(contributed_at),'') ts
+           FROM public_good_contributions WHERE scope_key=?;",
+          list(current_scope_key()))$ts[1] %||% "",
         error = function(e) "")
     },
     valueFunc = function() {
@@ -2519,8 +2834,8 @@ server <- function(input, output, session) {
         error = function(e) data.frame())
       totals <- tryCatch(db_query(
         "SELECT public_good_id, SUM(amount) AS total
-         FROM public_good_contributions GROUP BY public_good_id;"),
-        error = function(e) data.frame())
+         FROM public_good_contributions WHERE scope_key=? GROUP BY public_good_id;",
+        list(current_scope_key())), error = function(e) data.frame())
       list(goods = goods, totals = totals)
     }
   )
@@ -2589,10 +2904,14 @@ server <- function(input, output, session) {
         isTRUE(as.integer(db_query("SELECT COALESCE(assignments_revealed,0) v FROM arcade_state WHERE id=1;")$v[1]) == 1L),
         error = function(e) FALSE)
       subs <- if (nzchar(active %||% "")) {
-        tryCatch(db_query(
-          "SELECT DISTINCT user_id FROM olig_submissions WHERE round=(
-             SELECT current_round FROM olig_settings WHERE id=1);"),
-          error = function(e) data.frame())
+        tryCatch({
+          rows <- db_query(
+            "SELECT DISTINCT os.user_id,u.course,u.section
+             FROM olig_submissions os
+             LEFT JOIN users u ON u.user_id=os.user_id
+             WHERE os.round=(SELECT current_round FROM olig_settings WHERE id=1);")
+          scope_filter_rows(rows)
+        }, error = function(e) data.frame())
       } else data.frame()
       round <- tryCatch(active_round_row(), error = function(e) data.frame())
       rid <- if (nrow(round)) round$id[1] else NA_integer_
@@ -2682,10 +3001,10 @@ server <- function(input, output, session) {
   announcement_poll <- reactivePoll(8000, session,
     checkFunc = function() {
       if (!isTRUE(rv$authed)) return("")
-      tryCatch(get_setting("today_announcement", ""), error = function(e) "")
+      tryCatch(get_scoped_setting("today_announcement", ""), error = function(e) "")
     },
     valueFunc = function() {
-      tryCatch(get_setting("today_announcement", ""), error = function(e) "")
+      tryCatch(get_scoped_setting("today_announcement", ""), error = function(e) "")
     }
   )
 
@@ -2901,8 +3220,9 @@ server <- function(input, output, session) {
     req(rv$user_id)
     tryCatch(db_query(
       "SELECT public_good_id, SUM(amount) AS my_total
-       FROM public_good_contributions WHERE user_id=? GROUP BY public_good_id;",
-      list(rv$user_id)), error = function(e) data.frame())
+       FROM public_good_contributions
+       WHERE user_id=? AND scope_key=? GROUP BY public_good_id;",
+      list(rv$user_id,current_scope_key())), error = function(e) data.frame())
   })
 
   token_credit <- function(uid, dname, amount, earning, source_type, source_id = NA, note = "") {
@@ -2960,6 +3280,7 @@ server <- function(input, output, session) {
   # Preserve typed input values across poll-triggered re-renders.
   observe({ if (!is.null(input$bp_contrib)) rv$bp_contrib_val <- input$bp_contrib })
   observe({ if (!is.null(input$pd_choice))  rv$pd_choice_val  <- input$pd_choice  })
+  observe({ if (!is.null(input$flex_contribution)) rv$flex_contrib_val <- input$flex_contribution })
 
   # ── Today tab ─────────────────────────────────────────────────────────────────
   output$today_tab <- renderUI({
@@ -3009,19 +3330,7 @@ server <- function(input, output, session) {
         , drop = FALSE]
     }
 
-    revealed_jobs <- if (!is.null(jp$all_assign)) jp$all_assign else data.frame()
-    viewer_course <- trimws(if (isTRUE(rv$is_admin)) rv$active_course %||% "" else rv$course %||% "")
-    viewer_section <- trimws(if (isTRUE(rv$is_admin)) rv$active_section %||% "" else rv$section %||% "")
-    if (nrow(revealed_jobs) && nzchar(viewer_course)) {
-      revealed_jobs <- revealed_jobs[
-        !is.na(revealed_jobs$course) & norm_key(revealed_jobs$course) == norm_key(viewer_course),
-        , drop = FALSE]
-    }
-    if (nrow(revealed_jobs) && nzchar(viewer_section)) {
-      revealed_jobs <- revealed_jobs[
-        !is.na(revealed_jobs$section) & norm_key(revealed_jobs$section) == norm_key(viewer_section),
-        , drop = FALSE]
-    }
+    revealed_jobs <- scope_filter_rows(if (!is.null(jp$all_assign)) jp$all_assign else data.frame())
     if (nrow(revealed_jobs)) {
       timing_key <- norm_key(revealed_jobs$selection_time)
       revealed_jobs <- revealed_jobs[
@@ -3047,15 +3356,7 @@ server <- function(input, output, session) {
       revealed_jobs <- revealed_jobs[visible, , drop = FALSE]
     }
 
-    last_class_jobs <- if (!is.null(jp$last_class_assign)) jp$last_class_assign else data.frame()
-    if (nrow(last_class_jobs) && nzchar(viewer_course)) {
-      last_class_jobs <- last_class_jobs[
-        !is.na(last_class_jobs$course) & norm_key(last_class_jobs$course) == norm_key(viewer_course), , drop=FALSE]
-    }
-    if (nrow(last_class_jobs) && nzchar(viewer_section)) {
-      last_class_jobs <- last_class_jobs[
-        !is.na(last_class_jobs$section) & norm_key(last_class_jobs$section) == norm_key(viewer_section), , drop=FALSE]
-    }
+    last_class_jobs <- scope_filter_rows(if (!is.null(jp$last_class_assign)) jp$last_class_assign else data.frame())
     if (nrow(last_class_jobs)) {
       timing_key <- norm_key(last_class_jobs$selection_time)
       last_class_jobs$reveal_timing <- ifelse(
@@ -3150,23 +3451,21 @@ server <- function(input, output, session) {
         )
       },
 
-      # Flex Questions progress
+      # Shared candidate-question funding progress
       {
-        total_q <- tryCatch(
-          db_query("SELECT COUNT(*) n FROM flex_questions WHERE COALESCE(active,1)=1;")$n[1],
-          error = function(e) 0L)
-        if (as.integer(total_q %||% 0L) > 0) {
-          owned_n <- tryCatch(
-            db_query("SELECT COUNT(*) n FROM flex_purchases WHERE user_id=?;", list(rv$user_id))$n[1],
-            error = function(e) 0L)
-          next_cost <- question_cost_for_n(as.integer(owned_n %||% 0L) + 1L)
+        fq <- flex_poll()
+        if (as.integer(fq$total %||% 0L) > 0) {
+          status <- if (!nrow(fq$next_question)) {
+            sprintf("All %d candidate questions unlocked.", as.integer(fq$total))
+          } else {
+            sprintf("%d of %d unlocked · %d of %d tokens toward the next reveal.",
+                    as.integer(fq$unlocked_n), as.integer(fq$total),
+                    as.integer(fq$funded), as.integer(fq$target))
+          }
           div(class = "today-card",
-            tags$strong("\U0001f4da Questions"),
-            tags$p(style = "color:#555;font-size:.86rem;margin:.2rem 0 .3rem;",
-                   sprintf("You own %d of %d questions. Next costs %d tokens.",
-                           as.integer(owned_n %||% 0L), as.integer(total_q),
-                           as.integer(next_cost))),
-            actionButton("go_to_spend_fq", "Open Spend →",
+            tags$strong("📚 Candidate Question Fund"),
+            tags$p(style = "color:#555;font-size:.86rem;margin:.2rem 0 .3rem;", status),
+            actionButton("go_to_spend_fq", "View / contribute →",
                          class = "btn btn-sm btn-outline-primary",
                          style = "margin-top:.2rem;")
           )
@@ -3823,7 +4122,7 @@ server <- function(input, output, session) {
     s      <- op$settings
     if (!nrow(s)) return(div(class = "no-game", "Game not configured."))
 
-    active <- isolate(arcade_poll())$active_game[1] %||% ""
+    active <- arcade_poll()$active_game[1] %||% ""
     is_pw  <- identical(active, "price_war")
     status <- s$round_status[1] %||% "pending"
     round  <- as.integer(s$current_round[1] %||% 1L)
@@ -3928,17 +4227,12 @@ server <- function(input, output, session) {
 
     if (is.null(rv$spend_mode)) {
       # Card picker view
-      owned_count <- tryCatch(
-        db_query("SELECT COUNT(*) n FROM flex_purchases WHERE user_id=?;", list(rv$user_id))$n[1],
-        error = function(e) 0L)
-      total_q <- tryCatch(
-        db_query("SELECT COUNT(*) n FROM flex_questions WHERE COALESCE(active,1)=1;")$n[1],
-        error = function(e) 0L)
-      next_cost <- question_cost_for_n(as.integer(owned_count %||% 0L) + 1L)
-      fq_status <- if (total_q == 0) "No questions loaded yet" else
-        sprintf("%d / %d purchased · next costs %d tokens",
-                as.integer(owned_count %||% 0L), as.integer(total_q),
-                as.integer(next_cost))
+      fq <- flex_poll()
+      fq_status <- if (fq$total == 0) "No candidate questions loaded yet" else
+        if (!nrow(fq$next_question)) sprintf("All %d unlocked", as.integer(fq$total)) else
+          sprintf("%d / %d public · %d tokens still needed",
+                  as.integer(fq$unlocked_n), as.integer(fq$total),
+                  as.integer(fq$remaining))
 
       tagList(
         div(class = "tab-howto",
@@ -3966,9 +4260,9 @@ server <- function(input, output, session) {
           ),
           div(class = "spend-card",
             div(class = "spend-card-icon", "\U0001f4da"),
-            div(class = "spend-card-label", "Buy a Question"),
+            div(class = "spend-card-label", "Candidate Question Fund"),
             div(class = "spend-card-desc",
-                "Unlock the next exam question. Questions are revealed in order."),
+                "Contribute tokens toward a pooled-section reveal. Unlocked questions are public within that scope."),
             div(class = "spend-card-meta", fq_status),
             div(class = "spend-card-foot",
                 actionButton("open_flex_question", "Select →", class = "btn btn-sm btn-outline-primary"))
@@ -4051,43 +4345,55 @@ server <- function(input, output, session) {
       )
 
     } else if (mode == "flex_question") {
-      owned <- tryCatch(db_query(
-        "SELECT fp.question_id, fq.question_text, fq.order_index
-         FROM flex_purchases fp
-         JOIN flex_questions fq ON fq.id=fp.question_id
-         WHERE fp.user_id=? ORDER BY fq.order_index ASC, fq.id ASC;",
-        list(rv$user_id)), error = function(e) data.frame())
-      total_q <- tryCatch(
-        db_query("SELECT COUNT(*) n FROM flex_questions WHERE COALESCE(active,1)=1;")$n[1],
-        error = function(e) 0L)
-      n_owned <- nrow(owned)
-      next_cost <- question_cost_for_n(n_owned + 1L)
-      all_done  <- n_owned >= as.integer(total_q %||% 0L)
+      rv$flex_ver
+      fq <- flex_poll()
+      pct <- if (fq$target > 0) min(100, 100 * fq$funded / fq$target) else 100
+      max_contribution <- max(0L, min(as.integer(floor(bal)), as.integer(ceiling(fq$remaining))))
+      typed <- suppressWarnings(as.integer(rv$flex_contrib_val %||% 1L))
+      if (!is.finite(typed) || typed < 1L) typed <- 1L
+      contribution_value <- if (max_contribution > 0L) min(typed, max_contribution) else 1L
       div(class = "spend-form-box",
-        tags$h6(style = "color:#951829;font-weight:700;", "\U0001f4da Buy a Question"),
-        if (total_q == 0) {
-          tags$p(style = "color:#999;", "No questions have been loaded yet.")
-        } else if (all_done) {
+        tags$h6(style = "color:#951829;font-weight:700;", "📚 Candidate Question Fund"),
+        tags$p(style = "color:#555;font-size:.88rem;",
+               "Contributions fund a public good: every unlocked candidate becomes visible to everyone in your pooled section scope."),
+        if (fq$total == 0) {
+          tags$p(style = "color:#999;", "No candidate questions have been loaded yet.")
+        } else if (!nrow(fq$next_question)) {
           tags$p(style = "color:#1a6e3c;font-weight:600;",
-                 sprintf("You have purchased all %d questions!", as.integer(total_q)))
+                 sprintf("All %d candidate questions are public.", as.integer(fq$total)))
         } else {
           tagList(
-            tags$p(style = "color:#555;font-size:.88rem;",
-                   sprintf("You own %d of %d questions. The next question costs %d tokens.",
-                           n_owned, as.integer(total_q), as.integer(next_cost))),
-            actionButton("submit_flex_question",
-                         sprintf("Buy question #%d (%d tokens)", n_owned + 1L, as.integer(next_cost)),
-                         class = "btn btn-warning")
+            tags$p(style = "font-weight:600;margin-bottom:.35rem;",
+                   sprintf("Question #%d: %d of %d tokens funded",
+                           as.integer(fq$unlocked_n + 1L), as.integer(fq$funded),
+                           as.integer(fq$target))),
+            div(class = "progress", style = "height:18px;margin-bottom:.65rem;",
+                div(class = "progress-bar", role = "progressbar",
+                    style = sprintf("width:%.1f%%;", pct),
+                    sprintf("%.0f%%", pct))),
+            tags$p(style = "color:#666;font-size:.82rem;",
+                   sprintf("Class size N = %d · %d tokens remain · your balance is %d.",
+                           as.integer(fq$class_size), as.integer(ceiling(fq$remaining)),
+                           as.integer(bal))),
+            if (max_contribution > 0L) tagList(
+              numericInput("flex_contribution", "Tokens to contribute:",
+                           value=contribution_value, min=1, max=max_contribution, step=1),
+              actionButton("submit_flex_contribution", "Contribute to the class reveal",
+                           class = "btn btn-warning")
+            ) else {
+              tags$p(style = "color:#9a6b00;font-size:.85rem;",
+                     "You do not currently have spendable tokens for this contribution.")
+            }
           )
         },
-        if (n_owned > 0) {
+        if (nrow(fq$unlocked)) {
           tagList(
             tags$hr(),
-            tags$strong("Your purchased questions:"),
-            lapply(seq_len(n_owned), function(i) {
+            tags$strong("Publicly unlocked candidate questions:"),
+            lapply(seq_len(nrow(fq$unlocked)), function(i) {
               div(style = "margin-top:.5rem;padding:.5rem .7rem;background:#f8f8f8;border-radius:4px;",
                   tags$small(style = "color:#888;", sprintf("Question #%d", i)),
-                  tags$p(style = "margin:.2rem 0 0;", owned$question_text[i]))
+                  tags$p(style = "margin:.2rem 0 0;", fq$unlocked$question_text[i]))
             })
           )
         }
@@ -4434,45 +4740,85 @@ server <- function(input, output, session) {
     rv$spend_mode <- NULL
   })
 
-  observeEvent(input$submit_flex_question, {
+  observeEvent(input$submit_flex_contribution, {
     req(rv$authed, rv$user_id)
-    if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
-    owned <- tryCatch(db_query(
-      "SELECT question_id FROM flex_purchases WHERE user_id=?;", list(rv$user_id)),
-      error = function(e) data.frame())
-    owned_ids <- if (nrow(owned)) as.integer(owned$question_id) else integer(0)
-    nxt <- tryCatch({
-      if (length(owned_ids)) {
-        q <- sprintf(
-          "SELECT id, question_text, order_index FROM flex_questions
-           WHERE COALESCE(active,1)=1 AND id NOT IN (%s)
-           ORDER BY order_index ASC, id ASC LIMIT 1;",
-          paste(owned_ids, collapse=","))
-        db_query(q, list())
-      } else {
-        db_query(
-          "SELECT id, question_text, order_index FROM flex_questions
-           WHERE COALESCE(active,1)=1 ORDER BY order_index ASC, id ASC LIMIT 1;")
-      }
-    }, error = function(e) data.frame())
-    if (!nrow(nxt)) {
-      showNotification("You have purchased all available questions.", type = "message"); return()
+    if (rv$is_demo) {
+      showNotification("Demo mode — contributions are not saved.", type = "warning"); return()
     }
-    n_owned <- length(owned_ids) + 1L
-    cost <- question_cost_for_n(n_owned)
-    bal  <- isolate(token_bal())
-    if (bal < cost) {
-      showNotification(sprintf("Not enough tokens (need %d, have %d).", as.integer(cost), as.integer(bal)),
-                       type = "error"); return()
+    requested <- suppressWarnings(as.integer(input$flex_contribution %||% 0L))
+    if (!is.finite(requested) || requested < 1L) {
+      showNotification("Enter a positive whole number of tokens.", type = "error"); return()
     }
-    qid <- as.integer(nxt$id[1])
-    lid <- token_debit(rv$user_id, rv$name, cost, "flex_question", qid,
-                       note = sprintf("Question #%d", n_owned))
+
+    # Re-read shared state at commit time so a stale browser cannot fund an
+    # already-unlocked question.
+    fq <- flex_question_state()
+    if (!nrow(fq$next_question)) {
+      showNotification("All candidate questions are already unlocked.", type = "message"); return()
+    }
+    qid <- as.integer(fq$next_question$id[1])
+    stored_cost <- suppressWarnings(as.numeric(fq$next_question$unlock_cost[1]))
+    target <- if (is.finite(stored_cost) && stored_cost > 0) stored_cost else
+      question_cost_for_n(fq$unlocked_n + 1L, flex_cost_schedule_for_scope(), fq$class_size)
+    scope_key <- fq$scope_key
+    if (!is.finite(stored_cost) || stored_cost <= 0)
+      db_exec(
+        "INSERT INTO flex_question_scope_state(question_id,scope_key,unlock_cost)
+         VALUES(?,?,?)
+         ON CONFLICT(question_id,scope_key) DO UPDATE SET
+           unlock_cost=COALESCE(flex_question_scope_state.unlock_cost,excluded.unlock_cost);",
+        list(qid, scope_key, target))
+
+    funded <- tryCatch(as.numeric(db_query(
+      "SELECT COALESCE(SUM(amount),0) total
+       FROM flex_question_contributions WHERE question_id=? AND scope_key=?;",
+      list(qid, scope_key))$total[1] %||% 0),
+      error=function(e) 0)
+    remaining <- max(0, target-funded)
+    if (remaining <= 0) {
+      db_exec(
+        "INSERT INTO flex_question_scope_state(question_id,scope_key,unlock_cost,unlocked_at)
+         VALUES(?,?,?,CURRENT_TIMESTAMP)
+         ON CONFLICT(question_id,scope_key) DO UPDATE SET
+           unlock_cost=COALESCE(flex_question_scope_state.unlock_cost,excluded.unlock_cost),
+           unlocked_at=COALESCE(flex_question_scope_state.unlocked_at,CURRENT_TIMESTAMP);",
+        list(qid, scope_key, target))
+      rv$flex_ver <- rv$flex_ver + 1L
+      showNotification("That question was just unlocked for the class.", type="message"); return()
+    }
+
+    bal <- tryCatch(as.numeric(db_query(
+      "SELECT COALESCE(SUM(amount),0) t FROM token_ledger WHERE user_id=?;",
+      list(rv$user_id))$t[1] %||% 0), error=function(e) 0)
+    amount <- min(requested, as.integer(ceiling(remaining)), as.integer(floor(max(0, bal))))
+    if (amount < 1L) {
+      showNotification("Not enough spendable tokens.", type = "error"); return()
+    }
+
+    lid <- token_debit(rv$user_id, rv$name, amount, "flex_question_contribution", qid,
+                       note=sprintf("Public candidate question #%d", fq$unlocked_n + 1L))
     db_exec(
-      "INSERT OR IGNORE INTO flex_purchases(user_id,question_id,tokens_spent) VALUES(?,?,?);",
-      list(rv$user_id, qid, cost))
-    showNotification(sprintf("Question purchased for %d tokens.", as.integer(cost)), type = "message")
-    rv$spend_mode <- "flex_question"
+      "INSERT INTO flex_question_contributions(question_id,user_id,amount,ledger_id,scope_key)
+       VALUES(?,?,?,?,?);",
+      list(qid, rv$user_id, amount, as.integer(lid %||% NA_integer_), scope_key))
+    new_total <- funded + amount
+    unlocked_now <- new_total >= target
+    if (unlocked_now)
+      db_exec(
+        "INSERT INTO flex_question_scope_state(question_id,scope_key,unlock_cost,unlocked_at)
+         VALUES(?,?,?,CURRENT_TIMESTAMP)
+         ON CONFLICT(question_id,scope_key) DO UPDATE SET
+           unlock_cost=COALESCE(flex_question_scope_state.unlock_cost,excluded.unlock_cost),
+           unlocked_at=COALESCE(flex_question_scope_state.unlocked_at,CURRENT_TIMESTAMP);",
+        list(qid, scope_key, target))
+    rv$flex_contrib_val <- NULL
+    rv$flex_ver <- rv$flex_ver + 1L
+    showNotification(
+      if (unlocked_now)
+        sprintf("You contributed %d tokens. Question #%d is now public!", amount, fq$unlocked_n + 1L)
+      else
+        sprintf("You contributed %d tokens. %d remain.", amount, as.integer(ceiling(target-new_total))),
+      type = "message")
   })
 
   # ── Account tab ───────────────────────────────────────────────────────────────
@@ -4700,22 +5046,40 @@ server <- function(input, output, session) {
 
   observeEvent(input$active_section_sel, {
     req(rv$is_admin)
-    sec <- input$active_section_sel %||% ""
-    if (identical(norm_key(sec), norm_key(rv$active_section %||% ""))) return()
-    rv$active_section <- sec
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('active_section',?);",
-            list(sec))
+    available <- live_section_values(rv$active_course %||% "")
+    selected <- normalize_scope_sections(input$active_section_sel %||% character(0))
+    selected <- selected[selected %in% c("__all__", available)]
+    if ("__all__" %in% selected) selected <- "__all__"
+    if (!length(selected) && length(available)) selected <- available[1]
+    if (identical(norm_key(selected), norm_key(rv$active_sections %||% character(0)))) return()
+    rv$active_sections <- selected
+    expanded <- if ("__all__" %in% selected) available else selected
+    rv$active_section <- if (length(expanded) == 1L) expanded[1] else ""
+    set_setting("active_sections", serialize_scope_sections(selected))
+    set_setting("active_section", rv$active_section)
+    ensure_scope_round()
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    rv$students_ver <- rv$students_ver + 1L
+    rv$flex_ver <- rv$flex_ver + 1L
   }, ignoreNULL = FALSE)
 
   observeEvent(input$active_course_sel, {
     req(rv$is_admin)
+    available_courses <- live_course_values()
     course <- input$active_course_sel %||% ""
+    if (!course %in% available_courses && length(available_courses)) course <- available_courses[1]
     if (identical(norm_key(course), norm_key(rv$active_course %||% ""))) return()
     rv$active_course <- course
-    rv$active_section <- ""
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('active_course',?);",
-            list(course))
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('active_section','');")
+    sections <- live_section_values(course)
+    rv$active_sections <- if (length(sections)) sections[1] else character(0)
+    rv$active_section <- if (length(sections)) sections[1] else ""
+    set_setting("active_course", course)
+    set_setting("active_sections", serialize_scope_sections(rv$active_sections))
+    set_setting("active_section", rv$active_section)
+    ensure_scope_round()
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    rv$students_ver <- rv$students_ver + 1L
+    rv$flex_ver <- rv$flex_ver + 1L
   }, ignoreNULL = FALSE)
 
   observeEvent(input$hide_archived_students_chk, {
@@ -4747,7 +5111,7 @@ server <- function(input, output, session) {
 
   user_ref_tables <- c(
     "arcade_sessions", "extension_purchases", "grade_reweight_requests",
-    "public_good_contributions", "flex_purchases", "token_ledger",
+    "public_good_contributions", "flex_purchases", "flex_question_contributions", "token_ledger",
     "olig_submissions", "olig_payouts", "pledges", "participation_events",
     "live_score_events", "student_grades", "job_assignments", "round_absences",
     "wage_bids", "job_wage_bids", "application_bids"
@@ -5536,17 +5900,13 @@ server <- function(input, output, session) {
     rid_row <- tryCatch(active_round_row(),
                         error=function(e) data.frame())
     if (!nrow(rid_row)) return()
-    cur_sec <- trimws(rv$active_section %||% "")
-    if (nzchar(cur_sec)) {
-      db_exec(
-        "DELETE FROM live_score_events
-         WHERE round_id=? AND committed_at IS NULL
-           AND user_id IN (SELECT user_id FROM users WHERE LOWER(section)=LOWER(?));",
-        list(rid_row$id[1], cur_sec))
-    } else {
-      db_exec("DELETE FROM live_score_events WHERE round_id=? AND committed_at IS NULL;",
-              list(rid_row$id[1]))
-    }
+    pending <- tryCatch(db_query(
+      "SELECT lse.id,u.course,u.section FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
+       WHERE lse.round_id=? AND lse.committed_at IS NULL;", list(rid_row$id[1])),
+      error=function(e)data.frame())
+    pending <- scope_filter_rows(pending)
+    if (nrow(pending)) for (eid in pending$id)
+      db_exec("DELETE FROM live_score_events WHERE id=? AND committed_at IS NULL;", list(eid))
     showNotification("Pending scores cleared.", type = "message")
   }, ignoreNULL = TRUE)
 
@@ -5555,22 +5915,12 @@ server <- function(input, output, session) {
     rid_row <- tryCatch(active_round_row(),
                         error=function(e) data.frame())
     if (!nrow(rid_row)) { showNotification("No selected class date.", type = "error"); return() }
-    cur_sec <- trimws(rv$active_section %||% "")
-    pending <- if (nzchar(cur_sec)) {
-      tryCatch(db_query(
-        "SELECT lse.*, u.display_name
-         FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
-         WHERE lse.round_id=? AND lse.committed_at IS NULL AND LOWER(u.section)=LOWER(?)
-         ORDER BY lse.id;", list(rid_row$id[1], cur_sec)),
-        error=function(e) data.frame())
-    } else {
-      tryCatch(db_query(
-        "SELECT lse.*, u.display_name
-         FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
-         WHERE lse.round_id=? AND lse.committed_at IS NULL
-         ORDER BY lse.id;", list(rid_row$id[1])),
-        error=function(e) data.frame())
-    }
+    pending <- tryCatch(db_query(
+      "SELECT lse.*,u.display_name,u.course,u.section
+       FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
+       WHERE lse.round_id=? AND lse.committed_at IS NULL ORDER BY lse.id;",
+      list(rid_row$id[1])), error=function(e)data.frame())
+    pending <- scope_filter_rows(pending)
     if (!nrow(pending)) { showNotification("No pending live scores.", type = "message"); return() }
     applied <- 0L
     for (i in seq_len(nrow(pending))) {
@@ -5634,6 +5984,8 @@ server <- function(input, output, session) {
     tryCatch(db_exec("DELETE FROM wage_bids WHERE round_id=?;", list(rid)), error = function(e) NULL)
     tryCatch(db_exec("DELETE FROM job_wage_bids WHERE round_id=?;", list(rid)), error = function(e) NULL)
     db_exec("DELETE FROM job_posts WHERE round_id=?;", list(rid))
+    db_exec("DELETE FROM scope_rounds WHERE round_id=?;",list(rid))
+    db_exec("DELETE FROM scope_active_rounds WHERE round_id=?;",list(rid))
     db_exec("DELETE FROM weekly_rounds WHERE id=?;", list(rid))
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Round deleted.", type = "message")
@@ -5663,14 +6015,15 @@ server <- function(input, output, session) {
       return()
     }
     stu <- tryCatch(db_query(
-      "SELECT user_id, display_name
+      "SELECT user_id,display_name,course,section
        FROM users
        WHERE user_id=? AND COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
          AND COALESCE(is_demo,0)=0
        LIMIT 1;",
       list(uid)),
       error = function(e) data.frame())
-    if (!nrow(stu)) { showNotification("Student is not active.", type = "error"); return() }
+    stu <- scope_filter_rows(stu)
+    if (!nrow(stu)) { showNotification("Student is not active in the selected section scope.", type = "error"); return() }
     post <- tryCatch(db_query(
       "SELECT jp.id, jp.job_name, COALESCE(jp.wage_override, jc.default_wage, 0) AS wage
        FROM job_posts jp
@@ -5724,14 +6077,11 @@ server <- function(input, output, session) {
       req(rv$is_admin)
       rid_row <- active_round_row()
       req(nrow(rid_row))
-      course <- trimws(rv$active_course %||% "")
-      section <- trimws(rv$active_section %||% "")
       students <- db_query(
-        "SELECT user_id, display_name AS student, COALESCE(section,'') AS section
+        "SELECT user_id,display_name AS student,course,COALESCE(section,'') AS section
          FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
-           AND (?='' OR LOWER(course)=LOWER(?)) AND (?='' OR LOWER(section)=LOWER(?))
-         ORDER BY section, display_name;",
-        list(course, course, section, section))
+         ORDER BY section,display_name;")
+      students <- scope_filter_rows(students)
       jobs <- db_query(
         "SELECT job_name FROM job_posts WHERE round_id=? AND COALESCE(active,1)=1
          ORDER BY display_order, job_name;", list(rid_row$id[1]))
@@ -5798,9 +6148,10 @@ server <- function(input, output, session) {
     header_rows <- norm_key(rows$student_key) %in% c("student", "student id", "user id", "user_id")
     rows <- rows[!header_rows & nzchar(trimws(rows$student_key)) & nzchar(trimws(rows$job)), , drop = FALSE]
     rid <- as.integer(rid_row$id[1])
-    active_course <- trimws(rv$active_course %||% "")
-    active_section <- trimws(rv$active_section %||% "")
-    students <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0 AND (?='' OR LOWER(course)=LOWER(?)) AND (?='' OR LOWER(section)=LOWER(?));", list(active_course, active_course, active_section, active_section))
+    students <- db_query(
+      "SELECT user_id,display_name,course,section FROM users
+       WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;")
+    students <- scope_filter_rows(students)
     posts <- db_query(
       "SELECT jp.id, jp.job_name,
               COALESCE(jp.wage_override,jc.default_wage,0) AS wage,
@@ -5892,49 +6243,22 @@ server <- function(input, output, session) {
 
   draw_cold_call <- function() {
     req(rv$is_admin)
-    sec <- trimws(rv$active_section %||% "")
-    course <- trimws(rv$active_course %||% "")
-    round <- tryCatch(active_round_row(),
-                      error = function(e) data.frame())
-    if (!nrow(round)) {
-      showNotification("No selected class date for a cold call.", type = "warning")
-      return()
-    }
+    round <- tryCatch(active_round_row(),error=function(e)data.frame())
+    if(!nrow(round)){showNotification("No selected class date for a cold call.",type="warning");return()}
     rid <- as.integer(round$id[1])
     freeze_class_wages(rid)
     close_bidding_after_draw(rid)
     rv$jobs_ver <- rv$jobs_ver + 1L
-    pool <- tryCatch(
-      if (nzchar(sec)) {
-        db_query(
-          "SELECT u.user_id, u.display_name, u.course, u.section
-           FROM users u
-           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
-             AND COALESCE(u.is_demo,0)=0 AND LOWER(u.section)=LOWER(?)
-             AND (?='' OR LOWER(u.course)=LOWER(?))
-             AND NOT EXISTS (
-               SELECT 1 FROM round_absences ra
-               WHERE ra.round_id=? AND LOWER(ra.user_id)=LOWER(u.user_id)
-             )
-           ORDER BY RANDOM()
-           LIMIT 1;",
-          list(sec, course, course, rid))
-      } else {
-        db_query(
-          "SELECT u.user_id, u.display_name, u.course, u.section
-           FROM users u
-           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
-             AND COALESCE(u.is_demo,0)=0
-             AND (?='' OR LOWER(u.course)=LOWER(?))
-             AND NOT EXISTS (
-               SELECT 1 FROM round_absences ra
-               WHERE ra.round_id=? AND LOWER(ra.user_id)=LOWER(u.user_id)
-             )
-           ORDER BY RANDOM()
-           LIMIT 1;",
-          list(course, course, rid))
-      },
-      error = function(e) data.frame())
+    pool <- tryCatch(db_query(
+      "SELECT u.user_id,u.display_name,u.course,u.section
+       FROM users u
+       WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
+         AND COALESCE(u.is_demo,0)=0
+         AND NOT EXISTS(SELECT 1 FROM round_absences ra
+           WHERE ra.round_id=? AND LOWER(ra.user_id)=LOWER(u.user_id));",
+      list(rid)),error=function(e)data.frame())
+    pool <- scope_filter_rows(pool)
+    if(nrow(pool)) pool <- pool[sample(nrow(pool)),,drop=FALSE]
     if (!nrow(pool)) {
       showNotification("No eligible students for a cold call.", type = "warning")
       return()
@@ -6058,7 +6382,7 @@ server <- function(input, output, session) {
       div(style = "font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #6b7280;",
           "Cold Call"),
       div(style = "font-size: 12px; color: #6b7280; margin-top: 2px;",
-          paste(c(rv$active_course, rv$active_section)[nzchar(c(rv$active_course, rv$active_section))], collapse = " / ")),
+          paste(c(scoped_course(), paste(scoped_sections(), collapse=", ")), collapse = " / ")),
       div(
         style = paste(
           "margin: 10px 0; min-height: 58px; display: flex; align-items: center;",
@@ -6095,36 +6419,17 @@ server <- function(input, output, session) {
       showNotification("Cannot redraw an already marked absent assignment.", type = "warning")
       return()
     }
-    sec <- trimws(old$section[1] %||% "")
-    candidates <- tryCatch(
-      if (nzchar(sec)) {
-        db_query(
-          "SELECT u.user_id, u.display_name
-           FROM users u
-           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
-             AND COALESCE(u.is_demo,0)=0 AND LOWER(u.section)=LOWER(?)
-             AND LOWER(u.user_id)<>LOWER(?)
-             AND NOT EXISTS (
-               SELECT 1 FROM job_assignments ja
-               WHERE ja.round_id=? AND ja.user_id=u.user_id AND ja.job_post_id=?
-             )
-           ORDER BY RANDOM() LIMIT 1;",
-          list(sec, old$user_id[1], old$round_id[1], old$job_post_id[1]))
-      } else {
-        db_query(
-          "SELECT u.user_id, u.display_name
-           FROM users u
-           WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
-             AND COALESCE(u.is_demo,0)=0
-             AND LOWER(u.user_id)<>LOWER(?)
-             AND NOT EXISTS (
-               SELECT 1 FROM job_assignments ja
-               WHERE ja.round_id=? AND ja.user_id=u.user_id AND ja.job_post_id=?
-             )
-           ORDER BY RANDOM() LIMIT 1;",
-          list(old$user_id[1], old$round_id[1], old$job_post_id[1]))
-      },
-      error = function(e) data.frame())
+    candidates <- tryCatch(db_query(
+      "SELECT u.user_id,u.display_name,u.course,u.section
+       FROM users u
+       WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
+         AND COALESCE(u.is_demo,0)=0 AND LOWER(u.user_id)<>LOWER(?)
+         AND NOT EXISTS(SELECT 1 FROM job_assignments ja
+           WHERE ja.round_id=? AND ja.user_id=u.user_id AND ja.job_post_id=?);",
+      list(old$user_id[1],old$round_id[1],old$job_post_id[1])),
+      error=function(e)data.frame())
+    candidates <- scope_filter_rows(candidates)
+    if(nrow(candidates)) candidates <- candidates[sample(nrow(candidates)),,drop=FALSE]
     if (!nrow(candidates)) {
       showNotification("No replacement student without this job was found.", type = "warning")
       return()
@@ -6201,8 +6506,11 @@ server <- function(input, output, session) {
       return(FALSE)
     }
     existing <- tryCatch(db_query(
-      "SELECT * FROM weekly_rounds WHERE class_date=? ORDER BY id DESC LIMIT 1;", list(date_text)),
-      error = function(e) data.frame())
+      "SELECT wr.* FROM weekly_rounds wr
+       JOIN scope_rounds sr ON sr.round_id=wr.id
+       WHERE sr.scope_key=? AND wr.class_date=?
+       ORDER BY wr.id DESC LIMIT 1;",
+      list(current_scope_key(),date_text)), error=function(e)data.frame())
     if (nrow(existing)) {
       set_active_round_id(existing$id[1])
       rv$jobs_ver <- rv$jobs_ver + 1L
@@ -6665,16 +6973,16 @@ server <- function(input, output, session) {
     if (!nzchar(sched)) { showNotification("Enter a schedule.", type = "error"); return() }
     parsed <- parse_flex_cost(sched)
     if (parsed$type == "expr") {
-      test <- eval_cost_expr(parsed$expr, "q", 0)
+      test <- eval_flex_cost_expr(parsed$expr, 0, flex_roster_size())
       if (is.na(test)) {
-        showNotification("Expression error — check syntax (use q for questions owned, e.g. 11+q^2).",
-                         type = "error"); return()
+        showNotification(
+          "Expression error — use q for questions already public and N for active students.",
+          type = "error"); return()
       }
     }
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('flex_cost_schedule',?);",
-            list(sched))
+    set_setting(paste0("flex_cost_schedule::",current_scope_key()),sched)
     showNotification("Price schedule saved.", type = "message")
-    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    rv$flex_ver <- rv$flex_ver + 1L
   })
 
   observeEvent(input$add_flex_question_btn, {
@@ -6683,10 +6991,13 @@ server <- function(input, output, session) {
     etag <- trimws(input$new_fq_exam %||% "")
     if (!nzchar(txt)) { showNotification("Question text required.", type = "error"); return() }
     max_idx <- tryCatch(
-      db_query("SELECT COALESCE(MAX(order_index),0) n FROM flex_questions;")$n[1],
-      error = function(e) 0L)
-    db_exec("INSERT INTO flex_questions(question_text,order_index,exam_tag) VALUES(?,?,?);",
-            list(txt, as.integer(max_idx %||% 0L) + 1L, if (nzchar(etag)) etag else NA_character_))
+      db_query(
+        "SELECT COALESCE(MAX(order_index),0) n FROM flex_questions WHERE trim(COALESCE(course,''))='' OR LOWER(course)=LOWER(?);",
+        list(scoped_course()))$n[1], error=function(e)0L)
+    db_exec("INSERT INTO flex_questions(question_text,order_index,exam_tag,course) VALUES(?,?,?,?);",
+            list(txt, as.integer(max_idx %||% 0L) + 1L,
+                 if (nzchar(etag)) etag else NA_character_, scoped_course()))
+    rv$flex_ver <- rv$flex_ver + 1L
     showNotification("Question added.", type = "message")
   })
 
@@ -6695,6 +7006,7 @@ server <- function(input, output, session) {
     qid <- suppressWarnings(as.integer(input$delete_flex_question_btn %||% 0))
     if (is.na(qid) || qid <= 0) return()
     db_exec("UPDATE flex_questions SET active=0 WHERE id=?;", list(qid))
+    rv$flex_ver <- rv$flex_ver + 1L
     showNotification("Question removed.", type = "message")
   }, ignoreNULL = TRUE)
 
@@ -6725,18 +7037,21 @@ server <- function(input, output, session) {
     texts <- parsed$texts[keep]
     etags <- parsed$tags[keep]
     if (!length(texts)) { showNotification("No questions found in file.", type = "warning"); return() }
-    if (isTRUE(input$fq_replace_all)) db_exec("UPDATE flex_questions SET active=0;")
-    max_idx  <- tryCatch(
-      db_query("SELECT COALESCE(MAX(order_index),0) n FROM flex_questions;")$n[1],
-      error = function(e) 0L)
+    if (isTRUE(input$fq_replace_all)) db_exec(
+      "UPDATE flex_questions SET active=0 WHERE trim(COALESCE(course,''))='' OR LOWER(course)=LOWER(?);",
+      list(scoped_course()))
+    max_idx <- tryCatch(db_query(
+      "SELECT COALESCE(MAX(order_index),0) n FROM flex_questions WHERE trim(COALESCE(course,''))='' OR LOWER(course)=LOWER(?);",
+      list(scoped_course()))$n[1], error=function(e)0L)
     base_idx <- as.integer(max_idx %||% 0L)
     for (i in seq_along(texts)) {
       tag <- if (!is.na(etags[i]) && nzchar(trimws(etags[i]))) trimws(etags[i])
              else if (nzchar(batch_etag)) batch_etag
              else NA_character_
-      db_exec("INSERT INTO flex_questions(question_text,order_index,exam_tag) VALUES(?,?,?);",
-              list(texts[i], base_idx + i, tag))
+      db_exec("INSERT INTO flex_questions(question_text,order_index,exam_tag,course) VALUES(?,?,?,?);",
+              list(texts[i], base_idx + i, tag, scoped_course()))
     }
+    rv$flex_ver <- rv$flex_ver + 1L
     showNotification(sprintf("Uploaded %d questions.", length(texts)), type = "message")
   })
 
@@ -6777,42 +7092,21 @@ server <- function(input, output, session) {
 
     # Class/section picker data
     all_courses <- live_course_values()
-    course_choices <- c("(All classes)" = "", setNames(all_courses, all_courses))
+    course_choices <- setNames(all_courses,all_courses)
     cur_course <- rv$active_course %||% ""
+    if (!cur_course %in% all_courses && length(all_courses)) cur_course <- all_courses[1]
     all_sections <- live_section_values(cur_course)
-    sec_choices <- c("(All sections)" = "", setNames(all_sections, all_sections))
-    cur_sec <- rv$active_section %||% ""
+    sec_choices <- c("All sections (explicit)" = "__all__", setNames(all_sections, all_sections))
+    cur_sections <- normalize_scope_sections(rv$active_sections %||% rv$active_section %||% "")
+    if (!length(cur_sections) && length(all_sections)) cur_sections <- all_sections[1]
+    expanded_sections <- if ("__all__" %in% cur_sections) all_sections else cur_sections
+    cur_sec <- if (length(expanded_sections) == 1L) expanded_sections[1] else ""
+    section_scope_label <- paste(expanded_sections,collapse=", ")
 
-    # Filter assignments to active class/section
-    assignments_show <- td$assignments
-    if (nzchar(cur_course) && nrow(assignments_show) && "course" %in% names(assignments_show)) {
-      keep <- !is.na(assignments_show$course) & norm_key(assignments_show$course) == norm_key(cur_course)
-      assignments_show <- assignments_show[keep, , drop = FALSE]
-    }
-    if (nzchar(cur_sec) && nrow(assignments_show) && "section" %in% names(assignments_show)) {
-      keep <- !is.na(assignments_show$section) & norm_key(assignments_show$section) == norm_key(cur_sec)
-      assignments_show <- assignments_show[keep, , drop = FALSE]
-    }
-    n_show <- nrow(assignments_show)
-
-    students_sec <- td$students
-    if (nzchar(cur_course) && nrow(students_sec) && "course" %in% names(students_sec)) {
-      keep <- !is.na(students_sec$course) & norm_key(students_sec$course) == norm_key(cur_course)
-      students_sec <- students_sec[keep, , drop = FALSE]
-    }
-    if (nzchar(cur_sec) && nrow(students_sec) && "section" %in% names(students_sec)) {
-      keep <- !is.na(students_sec$section) & norm_key(students_sec$section) == norm_key(cur_sec)
-      students_sec <- students_sec[keep, , drop = FALSE]
-    }
-    pending_show <- td$pending_scores
-    if (nzchar(cur_course) && nrow(pending_show) && "course" %in% names(pending_show)) {
-      keep <- !is.na(pending_show$course) & norm_key(pending_show$course) == norm_key(cur_course)
-      pending_show <- pending_show[keep, , drop = FALSE]
-    }
-    if (nzchar(cur_sec) && nrow(pending_show) && "section" %in% names(pending_show)) {
-      keep <- !is.na(pending_show$section) & norm_key(pending_show$section) == norm_key(cur_sec)
-      pending_show <- pending_show[keep, , drop = FALSE]
-    }
+    # Filter every live-tracker roster and event through the same explicit scope.
+    assignments_show <- scope_filter_rows(td$assignments)
+    students_sec <- scope_filter_rows(td$students)
+    pending_show <- scope_filter_rows(td$pending_scores)
     audit_assignment_ids <- unique(na.omit(as.integer(pending_show$job_assignment_id %||% integer(0))))
     if (length(audit_assignment_ids) && nrow(assignments_show)) {
       assignments_show <- assignments_show[!(assignments_show$id %in% audit_assignment_ids), , drop = FALSE]
@@ -6837,14 +7131,16 @@ server <- function(input, output, session) {
       selected_reveal_timing <- "start"
     }
     section_revealed <- FALSE
-    if (!is.na(rid) && nzchar(cur_sec) && nrow(td$section_reveals)) {
-      keep_sr <- !is.na(td$section_reveals$section) &
-        norm_key(td$section_reveals$section) == norm_key(cur_sec)
-      sr <- td$section_reveals[keep_sr, , drop = FALSE]
+    if (!is.na(rid) && length(expanded_sections) && nrow(td$section_reveals)) {
       target_timings <- reveal_timings_for_scope(selected_reveal_timing)
-      revealed_timings <- as.character(sr$timing[
-        as.integer(sr$revealed %||% 0L) == 1L] %||% character(0))
-      section_revealed <- all(target_timings %in% revealed_timings)
+      section_revealed <- all(vapply(expanded_sections,function(sec){
+        sr <- td$section_reveals[
+          !is.na(td$section_reveals$section) &
+          norm_key(td$section_reveals$section)==norm_key(sec),,drop=FALSE]
+        revealed_timings <- as.character(sr$timing[
+          as.integer(sr$revealed %||% 0L)==1L] %||% character(0))
+        all(target_timings %in% revealed_timings)
+      },logical(1)))
     }
 
     # Voluntary job posts for participation panel (Panel 2)
@@ -6928,8 +7224,11 @@ server <- function(input, output, session) {
           selectInput("active_course_sel", "Active class:",
                       choices = course_choices, selected = cur_course, width = "100%")),
         column(3,
-          selectInput("active_section_sel", "Active section:",
-                      choices = sec_choices, selected = cur_sec, width = "100%")),
+          selectizeInput("active_section_sel", "Active section(s):",
+                      choices = sec_choices, selected = cur_sections, multiple = TRUE,
+                      options = list(plugins = list("remove_button"),
+                                     placeholder = "Choose one or more sections"),
+                      width = "100%")),
         column(3,
           selectInput("draw_timing_filter", "Draw jobs:",
                       choices = c("All timings" = "all", "Start of class" = "start",
@@ -7010,7 +7309,7 @@ server <- function(input, output, session) {
                    sprintf("Class date: %s  ·  %s%s  ·  Tokens: %s",
                            round$label[1] %||% paste("Round", round$id[1]),
                            mode_label,
-                           if (nzchar(cur_sec)) paste0("  ·  Section: ", cur_sec) else "",
+                           if (nzchar(section_scope_label)) paste0(" / Sections: ",section_scope_label) else "",
                            if (tok_rev) "released" else sprintf("%d pending", as.integer(n_pending)))),
             fluidRow(
               column(2,
@@ -7031,13 +7330,11 @@ server <- function(input, output, session) {
                   actionButton(
                     "toggle_section_reveal_btn", if (section_revealed) "Hide" else "Reveal",
                     class = if (section_revealed) "btn btn-outline-secondary btn-sm" else "btn btn-success btn-sm",
-                    title = if (nzchar(cur_sec))
-                      sprintf("%s the selected assignment group for %s",
-                              if (section_revealed) "Hide" else "Reveal", cur_sec)
-                    else "Tap Reveal to choose a section"
+                    title = sprintf("%s the selected assignment group for %s",
+                                    if(section_revealed)"Hide" else "Reveal",section_scope_label)
                   )
                 ),
-                if (!nzchar(cur_sec)) div(class = "reveal-hint", "Tap Reveal to choose a section")
+                div(class="reveal-hint",paste0("Applies to: ",section_scope_label))
               ),
               column(4,
                 if (!tok_rev && n_pending > 0)
@@ -7045,7 +7342,7 @@ server <- function(input, output, session) {
                                "Release",
                                class = "btn btn-warning btn-sm",
                                title = "Credit pending token earnings to students",
-                               onclick = "if(!confirm('Release tokens to all students? This cannot be undone.')) return false;")
+                               onclick = "if(!confirm('Release tokens for the selected section scope? This cannot be undone.')) return false;")
                 else if (n_show > 0)
                   actionButton("clear_assignments_btn", "Clear",
                                class = "btn btn-outline-danger btn-sm",
@@ -7302,9 +7599,8 @@ server <- function(input, output, session) {
       # Panel 3: Coordination Game — per-section breakdown
       local({
         op     <- olig_poll()
-        arc    <- arcade_poll()
         s      <- op$settings
-        active <- arc$active_game[1] %||% ""
+        active <- arcade_poll()$active_game[1] %||% ""
         if (!nrow(s) || !nzchar(active)) return(NULL)
 
         cur_round  <- as.integer(s$current_round[1] %||% 1L)
@@ -7314,26 +7610,32 @@ server <- function(input, output, session) {
         # Per-section submission counts + totals
         subs <- tryCatch(
           db_query(
-            "SELECT COALESCE(section,'') AS section,
+            "SELECT COALESCE(u.course,'') AS course,
+                    COALESCE(os.section,u.section,'') AS section,
                     COUNT(*) AS n_sub,
-                    SUM(CASE WHEN contribute IS NOT NULL THEN contribute ELSE 0 END) AS total_contrib,
-                    SUM(CASE WHEN choice='cooperate' THEN 1 ELSE 0 END) AS n_coop,
-                    SUM(CASE WHEN choice='defect'    THEN 1 ELSE 0 END) AS n_defect
-             FROM olig_submissions
-             WHERE round=?
-             GROUP BY COALESCE(section,'')
-             ORDER BY COALESCE(section,'');",
+                    SUM(CASE WHEN os.contribute IS NOT NULL THEN os.contribute ELSE 0 END) AS total_contrib,
+                    SUM(CASE WHEN os.choice='cooperate' THEN 1 ELSE 0 END) AS n_coop,
+                    SUM(CASE WHEN os.choice='defect'    THEN 1 ELSE 0 END) AS n_defect
+             FROM olig_submissions os
+             LEFT JOIN users u ON u.user_id=os.user_id
+             WHERE os.round=?
+             GROUP BY COALESCE(u.course,''),COALESCE(os.section,u.section,'')
+             ORDER BY COALESCE(os.section,u.section,'');",
             list(cur_round)),
           error = function(e) data.frame())
+        subs <- scope_filter_rows(subs)
 
         totals <- tryCatch(
           db_query(
-            "SELECT COALESCE(section,'') AS section, COUNT(*) AS n_total
+            "SELECT COALESCE(course,'') AS course, COALESCE(section,'') AS section,
+                    COUNT(*) AS n_total
              FROM users
-             WHERE COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
-             GROUP BY COALESCE(section,'')
+             WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
+               AND COALESCE(is_demo,0)=0
+             GROUP BY COALESCE(course,''),COALESCE(section,'')
              ORDER BY COALESCE(section,'');"),
           error = function(e) data.frame())
+        totals <- scope_filter_rows(totals)
 
         if (!nrow(subs) && !nrow(totals)) return(NULL)
 
@@ -7533,6 +7835,13 @@ server <- function(input, output, session) {
   output$settings_tab <- renderUI({
     req(rv$is_admin)
     tagList(
+      wellPanel(
+        tags$strong("Active scope: "),
+        paste(c(scoped_course(),scoped_sections()),collapse=" / "),
+        tags$p(style="color:#666;font-size:.82rem;margin:.25rem 0 .4rem;",
+               "Roster, jobs, market controls, tracker choices, exports, and Flex funding use this scope."),
+        actionButton("open_scope_picker_btn","Change course / sections",class="btn btn-sm btn-outline-primary")
+      ),
       tutorial_note("How to configure the app", c(
         "Jobs: edit reusable templates, instructions, wages, timing, and posts for the selected class date.",
         "Job Market Controls: choose the class date and adjust allocation or bidding at any time.",
@@ -7558,6 +7867,8 @@ server <- function(input, output, session) {
       )
     )
   })
+
+  observeEvent(input$open_scope_picker_btn,{ updateTabsetPanel(session,"arc_tabs",selected="Live Tracker") })
 
   output$olig_status_display <- renderUI({
     req(rv$is_admin)
@@ -8101,6 +8412,7 @@ server <- function(input, output, session) {
          ", if (hide_archived) "AND COALESCE(active,1)=1 " else "",
          "ORDER BY course, section, display_name;")),
         error = function(e) data.frame())
+      students <- scope_filter_rows(students)
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Student Roster"),
         checkboxInput("hide_archived_students_chk", "Hide archived students",
@@ -8252,7 +8564,7 @@ server <- function(input, output, session) {
           downloadButton("dl_extensions",           "Extension Purchases",  class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_reweight_requests",    "Reweight Requests",    class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_pubgood_contribs",     "Public Good Contribs", class = "btn btn-sm btn-outline-secondary"),
-          downloadButton("dl_flex_purchases",       "Flex Q Purchases",     class = "btn btn-sm btn-outline-secondary"),
+          downloadButton("dl_flex_purchases",       "Question Contributions",     class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_students",             "Students",             class = "btn btn-sm btn-outline-secondary")
         )
       )
@@ -8350,33 +8662,50 @@ server <- function(input, output, session) {
       )
 
     } else if (act == "flex_questions") {
+      scope_key <- current_scope_key()
+      scope_course <- scoped_course()
       fqs <- tryCatch(db_query(
-        "SELECT id, question_text, order_index, active, exam_tag FROM flex_questions ORDER BY order_index ASC, id ASC;"),
+        "SELECT fq.id, fq.question_text, fq.order_index, fq.active, fq.exam_tag, fq.course,
+                fqs.unlock_cost, fqs.unlocked_at, COALESCE(SUM(fqc.amount),0) AS funded
+         FROM flex_questions fq
+         LEFT JOIN flex_question_scope_state fqs
+           ON fqs.question_id=fq.id AND fqs.scope_key=?
+         LEFT JOIN flex_question_contributions fqc
+           ON fqc.question_id=fq.id AND fqc.scope_key=?
+         WHERE ?='' OR trim(COALESCE(fq.course,''))='' OR LOWER(fq.course)=LOWER(?)
+         GROUP BY fq.id
+         ORDER BY fq.order_index ASC, fq.id ASC;",
+        list(scope_key,scope_key,scope_course,scope_course)),
         error = function(e) data.frame())
-      cur_schedule <- tryCatch(get_setting("flex_cost_schedule", "2,4,6,8,10"),
-                               error = function(e) "2,4,6,8,10")
+      cur_schedule <- tryCatch(flex_cost_schedule_for_scope(),
+                               error=function(e)"2,4,6,8,10")
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Flex Questions"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "Students unlock questions in order by spending tokens. Questions are shown one at a time."),
+               sprintf("Question text is shared within %s; funding and reveals apply only to the selected section scope: %s.",
+                       if (nzchar(scope_course)) scope_course else "the selected class",
+                       paste(scoped_sections(), collapse=", "))),
 
         # Price schedule
         tags$h6(style = "font-weight:700;margin-top:.75rem;", "Price Schedule"),
         textInput("flex_cost_input", NULL, value = cur_schedule, width = "100%",
-                  placeholder = "e.g. 2,4,6,8,10  or  11+q^2"),
+                  placeholder = "e.g. 20,25,40,65  or  N*(1+(q/2)^2)"),
         tags$p(style = "color:#888;font-size:.82em;margin-top:-.4rem;",
-          tags$b("Table:"), " comma-separated costs in order (e.g. ", tags$code("2,4,6,8,10"),
-          ") — last value repeats beyond the list. ",
-          tags$b("Expression:"), " any arithmetic formula in ", tags$code("q"),
-          " where q = number of questions already owned (e.g. ", tags$code("11+q^2"), ")."),
+          tags$b("Table:"), " comma-separated scope-wide thresholds in order (e.g. ",
+          tags$code("20,25,40,65"), ") — the final step continues beyond the list. ",
+          tags$b("Expression:"), " arithmetic in ", tags$code("q"), " and ", tags$code("N"),
+          ", where q is the number already public and N is the active class size (e.g. ",
+          tags$code("N*(1+(q/2)^2)"), ")."),
         actionButton("save_flex_cost_btn", "Save schedule", class = "btn btn-sm btn-primary"),
         # Live preview of first 8 question costs
         {
           sched_preview <- parse_flex_cost(cur_schedule)
-          costs_preview <- sapply(1:8, function(i) question_cost_for_n(i, cur_schedule))
+          preview_n <- max(1L, flex_roster_size())
+          costs_preview <- sapply(1:8, function(i)
+            question_cost_for_n(i, cur_schedule, class_size=preview_n))
           tags$div(style = "margin-top:.6rem;",
             tags$p(style = "font-size:.82em;color:#555;margin-bottom:.2rem;font-weight:600;",
-                   "Preview (first 8 questions):"),
+                   sprintf("Preview for N = %d (first 8 questions):", preview_n)),
             div(style = "display:flex;gap:.4rem;flex-wrap:wrap;",
               lapply(seq_along(costs_preview), function(i)
                 div(style = "background:#f0f4f8;border-radius:5px;padding:.2rem .5rem;font-size:.82rem;text-align:center;min-width:3rem;",
@@ -8394,7 +8723,7 @@ server <- function(input, output, session) {
         if (nrow(fqs)) {
           tags$table(class = "table table-sm",
             tags$thead(tags$tr(
-              tags$th("#"), tags$th("Question"), tags$th("Exam"), tags$th("Active"), tags$th("")
+              tags$th("#"), tags$th("Question"), tags$th("Exam"), tags$th("Funding"), tags$th("Active"), tags$th("")
             )),
             tags$tbody(lapply(seq_len(nrow(fqs)), function(i) {
               r <- fqs[i, ]
@@ -8405,6 +8734,11 @@ server <- function(input, output, session) {
                         r$question_text %||% ""),
                 tags$td(style = "font-size:.82rem;color:#555;white-space:nowrap;",
                         r$exam_tag %||% "—"),
+                tags$td(style = "font-size:.82rem;white-space:nowrap;",
+                        if (!is.na(r$unlocked_at %||% NA)) "Public"
+                        else if (as.numeric(r$funded %||% 0) > 0)
+                          sprintf("%g / %g", as.numeric(r$funded), as.numeric(r$unlock_cost %||% 0))
+                        else "Locked"),
                 tags$td(if (is_active) "✓" else ""),
                 tags$td(
                   tags$button(
@@ -8454,22 +8788,24 @@ server <- function(input, output, session) {
         "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
         error = function(e) data.frame())
       grade_rows <- tryCatch(db_query(
-        "SELECT sg.user_id, u.display_name, u.section, sg.assignment_name,
+        "SELECT sg.user_id, u.display_name, u.course, u.section, sg.assignment_name,
                 sg.score, sg.max_score, sg.grade_pct, sg.week_tag
          FROM student_grades sg LEFT JOIN users u ON u.user_id=sg.user_id
          ORDER BY u.section, u.display_name, sg.assignment_name;"),
         error = function(e) data.frame())
+      grade_rows <- scope_filter_rows(grade_rows)
       rw_costs_str  <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
                                 error = function(e) "1:2,2:5,3:9,4:14,5:20")
       rw_max_pts_cur <- get_rw_max_points()
       sections_df <- tryCatch(db_query(
         "SELECT DISTINCT section FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND section IS NOT NULL AND section != '';"),
         error = function(e) data.frame())
-      sec_choices <- c("All sections" = "all", sort(sections_df$section %||% character(0)))
+      sec_choices <- c("Current selected scope"="current_scope","All sections (explicit)"="all",sort(sections_df$section %||% character(0)))
       grade_students <- tryCatch(db_query(
-        "SELECT user_id, display_name, section FROM users
+        "SELECT user_id,display_name,course,section FROM users
          WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
          ORDER BY section, display_name;"), error = function(e) data.frame())
+      grade_students <- scope_filter_rows(grade_students)
       grade_student_choices <- if (nrow(grade_students)) setNames(
         grade_students$user_id,
         sprintf("%s — %s%s",
@@ -8737,7 +9073,7 @@ server <- function(input, output, session) {
           tagList(
             # Downloads
             fluidRow(
-              column(4, selectInput("gb_template_section", "Section:", choices = sec_choices)),
+              column(4,selectInput("gb_template_section","Section:",choices=sec_choices,selected="current_scope")),
               column(8, tags$br(),
                 downloadButton("dl_gradebook_template", "Upload template",
                                class = "btn btn-sm btn-outline-secondary"),
@@ -8933,7 +9269,7 @@ server <- function(input, output, session) {
       )
 
     } else if (act == "game_controls") {
-      active <- isolate(arcade_poll())$active_game[1] %||% ""
+      active <- arcade_poll()$active_game[1] %||% ""
       s      <- isolate(olig_poll())$settings
       make_group <- function(type_id, heading) {
         gs <- Filter(function(g) g$type == type_id, GAMES)
@@ -8979,6 +9315,7 @@ server <- function(input, output, session) {
          WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
          GROUP BY u.user_id ORDER BY u.course, u.section, u.display_name;"),
         error = function(e) data.frame())
+      students <- scope_filter_rows(students)
       if (nrow(students)) {
         students$tokens_pending <- 0
         ja_cols <- tryCatch(db_query("PRAGMA table_info(job_assignments);")$name,
@@ -9006,7 +9343,7 @@ server <- function(input, output, session) {
       course_vals[is.na(course_vals)] <- ""
       section_vals[is.na(section_vals)] <- ""
       courses <- sort(unique_ci(course_vals))
-      scope_choices <- c("All classes" = "all")
+      scope_choices <- c("Current selected section scope"="current_scope","All classes (explicit)"="all")
       if (length(courses)) {
         scope_choices <- c(scope_choices,
                            setNames(paste0("course:", courses),
@@ -9082,7 +9419,7 @@ server <- function(input, output, session) {
                "Award or deduct tokens from all active students, one class, or one section at once."),
         div(class = "spend-form-box",
           fluidRow(
-            column(3, selectInput("bulk_section", "Apply to:", choices = scope_choices)),
+            column(3, selectInput("bulk_section", "Apply to:", choices=scope_choices,selected="current_scope")),
             column(2, numericInput("bulk_amount", "Amount (+/-):", value = 1, step = 1)),
             column(5, textInput("bulk_note", "Note:", placeholder = "e.g. class participation")),
             column(2, tags$br(),
@@ -9121,9 +9458,9 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Today Announcement"),
         tags$p(style = "color:#666;font-size:.88rem;",
-               "Shown near the top of every student's Today page. Save it blank to hide the announcement."),
+               "Shown near the top of Today for students in the selected section scope. Save it blank to hide the announcement."),
         textAreaInput("today_announcement_text", "Class announcement:",
-                      value = get_setting("today_announcement", ""), rows = 4, width = "100%",
+                      value = get_scoped_setting("today_announcement", ""), rows = 4, width = "100%",
                       placeholder = "e.g. Bring your worksheet to class today."),
         actionButton("save_today_announcement_btn", "Save announcement",
                      class = "btn btn-sm btn-primary")
@@ -9180,7 +9517,9 @@ server <- function(input, output, session) {
        JOIN users u ON u.user_id=ja.user_id
        JOIN job_posts jp ON jp.id=ja.job_post_id
        JOIN weekly_rounds wr ON wr.id=ja.round_id
-       ORDER BY wr.id DESC, u.display_name;"), error = function(e) data.frame()),
+       JOIN scope_rounds sr ON sr.round_id=ja.round_id
+       WHERE sr.scope_key=?
+       ORDER BY wr.id DESC,u.display_name;",list(current_scope_key())),error=function(e)data.frame()),
       file, row.names = FALSE)
   )
   output$dl_wage_bids <- downloadHandler(
@@ -9193,6 +9532,8 @@ server <- function(input, output, session) {
        JOIN job_posts jp ON jp.id=jwb.job_post_id
        LEFT JOIN job_categories jc ON jc.id=jp.category_id
        JOIN weekly_rounds wr ON wr.id=jwb.round_id
+       JOIN scope_rounds sr1 ON sr1.round_id=jwb.round_id
+       WHERE sr1.scope_key=?
        UNION ALL
        SELECT wr.label round, u.display_name student, '(legacy category bid)' job,
               jc.name category, wb.min_wage, wb.submitted_at
@@ -9200,26 +9541,31 @@ server <- function(input, output, session) {
        JOIN users u ON u.user_id=wb.user_id
        JOIN job_categories jc ON jc.id=wb.category_id
        JOIN weekly_rounds wr ON wr.id=wb.round_id
-       ORDER BY round DESC, student, job;"), error = function(e) data.frame()),
+       JOIN scope_rounds sr2 ON sr2.round_id=wb.round_id
+       WHERE sr2.scope_key=?
+       ORDER BY round DESC,student,job;",
+      list(current_scope_key(),current_scope_key())),error=function(e)data.frame()),
       file, row.names = FALSE)
   )
   output$dl_tokens <- downloadHandler(
-    filename = function() paste0("token_ledger_", Sys.Date(), ".csv"),
-    content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT tl.user_id, u.display_name, tl.amount, tl.earning,
-              tl.source_type, tl.note, tl.created_at
-       FROM token_ledger tl LEFT JOIN users u ON u.user_id=tl.user_id
-       ORDER BY tl.created_at DESC;"), error = function(e) data.frame()),
-      file, row.names = FALSE)
-  )
+    filename=function() paste0("token_ledger_",Sys.Date(),".csv"),
+    content=function(file){
+      rows <- tryCatch(db_query(
+        "SELECT tl.user_id,u.display_name,u.course,u.section,tl.amount,tl.earning,
+                tl.source_type,tl.note,tl.created_at
+         FROM token_ledger tl LEFT JOIN users u ON u.user_id=tl.user_id
+         ORDER BY tl.created_at DESC;"),error=function(e)data.frame())
+      write.csv(scope_filter_rows(rows),file,row.names=FALSE)
+    })
   output$dl_students <- downloadHandler(
-    filename = function() paste0("students_", Sys.Date(), ".csv"),
-    content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT user_id, display_name, section, COALESCE(active,1) AS active
-       FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0
-       ORDER BY section, display_name;"), error = function(e) data.frame()),
-      file, row.names = FALSE)
-  )
+    filename=function() paste0("students_",Sys.Date(),".csv"),
+    content=function(file){
+      rows <- tryCatch(db_query(
+        "SELECT user_id,display_name,course,section,COALESCE(active,1) active
+         FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0
+         ORDER BY section,display_name;"),error=function(e)data.frame())
+      write.csv(scope_filter_rows(rows),file,row.names=FALSE)
+    })
   output$dl_student_template <- downloadHandler(
     filename = function() "student_upload_template.csv",
     content  = function(file) write.csv(
@@ -9248,77 +9594,92 @@ server <- function(input, output, session) {
   )
   output$dl_participation_events <- downloadHandler(
     filename = function() paste0("participation_events_", Sys.Date(), ".csv"),
-    content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT pe.id, wr.label AS round, u.display_name AS student, pe.event_type,
-              pe.tokens, pe.note, pe.logged_by, pe.created_at
-       FROM participation_events pe
-       LEFT JOIN users u ON u.user_id=pe.user_id
-       LEFT JOIN weekly_rounds wr ON wr.id=pe.round_id
-       ORDER BY pe.created_at DESC;"), error = function(e) data.frame()),
-      file, row.names = FALSE)
+    content = function(file) {
+      rows <- tryCatch(db_query(
+        "SELECT pe.id, wr.label AS round, u.display_name AS student,
+                u.course,u.section,pe.event_type,pe.tokens,pe.note,
+                pe.logged_by,pe.created_at
+         FROM participation_events pe
+         LEFT JOIN users u ON u.user_id=pe.user_id
+         LEFT JOIN weekly_rounds wr ON wr.id=pe.round_id
+         ORDER BY pe.created_at DESC;"), error=function(e)data.frame())
+      write.csv(scope_filter_rows(rows),file,row.names=FALSE)
+    }
   )
   output$dl_extensions <- downloadHandler(
     filename = function() paste0("extensions_", Sys.Date(), ".csv"),
-    content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT ep.id, ep.user_id, ps.name AS problem_set, u.display_name AS student,
-              ps.cloudflare_assignment_id, ps.extension_target, ep.hours, ep.cost, ep.purchased_at,
-              ep.sync_status, ep.sync_error, ep.synced_at
-       FROM extension_purchases ep
-       LEFT JOIN users u ON u.user_id=ep.user_id
-       LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id
-       ORDER BY ep.purchased_at DESC;"), error = function(e) data.frame()),
-      file, row.names = FALSE)
+    content = function(file) {
+      rows <- tryCatch(db_query(
+        "SELECT ep.id,ep.user_id,ps.name AS problem_set,u.display_name AS student,
+                u.course,u.section,ps.cloudflare_assignment_id,ps.extension_target,
+                ep.hours,ep.cost,ep.purchased_at,ep.sync_status,ep.sync_error,ep.synced_at
+         FROM extension_purchases ep
+         LEFT JOIN users u ON u.user_id=ep.user_id
+         LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id
+         ORDER BY ep.purchased_at DESC;"), error=function(e)data.frame())
+      write.csv(scope_filter_rows(rows),file,row.names=FALSE)
+    }
   )
   output$dl_reweight_requests <- downloadHandler(
     filename = function() paste0("reweight_requests_", Sys.Date(), ".csv"),
-    content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT r.id, u.display_name AS student, COALESCE(r.level,'category') AS level,
-              r.from_category, r.to_category,
-              r.points, r.cost, r.status, r.created_at
-       FROM grade_reweight_requests r
-       LEFT JOIN users u ON u.user_id=r.user_id
-       ORDER BY r.created_at DESC;"), error = function(e) data.frame()),
-      file, row.names = FALSE)
+    content = function(file) {
+      rows <- tryCatch(db_query(
+        "SELECT r.id,u.display_name AS student,u.course,u.section,
+                COALESCE(r.level,'category') AS level,r.from_category,r.to_category,
+                r.points,r.cost,r.status,r.created_at
+         FROM grade_reweight_requests r
+         LEFT JOIN users u ON u.user_id=r.user_id
+         ORDER BY r.created_at DESC;"), error=function(e)data.frame())
+      write.csv(scope_filter_rows(rows),file,row.names=FALSE)
+    }
   )
   output$dl_pubgood_contribs <- downloadHandler(
     filename = function() paste0("pubgood_contributions_", Sys.Date(), ".csv"),
-    content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT pgc.id, pg.name AS public_good, u.display_name AS student,
-              pgc.amount, pgc.contributed_at
+    content = function(file) write.csv(tryCatch(db_query(
+      "SELECT pgc.id,pg.name AS public_good,u.display_name AS student,
+              u.course,u.section,pgc.scope_key,pgc.amount,pgc.contributed_at
        FROM public_good_contributions pgc
        LEFT JOIN users u ON u.user_id=pgc.user_id
        LEFT JOIN public_goods pg ON pg.id=pgc.public_good_id
-       ORDER BY pgc.contributed_at DESC;"), error = function(e) data.frame()),
-      file, row.names = FALSE)
+       WHERE pgc.scope_key=?
+       ORDER BY pgc.contributed_at DESC;",list(current_scope_key())),
+       error=function(e)data.frame()),file,row.names=FALSE)
   )
   output$dl_flex_purchases <- downloadHandler(
-    filename = function() paste0("flex_purchases_", Sys.Date(), ".csv"),
+    filename = function() paste0("flex_question_contributions_", Sys.Date(), ".csv"),
     content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT fp.id, u.display_name AS student, fq.order_index AS question_num,
-              fq.question_text, fp.tokens_spent, fp.purchased_at
-       FROM flex_purchases fp
-       LEFT JOIN users u ON u.user_id=fp.user_id
-       LEFT JOIN flex_questions fq ON fq.id=fp.question_id
-       ORDER BY fp.purchased_at DESC;"), error = function(e) data.frame()),
+      "SELECT fqc.id, fqc.scope_key, u.display_name AS student, fqc.user_id,
+              u.course,u.section,fq.order_index AS question_num,fq.question_text,
+              fqc.amount AS tokens_contributed,fqc.contributed_at,
+              fqs.unlock_cost,fqs.unlocked_at
+       FROM flex_question_contributions fqc
+       LEFT JOIN users u ON u.user_id=fqc.user_id
+       LEFT JOIN flex_questions fq ON fq.id=fqc.question_id
+       LEFT JOIN flex_question_scope_state fqs
+         ON fqs.question_id=fqc.question_id AND fqs.scope_key=fqc.scope_key
+       WHERE fqc.scope_key=?
+       ORDER BY fqc.contributed_at DESC;",list(current_scope_key())), error=function(e)data.frame()),
       file, row.names = FALSE)
   )
   output$dl_app_bids <- downloadHandler(
     filename = function() paste0("application_bids_", Sys.Date(), ".csv"),
-    content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT ab.id, wr.label AS round, jc.name AS category, u.display_name AS student,
-              ab.tickets, ab.submitted_at
+    content = function(file) write.csv(tryCatch(db_query(
+      "SELECT ab.id,wr.label AS round,jc.name AS category,u.display_name AS student,
+              u.course,u.section,ab.tickets,ab.submitted_at
        FROM application_bids ab
        LEFT JOIN users u ON u.user_id=ab.user_id
        LEFT JOIN job_categories jc ON jc.id=ab.category_id
        LEFT JOIN weekly_rounds wr ON wr.id=ab.round_id
-       ORDER BY wr.id DESC, u.display_name;"), error = function(e) data.frame()),
-      file, row.names = FALSE)
+       JOIN scope_rounds sr ON sr.round_id=ab.round_id
+       WHERE sr.scope_key=?
+       ORDER BY wr.id DESC,u.display_name;",list(current_scope_key())),
+       error=function(e)data.frame()),file,row.names=FALSE)
   )
 
   output$dl_gradebook_template <- downloadHandler(
     filename = function() paste0("gradebook_upload_template_", Sys.Date(), ".csv"),
     content  = function(file) {
-      sec <- isolate(input$gb_template_section %||% "all")
+      sec <- isolate(input$gb_template_section %||% "current_scope")
       cats <- tryCatch(db_query(
         "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
         error = function(e) data.frame())
@@ -9326,14 +9687,15 @@ server <- function(input, output, session) {
         "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
         error = function(e) data.frame())
       students <- tryCatch({
-        q <- "SELECT u.user_id, u.display_name, u.section
+        q <- "SELECT u.user_id,u.display_name,u.course,u.section
               FROM users u
               WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
                 AND COALESCE(u.is_demo,0)=0"
-        if (identical(sec, "all"))
-          db_query(paste0(q, " ORDER BY u.section, u.display_name;"))
-        else
-          db_query(paste0(q, " AND LOWER(u.section)=LOWER(?) ORDER BY u.section, u.display_name;"), list(sec))
+        if (identical(sec,"current_scope"))
+          scope_filter_rows(db_query(paste0(q," ORDER BY u.section,u.display_name;")))
+        else if (identical(sec,"all"))
+          db_query(paste0(q," ORDER BY u.section,u.display_name;"))
+        else db_query(paste0(q," AND LOWER(u.section)=LOWER(?) ORDER BY u.section,u.display_name;"),list(sec))
       }, error = function(e) data.frame())
 
       empty_template <- data.frame(
@@ -9381,7 +9743,7 @@ server <- function(input, output, session) {
   output$dl_gradebook_filled <- downloadHandler(
     filename = function() paste0("gradebook_filled_", Sys.Date(), ".csv"),
     content  = function(file) {
-      sec   <- isolate(input$gb_template_section %||% "all")
+      sec   <- isolate(input$gb_template_section %||% "current_scope")
       cats  <- tryCatch(db_query(
         "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
         error = function(e) data.frame())
@@ -9389,14 +9751,15 @@ server <- function(input, output, session) {
         "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
         error = function(e) data.frame())
       students <- tryCatch({
-        q_base <- "SELECT u.user_id, u.display_name, u.section,
+        q_base <- "SELECT u.user_id,u.display_name,u.course,u.section,
                           COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned
                    FROM users u LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
                    WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0"
-        if (identical(sec, "all"))
-          db_query(paste0(q_base, " GROUP BY u.user_id ORDER BY u.section, u.display_name;"))
-        else
-          db_query(paste0(q_base, " AND LOWER(u.section)=LOWER(?) GROUP BY u.user_id ORDER BY u.section, u.display_name;"), list(sec))
+        if (identical(sec,"current_scope"))
+          scope_filter_rows(db_query(paste0(q_base," GROUP BY u.user_id ORDER BY u.section,u.display_name;")))
+        else if (identical(sec,"all"))
+          db_query(paste0(q_base," GROUP BY u.user_id ORDER BY u.section,u.display_name;"))
+        else db_query(paste0(q_base," AND LOWER(u.section)=LOWER(?) GROUP BY u.user_id ORDER BY u.section,u.display_name;"),list(sec))
       }, error = function(e) data.frame())
       grade_rows_dl <- tryCatch(db_query(
         "SELECT sg.user_id, sg.assignment_name, sg.score, sg.max_score, sg.grade_pct, sg.week_tag
@@ -9689,7 +10052,7 @@ server <- function(input, output, session) {
       showNotification("Announcement must be 4,000 characters or fewer.", type = "error")
       return()
     }
-    set_setting("today_announcement", announcement)
+    set_scoped_setting("today_announcement",announcement)
     showNotification(
       if (nzchar(announcement)) "Announcement saved." else "Announcement cleared.",
       type = "message")
@@ -10111,14 +10474,21 @@ server <- function(input, output, session) {
   # ── Token Admin ───────────────────────────────────────────────────────────────
   observeEvent(input$bulk_award_btn, {
     req(rv$is_admin, !rv$impersonating)
-    scope <- input$bulk_section %||% "all"
+    scope <- input$bulk_section %||% "current_scope"
     amount  <- suppressWarnings(as.numeric(input$bulk_amount %||% 0))
     note    <- trimws(input$bulk_note %||% "")
     if (is.na(amount) || amount == 0) {
       showNotification("Enter a non-zero amount.", type = "error"); return()
     }
     scope_label <- "all classes"
-    targets <- if (identical(scope, "all")) {
+    targets <- if (identical(scope,"current_scope")) {
+      scope_label <- paste(c(scoped_course(),scoped_sections()),collapse=" / ")
+      rows <- tryCatch(db_query(
+        "SELECT user_id,display_name,course,section FROM users
+         WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;"),
+        error=function(e)data.frame())
+      scope_filter_rows(rows)
+    } else if (identical(scope, "all")) {
       tryCatch(db_query(
         "SELECT user_id, display_name FROM users
          WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;"),
@@ -10431,24 +10801,11 @@ server <- function(input, output, session) {
     target_rid <- assignment_round_for_timing(rid, timing_filter)
     target_label <- round$label[1] %||% paste("Round", rid)
 
-    sec_filter <- rv$active_section %||% ""
-    students <- tryCatch(
-      if (nzchar(sec_filter))
-        db_query(
-          "SELECT user_id, course, section FROM users
-           WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1
-             AND COALESCE(is_demo,0)=0 AND LOWER(section)=LOWER(?)
-           ORDER BY RANDOM();", list(sec_filter))
-      else
-        db_query(
-          "SELECT user_id, course, section FROM users
-           WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
-           ORDER BY RANDOM();"),
-      error = function(e) data.frame())
-    course_filter <- rv$active_course %||% ""
-    if (nzchar(course_filter) && nrow(students) && "course" %in% names(students)) {
-      students <- students[!is.na(students$course) & norm_key(students$course) == norm_key(course_filter), , drop = FALSE]
-    }
+    students <- tryCatch(db_query(
+      "SELECT user_id,course,section FROM users
+       WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
+       ORDER BY RANDOM();"), error=function(e)data.frame())
+    students <- scope_filter_rows(students)
     if (!nrow(students)) { showNotification("No eligible students found.", type = "error"); return() }
     if (exclude_existing_assignments_for_timing(timing_filter, allow_multiple)) {
       already <- tryCatch(db_query(
@@ -10520,24 +10877,11 @@ server <- function(input, output, session) {
     if (!nrow(posts)) {
       showNotification("No active job posts marked 'In Draw' for this class date.", type = "error"); return()
     }
-    sec_filter2 <- rv$active_section %||% ""
-    students <- tryCatch(
-      if (nzchar(sec_filter2))
-        db_query(
-          "SELECT user_id, course, section FROM users
-           WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1
-             AND COALESCE(is_demo,0)=0 AND LOWER(section)=LOWER(?)
-           ORDER BY RANDOM();", list(sec_filter2))
-      else
-        db_query(
-          "SELECT user_id, course, section FROM users
-           WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
-           ORDER BY RANDOM();"),
-      error = function(e) data.frame())
-    course_filter2 <- rv$active_course %||% ""
-    if (nzchar(course_filter2) && nrow(students) && "course" %in% names(students)) {
-      students <- students[!is.na(students$course) & norm_key(students$course) == norm_key(course_filter2), , drop = FALSE]
-    }
+    students <- tryCatch(db_query(
+      "SELECT user_id,course,section FROM users
+       WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
+       ORDER BY RANDOM();"), error=function(e)data.frame())
+    students <- scope_filter_rows(students)
     if (!nrow(students)) {
       showNotification("No eligible students found.", type = "error"); return()
     }
@@ -10566,52 +10910,34 @@ server <- function(input, output, session) {
   # ── Reveal toggle ─────────────────────────────────────────────────────────────
   observeEvent(input$toggle_section_reveal_btn, {
     req(rv$is_admin)
-    sec <- trimws(rv$active_section %||% "")
-    if (!nzchar(sec)) {
-      sections <- live_section_values(rv$active_course %||% "")
-      if (!length(sections)) {
-        showNotification("No non-demo class sections are available.", type = "warning")
-        return()
-      }
-      showModal(modalDialog(
-        title = "Choose a section",
-        selectInput("reveal_section_prompt", "Reveal jobs for:",
-                    choices = setNames(sections, sections), selected = sections[1]),
-        footer = tagList(modalButton("Cancel"), actionButton("choose_reveal_section_btn", "Select & reveal", class = "btn-primary")),
-        easyClose = TRUE
-      ))
-      return()
+    sections <- scoped_sections()
+    if (!length(sections)) {
+      showNotification("Choose at least one section first.",type="warning");return()
     }
-    rid_row <- tryCatch(active_round_row(),
-                        error=function(e) data.frame())
-    if (!nrow(rid_row)) { showNotification("No selected class date.", type = "error"); return() }
+    rid_row <- tryCatch(active_round_row(),error=function(e)data.frame())
+    if (!nrow(rid_row)) {showNotification("No selected class date.",type="error");return()}
     scope <- input$section_reveal_timing %||% "start"
     timings <- reveal_timings_for_scope(scope)
     cur <- tryCatch(db_query(
-      "SELECT COALESCE(timing,'start') timing, COALESCE(revealed,0) v
-       FROM assignment_timing_reveals
-       WHERE round_id=? AND LOWER(section)=LOWER(?);",
-      list(rid_row$id[1], sec)), error=function(e) data.frame())
-    currently_on <- if (!nrow(cur)) FALSE else
-      all(timings %in% as.character(cur$timing[as.integer(cur$v %||% 0L) == 1L]))
-    new_val <- if (currently_on) 0L else 1L
-    for (timing in timings) {
-      db_exec(
-        "INSERT INTO assignment_timing_reveals(round_id, section, revealed, timing, updated_at)
-         VALUES(?,?,?,?,CURRENT_TIMESTAMP)
-         ON CONFLICT(round_id, section, timing)
-         DO UPDATE SET revealed=excluded.revealed,
-                       updated_at=CURRENT_TIMESTAMP;",
-        list(rid_row$id[1], sec, new_val, timing))
-    }
-    # Retire the old global override so section/timing rows are authoritative.
-    db_exec("UPDATE arcade_state SET assignments_revealed=0, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-    scope_label <- switch(scope, end = "end of class", all = "all assignments", "start of class")
-    showNotification(
-      sprintf("%s assignments %s (%s).", sec, if (new_val == 1L) "revealed" else "hidden",
-              scope_label),
-      type = "message")
-  }, ignoreNULL = TRUE)
+      "SELECT section,COALESCE(timing,'start') timing,COALESCE(revealed,0) v
+       FROM assignment_timing_reveals WHERE round_id=?;",
+      list(rid_row$id[1])),error=function(e)data.frame())
+    section_on <- vapply(sections,function(sec){
+      rows <- cur[!is.na(cur$section)&norm_key(cur$section)==norm_key(sec),,drop=FALSE]
+      all(timings %in% as.character(rows$timing[as.integer(rows$v %||% 0L)==1L]))
+    },logical(1))
+    new_val <- if(all(section_on)) 0L else 1L
+    for(sec in sections) for(timing in timings) db_exec(
+      "INSERT INTO assignment_timing_reveals(round_id,section,revealed,timing,updated_at)
+       VALUES(?,?,?,?,CURRENT_TIMESTAMP)
+       ON CONFLICT(round_id,section,timing) DO UPDATE SET
+         revealed=excluded.revealed,updated_at=CURRENT_TIMESTAMP;",
+      list(rid_row$id[1],sec,new_val,timing))
+    db_exec("UPDATE arcade_state SET assignments_revealed=0,updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    scope_label <- switch(scope,end="end of class",all="all assignments","start of class")
+    showNotification(sprintf("%s %s (%s).",paste(sections,collapse=", "),
+      if(new_val==1L)"revealed" else "hidden",scope_label),type="message")
+  }, ignoreNULL=TRUE)
   observeEvent(input$choose_reveal_section_btn, {
     req(rv$is_admin)
     sec <- trimws(input$reveal_section_prompt %||% "")
