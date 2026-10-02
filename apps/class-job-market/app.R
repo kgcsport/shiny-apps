@@ -1599,6 +1599,28 @@ previous_round_id <- function(current_round_id, query_fn = db_query) {
   if (nrow(row) && !is.na(row$id[1] %||% NA)) as.integer(row$id[1]) else NA_integer_
 }
 
+overdue_pending_jobs <- function(query_fn = db_query) {
+  tryCatch(query_fn(
+    "SELECT ja.round_id, ja.user_id, u.display_name, u.course, u.section, jp.job_name,
+            COALESCE(jp.description,'') AS description,
+            COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time,
+            COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''), substr(ja.created_at,1,10)) AS job_date
+     FROM job_assignments ja
+     JOIN users u ON u.user_id=ja.user_id
+     JOIN job_posts jp ON jp.id=ja.job_post_id
+     LEFT JOIN job_categories jc ON jc.id=jp.category_id
+     JOIN weekly_rounds wr ON wr.id=ja.round_id
+     WHERE date(COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''), substr(ja.created_at,1,10)))
+               < date('now','localtime')
+       AND COALESCE(ja.status,'assigned')='assigned'
+       AND COALESCE(ja.outcome,'')=''
+       AND COALESCE(jp.voluntary,COALESCE(jc.voluntary,0),0)=0
+       AND LOWER(COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start'))<>'volunteer'
+       AND NOT EXISTS (SELECT 1 FROM live_score_events lse WHERE lse.job_assignment_id=ja.id)
+     ORDER BY job_date, u.course, u.section, jp.display_order, u.display_name;"),
+    error = function(e) data.frame())
+}
+
 APP_NAME <- get_config("app_name", "Classroom Economy")
 
 # ── Game catalog ──────────────────────────────────────────────────────────────
@@ -2606,10 +2628,7 @@ server <- function(input, output, session) {
         tryCatch(db_query(sprintf(
           "SELECT ja.id, ja.user_id, u.display_name, u.course, u.section, jp.job_name,
                   COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time,
-                  CASE WHEN ja.assignment_mode='wage_bidding' AND ja.assigned_wage IS NOT NULL
-                       THEN ja.assigned_wage
-                       ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
-                  END AS assigned_wage,
+                  COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS assigned_wage,
                   %s AS outcome,
                   %s AS tokens_awarded,
                   %s AS pending_outcome,
@@ -2733,15 +2752,11 @@ server <- function(input, output, session) {
 
       if (!nrow(round)) return(empty)
       rid <- round$id[1]
-      last_class_rid <- previous_round_id(rid)
       assignment_rid <- rid
 
       my_assign <- tryCatch(db_query(
         "SELECT jp.job_name,
-                CASE WHEN ja.assignment_mode='wage_bidding' AND ja.assigned_wage IS NOT NULL THEN ja.assigned_wage
-                     WHEN COALESCE(ja.outcome,'')<>'' THEN ja.assigned_wage
-                     ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
-                END AS assigned_wage,
+                COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS assigned_wage,
                 wr.label AS round_label,
                 COALESCE(jp.description,'') AS description,
                 COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time
@@ -2753,7 +2768,7 @@ server <- function(input, output, session) {
             AND COALESCE(ja.status,'assigned')='assigned'
             AND COALESCE(ja.outcome,'')=''
             AND COALESCE(ja.display_on_today,1)=1
-            AND (COALESCE(ja.scheduled_date,'')='' OR ja.scheduled_date=date('now','localtime'))
+            AND (COALESCE(ja.scheduled_date,'')='' OR ja.scheduled_date=wr.class_date)
             AND NOT EXISTS (
               SELECT 1 FROM live_score_events lse
               WHERE lse.job_assignment_id=ja.id
@@ -2764,20 +2779,18 @@ server <- function(input, output, session) {
       all_assign <- tryCatch(db_query(
         "SELECT ja.user_id, u.display_name, u.course, u.section, jp.job_name,
                 COALESCE(jp.description,'') AS description,
-                CASE WHEN ja.assignment_mode='wage_bidding' AND ja.assigned_wage IS NOT NULL THEN ja.assigned_wage
-                     WHEN COALESCE(ja.outcome,'')<>'' THEN ja.assigned_wage
-                     ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
-                END AS assigned_wage,
+                COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS assigned_wage,
                 COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time
          FROM job_assignments ja
          JOIN users u ON u.user_id=ja.user_id
          JOIN job_posts jp ON jp.id=ja.job_post_id
          LEFT JOIN job_categories jc ON jc.id=jp.category_id
+         JOIN weekly_rounds wr ON wr.id=ja.round_id
          WHERE ja.round_id=?
            AND COALESCE(ja.status,'assigned')='assigned'
            AND COALESCE(ja.outcome,'')=''
            AND COALESCE(ja.display_on_today,1)=1
-           AND (COALESCE(ja.scheduled_date,'')='' OR ja.scheduled_date=date('now','localtime'))
+           AND (COALESCE(ja.scheduled_date,'')='' OR ja.scheduled_date=wr.class_date)
            AND NOT EXISTS (
              SELECT 1 FROM live_score_events lse
              WHERE lse.job_assignment_id=ja.id
@@ -2792,29 +2805,11 @@ server <- function(input, output, session) {
          WHERE round_id=?;",
         list(assignment_rid)), error = function(e) data.frame())
 
-      last_class_assign <- if (!is.na(last_class_rid)) tryCatch(db_query(
-        "SELECT ja.user_id, u.display_name, u.course, u.section, jp.job_name,
-                COALESCE(jp.description,\"\") AS description,
-                COALESCE(NULLIF(jp.selection_time,\"\"), NULLIF(jc.selection_time,\"\"), \"start\") AS selection_time,
-                wr.label AS round_label
-         FROM job_assignments ja
-         JOIN users u ON u.user_id=ja.user_id
-         JOIN job_posts jp ON jp.id=ja.job_post_id
-         LEFT JOIN job_categories jc ON jc.id=jp.category_id
-         JOIN weekly_rounds wr ON wr.id=ja.round_id
-         WHERE ja.round_id=?
-           AND COALESCE(ja.status,\"assigned\")=\"assigned\"
-           AND COALESCE(ja.outcome,\"\")=\"\"
-           AND COALESCE(ja.display_on_today,1)=1
-           AND COALESCE(jp.voluntary,COALESCE(jc.voluntary,0),0)=0
-           AND LOWER(COALESCE(NULLIF(jp.selection_time,\"\"), NULLIF(jc.selection_time,\"\"), \"start\"))<>\"volunteer\"
-           AND NOT EXISTS (SELECT 1 FROM live_score_events lse WHERE lse.job_assignment_id=ja.id)
-         ORDER BY u.course, u.section, jp.display_order, u.display_name;",
-        list(last_class_rid)), error = function(e) data.frame()) else data.frame()
-      last_class_reveals <- if (!is.na(last_class_rid)) tryCatch(db_query(
-        "SELECT section, COALESCE(timing,\"start\") AS timing, COALESCE(revealed,0) AS revealed
-         FROM assignment_timing_reveals WHERE round_id=?;",
-        list(last_class_rid)), error = function(e) data.frame()) else data.frame()
+      last_class_assign <- overdue_pending_jobs()
+      last_class_reveals <- tryCatch(db_query(
+        "SELECT round_id, section, COALESCE(timing,'start') AS timing, COALESCE(revealed,0) AS revealed
+         FROM assignment_timing_reveals WHERE COALESCE(revealed,0)=1;"),
+        error = function(e) data.frame())
 
       # Every category with an active post is biddable — including volunteer
       # and cold-call categories, so wage bidding can cover them when it goes
@@ -2848,7 +2843,7 @@ server <- function(input, output, session) {
            WHERE COALESCE(ja2.status,'assigned')='assigned'
              AND COALESCE(ja2.outcome,'')=''
              AND COALESCE(ja2.display_on_today,1)=1
-             AND (COALESCE(ja2.scheduled_date,'')='' OR ja2.scheduled_date=date('now','localtime'))
+             AND (COALESCE(ja2.scheduled_date,'')='' OR ja2.scheduled_date=(SELECT class_date FROM weekly_rounds WHERE id=?))
              AND NOT EXISTS (
                SELECT 1 FROM live_score_events lse2
                WHERE lse2.job_assignment_id=ja2.id
@@ -2858,7 +2853,7 @@ server <- function(input, output, session) {
         WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
           AND COALESCE(jp.in_draw, COALESCE(jc.in_draw,1), 1)=1
          ORDER BY jp.display_order, jp.job_name;",
-        list(rid)), error = function(e) data.frame())
+        list(rid, rid)), error = function(e) data.frame())
 
       # Wage bids are per individual active post, including voluntary and
       # during-class jobs. A legacy category bid pre-fills posts until the
@@ -3072,7 +3067,8 @@ server <- function(input, output, session) {
         sr_timing <- ifelse(
           norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
           "end", "start")
-        any(!is.na(sr$section) &
+        any(as.integer(sr$round_id %||% NA_integer_) == as.integer(last_class_jobs$round_id[i]) &
+            !is.na(sr$section) &
             norm_key(sr$section) == norm_key(last_class_jobs$section[i]) &
             sr_timing == last_class_jobs$reveal_timing[i] &
             as.integer(sr$revealed %||% 0L) == 1L)
@@ -3123,18 +3119,18 @@ server <- function(input, output, session) {
       div(class = "sec-label", "Last Class Jobs Still Pending"),
       if (!nrow(last_class_jobs)) {
         div(class = "today-card", style = "color:#888;font-style:italic;",
-            "No non-volunteer jobs from the last class are still pending.")
+            "No non-volunteer jobs from past class dates are still pending.")
       } else {
         div(class = "today-card tracker-wrap",
           tags$table(class = "table table-sm table-hover", style = "margin-bottom:0;",
-            tags$thead(tags$tr(tags$th("Student"), tags$th("Job"), tags$th("Round"))),
+            tags$thead(tags$tr(tags$th("Student"), tags$th("Job"), tags$th("Class date"))),
             tags$tbody(lapply(seq_len(nrow(last_class_jobs)), function(i) {
               r <- last_class_jobs[i, ]
               tags$tr(
                 tags$td(r$display_name %||% r$user_id),
                 tags$td(r$job_name %||% "",
                         job_description_details(r$description, "Instructions")),
-                tags$td(r$round_label %||% "Previous class")
+                tags$td(format(as.Date(r$job_date), "%B %d, %Y"))
               )
             }))
           )
@@ -5472,10 +5468,7 @@ server <- function(input, output, session) {
       cur <- tryCatch(db_query(
         "SELECT COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
                 COALESCE(ja.outcome,'') AS outcome,
-                CASE WHEN ja.assignment_mode='wage_bidding' AND ja.assigned_wage IS NOT NULL
-                     THEN ja.assigned_wage
-                     ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
-                END AS current_wage
+                COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS current_wage
          FROM job_assignments ja
          JOIN job_posts jp ON jp.id=ja.job_post_id
          LEFT JOIN job_categories jc ON jc.id=jp.category_id
@@ -5662,10 +5655,9 @@ server <- function(input, output, session) {
     rid <- as.integer(round$id[1])
     uid <- trimws(input$manual_assign_uid %||% "")
     post_id <- suppressWarnings(as.integer(input$manual_assign_post_id %||% 0))
-    scheduled_date <- tryCatch(as.character(as.Date(input$manual_assign_date)),
-                               error = function(e) as.character(Sys.Date()))
-    if (!nzchar(scheduled_date %||% "")) scheduled_date <- as.character(Sys.Date())
-    display_today <- as.integer(isTRUE(input$manual_assign_show_today))
+    scheduled_date <- as.character(suppressWarnings(as.Date(round$class_date[1] %||% NA)))
+    if (is.na(scheduled_date) || !nzchar(scheduled_date)) scheduled_date <- as.character(Sys.Date())
+    display_today <- 1L
     if (!nzchar(uid) || is.na(post_id) || post_id <= 0) {
       showNotification("Pick a student and job first.", type = "warning")
       return()
@@ -5717,12 +5709,12 @@ server <- function(input, output, session) {
            if (is.na(post$wage[1] %||% NA)) NA_real_ else as.numeric(post$wage[1]),
            round$assignment_mode[1] %||% "manual",
            scheduled_date, display_today))
+    rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification(
-      sprintf("Added %s back to %s for %s%s.",
+      sprintf("Added %s back to %s for the %s class. It now appears in that date's assignment and job-pool counts.",
               stu$display_name[1] %||% uid,
               post$job_name[1] %||% "the job",
-              scheduled_date,
-              if (display_today == 1L) " (shown in Today when current)" else " (kept out of Today)"),
+              scheduled_date),
       type = "message")
   }, ignoreNULL = TRUE)
 
@@ -7084,16 +7076,9 @@ server <- function(input, output, session) {
                                       class = "btn btn-sm btn-primary",
                                       title = "Add this assignment back"))
                 ),
-                fluidRow(
-                  column(4, dateInput("manual_assign_date", "Date job belongs to:",
-                                      value = Sys.Date(), width = "100%")),
-                  column(8, tags$br(),
-                         checkboxInput("manual_assign_show_today",
-                                       "Show in Today when this date is current",
-                                       value = FALSE))
-                ),
-                tags$p(style = "font-size:.78rem;color:#888;margin:.15rem 0 0;",
-                       "Add Back is hidden from Today by default, which is useful for historical corrections.")
+                tags$p(style = "font-size:.78rem;color:#888;margin:.35rem 0 0;",
+                       sprintf("This restores the assignment to the selected class date (%s), just like an in-class selection.",
+                               format(as.Date(round$class_date[1] %||% Sys.Date()), "%B %d, %Y")))
               )
             }
           )}
@@ -9722,10 +9707,7 @@ server <- function(input, output, session) {
     }
     row <- db_query(
       "SELECT ja.user_id, u.display_name,
-              CASE WHEN ja.assignment_mode='wage_bidding' AND ja.assigned_wage IS NOT NULL
-                     THEN ja.assigned_wage
-                     ELSE COALESCE(jp.wage_override, jc.default_wage, ja.assigned_wage, 0)
-                END AS current_wage,
+              COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS current_wage,
               COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
               COALESCE(ja.outcome,'') AS outcome,
               ja.round_id

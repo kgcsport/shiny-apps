@@ -136,7 +136,9 @@ Live Tracker → Job Assignments:
 
 - Draw filter: All timings / Start of class / During class (cold call) / End-post class.
 - The **All timings** draw clears and redraws the full assigned-job round but **excludes `during` posts**. Each lecture can allow multiple distinct regular jobs per student or limit each student to one, in which case the editable job clearing order determines which post gets first claim. Live cold calls and voluntary contributions are independent, repeatable score events and may stack with assigned jobs or each other.
-- In `wage_bidding` mode, draws take the cheapest bids per category. Each lecture can pay winners their own bids or use uniform reverse-second-price pricing, where every winner on a post receives the next losing bid (with the posted wage as the no-loser fallback). Tie-breaks follow the round's method.
+- In `wage_bidding` mode, draws take the cheapest bids per category. Each class date can pay winners their own bids or use uniform reverse-second-price pricing, where every winner on a post receives the next losing bid (with the posted wage as the no-loser fallback).
+- In `random` and `application_bidding` modes, every assignment snapshots the post's configured default wage when selected. A completed job pays that fixed amount, a genuine try pays 1 token, and a miss pays 0. Clearing wages never leak into these modes.
+- **Add Assignment Back** is a repair for an accidental removal: it restores a normal assignment on the selected class date, snapshots the post wage, appears in that date's assignment and Today job-pool counts, and ages into the overdue table normally.
 
 ### Volunteer clearing wage
 
@@ -192,10 +194,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
   lecture, while creating a new lecture makes it active automatically.
 
 
-- **2026-09-28** — Keep Today on the newest configured round and show
-  unfinished non-volunteer assignments from the immediately preceding round in a
-  separate reveal-aware **Last Class Jobs Still Pending** section. Live Tracker
-  may continue using that prior assignment round until its work is resolved.
+- **2026-10-02** — Treat every revealed, unfinished, non-volunteer assignment whose indexed class date is before today as overdue. Today shows the full reveal-aware backlog in **Last Class Jobs Still Pending**, sorted by and labeled with its original class date; it is no longer limited to one preceding session.
 
 - **2026-09-28** — Store wage bids per individual active job post, including
   regular class roles, volunteer jobs, and cold-call jobs. Retain old
@@ -387,6 +386,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-10-02** (Codex) - Made assignment-time wages authoritative in random and point-allocation modes, keeping clearing prices exclusive to wage bidding. Changed Add Assignment Back into a normal selected-date repair that always refreshes Today and job-pool counts. Expanded Last Class Jobs Still Pending from one prior session to every revealed overdue assignment and added its indexed class date to the table.
 
 - **2026-10-01** (Codex) - Connected extension purchases to the generic
   Cloudflare assignment API. Added per-problem-set Cloudflare assignment and
@@ -675,5 +676,4 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Questions for Kyle
 
-- In `application_bidding` (point-bid) rounds, volunteers currently earn the post's default wage — clearing wages only apply under wage bidding. Intended until wage bidding starts, or should point bids also price volunteering somehow?
 - Should students see the posted demand k itself, or only the implied wage (current behavior)?

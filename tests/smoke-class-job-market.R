@@ -21,7 +21,7 @@ app <- parse("apps/class-job-market/app.R")
 # Pull the definitions we need out of app.R without running the whole app
 wanted <- c("seed_class_job_defaults", "get_setting", "bid_lock_status",
             "volunteer_clearing_wage", "class_wage_snapshot", "freeze_class_wages",
-            "close_bidding_after_draw", "assignment_round_for_timing",
+            "close_bidding_after_draw", "overdue_pending_jobs", "assignment_round_for_timing",
             "reveal_timings_for_scope", "round_bid_datetime_value",
             "round_bid_window_values", "round_bid_window_status",
             "validate_ticket_allocation", "order_job_posts_for_clearing",
@@ -74,6 +74,10 @@ point_bids <- data.frame(user_id=c("s01-a","s01-b","s02-outsider"),
 point_pairs <- compute_application_pairs(point_posts, point_students, point_bids)
 stopifnot(length(point_pairs) == 2L)
 stopifnot(all(vapply(point_pairs, function(x) x[["uid"]], character(1)) %in% point_students$user_id))
+stopifnot(all(vapply(point_pairs, function(x) {
+  expected <- point_posts$wage[match(x$post_id, point_posts$id)]
+  identical(as.numeric(x$wage), as.numeric(expected))
+}, logical(1))))
 
 point_multi_posts <- data.frame(id=c(2L,1L), category_id=c(2L,1L), slots=c(1L,1L),
                                 wage=c(3,2), display_order=c(2L,1L))
@@ -257,5 +261,29 @@ set_setting("bid_lock_enabled", "1")
 close_bidding_after_draw(rid, as.POSIXct("2026-09-30 12:00:00", tz="America/New_York"))
 stopifnot(db_query("SELECT bidding_enabled FROM weekly_rounds WHERE id=?;", list(rid))$bidding_enabled[1] == 2)
 stopifnot(nzchar(get_setting("bid_draw_locked_until", "")))
+
+# Every unfinished non-volunteer assignment from a past indexed class date is
+# returned, rather than only assignments from the immediately previous row.
+db_exec("INSERT OR IGNORE INTO users(user_id,display_name,course,section,active,is_admin,is_demo)
+         VALUES('overdue-student','Overdue Student','TEST','S01',1,0,0);")
+class_cat <- db_query("SELECT id FROM job_categories WHERE name='Class roles' LIMIT 1;")$id[1]
+overdue_dates <- c("2000-01-01", "2001-01-01")
+for (d in overdue_dates) {
+  db_exec("INSERT INTO weekly_rounds(label,class_date,assignment_mode) VALUES(?,?,'random');",
+          list(paste("Past", d), d))
+  old_rid <- db_query("SELECT last_insert_rowid() id;")$id[1]
+  db_exec("INSERT INTO job_posts(round_id,job_name,category_id,slots,wage_override,active,in_draw,selection_time)
+           VALUES(?, ?, ?, 1, 3, 1, 1, 'start');",
+          list(old_rid, paste("Past job", d), class_cat))
+  old_pid <- db_query("SELECT last_insert_rowid() id;")$id[1]
+  db_exec("INSERT INTO job_assignments(round_id,user_id,job_post_id,assigned_wage,assignment_mode,
+                                        status,outcome,scheduled_date,display_on_today)
+           VALUES(?, 'overdue-student', ?, 3, 'random', 'assigned', '', ?, 1);",
+          list(old_rid, old_pid, d))
+}
+overdue_rows <- overdue_pending_jobs(query_fn=db_query)
+overdue_rows <- overdue_rows[overdue_rows$user_id == "overdue-student", , drop=FALSE]
+stopifnot(nrow(overdue_rows) == 2L)
+stopifnot(identical(as.character(overdue_rows$job_date), overdue_dates))
 
 cat("\nALL SMOKE TESTS PASSED\n")
