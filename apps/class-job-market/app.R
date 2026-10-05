@@ -1684,7 +1684,8 @@ previous_round_id <- function(current_round_id, query_fn = db_query) {
 
 overdue_pending_jobs <- function(query_fn = db_query) {
   tryCatch(query_fn(
-    "SELECT ja.round_id, ja.user_id, u.display_name, u.course, u.section, jp.job_name,
+    "SELECT ja.id AS assignment_id, ja.round_id, ja.user_id, ja.job_post_id,
+            ja.assigned_wage, u.display_name, u.course, u.section, jp.job_name,
             COALESCE(jp.description,'') AS description,
             COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time,
             COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''), substr(ja.created_at,1,10)) AS job_date
@@ -3445,7 +3446,11 @@ server <- function(input, output, session) {
                   actionButton(paste0("grade_pending_", as.integer(r$round_id), "_", as.integer(i)),
                                "Grade →", class = "btn btn-xs btn-outline-primary",
                                onclick = sprintf("Shiny.setInputValue('grade_pending_round_btn',{round_id:%d},{priority:'event'});",
-                                                 as.integer(r$round_id)))
+                                                 as.integer(r$round_id))),
+                  actionButton(paste0("edit_pending_", as.integer(r$assignment_id), "_", as.integer(i)),
+                               "Edit →", class = "btn btn-xs btn-outline-secondary",
+                               onclick = sprintf("Shiny.setInputValue('edit_pending_assignment_btn',{assignment_id:%d},{priority:'event'});",
+                                                 as.integer(r$assignment_id)))
                 )
               )
             }))
@@ -3563,6 +3568,59 @@ server <- function(input, output, session) {
     updateTabsetPanel(session, "arc_tabs", selected = "Live Tracker")
     showNotification("Selected the pending class date. Grade it in Live Tracker.", type = "message")
   }, ignoreNULL = TRUE)
+
+  observeEvent(input$edit_pending_assignment_btn, {
+    req(rv$is_admin)
+    aid <- suppressWarnings(as.integer(input$edit_pending_assignment_btn$assignment_id %||% NA))
+    if (is.na(aid)) return()
+    row <- tryCatch(db_query(
+      "SELECT ja.id, ja.round_id, ja.user_id, ja.job_post_id, ja.assigned_wage,
+              COALESCE(NULLIF(ja.scheduled_date,''),wr.class_date,date('now','localtime')) AS scheduled_date,
+              wr.label, u.display_name, u.course, u.section
+       FROM job_assignments ja JOIN weekly_rounds wr ON wr.id=ja.round_id
+       JOIN users u ON u.user_id=ja.user_id WHERE ja.id=? LIMIT 1;", list(aid)),
+      error=function(e)data.frame())
+    if (!nrow(row)) { showNotification("That pending assignment no longer exists.", type="error"); return() }
+    students <- scope_filter_rows(tryCatch(db_query(
+      "SELECT user_id,display_name,section FROM users WHERE COALESCE(active,1)=1
+       AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0 ORDER BY display_name;"),
+      error=function(e)data.frame()))
+    posts <- tryCatch(db_query(
+      "SELECT jp.id,jp.job_name,COALESCE(jp.wage_override,jc.default_wage,0) wage
+       FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
+       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 ORDER BY jp.display_order,jp.job_name;",
+      list(row$round_id[1])), error=function(e)data.frame())
+    stu_choices <- setNames(students$user_id, students$display_name)
+    post_choices <- setNames(posts$id, posts$job_name)
+    showModal(modalDialog(
+      title = paste("Edit pending job —", row$display_name[1] %||% row$user_id[1]),
+      selectInput("edit_pending_uid", "Student:", choices=stu_choices, selected=row$user_id[1]),
+      selectInput("edit_pending_post", "Job:", choices=post_choices, selected=row$job_post_id[1]),
+      dateInput("edit_pending_date", "Class date:", value=as.Date(row$scheduled_date[1])),
+      numericInput("edit_pending_wage", "Wage:", value=as.numeric(row$assigned_wage[1]), min=0, step=1),
+      footer=tagList(modalButton("Cancel"), actionButton("save_pending_edit_btn", "Save changes", class="btn-primary")),
+      easyClose=TRUE
+    ))
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$save_pending_edit_btn, {
+    req(rv$is_admin)
+    aid <- isolate(suppressWarnings(as.integer(input$edit_pending_assignment_btn$assignment_id %||% NA)))
+    if (is.na(aid)) { removeModal(); return() }
+    row <- tryCatch(db_query("SELECT round_id FROM job_assignments WHERE id=? LIMIT 1;",list(aid)),error=function(e)data.frame())
+    new_date <- as.character(suppressWarnings(as.Date(input$edit_pending_date %||% NA)))
+    wage <- suppressWarnings(as.numeric(input$edit_pending_wage %||% NA_real_))
+    if (!nrow(row) || is.na(new_date) || !nzchar(new_date) || is.na(wage)) {
+      showNotification("Enter a valid date and wage.",type="error"); return()
+    }
+    conflict <- tryCatch(db_query("SELECT id FROM job_assignments WHERE round_id=? AND user_id=? AND job_post_id=? AND id<>? LIMIT 1;",
+      list(row$round_id[1],input$edit_pending_uid,input$edit_pending_post,aid)),error=function(e)data.frame())
+    if (nrow(conflict)) { showNotification("That student already has this job for the selected class date.",type="error"); return() }
+    db_exec("UPDATE job_assignments SET user_id=?,job_post_id=?,assigned_wage=?,scheduled_date=?,updated_at=datetime('now') WHERE id=?;",
+            list(input$edit_pending_uid,input$edit_pending_post,wage,new_date,aid))
+    removeModal(); rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification("Pending assignment updated.",type="message")
+  }, ignoreNULL=TRUE)
 
   observeEvent(input$go_to_games, {
     updateTabsetPanel(session, "arc_tabs", selected = "Games & Demos")
