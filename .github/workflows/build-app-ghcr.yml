@@ -9,6 +9,7 @@ on:
       - "scripts/**"
       - "shiny-server.conf"
       - "Dockerfile"
+      - "docker-entrypoint.sh"
   workflow_dispatch:
 
 permissions:
