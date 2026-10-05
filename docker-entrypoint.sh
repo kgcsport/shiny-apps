@@ -15,6 +15,11 @@ export SHINY_SIMPLE_SCHEDULER SHINY_APP_IDLE_TIMEOUT APP_SESSION_TIMEOUT_LINE
 RENDERED_CONF="${SHINY_SERVER_CONF:-/tmp/shiny-server.conf}"
 
 mkdir -p /srv/shiny-server/appdata/data /var/log/shiny-server
+# Shiny Server starts the first application worker after this script has
+# finished. Pre-create shared SQLite files so the initial schema pass cannot
+# create them as root before the worker drops to the `shiny` user.
+touch /srv/shiny-server/appdata/data/class-job-market.sqlite
+touch /srv/shiny-server/appdata/data/class-job-market-demo.sqlite
 chown -R shiny:shiny /srv/shiny-server/appdata /var/log/shiny-server 2>/dev/null || true
 
 # Shiny apps run as the 'shiny' user and don't inherit container env vars.
