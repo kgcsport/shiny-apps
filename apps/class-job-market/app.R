@@ -2323,30 +2323,33 @@ server <- function(input, output, session) {
     policy_ver     = 0L     # bumped after policy-group assignment import
   )
 
-  # Empty legacy settings must not silently mean every class/section.
-  if (!nzchar(trimws(rv$active_course %||% ""))) {
-    first_course <- tryCatch(db_query(
-      "SELECT course FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
-       AND COALESCE(is_demo,0)=0 AND trim(COALESCE(course,''))<>'' ORDER BY course LIMIT 1;"),
-      error=function(e)data.frame())
-    if(nrow(first_course)) {
-      rv$active_course <- first_course$course[1]
-      set_setting("active_course",rv$active_course)
+  # Empty legacy settings must not silently mean every class/section. These
+  # defaults run during session setup, before a reactive consumer exists.
+  isolate({
+    if (!nzchar(trimws(rv$active_course %||% ""))) {
+      first_course <- tryCatch(db_query(
+        "SELECT course FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
+         AND COALESCE(is_demo,0)=0 AND trim(COALESCE(course,''))<>'' ORDER BY course LIMIT 1;"),
+        error=function(e)data.frame())
+      if(nrow(first_course)) {
+        rv$active_course <- first_course$course[1]
+        set_setting("active_course",rv$active_course)
+      }
     }
-  }
-  if (!length(normalize_scope_sections(rv$active_sections))) {
-    first_section <- tryCatch(db_query(
-      "SELECT section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
-       AND COALESCE(is_demo,0)=0 AND LOWER(COALESCE(course,''))=LOWER(?)
-       AND trim(COALESCE(section,''))<>'' ORDER BY section LIMIT 1;",
-      list(rv$active_course %||% "")),error=function(e)data.frame())
-    if(nrow(first_section)) {
-      rv$active_sections <- first_section$section[1]
-      rv$active_section <- first_section$section[1]
-      set_setting("active_sections",serialize_scope_sections(rv$active_sections))
-      set_setting("active_section",rv$active_section)
+    if (!length(normalize_scope_sections(rv$active_sections))) {
+      first_section <- tryCatch(db_query(
+        "SELECT section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
+         AND COALESCE(is_demo,0)=0 AND LOWER(COALESCE(course,''))=LOWER(?)
+         AND trim(COALESCE(section,''))<>'' ORDER BY section LIMIT 1;",
+        list(rv$active_course %||% "")),error=function(e)data.frame())
+      if(nrow(first_section)) {
+        rv$active_sections <- first_section$section[1]
+        rv$active_section <- first_section$section[1]
+        set_setting("active_sections",serialize_scope_sections(rv$active_sections))
+        set_setting("active_section",rv$active_section)
+      }
     }
-  }
+  })
 
   global_active_round_id <- active_round_id
   global_active_round_row <- active_round_row
