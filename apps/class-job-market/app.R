@@ -6034,7 +6034,7 @@ server <- function(input, output, session) {
     rid <- as.integer(round$id[1])
     uid <- trimws(input$manual_assign_uid %||% "")
     post_id <- suppressWarnings(as.integer(input$manual_assign_post_id %||% 0))
-    scheduled_date <- as.character(suppressWarnings(as.Date(round$class_date[1] %||% NA)))
+    scheduled_date <- as.character(suppressWarnings(as.Date(input$manual_assign_date %||% round$class_date[1] %||% NA)))
     if (is.na(scheduled_date) || !nzchar(scheduled_date)) scheduled_date <- as.character(Sys.Date())
     display_today <- 1L
     if (!nzchar(uid) || is.na(post_id) || post_id <= 0) {
@@ -6069,6 +6069,8 @@ server <- function(input, output, session) {
       db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;",
               list(as.integer(old$id[1])))
     }
+    assigned_wage <- suppressWarnings(as.numeric(input$manual_assign_wage %||% NA_real_))
+    if (is.na(assigned_wage)) assigned_wage <- if (is.na(post$wage[1] %||% NA)) NA_real_ else as.numeric(post$wage[1])
     db_exec(
       "INSERT INTO job_assignments(round_id, user_id, job_post_id, assigned_wage,
               assignment_mode, status, outcome, tokens_awarded, tokens_credited,
@@ -6086,7 +6088,7 @@ server <- function(input, output, session) {
                      display_on_today=excluded.display_on_today,
                      updated_at=datetime('now');",
       list(rid, uid, post_id,
-           if (is.na(post$wage[1] %||% NA)) NA_real_ else as.numeric(post$wage[1]),
+           assigned_wage,
            round$assignment_mode[1] %||% "manual",
            scheduled_date, display_today))
     rv$jobs_ver <- rv$jobs_ver + 1L
@@ -7416,14 +7418,18 @@ server <- function(input, output, session) {
             } else {
               tagList(
                 fluidRow(
-                  column(4, selectInput("manual_assign_uid", "Student:",
+                  column(3, selectInput("manual_assign_uid", "Student:",
                                         choices = assignment_stu_choices, width = "100%")),
-                  column(5, selectInput("manual_assign_post_id", "Job:",
+                  column(3, selectInput("manual_assign_post_id", "Job:",
                                         choices = manual_post_choices, width = "100%")),
-                  column(3, tags$br(),
-                         actionButton("manual_add_assignment_btn", "Add",
+                  column(2, dateInput("manual_assign_date", "Date:",
+                                      value = as.Date(round$class_date[1] %||% Sys.Date()))),
+                  column(2, numericInput("manual_assign_wage", "Wage:",
+                                         value = NA_real_, min = 0, step = 1)),
+                  column(2, tags$br(),
+                         actionButton("manual_add_assignment_btn", "Add / edit",
                                       class = "btn btn-sm btn-primary",
-                                      title = "Add this assignment back"))
+                                      title = "Add this assignment back with the date and wage shown"))
                 ),
                 tags$p(style = "font-size:.78rem;color:#888;margin:.35rem 0 0;",
                        sprintf("This restores the assignment to the selected class date (%s), just like an in-class selection.",
