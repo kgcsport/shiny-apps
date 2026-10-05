@@ -2955,7 +2955,8 @@ server <- function(input, output, session) {
         pending_outcome_expr <- if (nzchar(pending_join)) "COALESCE(pse.outcome,'')" else "''"
         pending_tokens_expr  <- if (nzchar(pending_join)) "pse.tokens" else "0"
         tryCatch(db_query(sprintf(
-          "SELECT ja.id, ja.user_id, u.display_name, u.course, u.section, jp.job_name,
+          "SELECT ja.id, ja.round_id, ja.user_id, u.display_name, u.course, u.section, jp.job_name,
+                  COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''), substr(ja.created_at,1,10)) AS job_date,
                   COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time,
                   COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS assigned_wage,
                   %s AS outcome,
@@ -2966,9 +2967,10 @@ server <- function(input, output, session) {
            JOIN users u ON u.user_id=ja.user_id
            JOIN job_posts jp ON jp.id=ja.job_post_id
            LEFT JOIN job_categories jc ON jc.id=jp.category_id
+           JOIN weekly_rounds wr ON wr.id=ja.round_id
            %s
-            WHERE ja.round_id=? %s
-            ORDER BY u.course, u.section, u.display_name;",
+            WHERE (ja.round_id=? OR date(COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''), substr(ja.created_at,1,10))) < date('now','localtime')) %s
+            ORDER BY job_date, u.course, u.section, u.display_name;",
           outcome_expr, awarded_expr, pending_outcome_expr, pending_tokens_expr,
           pending_join, status_filter), list(rid)),
           error = function(e) data.frame())
@@ -7265,7 +7267,10 @@ server <- function(input, output, session) {
       as.character(pending_show$user_id[
         !is.na(pending_show$job_assignment_id)])
     } else character(0)
-    unavailable_ids <- unique(c(as.character(td$assignments$user_id %||% character(0)),
+    current_assignments <- if (!is.na(rid)) td$assignments[
+      as.integer(td$assignments$round_id %||% NA_integer_) == as.integer(rid), , drop = FALSE
+    ] else data.frame()
+    unavailable_ids <- unique(c(as.character(current_assignments$user_id %||% character(0)),
                                 pending_assignment_users))
     students_assignment_available <- students_sec[
       !(students_sec$user_id %in% unavailable_ids), , drop = FALSE]
@@ -7542,7 +7547,7 @@ server <- function(input, output, session) {
           div(class = "tracker-wrap",
             tags$table(class = "table table-sm",
               tags$thead(tags$tr(
-                tags$th("Student"), tags$th("Section"), tags$th("Job"), tags$th("When"),
+                tags$th("Student"), tags$th("Section"), tags$th("Job"), tags$th("Class date"), tags$th("When"),
                 if (wage_mode) tags$th(style = "text-align:right;", "Wage"),
                 tags$th("Outcome"), tags$th("")
               )),
@@ -7556,6 +7561,8 @@ server <- function(input, output, session) {
                   tags$td(r$display_name %||% r$user_id),
                   tags$td(style = "color:#888;font-size:.85em;", r$section %||% ""),
                   tags$td(style = "font-weight:600;", r$job_name %||% ""),
+                  tags$td(style = "color:#888;font-size:.85em;",
+                          format(as.Date(r$job_date), "%b %d, %Y")),
                   tags$td(style = "color:#888;font-size:.85em;",
                           if (identical(as.character(r$selection_time %||% "start"), "end")) "End" else "Start"),
                   if (wage_mode)
