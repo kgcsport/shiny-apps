@@ -6599,6 +6599,26 @@ server <- function(input, output, session) {
     activate_class_date(input$market_class_date)
   }, ignoreInit = FALSE, ignoreNULL = TRUE)
 
+  # On configured class days, automatically activate today's class date.
+  # Non-class days keep the last class date selected so the instructor can
+  # review or edit it without the app creating future dates prematurely.
+  auto_select_class_date <- function() {
+    tz <- as.character(get_setting("class_tz", "America/New_York"))
+    now <- tryCatch(as.POSIXlt(Sys.time(), tz = tz), error = function(e) as.POSIXlt(Sys.time()))
+    days <- trimws(strsplit(as.character(get_setting("class_days", "Mon,Wed")), ",", fixed = TRUE)[[1]])
+    if (!format(now, "%a") %in% days) return(FALSE)
+    target <- format(as.Date(now), "%Y-%m-%d")
+    current <- tryCatch(active_round_row(), error = function(e) data.frame())
+    if (nrow(current) && identical(as.character(current$class_date[1] %||% ""), target)) return(FALSE)
+    activate_class_date(target)
+  }
+
+  observe({
+    req(rv$is_admin)
+    invalidateLater(60000, session)
+    auto_select_class_date()
+  })
+
   observeEvent(input$active_round_select, {
     req(rv$is_admin)
     target_rid <- suppressWarnings(as.integer(input$active_round_select %||% NA))
@@ -6889,6 +6909,7 @@ server <- function(input, output, session) {
     db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('bid_reopen_time',?);", list(rt))
     db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('class_tz',?);", list(tz))
     rv$jobs_ver <- rv$jobs_ver + 1L
+    auto_select_class_date()
     showNotification("Bid lock schedule saved.", type = "message")
   })
 
