@@ -7240,6 +7240,7 @@ server <- function(input, output, session) {
     round     <- td$round
     mode      <- if (nrow(round)) round$assignment_mode[1] %||% "random" else "random"
     wage_mode <- identical(mode, "wage_bidding")
+    rid       <- if (nrow(round)) round$id[1] else NA_integer_
 
     # Class/section picker data
     all_courses <- live_course_values()
@@ -7278,8 +7279,7 @@ server <- function(input, output, session) {
     # available even when the student has an assigned job or another score event.
     students_vol <- students_sec
 
-    # Round ID
-    rid <- if (nrow(round)) round$id[1] else NA_integer_
+    # Round ID is initialized above because the availability filter also uses it.
     selected_reveal_timing <- input$section_reveal_timing %||% "start"
     if (!selected_reveal_timing %in% c("start", "end", "all")) {
       selected_reveal_timing <- "start"
