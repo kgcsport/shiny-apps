@@ -3433,14 +3433,20 @@ server <- function(input, output, session) {
       } else {
         div(class = "today-card tracker-wrap",
           tags$table(class = "table table-sm table-hover", style = "margin-bottom:0;",
-            tags$thead(tags$tr(tags$th("Student"), tags$th("Job"), tags$th("Class date"))),
+            tags$thead(tags$tr(tags$th("Student"), tags$th("Job"), tags$th("Class date"), if (isTRUE(rv$is_admin)) tags$th("Grade") else NULL)),
             tags$tbody(lapply(seq_len(nrow(last_class_jobs)), function(i) {
               r <- last_class_jobs[i, ]
               tags$tr(
                 tags$td(r$display_name %||% r$user_id),
                 tags$td(r$job_name %||% "",
                         job_description_details(r$description, "Instructions")),
-                tags$td(format(as.Date(r$job_date), "%B %d, %Y"))
+                tags$td(format(as.Date(r$job_date), "%B %d, %Y")),
+                if (isTRUE(rv$is_admin)) tags$td(
+                  actionButton(paste0("grade_pending_", as.integer(r$round_id), "_", as.integer(i)),
+                               "Grade →", class = "btn btn-xs btn-outline-primary",
+                               onclick = sprintf("Shiny.setInputValue('grade_pending_round_btn',{round_id:%d},{priority:'event'});",
+                                                 as.integer(r$round_id)))
+                )
               )
             }))
           )
@@ -3548,6 +3554,16 @@ server <- function(input, output, session) {
   })
 
   # Navigate to Games tab from Today
+  observeEvent(input$grade_pending_round_btn, {
+    req(rv$is_admin)
+    rid <- suppressWarnings(as.integer(input$grade_pending_round_btn$round_id %||% NA))
+    if (is.na(rid)) return()
+    if (!set_active_round_id(rid)) { showNotification("That class date is no longer available.", type = "error"); return() }
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    updateTabsetPanel(session, "arc_tabs", selected = "Live Tracker")
+    showNotification("Selected the pending class date. Grade it in Live Tracker.", type = "message")
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$go_to_games, {
     updateTabsetPanel(session, "arc_tabs", selected = "Games & Demos")
   })
