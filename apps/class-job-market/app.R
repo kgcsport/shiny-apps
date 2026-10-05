@@ -240,6 +240,11 @@ db_exec("CREATE TABLE IF NOT EXISTS flex_purchases(
 ensure_column("flex_questions", "unlock_cost REAL")
 ensure_column("flex_questions", "unlocked_at TEXT")
 ensure_column("flex_questions", "course TEXT")
+ensure_column("flex_questions", "exam_tag TEXT")
+ensure_column("flex_questions", "topic TEXT")
+ensure_column("flex_questions", "draw_group TEXT")
+ensure_column("flex_questions", "draw_count INTEGER")
+ensure_column("flex_questions", "pool_size INTEGER")
 db_exec("CREATE TABLE IF NOT EXISTS flex_question_contributions(
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   question_id    INTEGER NOT NULL,
@@ -423,7 +428,7 @@ db_exec("CREATE TABLE IF NOT EXISTS round_absences(
 db_exec("INSERT OR IGNORE INTO assignment_timing_reveals(round_id,section,timing,revealed,updated_at)
          SELECT round_id,section,CASE WHEN timing='post' THEN 'end' ELSE COALESCE(timing,'start') END,revealed,updated_at
          FROM assignment_reveals;")
-try(db_exec("ALTER TABLE flex_questions ADD COLUMN exam_tag TEXT;"), silent = TRUE)
+
 db_exec("CREATE TABLE IF NOT EXISTS gradebook_categories(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -2767,6 +2772,7 @@ server <- function(input, output, session) {
     course <- scoped_course()
     questions <- tryCatch(db_query(
       "SELECT fq.id, fq.question_text, fq.order_index, fq.exam_tag, fq.course,
+              fq.topic,fq.draw_group,fq.draw_count,fq.pool_size,
               fqs.unlock_cost, fqs.unlocked_at,
               COALESCE(SUM(fqc.amount),0) AS funded
        FROM flex_questions fq
@@ -4363,10 +4369,19 @@ server <- function(input, output, session) {
                  sprintf("All %d candidate questions are public.", as.integer(fq$total)))
         } else {
           tagList(
-            tags$p(style = "font-weight:600;margin-bottom:.35rem;",
-                   sprintf("Question #%d: %d of %d tokens funded",
-                           as.integer(fq$unlocked_n + 1L), as.integer(fq$funded),
-                           as.integer(fq$target))),
+            {
+              next_q <- fq$next_question[1,]
+              draw_n <- as.integer(next_q$draw_count %||% NA_integer_)
+              pool_n <- as.integer(next_q$pool_size %||% NA_integer_)
+              chance <- if (is.finite(draw_n) && is.finite(pool_n) && pool_n > 0)
+                sprintf("%d of %d drawn (%.0f%% chance)",draw_n,pool_n,100*draw_n/pool_n)
+                else "draw probability not specified"
+              tags$p(style = "font-weight:600;margin-bottom:.35rem;",
+                     sprintf("Question #%d · Pool %s · %s: %d of %d tokens funded",
+                             as.integer(fq$unlocked_n + 1L),
+                             next_q$draw_group %||% "—",chance,
+                             as.integer(fq$funded),as.integer(fq$target)))
+            },
             div(class = "progress", style = "height:18px;margin-bottom:.65rem;",
                 div(class = "progress-bar", role = "progressbar",
                     style = sprintf("width:%.1f%%;", pct),
@@ -4392,7 +4407,16 @@ server <- function(input, output, session) {
             tags$strong("Publicly unlocked candidate questions:"),
             lapply(seq_len(nrow(fq$unlocked)), function(i) {
               div(style = "margin-top:.5rem;padding:.5rem .7rem;background:#f8f8f8;border-radius:4px;",
-                  tags$small(style = "color:#888;", sprintf("Question #%d", i)),
+                  {
+                    draw_n <- as.integer(fq$unlocked$draw_count[i] %||% NA_integer_)
+                    pool_n <- as.integer(fq$unlocked$pool_size[i] %||% NA_integer_)
+                    chance <- if (is.finite(draw_n) && is.finite(pool_n) && pool_n > 0)
+                      sprintf("%.0f%%",100*draw_n/pool_n) else "chance unspecified"
+                    tags$small(style = "color:#888;",
+                      sprintf("Question #%d · %s · Pool %s · %s",
+                              i,fq$unlocked$topic[i] %||% "Topic unspecified",
+                              fq$unlocked$draw_group[i] %||% "—",chance))
+                  },
                   tags$p(style = "margin:.2rem 0 0;", fq$unlocked$question_text[i]))
             })
           )
@@ -7021,21 +7045,40 @@ server <- function(input, output, session) {
         df  <- read.csv(f$datapath, stringsAsFactors = FALSE)
         col <- intersect(c("question_text","question","text"), names(df))
         if (!length(col)) stop("CSV must have a 'question_text' column.")
-        etag_col <- intersect(c("exam_tag","exam"), names(df))
+        etag_col <- intersect(c("exam_tag","exam"),names(df))
+        field <- function(name,default=NA) if(name %in% names(df)) df[[name]] else rep(default,nrow(df))
         list(
-          texts = df[[col[1]]],
-          tags  = if (length(etag_col)) df[[etag_col[1]]] else rep(NA_character_, nrow(df))
+          texts=df[[col[1]]],
+          tags=if(length(etag_col)) df[[etag_col[1]]] else rep(NA_character_,nrow(df)),
+          topics=field("topic",NA_character_),
+          groups=field("draw_group",NA_character_),
+          draw_counts=field("draw_count",NA_integer_),
+          pool_sizes=field("pool_size",NA_integer_)
         )
       } else {
-        raw <- readLines(f$datapath, warn = FALSE)
+        raw <- readLines(f$datapath,warn=FALSE)
         txts <- trimws(raw[nzchar(trimws(raw))])
-        list(texts = txts, tags = rep(NA_character_, length(txts)))
+        list(texts=txts,tags=rep(NA_character_,length(txts)),
+             topics=rep(NA_character_,length(txts)),groups=rep(NA_character_,length(txts)),
+             draw_counts=rep(NA_integer_,length(txts)),pool_sizes=rep(NA_integer_,length(txts)))
       }
     }, error = function(e) { showNotification(paste("Error:", e$message), type = "error"); NULL })
     if (is.null(parsed)) return()
     keep  <- nzchar(trimws(parsed$texts))
     texts <- parsed$texts[keep]
     etags <- parsed$tags[keep]
+    topics <- parsed$topics[keep]
+    groups <- parsed$groups[keep]
+    draw_counts <- suppressWarnings(as.integer(parsed$draw_counts[keep]))
+    pool_sizes <- suppressWarnings(as.integer(parsed$pool_sizes[keep]))
+    invalid_draw <- (!is.na(draw_counts) | !is.na(pool_sizes)) &
+      (is.na(draw_counts) | is.na(pool_sizes) | draw_counts < 1L |
+       pool_sizes < 1L | draw_counts > pool_sizes)
+    if (any(invalid_draw)) {
+      showNotification("Each probability row needs draw_count and pool_size with 1 <= draw_count <= pool_size.",
+                       type="error")
+      return()
+    }
     if (!length(texts)) { showNotification("No questions found in file.", type = "warning"); return() }
     if (isTRUE(input$fq_replace_all)) db_exec(
       "UPDATE flex_questions SET active=0 WHERE trim(COALESCE(course,''))='' OR LOWER(course)=LOWER(?);",
@@ -7048,8 +7091,14 @@ server <- function(input, output, session) {
       tag <- if (!is.na(etags[i]) && nzchar(trimws(etags[i]))) trimws(etags[i])
              else if (nzchar(batch_etag)) batch_etag
              else NA_character_
-      db_exec("INSERT INTO flex_questions(question_text,order_index,exam_tag,course) VALUES(?,?,?,?);",
-              list(texts[i], base_idx + i, tag, scoped_course()))
+      db_exec(
+        "INSERT INTO flex_questions(
+           question_text,order_index,exam_tag,course,topic,draw_group,draw_count,pool_size)
+         VALUES(?,?,?,?,?,?,?,?);",
+        list(texts[i],base_idx+i,tag,scoped_course(),
+             if(!is.na(topics[i]) && nzchar(trimws(topics[i]))) trimws(topics[i]) else NA_character_,
+             if(!is.na(groups[i]) && nzchar(trimws(groups[i]))) trimws(groups[i]) else NA_character_,
+             draw_counts[i],pool_sizes[i]))
     }
     rv$flex_ver <- rv$flex_ver + 1L
     showNotification(sprintf("Uploaded %d questions.", length(texts)), type = "message")
@@ -8666,6 +8715,7 @@ server <- function(input, output, session) {
       scope_course <- scoped_course()
       fqs <- tryCatch(db_query(
         "SELECT fq.id, fq.question_text, fq.order_index, fq.active, fq.exam_tag, fq.course,
+                fq.topic,fq.draw_group,fq.draw_count,fq.pool_size,
                 fqs.unlock_cost, fqs.unlocked_at, COALESCE(SUM(fqc.amount),0) AS funded
          FROM flex_questions fq
          LEFT JOIN flex_question_scope_state fqs
@@ -8723,7 +8773,8 @@ server <- function(input, output, session) {
         if (nrow(fqs)) {
           tags$table(class = "table table-sm",
             tags$thead(tags$tr(
-              tags$th("#"), tags$th("Question"), tags$th("Exam"), tags$th("Funding"), tags$th("Active"), tags$th("")
+              tags$th("#"),tags$th("Question"),tags$th("Topic"),tags$th("Draw chance"),
+              tags$th("Exam"),tags$th("Funding"),tags$th("Active"),tags$th("")
             )),
             tags$tbody(lapply(seq_len(nrow(fqs)), function(i) {
               r <- fqs[i, ]
@@ -8732,6 +8783,15 @@ server <- function(input, output, session) {
                 tags$td(style = "color:#888;width:2rem;", i),
                 tags$td(style = "font-size:.85rem;max-width:22rem;word-break:break-word;",
                         r$question_text %||% ""),
+                tags$td(style = "font-size:.82rem;color:#555;",r$topic %||% "—"),
+                tags$td(style = "font-size:.82rem;white-space:nowrap;",
+                        if (is.finite(as.numeric(r$draw_count)) &&
+                            is.finite(as.numeric(r$pool_size)) &&
+                            as.numeric(r$pool_size)>0)
+                          sprintf("Pool %s: %d/%d (%.0f%%)",r$draw_group %||% "—",
+                                  as.integer(r$draw_count),as.integer(r$pool_size),
+                                  100*as.numeric(r$draw_count)/as.numeric(r$pool_size))
+                        else "—"),
                 tags$td(style = "font-size:.82rem;color:#555;white-space:nowrap;",
                         r$exam_tag %||% "—"),
                 tags$td(style = "font-size:.82rem;white-space:nowrap;",
@@ -8769,7 +8829,7 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;", "Upload Questions"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "Upload a plain-text file (one question per non-empty line) or a CSV with 'question_text' and optional 'exam_tag' columns."),
+               "Upload a plain-text file (one question per non-empty line) or a CSV with question_text plus optional exam_tag, topic, draw_group, draw_count, and pool_size columns."),
         fileInput("upload_flex_questions", NULL,
                   accept = c(".txt", ".md", ".csv", ".yaml", ".yml"),
                   buttonLabel = "Browse…", placeholder = "No file chosen"),

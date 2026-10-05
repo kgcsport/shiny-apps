@@ -69,7 +69,8 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true(all(c("tokens_awarded", "tokens_credited", "status", "job_post_id",
                       "scheduled_date", "display_on_today") %in% cols(con, "job_assignments")))
     expect_true(all(c("job_post_id", "event_kind", "tokens", "committed_at") %in% cols(con, "live_score_events")))
-    expect_true(all(c("unlock_cost","unlocked_at","course") %in% cols(con,"flex_questions")))
+    expect_true(all(c("unlock_cost","unlocked_at","course","topic","draw_group",
+                      "draw_count","pool_size") %in% cols(con,"flex_questions")))
     expect_true(all(c("question_id","user_id","amount","ledger_id","contributed_at","scope_key") %in%
                       cols(con,"flex_question_contributions")))
     expect_true(all(c("question_id","scope_key","unlock_cost","unlocked_at") %in%
@@ -281,6 +282,7 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_match(app_source, "selectizeInput(\"active_section_sel\"", fixed = TRUE)
     expect_match(app_source, "Current selected section scope", fixed = TRUE)
     expect_match(app_source, "flex_question_scope_state", fixed = TRUE)
+    expect_match(app_source, "draw_count and pool_size", fixed = TRUE)
     expect_match(app_source, "public_good_contributions(scope_key,public_good_id)", fixed = TRUE)
     expect_match(app_source, "announcement_poll <- reactivePoll", fixed = TRUE)
     expect_match(app_source, "edit_round_bidding_enabled", fixed = TRUE)

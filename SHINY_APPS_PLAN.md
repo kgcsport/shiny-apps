@@ -162,6 +162,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-10-05** - Represent the ECON 342 midterm bank as twelve candidates in three four-question pools. Pool A contributes 3 questions (75% each), Pool B contributes 2 (50% each), and Pool C contributes 1 (25% each); every pool spans the same four topic strands.
+
 - **2026-10-02** - Treat one course plus one explicitly selected section set as the operational scope. One section is the default; choosing several intentionally pools their roster, job-market round and controls, tracker eligibility, and Flex funding, while choosing all sections must be explicit. Question-bank text may be course-wide, but prices, contributions, and unlocks are scope-specific.
 
 - **2026-10-02** — Make exam-candidate questions a class-wide provision-point
@@ -395,6 +397,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-10-05** (Codex) - Added topic and draw-probability metadata to Flex Questions, exposed 75/50/25 percent chances to students and admins, and extended private CSV import validation and startup schema tests. The question text remains in the private PubEcon repository rather than the public app repository.
 
 - **2026-10-02** (Codex) - Added persistent course/section scopes with one-, many-, and explicit-all selection; per-scope active job rounds; scoped tracker/draw/redraw/audit rosters; scoped roster, token, gradebook, public-good, coordination-game tracker, and export defaults; course-specific Flex banks; and scope-specific Flex formulas, contributions, thresholds, and reveals. Legacy blank scope settings now select the first actual course and section instead of silently including everyone.
 
@@ -685,16 +689,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Put the same `ASSIGNMENT_ADMIN_TOKEN` used by the Cloudflare Worker in the
-   deployed Shiny server's `.env`, then deploy this build.
-2. Map each active problem-set/corrections shop item to its Cloudflare
-   assignment id and target, then retry any purchases shown as pending or
-   failed in the Extensions admin panel.
-3. Run one end-to-end extension purchase with a test student and verify the
-   personalized due/solution/self-grading dates in the assignment receipt.
-4. Load the midterm candidate bank, enter the intended Flex Questions formula,
-   and rehearse one single-section and one pooled multi-section contribution through
-   the first public reveal; confirm N, tracker eligibility, and job controls in each.
+1. Deploy the class-job-market build, then use the authenticated Flex Questions admin upload to replace the ECON 342 bank with the private 12-question CSV and confirm all candidates are active.
+2. Rehearse one single-section and one pooled multi-section contribution through the first public reveal; confirm N, scope membership, and the displayed 75/50/25 percent chance.
+3. Complete one end-to-end extension purchase after mapping the active assignment id and target.
 
 ## Questions for Kyle
 
