@@ -8099,6 +8099,8 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     rv$jobs_ver  # invalidate when any job/category/template/round mutation fires
     rv$extensions_ver
+    rv$flex_ver   # refresh the Flex Questions schedule and preview after saving
+    rv$students_ver # keep N-based previews current when the roster changes
     act <- input$config_action %||% "jobs"
 
     if (act == "jobs") {
