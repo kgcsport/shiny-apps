@@ -3327,7 +3327,7 @@ server <- function(input, output, session) {
       sr <- if (!is.null(jp$section_reveals)) jp$section_reveals else data.frame()
       sec <- trimws(rv$section %||% "")
       visible <- vapply(seq_len(nrow(today_my_assign)), function(i) {
-        if (norm_key(today_my_assign$assignment_mode[i]) == "manual") return(TRUE)
+        if (isTRUE(rv$is_admin) || norm_key(today_my_assign$assignment_mode[i]) == "manual") return(TRUE)
         if (!nrow(sr) || !nzchar(sec)) return(FALSE)
         sr_timing <- ifelse(
           norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
@@ -3364,7 +3364,7 @@ server <- function(input, output, session) {
         "end", "start")
       sr <- if (!is.null(jp$section_reveals)) jp$section_reveals else data.frame()
       visible <- vapply(seq_len(nrow(revealed_jobs)), function(i) {
-        if (norm_key(revealed_jobs$assignment_mode[i]) == "manual") return(TRUE)
+        if (isTRUE(rv$is_admin) || norm_key(revealed_jobs$assignment_mode[i]) == "manual") return(TRUE)
         if (!nrow(sr)) return(FALSE)
         sr_timing <- ifelse(
           norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
@@ -3386,7 +3386,7 @@ server <- function(input, output, session) {
         "end", "start")
       sr <- if (!is.null(jp$last_class_reveals)) jp$last_class_reveals else data.frame()
       visible <- vapply(seq_len(nrow(last_class_jobs)), function(i) {
-        if (norm_key(last_class_jobs$assignment_mode[i]) == "manual") return(TRUE)
+        if (isTRUE(rv$is_admin) || norm_key(last_class_jobs$assignment_mode[i]) == "manual") return(TRUE)
         if (!nrow(sr)) return(FALSE)
         sr_timing <- ifelse(
           norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
