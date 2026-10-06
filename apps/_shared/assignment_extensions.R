@@ -61,3 +61,34 @@ sync_extension_purchase <- function(purchase_id) {
     list(result$status, result$error, result$status, as.integer(purchase_id)))
   result
 }
+
+
+# Read-only server-side access to the Worker instructor review API. This uses
+# the same ADMIN_TOKEN as extension syncing; no credential is exposed to clients.
+assignment_review_configured <- function() {
+  extension_sync_configured()
+}
+
+assignment_review_get <- function(path) {
+  if (!assignment_review_configured())
+    stop("Set ASSIGNMENT_ADMIN_TOKEN and install httr2")
+  response <- httr2::request(paste0(ASSIGNMENT_API_ORIGIN, path)) |>
+    httr2::req_headers(Authorization=paste("Bearer", ASSIGNMENT_ADMIN_TOKEN)) |>
+    httr2::req_timeout(20) |>
+    httr2::req_error(is_error=function(resp) FALSE) |>
+    httr2::req_perform()
+  body <- tryCatch(httr2::resp_body_json(response, simplifyVector=TRUE),
+                   error=function(e) list())
+  if (httr2::resp_status(response) >= 300)
+    stop(body$error %||% paste("Cloudflare returned", httr2::resp_status(response)))
+  body
+}
+
+assignment_review_assignments <- function() {
+  assignment_review_get("/api/admin/review/assignments")
+}
+
+assignment_review_assignment <- function(assignment_id) {
+  assignment_review_get(paste0("/api/admin/review/assignments/",
+                               utils::URLencode(as.character(assignment_id), reserved=TRUE)))
+}

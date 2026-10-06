@@ -467,6 +467,17 @@ db_exec("DELETE FROM student_grades
          );")
 db_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_student_grades_student_assignment
          ON student_grades(user_id COLLATE NOCASE, assignment_name COLLATE NOCASE);")
+db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_log(
+  assignment_id TEXT PRIMARY KEY,
+  assignment_title TEXT,
+  gradebook_item TEXT,
+  policy TEXT,
+  last_synced_at TEXT,
+  status TEXT DEFAULT 'pending',
+  error TEXT,
+  rows_synced INTEGER DEFAULT 0
+);")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('assignment_grade_policy','final_score');")
 
 upsert_student_grade <- function(user_id, assignment_name, score = NA_real_,
                                  max_score = NA_real_, grade_pct = NA_real_,
@@ -9024,6 +9035,10 @@ server <- function(input, output, session) {
       manual_grade_items <- manual_grade_catalog()
       manual_grade_choices <- if (nrow(manual_grade_items))
         setNames(manual_grade_items$assignment, manual_grade_items$assignment) else character(0)
+      assignment_policy <- get_setting("assignment_grade_policy", "final_score")
+      assignment_sync_log <- tryCatch(db_query(
+        "SELECT assignment_title,gradebook_item,policy,last_synced_at,status,error,rows_synced
+         FROM assignment_grade_sync_log ORDER BY assignment_title;"), error=function(e)data.frame())
 
       get_item_names_for_cat <- function(cat_row) {
         gradebook_item_specs(cat_row, inames)$item_name
@@ -9035,6 +9050,21 @@ server <- function(input, output, session) {
 
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Grades & Gradebook"),
+        tags$h6(style = "font-weight:700;margin-top:.8rem;", "Cloudflare problem-set sync"),
+        radioButtons("assignment_grade_policy", "Grade policy:",
+                     choices = assignment_grade_policy_choices,
+                     selected = assignment_policy, inline = FALSE),
+        tags$p(style = "color:#666;font-size:.82rem;",
+               "Sync maps Worker assignments to existing gradebook items (for example, PS1 → Problem Set 1). It never creates new items."),
+        actionButton("save_assignment_grade_policy_btn", "Save policy", class="btn btn-sm btn-outline-primary"),
+        actionButton("sync_cloudflare_grades_btn", "Sync now", class="btn btn-sm btn-primary"),
+        if (nrow(assignment_sync_log)) tags$table(class="table table-sm", style="margin-top:.5rem;",
+          tags$thead(tags$tr(tags$th("Assignment"),tags$th("Gradebook item"),tags$th("Status"),tags$th("Rows"),tags$th("Last sync"),tags$th("Note"))),
+          tags$tbody(lapply(seq_len(nrow(assignment_sync_log)), function(i) { r <- assignment_sync_log[i, ]; tags$tr(
+            tags$td(r$assignment_title %||% ""), tags$td(r$gradebook_item %||% "—"), tags$td(r$status %||% ""),
+            tags$td(r$rows_synced %||% 0), tags$td(r$last_synced_at %||% "—"), tags$td(r$error %||% ""))
+          }))
+        ),
 
         # ── 1. Grade Categories ─────────────────────────────────────────────────
         sec_hdr(1L, "Grade Categories"),
@@ -10446,6 +10476,86 @@ server <- function(input, output, session) {
                              if (n_released == 1L) "" else "s"), type="message")
   }, ignoreNULL=TRUE)
 
+  assignment_grade_policy_choices <- c(
+    "Final Worker score only" = "final_score",
+    "Initial PDF completion + final score (50/50)" = "split_half"
+  )
+
+  assignment_gradebook_item <- function(assignment, catalog) {
+    if (!nrow(catalog)) return(NA_character_)
+    compact <- function(x) gsub("[^a-z0-9]", "", tolower(trimws(as.character(x %||% ""))))
+    aid <- compact(assignment$id %||% "")
+    title <- compact(assignment$title %||% "")
+    names_compact <- compact(catalog$assignment)
+    exact <- which(names_compact %in% c(aid, title) & nzchar(names_compact))
+    if (length(exact) == 1L) return(catalog$assignment[exact])
+    number <- regmatches(aid, regexpr("[0-9]+$", aid))
+    if (length(number) && nzchar(number)) {
+      candidates <- which(grepl(paste0("(problemset|ps)", number), names_compact, fixed=FALSE))
+      if (length(candidates) == 1L) return(catalog$assignment[candidates])
+    }
+    NA_character_
+  }
+
+  sync_cloudflare_gradebook <- function() {
+    policy <- get_setting("assignment_grade_policy", "final_score")
+    if (!policy %in% unname(assignment_grade_policy_choices)) policy <- "final_score"
+    if (!assignment_review_configured())
+      return(list(ok=FALSE, message="Set ASSIGNMENT_ADMIN_TOKEN and install httr2 on the Shiny server."))
+    catalog <- manual_grade_catalog()
+    roster <- tryCatch(db_query("SELECT user_id,display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;"), error=function(e)data.frame())
+    if (!nrow(roster)) return(list(ok=FALSE, message="No active students are available for matching."))
+    key <- function(x) tolower(trimws(as.character(x %||% "")))
+    assignment_rows <- tryCatch(assignment_review_assignments(), error=function(e)e)
+    if (inherits(assignment_rows, "error")) return(list(ok=FALSE, message=conditionMessage(assignment_rows)))
+    if (!is.data.frame(assignment_rows)) {
+      assignment_rows <- if (length(assignment_rows)) do.call(rbind, lapply(assignment_rows, as.data.frame, stringsAsFactors=FALSE)) else data.frame()
+    }
+    if (!nrow(assignment_rows)) return(list(ok=TRUE, message="No Worker assignments returned.", rows=0L))
+    synced <- 0L; unmatched <- 0L; notes <- character(0)
+    for (i in seq_len(nrow(assignment_rows))) {
+      a <- assignment_rows[i, , drop=FALSE]
+      aid <- as.character(a$id[1] %||% "")
+      title <- as.character(a$title[1] %||% aid)
+      item <- assignment_gradebook_item(a, catalog)
+      if (is.na(item) || !nzchar(item)) {
+        db_exec("INSERT OR REPLACE INTO assignment_grade_sync_log(assignment_id,assignment_title,gradebook_item,policy,last_synced_at,status,error,rows_synced) VALUES(?,?,?,?,CURRENT_TIMESTAMP,'unmatched',?,0);",
+                list(aid,title,NA_character_,policy,"No matching existing Shiny gradebook item"))
+        notes <- c(notes, paste(title, "has no matching gradebook item")); next
+      }
+      detail <- tryCatch(assignment_review_assignment(aid), error=function(e)e)
+      if (inherits(detail, "error")) {
+        db_exec("INSERT OR REPLACE INTO assignment_grade_sync_log(assignment_id,assignment_title,gradebook_item,policy,last_synced_at,status,error,rows_synced) VALUES(?,?,?,?,CURRENT_TIMESTAMP,'failed',?,0);",
+                list(aid,title,item,policy,conditionMessage(detail))); notes <- c(notes, conditionMessage(detail)); next
+      }
+      subs <- detail$submissions %||% data.frame()
+      if (!is.data.frame(subs)) subs <- if (length(subs)) do.call(rbind, lapply(subs, as.data.frame, stringsAsFactors=FALSE)) else data.frame()
+      n_rows <- 0L
+      if (nrow(subs)) for (j in seq_len(nrow(subs))) {
+        sub <- subs[j, , drop=FALSE]
+        ext <- key(sub$externalId[1] %||% "")
+        nm <- key(sub$name[1] %||% "")
+        hit <- which(key(roster$user_id) == ext)
+        if (!length(hit) && nzchar(nm)) hit <- which(key(roster$display_name) == nm)
+        if (!length(hit)) { unmatched <- unmatched + 1L; next }
+        scan_ok <- nzchar(as.character(sub$scanVerifiedAt[1] %||% ""))
+        submitted <- identical(as.character(sub$status[1] %||% ""), "submitted") && nzchar(as.character(sub$submittedAt[1] %||% ""))
+        score <- suppressWarnings(as.numeric(sub$totalScore[1] %||% NA_real_))
+        max_score <- suppressWarnings(as.numeric(sub$maxPoints[1] %||% NA_real_))
+        final_pct <- if (is.finite(score) && is.finite(max_score) && max_score > 0) 100 * score / max_score else NA_real_
+        if (policy == "final_score" && (!submitted || !is.finite(final_pct))) next
+        if (policy == "split_half" && !scan_ok && (!submitted || !is.finite(final_pct))) next
+        grade_pct <- if (policy == "split_half") (if (scan_ok) 50 else 0) + if (submitted && is.finite(final_pct)) 0.5 * final_pct else 0 else final_pct
+        upsert_student_grade(roster$user_id[hit[1]], item, grade_pct, 100, grade_pct, title)
+        n_rows <- n_rows + 1L
+      }
+      db_exec("INSERT OR REPLACE INTO assignment_grade_sync_log(assignment_id,assignment_title,gradebook_item,policy,last_synced_at,status,error,rows_synced) VALUES(?,?,?,?,CURRENT_TIMESTAMP,'synced',?,?);",
+              list(aid,title,item,policy,if (unmatched) sprintf("%d student(s) unmatched", unmatched) else "",n_rows))
+      synced <- synced + n_rows
+    }
+    list(ok=TRUE, message=sprintf("Synced %d grade row%s across %d Worker assignment%s.%s", synced, if(synced==1)"" else "s", nrow(assignment_rows), if(nrow(assignment_rows)==1)"" else "s", if(length(notes)) paste0(" ",paste(unique(notes),collapse="; ")) else ""), rows=synced)
+  }
+
   manual_grade_catalog <- function() {
     cats <- tryCatch(db_query(
       "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
@@ -10467,6 +10577,35 @@ server <- function(input, output, session) {
     if (!length(rows)) return(data.frame(assignment = character(0), max_score = numeric(0)))
     do.call(rbind, rows)
   }
+
+  observeEvent(input$save_assignment_grade_policy_btn, {
+    req(rv$is_admin)
+    policy <- input$assignment_grade_policy %||% "final_score"
+    if (!policy %in% unname(assignment_grade_policy_choices)) {
+      showNotification("Choose a valid assignment grade policy.", type="error")
+      return()
+    }
+    set_setting("assignment_grade_policy", policy)
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification("Assignment grade policy saved.", type="message")
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$sync_cloudflare_grades_btn, {
+    req(rv$is_admin)
+    result <- tryCatch(sync_cloudflare_gradebook(), error=function(e) list(ok=FALSE, message=conditionMessage(e)))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification(result$message, type=if (isTRUE(result$ok)) "message" else "error", duration=12)
+  }, ignoreNULL=TRUE)
+
+  # Keep the gradebook current while an administrator has the Shiny app open.
+  # Manual sync remains available for an immediate refresh.
+  observe({
+    req(rv$is_admin)
+    invalidateLater(15 * 60 * 1000, session)
+    result <- tryCatch(sync_cloudflare_gradebook(), error=function(e) list(ok=FALSE, rows=0L))
+    if (isTRUE(result$ok) && isTRUE((result$rows %||% 0L) > 0L))
+      rv$gradebook_ver <- rv$gradebook_ver + 1L
+  })
 
   # ── Grade upload ──────────────────────────────────────────────────────────────
   observeEvent(input$upload_grades_btn, {
