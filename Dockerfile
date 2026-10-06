@@ -7,6 +7,7 @@ RUN R -e "install.packages(c('testthat', 'httr2'), repos='https://cloud.r-projec
 RUN rm -rf /srv/shiny-server/*
 COPY apps/ /srv/shiny-server/
 COPY tests/ /srv/shiny-server/tests/
+COPY scripts/ /srv/shiny-server/scripts/
 COPY shiny-server.conf.template /etc/shiny-server/shiny-server.conf.template
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
