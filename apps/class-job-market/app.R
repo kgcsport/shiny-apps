@@ -6167,8 +6167,7 @@ server <- function(input, output, session) {
       db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;",
               list(as.integer(old$id[1])))
     }
-    assigned_wage <- suppressWarnings(as.numeric(input$manual_assign_wage %||% NA_real_))
-    if (is.na(assigned_wage)) assigned_wage <- if (is.na(post$wage[1] %||% NA)) NA_real_ else as.numeric(post$wage[1])
+    assigned_wage <- if (is.na(post$wage[1] %||% NA)) NA_real_ else as.numeric(post$wage[1])
     db_exec(
       "INSERT INTO job_assignments(round_id, user_id, section, job_post_id, assigned_wage,
               assignment_mode, status, outcome, tokens_awarded, tokens_credited,
@@ -7548,15 +7547,13 @@ server <- function(input, output, session) {
                                         choices = manual_post_choices, width = "100%")),
                   column(2, dateInput("manual_assign_date", "Date:",
                                       value = as.Date(round$class_date[1] %||% Sys.Date()))),
-                  column(2, numericInput("manual_assign_wage", "Wage:",
-                                         value = NA_real_, min = 0, step = 1)),
                   column(2, selectInput("manual_assign_timing", "When:",
                                         choices = c("Start"="start", "During"="during", "End"="end", "Any"="any"),
                                         selected = "any")),
                   column(2, tags$br(),
                          actionButton("manual_add_assignment_btn", "Add / edit",
                                       class = "btn btn-sm btn-primary",
-                                      title = "Add this assignment back with the date and wage shown"))
+                                      title = "Add this assignment back with the selected date and timing"))
                 ),
                 tags$p(style = "font-size:.78rem;color:#888;margin:.35rem 0 0;",
                        sprintf("This restores the assignment to the selected class date (%s), just like an in-class selection.",
