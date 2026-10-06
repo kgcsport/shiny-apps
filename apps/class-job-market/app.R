@@ -1687,7 +1687,7 @@ previous_round_id <- function(current_round_id, query_fn = db_query) {
 overdue_pending_jobs <- function(query_fn = db_query) {
   tryCatch(query_fn(
     "SELECT ja.id AS assignment_id, ja.round_id, ja.user_id, ja.job_post_id,
-            ja.assigned_wage, u.display_name, u.course, u.section, jp.job_name,
+            ja.assignment_mode, ja.assigned_wage, u.display_name, u.course, u.section, jp.job_name,
             COALESCE(jp.description,'') AS description,
             COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time,
             COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''), substr(ja.created_at,1,10)) AS job_date
@@ -3090,6 +3090,7 @@ server <- function(input, output, session) {
 
       my_assign <- tryCatch(db_query(
         "SELECT jp.job_name,
+                COALESCE(ja.assignment_mode,'') AS assignment_mode,
                 COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS assigned_wage,
                 wr.label AS round_label,
                 COALESCE(jp.description,'') AS description,
@@ -3112,6 +3113,7 @@ server <- function(input, output, session) {
 
       all_assign <- tryCatch(db_query(
         "SELECT ja.user_id, u.display_name, u.course, u.section, jp.job_name,
+                COALESCE(ja.assignment_mode,'') AS assignment_mode,
                 COALESCE(jp.description,'') AS description,
                 COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS assigned_wage,
                 COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time
@@ -3322,6 +3324,7 @@ server <- function(input, output, session) {
       sr <- if (!is.null(jp$section_reveals)) jp$section_reveals else data.frame()
       sec <- trimws(rv$section %||% "")
       visible <- vapply(seq_len(nrow(today_my_assign)), function(i) {
+        if (norm_key(today_my_assign$assignment_mode[i]) == "manual") return(TRUE)
         if (!nrow(sr) || !nzchar(sec)) return(FALSE)
         sr_timing <- ifelse(
           norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
@@ -3358,6 +3361,7 @@ server <- function(input, output, session) {
         "end", "start")
       sr <- if (!is.null(jp$section_reveals)) jp$section_reveals else data.frame()
       visible <- vapply(seq_len(nrow(revealed_jobs)), function(i) {
+        if (norm_key(revealed_jobs$assignment_mode[i]) == "manual") return(TRUE)
         if (!nrow(sr)) return(FALSE)
         sr_timing <- ifelse(
           norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
@@ -3379,6 +3383,7 @@ server <- function(input, output, session) {
         "end", "start")
       sr <- if (!is.null(jp$last_class_reveals)) jp$last_class_reveals else data.frame()
       visible <- vapply(seq_len(nrow(last_class_jobs)), function(i) {
+        if (norm_key(last_class_jobs$assignment_mode[i]) == "manual") return(TRUE)
         if (!nrow(sr)) return(FALSE)
         sr_timing <- ifelse(
           norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
@@ -3439,24 +3444,14 @@ server <- function(input, output, session) {
       } else {
         div(class = "today-card tracker-wrap",
           tags$table(class = "table table-sm table-hover", style = "margin-bottom:0;",
-            tags$thead(tags$tr(tags$th("Student"), tags$th("Job"), tags$th("Class date"), if (isTRUE(rv$is_admin)) tags$th("Grade") else NULL)),
+            tags$thead(tags$tr(tags$th("Student"), tags$th("Job"), tags$th("Class date"))),
             tags$tbody(lapply(seq_len(nrow(last_class_jobs)), function(i) {
               r <- last_class_jobs[i, ]
               tags$tr(
                 tags$td(r$display_name %||% r$user_id),
                 tags$td(r$job_name %||% "",
                         job_description_details(r$description, "Instructions")),
-                tags$td(format(as.Date(r$job_date), "%B %d, %Y")),
-                if (isTRUE(rv$is_admin)) tags$td(
-                  actionButton(paste0("grade_pending_", as.integer(r$round_id), "_", as.integer(i)),
-                               "Grade →", class = "btn btn-xs btn-outline-primary",
-                               onclick = sprintf("Shiny.setInputValue('grade_pending_round_btn',{round_id:%d},{priority:'event'});",
-                                                 as.integer(r$round_id))),
-                  actionButton(paste0("edit_pending_", as.integer(r$assignment_id), "_", as.integer(i)),
-                               "Edit →", class = "btn btn-xs btn-outline-secondary",
-                               onclick = sprintf("Shiny.setInputValue('edit_pending_assignment_btn',{assignment_id:%d},{priority:'event'});",
-                                                 as.integer(r$assignment_id)))
-                )
+                tags$td(format(as.Date(r$job_date), "%B %d, %Y"))
               )
             }))
           )
@@ -6193,7 +6188,7 @@ server <- function(input, output, session) {
                      updated_at=datetime('now');",
       list(rid, uid, stu$section[1], post_id,
            assigned_wage,
-           round$assignment_mode[1] %||% "manual",
+           "manual",
            scheduled_date, input$manual_assign_timing %||% "any", display_today))
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification(
