@@ -7599,7 +7599,7 @@ server <- function(input, output, session) {
                     if (nzchar(poc)) {
                       span(class = "badge badge-warning",
                            sprintf("Pending: %s", switch(poc, complete = "complete", tried = "tried", missed = "missed", poc)))
-                    } else if (ta == 1L) {
+                    } else if (ta == 1L && nzchar(oc)) {
                       awarded_amt <- switch(oc,
                         complete = wage, tried = 1, missed = 0, 0)
                       span(style = "color:#888;font-size:.82rem;",
