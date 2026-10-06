@@ -7376,12 +7376,8 @@ server <- function(input, output, session) {
         error = function(e) data.frame())
     } else data.frame()
     manual_post_choices <- if (nrow(manual_posts)) {
-      post_labels <- sprintf("%s [%s, %g token%s]",
-                             manual_posts$job_name %||% paste("Job", manual_posts$id),
-                             manual_posts$selection_time %||% "any",
-                             as.numeric(manual_posts$wage %||% 0),
-                             ifelse(as.numeric(manual_posts$wage %||% 0) == 1, "", "s"))
-      setNames(manual_posts$id, post_labels)
+      setNames(manual_posts$id,
+               manual_posts$job_name %||% paste("Job", manual_posts$id))
     } else character(0)
 
     tagList(
