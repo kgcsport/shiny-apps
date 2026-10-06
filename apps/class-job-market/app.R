@@ -10601,7 +10601,7 @@ server <- function(input, output, session) {
   # Manual sync remains available for an immediate refresh.
   observe({
     req(rv$is_admin)
-    invalidateLater(15 * 60 * 1000, session)
+    invalidateLater(6 * 60 * 60 * 1000, session)
     result <- tryCatch(sync_cloudflare_gradebook(), error=function(e) list(ok=FALSE, rows=0L))
     if (isTRUE(result$ok) && isTRUE((result$rows %||% 0L) > 0L))
       rv$gradebook_ver <- rv$gradebook_ver + 1L
