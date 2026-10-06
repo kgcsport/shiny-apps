@@ -626,6 +626,8 @@ ensure_column("job_assignments", "tokens_credited INTEGER DEFAULT 1")
 ensure_column("job_assignments", "created_at TEXT")
 ensure_column("job_assignments", "scheduled_date TEXT")
 ensure_column("job_assignments", "display_on_today INTEGER DEFAULT 1")
+ensure_column("job_assignments", "section TEXT")
+ensure_column("job_assignments", "selection_time TEXT")
 db_exec("CREATE TABLE IF NOT EXISTS wage_bids(
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id     INTEGER,
@@ -2955,9 +2957,10 @@ server <- function(input, output, session) {
         pending_outcome_expr <- if (nzchar(pending_join)) "COALESCE(pse.outcome,'')" else "''"
         pending_tokens_expr  <- if (nzchar(pending_join)) "pse.tokens" else "0"
         tryCatch(db_query(sprintf(
-          "SELECT ja.id, ja.round_id, ja.user_id, u.display_name, u.course, u.section, jp.job_name,
+          "SELECT ja.id, ja.round_id, ja.user_id, u.display_name, u.course,
+                  COALESCE(NULLIF(ja.section,''),u.section) AS section, jp.job_name,
                   COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''), substr(ja.created_at,1,10)) AS job_date,
-                  COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time,
+                  COALESCE(NULLIF(ja.selection_time,''), NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time,
                   COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS assigned_wage,
                   %s AS outcome,
                   %s AS tokens_awarded,
@@ -2998,8 +3001,8 @@ server <- function(input, output, session) {
            LEFT JOIN job_assignments ja ON ja.id=lse.job_assignment_id
            LEFT JOIN job_posts ap ON ap.id=ja.job_post_id
            LEFT JOIN job_categories apc ON apc.id=ap.category_id
-           WHERE lse.round_id=? AND lse.committed_at IS NULL
-           ORDER BY u.course, u.section, u.display_name, lse.created_at;", list(rid)),
+           WHERE lse.committed_at IS NULL
+           ORDER BY u.course, u.section, u.display_name, lse.created_at;"),
           error = function(e) data.frame())
       } else data.frame()
       list(students=students, subs=subs, assignments=assignments,
@@ -3577,9 +3580,13 @@ server <- function(input, output, session) {
     if (is.na(aid)) return()
     row <- tryCatch(db_query(
       "SELECT ja.id, ja.round_id, ja.user_id, ja.job_post_id, ja.assigned_wage,
+              COALESCE(NULLIF(ja.section,''),u.section) AS assignment_section,
+              COALESCE(NULLIF(ja.selection_time,''),NULLIF(jp.selection_time,''),NULLIF(jc.selection_time,''),'start') AS assignment_timing,
               COALESCE(NULLIF(ja.scheduled_date,''),wr.class_date,date('now','localtime')) AS scheduled_date,
-              wr.label, u.display_name, u.course, u.section
+              wr.label, u.display_name, u.course, u.section, jp.job_name
        FROM job_assignments ja JOIN weekly_rounds wr ON wr.id=ja.round_id
+       JOIN job_posts jp ON jp.id=ja.job_post_id
+       LEFT JOIN job_categories jc ON jc.id=jp.category_id
        JOIN users u ON u.user_id=ja.user_id WHERE ja.id=? LIMIT 1;", list(aid)),
       error=function(e)data.frame())
     if (!nrow(row)) { showNotification("That pending assignment no longer exists.", type="error"); return() }
@@ -3597,8 +3604,10 @@ server <- function(input, output, session) {
     showModal(modalDialog(
       title = paste("Edit pending job —", row$display_name[1] %||% row$user_id[1]),
       selectInput("edit_pending_uid", "Student:", choices=stu_choices, selected=row$user_id[1]),
+      selectInput("edit_pending_section", "Section:", choices=unique(students$section), selected=row$assignment_section[1]),
       selectInput("edit_pending_post", "Job:", choices=post_choices, selected=row$job_post_id[1]),
       dateInput("edit_pending_date", "Class date:", value=as.Date(row$scheduled_date[1])),
+      selectInput("edit_pending_timing", "When:", choices=c("Start"="start","During"="during","End"="end","Any"="any"), selected=row$assignment_timing[1]),
       numericInput("edit_pending_wage", "Wage:", value=as.numeric(row$assigned_wage[1]), min=0, step=1),
       footer=tagList(modalButton("Cancel"), actionButton("save_pending_edit_btn", "Save changes", class="btn-primary")),
       easyClose=TRUE
@@ -3618,8 +3627,8 @@ server <- function(input, output, session) {
     conflict <- tryCatch(db_query("SELECT id FROM job_assignments WHERE round_id=? AND user_id=? AND job_post_id=? AND id<>? LIMIT 1;",
       list(row$round_id[1],input$edit_pending_uid,input$edit_pending_post,aid)),error=function(e)data.frame())
     if (nrow(conflict)) { showNotification("That student already has this job for the selected class date.",type="error"); return() }
-    db_exec("UPDATE job_assignments SET user_id=?,job_post_id=?,assigned_wage=?,scheduled_date=?,updated_at=datetime('now') WHERE id=?;",
-            list(input$edit_pending_uid,input$edit_pending_post,wage,new_date,aid))
+    db_exec("UPDATE job_assignments SET user_id=?,section=?,job_post_id=?,assigned_wage=?,scheduled_date=?,selection_time=?,updated_at=datetime('now') WHERE id=?;",
+            list(input$edit_pending_uid,input$edit_pending_section,input$edit_pending_post,wage,new_date,input$edit_pending_timing,aid))
     removeModal(); rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification("Pending assignment updated.",type="message")
   }, ignoreNULL=TRUE)
@@ -5998,6 +6007,23 @@ server <- function(input, output, session) {
     showNotification("Pending score removed.", type = "message")
   }, ignoreNULL = TRUE)
 
+  observeEvent(input$commit_one_live_score_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    eid <- suppressWarnings(as.integer(input$commit_one_live_score_btn %||% 0))
+    if (is.na(eid) || eid <= 0) return()
+    ev <- tryCatch(db_query(
+      "SELECT lse.*,u.display_name,u.course,u.section
+       FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
+       WHERE lse.id=? AND lse.committed_at IS NULL LIMIT 1;", list(eid)),
+      error=function(e)data.frame())
+    ev <- scope_filter_rows(ev)
+    if (!nrow(ev)) { showNotification("That pending score is no longer available.", type="warning"); return() }
+    if (isTRUE(.commit_live_score_event(ev[1, ]))) {
+      rv$jobs_ver <- rv$jobs_ver + 1L
+      showNotification("Score approved and committed.", type="message")
+    }
+  }, ignoreNULL=TRUE)
+
   observeEvent(input$clear_live_scores_btn, {
     req(rv$is_admin, !rv$impersonating)
     rid_row <- tryCatch(active_round_row(),
@@ -6148,12 +6174,13 @@ server <- function(input, output, session) {
     assigned_wage <- suppressWarnings(as.numeric(input$manual_assign_wage %||% NA_real_))
     if (is.na(assigned_wage)) assigned_wage <- if (is.na(post$wage[1] %||% NA)) NA_real_ else as.numeric(post$wage[1])
     db_exec(
-      "INSERT INTO job_assignments(round_id, user_id, job_post_id, assigned_wage,
+      "INSERT INTO job_assignments(round_id, user_id, section, job_post_id, assigned_wage,
               assignment_mode, status, outcome, tokens_awarded, tokens_credited,
-              scheduled_date, display_on_today, updated_at)
-       VALUES(?,?,?,?,?,'assigned','',0,1,?,?,datetime('now'))
+              scheduled_date, selection_time, display_on_today, updated_at)
+       VALUES(?,?,?,?,?,?,'assigned','',0,1,?,?,?,datetime('now'))
        ON CONFLICT(round_id, user_id, job_post_id)
        DO UPDATE SET job_post_id=excluded.job_post_id,
+                     section=excluded.section,
                      assigned_wage=excluded.assigned_wage,
                      assignment_mode=excluded.assignment_mode,
                      status='assigned',
@@ -6161,12 +6188,13 @@ server <- function(input, output, session) {
                      tokens_awarded=0,
                      tokens_credited=1,
                      scheduled_date=excluded.scheduled_date,
+                     selection_time=excluded.selection_time,
                      display_on_today=excluded.display_on_today,
                      updated_at=datetime('now');",
-      list(rid, uid, post_id,
+      list(rid, uid, stu$section[1], post_id,
            assigned_wage,
            round$assignment_mode[1] %||% "manual",
-           scheduled_date, display_today))
+           scheduled_date, input$manual_assign_timing %||% "any", display_today))
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification(
       sprintf("Added %s back to %s for the %s class. It now appears in that date's assignment and job-pool counts.",
@@ -7526,6 +7554,9 @@ server <- function(input, output, session) {
                                       value = as.Date(round$class_date[1] %||% Sys.Date()))),
                   column(2, numericInput("manual_assign_wage", "Wage:",
                                          value = NA_real_, min = 0, step = 1)),
+                  column(2, selectInput("manual_assign_timing", "When:",
+                                        choices = c("Start"="start", "During"="during", "End"="end", "Any"="any"),
+                                        selected = "any")),
                   column(2, tags$br(),
                          actionButton("manual_add_assignment_btn", "Add / edit",
                                       class = "btn btn-sm btn-primary",
@@ -7608,6 +7639,13 @@ server <- function(input, output, session) {
                   ),
                   tags$td(
                     tags$button(
+                      class = "btn btn-xs btn-outline-primary",
+                      style = "padding:.1rem .3rem;font-size:.7rem;margin-right:.1rem;",
+                      title = "Edit assignment details",
+                      onclick = sprintf(
+                        "Shiny.setInputValue('edit_pending_assignment_btn',{assignment_id:%d},{priority:'event'});",
+                        as.integer(r$id)), "Edit"),
+                    tags$button(
                       class = "btn btn-xs btn-outline-warning",
                       style = "padding:.1rem .3rem;font-size:.7rem;margin-right:.1rem;",
                       title = "Mark absent and redraw this job",
@@ -7619,7 +7657,7 @@ server <- function(input, output, session) {
                       style = "padding:.1rem .3rem;font-size:.7rem;",
                       title = "Unassign",
                       onclick = sprintf(
-                        "Shiny.setInputValue('unassign_job_btn',%d,{priority:'event'});",
+                        "if(confirm('Delete this pending assignment?')){Shiny.setInputValue('unassign_job_btn',%d,{priority:'event'})}",
                         as.integer(r$id)), "\U2715")
                   )
                 )
@@ -7904,6 +7942,11 @@ server <- function(input, output, session) {
                     tags$td(r$outcome %||% ""),
                     tags$td(style = "text-align:right;", as.integer(r$tokens %||% 0)),
                     tags$td(tags$button(
+                      class = "btn btn-xs btn-outline-primary",
+                      style = "padding:.1rem .3rem;font-size:.7rem;margin-right:.2rem;",
+                      title = "Approve and commit this score",
+                      onclick = sprintf("if(confirm('Approve this score?')){Shiny.setInputValue('commit_one_live_score_btn',%d,{priority:'event'})}", as.integer(r$id)),
+                      "Approve"), tags$button(
                       class = "btn btn-xs btn-outline-secondary",
                       style = "padding:.1rem .3rem;font-size:.7rem;",
                       title = if (identical(as.character(r$event_kind %||% ""), "assignment")) "Return assignment to pending" else "Remove pending score",
