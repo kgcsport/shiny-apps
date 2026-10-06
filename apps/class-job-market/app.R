@@ -2994,11 +2994,14 @@ server <- function(input, output, session) {
                     ELSE lse.tokens
                   END AS tokens,
                   lse.created_at,
+                  COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''),
+                           substr(ja.created_at,1,10), substr(lse.created_at,1,10)) AS job_date,
                   COALESCE(jp.job_name, ap.job_name, '') AS job_name
            FROM live_score_events lse
            JOIN users u ON u.user_id=lse.user_id
            LEFT JOIN job_posts jp ON jp.id=lse.job_post_id
            LEFT JOIN job_assignments ja ON ja.id=lse.job_assignment_id
+           LEFT JOIN weekly_rounds wr ON wr.id=ja.round_id
            LEFT JOIN job_posts ap ON ap.id=ja.job_post_id
            LEFT JOIN job_categories apc ON apc.id=ap.category_id
            WHERE lse.committed_at IS NULL
@@ -7922,13 +7925,15 @@ server <- function(input, output, session) {
             div(class = "tracker-wrap",
               tags$table(class = "table table-sm",
                 tags$thead(tags$tr(
-                  tags$th("Student"), tags$th("Job"), tags$th("Type"),
+                  tags$th("Student"), tags$th("Assignment date"), tags$th("Job"), tags$th("Type"),
                   tags$th("Outcome"), tags$th(style = "text-align:right;", "Tokens"), tags$th("")
                 )),
                 tags$tbody(lapply(seq_len(nrow(pending_show)), function(i) {
                   r <- pending_show[i, ]
                   tags$tr(
                     tags$td(r$display_name %||% r$user_id),
+                    tags$td(style = "color:#888;font-size:.85em;",
+                            if (nzchar(as.character(r$job_date %||% ""))) format(as.Date(r$job_date), "%b %d, %Y") else "—"),
                     tags$td(r$job_name %||% ""),
                     tags$td(switch(as.character(r$event_kind %||% ""),
                                    assignment = "assigned",
