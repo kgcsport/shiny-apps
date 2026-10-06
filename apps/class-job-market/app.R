@@ -1703,7 +1703,7 @@ overdue_pending_jobs <- function(query_fn = db_query) {
        AND COALESCE(jp.voluntary,COALESCE(jc.voluntary,0),0)=0
        AND LOWER(COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start'))<>'volunteer'
        AND NOT EXISTS (SELECT 1 FROM live_score_events lse WHERE lse.job_assignment_id=ja.id)
-     ORDER BY job_date, u.course, u.section, jp.display_order, u.display_name;"),
+     ORDER BY job_date DESC, u.course, u.section, jp.display_order, u.display_name;"),
     error = function(e) data.frame())
 }
 
@@ -2940,8 +2940,7 @@ server <- function(input, output, session) {
         awarded_expr <- if ("tokens_awarded" %in% ja_cols) "COALESCE(ja.tokens_awarded,0)" else "0"
         status_filter <- if ("status" %in% ja_cols) paste(
           "AND COALESCE(ja.status,'assigned')='assigned'",
-          "AND COALESCE(ja.outcome,'')=''",
-          "AND COALESCE(ja.tokens_awarded,0)=0") else ""
+          "AND COALESCE(ja.outcome,'')=''") else ""
         pending_join <- if (all(c("job_assignment_id", "outcome", "tokens", "event_kind", "committed_at") %in% lse_cols)) {
           "LEFT JOIN (
              SELECT lse.job_assignment_id, lse.outcome, lse.tokens
@@ -3102,17 +3101,17 @@ server <- function(input, output, session) {
          JOIN job_posts jp ON jp.id=ja.job_post_id
          LEFT JOIN job_categories jc ON jc.id=jp.category_id
          JOIN weekly_rounds wr ON wr.id=ja.round_id
-          WHERE ja.user_id=? AND ja.round_id=?
+          WHERE ja.user_id=?
+            AND date(COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''), substr(ja.created_at,1,10))) = date(?)
             AND COALESCE(ja.status,'assigned')='assigned'
             AND COALESCE(ja.outcome,'')=''
             AND COALESCE(ja.display_on_today,1)=1
-            AND (COALESCE(ja.scheduled_date,'')='' OR ja.scheduled_date=wr.class_date)
             AND NOT EXISTS (
               SELECT 1 FROM live_score_events lse
               WHERE lse.job_assignment_id=ja.id
             )
           ORDER BY COALESCE(jp.display_order,99), jp.id;",
-        list(uid, assignment_rid)), error = function(e) data.frame())
+        list(uid, round$class_date[1])), error = function(e) data.frame())
 
       all_assign <- tryCatch(db_query(
         "SELECT ja.user_id, u.display_name, u.course, u.section, jp.job_name,
@@ -3125,17 +3124,16 @@ server <- function(input, output, session) {
          JOIN job_posts jp ON jp.id=ja.job_post_id
          LEFT JOIN job_categories jc ON jc.id=jp.category_id
          JOIN weekly_rounds wr ON wr.id=ja.round_id
-         WHERE ja.round_id=?
+         WHERE date(COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''), substr(ja.created_at,1,10))) = date(?)
            AND COALESCE(ja.status,'assigned')='assigned'
            AND COALESCE(ja.outcome,'')=''
            AND COALESCE(ja.display_on_today,1)=1
-           AND (COALESCE(ja.scheduled_date,'')='' OR ja.scheduled_date=wr.class_date)
            AND NOT EXISTS (
              SELECT 1 FROM live_score_events lse
              WHERE lse.job_assignment_id=ja.id
            )
          ORDER BY u.course, u.section, jp.display_order, u.display_name;",
-        list(assignment_rid)), error = function(e) data.frame())
+        list(round$class_date[1])), error = function(e) data.frame())
 
       section_reveals <- tryCatch(db_query(
         "SELECT section, COALESCE(timing,'start') AS timing,

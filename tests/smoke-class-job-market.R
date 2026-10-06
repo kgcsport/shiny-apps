@@ -284,6 +284,6 @@ for (d in overdue_dates) {
 overdue_rows <- overdue_pending_jobs(query_fn=db_query)
 overdue_rows <- overdue_rows[overdue_rows$user_id == "overdue-student", , drop=FALSE]
 stopifnot(nrow(overdue_rows) == 2L)
-stopifnot(identical(as.character(overdue_rows$job_date), overdue_dates))
+stopifnot(identical(as.character(overdue_rows$job_date), rev(overdue_dates)))
 
 cat("\nALL SMOKE TESTS PASSED\n")
