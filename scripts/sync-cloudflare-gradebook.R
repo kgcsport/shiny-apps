@@ -5,7 +5,10 @@ suppressPackageStartupMessages({
   library(DBI); library(RSQLite); library(jsonlite); library(httr2)
 })
 `%||%` <- function(a,b) if (!is.null(a) && length(a)>0 && !is.na(a[1])) a else b
-shared_sqlite <- file.path(dirname(normalizePath(sys.frame(1)$ofile %||% getwd(), mustWork=FALSE)), "..", "apps", "_shared", "sqlite.R")
+script_args <- commandArgs(trailingOnly=FALSE)
+script_file <- sub("^--file=", "", script_args[grepl("^--file=", script_args)][1])
+script_dir <- if (nzchar(script_file)) dirname(normalizePath(script_file, mustWork=FALSE)) else getwd()
+shared_sqlite <- file.path(script_dir, "..", "apps", "_shared", "sqlite.R")
 if (!file.exists(shared_sqlite)) shared_sqlite <- "/srv/shiny-server/_shared/sqlite.R"
 source(shared_sqlite, local=TRUE)
 path <- shared_db_path(demo=FALSE)
