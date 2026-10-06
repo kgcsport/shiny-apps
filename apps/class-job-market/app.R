@@ -2974,7 +2974,7 @@ server <- function(input, output, session) {
             WHERE 1=1 %s
             ORDER BY job_date, u.course, u.section, u.display_name;",
           outcome_expr, awarded_expr, pending_outcome_expr, pending_tokens_expr,
-          pending_join, status_filter), list()),
+          pending_join, status_filter)),
           error = function(e) data.frame())
       }
       pending_scores <- {
