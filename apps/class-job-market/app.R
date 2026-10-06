@@ -2935,7 +2935,7 @@ server <- function(input, output, session) {
            ORDER BY section;", list(rid)),
           error = function(e) data.frame())
       } else data.frame()
-      assignments <- if (!is.na(rid)) {
+      assignments <- {
         outcome_expr <- if ("outcome" %in% ja_cols) "COALESCE(ja.outcome,'')" else "''"
         awarded_expr <- if ("tokens_awarded" %in% ja_cols) "COALESCE(ja.tokens_awarded,0)" else "0"
         status_filter <- if ("status" %in% ja_cols) paste(
@@ -2958,7 +2958,7 @@ server <- function(input, output, session) {
         pending_tokens_expr  <- if (nzchar(pending_join)) "pse.tokens" else "0"
         tryCatch(db_query(sprintf(
           "SELECT ja.id, ja.round_id, ja.user_id, u.display_name, u.course,
-                  COALESCE(NULLIF(ja.section,''),u.section) AS section, jp.job_name,
+                  COALESCE(NULLIF(ja.section,''),u.section) AS section, COALESCE(jp.job_name,jc.name,'Deleted job') AS job_name,
                   COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''), substr(ja.created_at,1,10)) AS job_date,
                   COALESCE(NULLIF(ja.selection_time,''), NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time,
                   COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS assigned_wage,
@@ -2968,17 +2968,17 @@ server <- function(input, output, session) {
                   %s AS pending_tokens
            FROM job_assignments ja
            JOIN users u ON u.user_id=ja.user_id
-           JOIN job_posts jp ON jp.id=ja.job_post_id
+           LEFT JOIN job_posts jp ON jp.id=ja.job_post_id
            LEFT JOIN job_categories jc ON jc.id=jp.category_id
-           JOIN weekly_rounds wr ON wr.id=ja.round_id
+           LEFT JOIN weekly_rounds wr ON wr.id=ja.round_id
            %s
-            WHERE (ja.round_id=? OR date(COALESCE(NULLIF(ja.scheduled_date,''), NULLIF(wr.class_date,''), substr(ja.created_at,1,10))) < date('now','localtime')) %s
+            WHERE 1=1 %s
             ORDER BY job_date, u.course, u.section, u.display_name;",
           outcome_expr, awarded_expr, pending_outcome_expr, pending_tokens_expr,
-          pending_join, status_filter), list(rid)),
+          pending_join, status_filter), list()),
           error = function(e) data.frame())
-      } else data.frame()
-      pending_scores <- if (!is.na(rid)) {
+      }
+      pending_scores <- {
         required_lse <- c("id", "round_id", "user_id", "job_assignment_id",
                           "job_post_id", "event_kind", "outcome", "tokens",
                           "created_at", "committed_at")
@@ -3004,7 +3004,7 @@ server <- function(input, output, session) {
            WHERE lse.committed_at IS NULL
            ORDER BY u.course, u.section, u.display_name, lse.created_at;"),
           error = function(e) data.frame())
-      } else data.frame()
+      }
       list(students=students, subs=subs, assignments=assignments,
            round=round, revealed=revealed, section_reveals=section_reveals,
            pending_scores=pending_scores)
