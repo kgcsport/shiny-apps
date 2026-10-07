@@ -9553,6 +9553,14 @@ server <- function(input, output, session) {
                "Sync maps Worker assignments to existing gradebook items (for example, PS1 → Problem Set 1). It never creates new items."),
         actionButton("save_assignment_grade_policy_btn", "Save policy", class="btn btn-sm btn-outline-primary"),
         actionButton("sync_cloudflare_grades_btn", "Sync now", class="btn btn-sm btn-primary"),
+        tags$h6(style="font-weight:700;margin-top:.8rem;", "Manual grade entry"),
+        fluidRow(
+          column(3, selectInput("manual_grade_student", "Student:", choices=grade_student_choices)),
+          column(3, selectInput("manual_grade_item", "Assignment:", choices=manual_grade_choices)),
+          column(2, numericInput("manual_grade_score", "Score (%)", value=NA, min=0, max=100)),
+          column(4, textInput("manual_grade_note", "Note:"))
+        ),
+        actionButton("save_manual_grade_btn", "Save manual grade", class="btn btn-sm btn-outline-primary"),
         if (nrow(assignment_sync_log)) tags$table(class="table table-sm", style="margin-top:.5rem;",
           tags$thead(tags$tr(tags$th("Assignment"),tags$th("Gradebook item"),tags$th("Status"),tags$th("Rows"),tags$th("Last sync"),tags$th("Note"))),
           tags$tbody(lapply(seq_len(nrow(assignment_sync_log)), function(i) { r <- assignment_sync_log[i, ]; tags$tr(
@@ -11090,6 +11098,19 @@ server <- function(input, output, session) {
     set_setting("assignment_grade_policy", policy)
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification("Assignment grade policy saved.", type="message")
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$save_manual_grade_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    uid <- trimws(input$manual_grade_student %||% "")
+    item <- trimws(input$manual_grade_item %||% "")
+    score <- suppressWarnings(as.numeric(input$manual_grade_score %||% NA_real_))
+    if (!nzchar(uid) || !nzchar(item) || !is.finite(score) || score < 0 || score > 100) {
+      showNotification("Choose a student and assignment, then enter a score from 0 to 100.", type="error"); return()
+    }
+    upsert_student_grade(uid, item, score, 100, score, trimws(input$manual_grade_note %||% "Manual entry"))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification(sprintf("Saved %s for %s.", item, uid), type="message")
   }, ignoreNULL=TRUE)
 
   observeEvent(input$sync_cloudflare_grades_btn, {
