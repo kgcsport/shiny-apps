@@ -10988,6 +10988,8 @@ server <- function(input, output, session) {
     token <- regmatches(label, regexpr("(problem\\s*set|ps)\\s*[0-9]+", label,
                                        ignore.case=TRUE, perl=TRUE))
     token <- compact(token)
+    number <- regmatches(token, regexpr("[0-9]+$", token))
+    token <- if (length(number) && nzchar(number)) paste0("ps", number) else token
     if (length(token) && nzchar(token)) {
       candidates <- which(names_compact == token)
       if (length(candidates) == 1L) return(catalog$assignment[candidates])

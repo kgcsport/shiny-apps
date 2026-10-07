@@ -47,12 +47,17 @@ match_item <- function(a) {
   token <- regmatches(label, regexpr("(problem\\s*set|ps)\\s*[0-9]+", label,
                                      ignore.case=TRUE, perl=TRUE))
   token <- compact(token)
+  # Normalize both “problemset2” and “ps2” to the local PS2 convention.
+  number <- regmatches(token, regexpr("[0-9]+$", token))
+  token <- if (length(number) && nzchar(number)) paste0("ps", number) else token
   hit <- if(length(token)&&nzchar(token)) which(nc == token) else integer()
   if(length(hit)==1) catalog$assignment[hit] else NA_character_
 }
 db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_log(assignment_id TEXT PRIMARY KEY,assignment_title TEXT,gradebook_item TEXT,policy TEXT,last_synced_at TEXT,status TEXT DEFAULT 'pending',error TEXT,rows_synced INTEGER DEFAULT 0);")
 policy <- db_query("SELECT value FROM labor_settings WHERE key='assignment_grade_policy';")$value[1] %||% "final_score"
 if (!policy %in% c("final_score","split_half")) policy <- "final_score"
+protected_raw <- db_query("SELECT value FROM labor_settings WHERE key='assignment_grade_protected';")$value[1] %||% "PS1"
+protected_items <- compact(strsplit(protected_raw, "[,;\\n]+")[[1]])
 roster <- db_query("SELECT user_id,display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;")
 key <- function(x) tolower(trimws(as.character(x %||% "")))
 upsert <- function(uid,item,pct,title) db_exec("INSERT INTO student_grades(user_id,assignment_name,score,max_score,grade_pct,week_tag) VALUES(?,?,?,100,?,?) ON CONFLICT DO UPDATE SET score=excluded.score,max_score=100,grade_pct=excluded.grade_pct,week_tag=excluded.week_tag,uploaded_at=CURRENT_TIMESTAMP;",list(uid,item,pct,pct,title))
