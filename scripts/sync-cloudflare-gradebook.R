@@ -17,7 +17,7 @@ on.exit <- function(...) try(DBI::dbDisconnect(con), silent=TRUE)
 db_query <- function(sql, params=NULL) if (is.null(params)) dbGetQuery(con,sql) else dbGetQuery(con,sql,params=params)
 db_exec <- function(sql, params=NULL) if (is.null(params)) dbExecute(con,sql) else dbExecute(con,sql,params=params)
 origin <- sub("/+$", "", Sys.getenv("ASSIGNMENT_API_ORIGIN", "https://econ342-self-grading.kyle-g-coombs.workers.dev"))
-token <- Sys.getenv("ASSIGNMENT_ADMIN_TOKEN", "")
+token <- trimws(Sys.getenv("ASSIGNMENT_ADMIN_TOKEN", ""))
 if (!nzchar(token)) stop("ASSIGNMENT_ADMIN_TOKEN is missing")
 get_json <- function(path) {
   r <- request(paste0(origin,path)) |> req_headers(Authorization=paste("Bearer",token)) |> req_timeout(30) |> req_error(is_error=function(x) FALSE) |> req_perform()

@@ -3,7 +3,7 @@
 ASSIGNMENT_API_ORIGIN <- sub("/+$", "", Sys.getenv(
   "ASSIGNMENT_API_ORIGIN",
   "https://econ342-self-grading.kyle-g-coombs.workers.dev"))
-ASSIGNMENT_ADMIN_TOKEN <- Sys.getenv("ASSIGNMENT_ADMIN_TOKEN", "")
+ASSIGNMENT_ADMIN_TOKEN <- trimws(Sys.getenv("ASSIGNMENT_ADMIN_TOKEN", ""))
 
 extension_sync_configured <- function() {
   nzchar(ASSIGNMENT_API_ORIGIN) && nzchar(ASSIGNMENT_ADMIN_TOKEN) &&

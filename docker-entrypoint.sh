@@ -26,6 +26,8 @@ chown -R shiny:shiny /srv/shiny-server/appdata /var/log/shiny-server 2>/dev/null
 # Write the vars apps need to R's site-level environment file so all R
 # processes pick them up regardless of which user spawned them.
 R_RENVIRON_SITE="$(Rscript --no-save --no-restore -e 'cat(file.path(R.home("etc"), "Renviron.site"))')"
+# Replace managed values instead of appending duplicates across restarts.
+sed -i "/^GOOGLE_CLIENT_ID=/d; /^GOOGLE_CLIENT_SECRET=/d; /^SHINY_APP_URL=/d; /^ADMIN_EMAILS=/d; /^SHINY_PASSWORD=/d; /^LIVE_POLL_BASE_URL=/d; /^ASSIGNMENT_API_ORIGIN=/d; /^ASSIGNMENT_ADMIN_TOKEN=/d" "$R_RENVIRON_SITE"
 {
   [ -n "${GOOGLE_CLIENT_ID:-}"     ] && printf 'GOOGLE_CLIENT_ID=%s\n'     "$GOOGLE_CLIENT_ID"
   [ -n "${GOOGLE_CLIENT_SECRET:-}" ] && printf 'GOOGLE_CLIENT_SECRET=%s\n' "$GOOGLE_CLIENT_SECRET"
