@@ -40,7 +40,8 @@ catalog <- do.call(rbind,lapply(seq_len(nrow(cats)), function(i) {
 }))
 match_item <- function(a) {
   if (!nrow(catalog)) return(NA_character_)
-  ac <- compact(a$id %||% ""); tc <- compact(a$title %||% ""); nc <- compact(catalog$assignment)
+  ac <- compact(a$id %||% ""); tc <- compact(a$title %||% ""); kc <- compact(a$gradebookKey %||% ""); nc <- compact(catalog$assignment)
+  hit <- which(nc == kc & nzchar(kc)); if(length(hit)==1) return(catalog$assignment[hit])
   hit <- which(nc %in% c(ac,tc) & nzchar(nc)); if(length(hit)==1) return(catalog$assignment[hit])
   # Descriptive Worker titles must map to compact local items such as PS2.
   label <- paste(a$id %||% "", a$title %||% "")
