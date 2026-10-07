@@ -33,6 +33,8 @@ R_RENVIRON_SITE="$(Rscript --no-save --no-restore -e 'cat(file.path(R.home("etc"
   [ -n "${ADMIN_EMAILS:-}"         ] && printf 'ADMIN_EMAILS=%s\n'         "$ADMIN_EMAILS"
   [ -n "${SHINY_PASSWORD:-}"       ] && printf 'SHINY_PASSWORD=%s\n'       "$SHINY_PASSWORD"
   [ -n "${LIVE_POLL_BASE_URL:-}"   ] && printf 'LIVE_POLL_BASE_URL=%s\n'   "$LIVE_POLL_BASE_URL"
+  [ -n "${ASSIGNMENT_API_ORIGIN:-}" ] && printf 'ASSIGNMENT_API_ORIGIN=%s\n' "$ASSIGNMENT_API_ORIGIN"
+  [ -n "${ASSIGNMENT_ADMIN_TOKEN:-}" ] && printf 'ASSIGNMENT_ADMIN_TOKEN=%s\n' "$ASSIGNMENT_ADMIN_TOKEN"
 } >> "$R_RENVIRON_SITE"
 
 awk '
