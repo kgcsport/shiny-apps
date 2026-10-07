@@ -1695,6 +1695,23 @@ compute_student_grade <- function(uid) {
 volunteer_clearing_wage <- function(round_id, category_id, slots, query_fn = db_query,
                                     job_post_id = NA_integer_) {
   if (is.na(round_id %||% NA) || is.na(category_id %||% NA)) return(NA_real_)
+  # Volunteer jobs inherit the frozen cold-call wage; students do not bid separately.
+  cold_posts <- tryCatch(query_fn(
+    "SELECT jp.id, COALESCE(jp.wage_override,jc.default_wage,1) AS fallback_wage
+     FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
+     WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+       AND (LOWER(COALESCE(NULLIF(jp.selection_time,''),NULLIF(jc.selection_time,''),'')) IN ('during','during class')
+            OR LOWER(COALESCE(jc.name,''))='cold call')
+     ORDER BY jp.display_order,jp.id;", list(as.integer(round_id))),
+    error=function(e) data.frame())
+  if (nrow(cold_posts)) for (cp in seq_len(nrow(cold_posts))) {
+    snap <- tryCatch(class_wage_snapshot(round_id, as.integer(cold_posts$id[cp]),
+                                         as.numeric(cold_posts$fallback_wage[cp]), query_fn),
+                     error=function(e) NA_real_)
+    if (is.finite(snap)) return(as.numeric(snap))
+  }
+  # If no cold-call snapshot exists yet, let the caller use the posted default.
+  return(NA_real_)
   bids <- if (!is.na(job_post_id %||% NA)) tryCatch(query_fn(
     "SELECT min_wage FROM job_wage_bids
      WHERE round_id=? AND job_post_id=? AND min_wage IS NOT NULL
@@ -3349,6 +3366,14 @@ server <- function(input, output, session) {
          WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
          ORDER BY jp.display_order, jp.job_name;",
         list(rid)), error = function(e) data.frame())
+
+      # Volunteer jobs inherit the cold-call wage and are not student-biddable.
+      if (nrow(wage_posts)) {
+        is_volunteer <- tolower(trimws(as.character(wage_posts$category_name %||% ""))) == "volunteer" |
+          tolower(trimws(as.character(wage_posts$selection_time %||% ""))) == "volunteer" |
+          grepl("^volunteer", tolower(as.character(wage_posts$job_name %||% "")))
+        wage_posts <- wage_posts[!is_volunteer, , drop=FALSE]
+      }
 
       my_wage_bids <- tryCatch(db_query(
         "SELECT jp.id AS job_post_id,
