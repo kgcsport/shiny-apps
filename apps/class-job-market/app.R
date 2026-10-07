@@ -8989,7 +8989,9 @@ server <- function(input, output, session) {
          ", if (hide_archived) "AND COALESCE(active,1)=1 " else "",
          "ORDER BY course, section, display_name;")),
         error = function(e) data.frame())
-      students <- scope_filter_rows(students)
+      # Settings → Students is the master roster editor. Show every real
+      # student here so changing the active course/section cannot hide the
+      # records needed to repair their course or section assignments.
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Student Roster"),
         checkboxInput("hide_archived_students_chk", "Hide archived students",
