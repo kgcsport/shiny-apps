@@ -10956,9 +10956,12 @@ server <- function(input, output, session) {
     names_compact <- compact(catalog$assignment)
     exact <- which(names_compact %in% c(aid, title) & nzchar(names_compact))
     if (length(exact) == 1L) return(catalog$assignment[exact])
-    number <- regmatches(aid, regexpr("[0-9]+$", aid))
-    if (length(number) && nzchar(number)) {
-      candidates <- which(grepl(paste0("(problemset|ps)", number), names_compact, fixed=FALSE))
+    label <- paste(assignment$id %||% "", assignment$title %||% "")
+    token <- regmatches(label, regexpr("(problem\\s*set|ps)\\s*[0-9]+", label,
+                                       ignore.case=TRUE, perl=TRUE))
+    token <- compact(token)
+    if (length(token) && nzchar(token)) {
+      candidates <- which(names_compact == token)
       if (length(candidates) == 1L) return(catalog$assignment[candidates])
     }
     NA_character_

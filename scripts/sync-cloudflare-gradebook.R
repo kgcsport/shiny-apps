@@ -42,7 +42,12 @@ match_item <- function(a) {
   if (!nrow(catalog)) return(NA_character_)
   ac <- compact(a$id %||% ""); tc <- compact(a$title %||% ""); nc <- compact(catalog$assignment)
   hit <- which(nc %in% c(ac,tc) & nzchar(nc)); if(length(hit)==1) return(catalog$assignment[hit])
-  num <- regmatches(ac,regexpr("[0-9]+$",ac)); hit <- if(length(num)&&nzchar(num)) which(grepl(paste0("(problemset|ps)",num),nc)) else integer()
+  # Descriptive Worker titles must map to compact local items such as PS2.
+  label <- paste(a$id %||% "", a$title %||% "")
+  token <- regmatches(label, regexpr("(problem\\s*set|ps)\\s*[0-9]+", label,
+                                     ignore.case=TRUE, perl=TRUE))
+  token <- compact(token)
+  hit <- if(length(token)&&nzchar(token)) which(nc == token) else integer()
   if(length(hit)==1) catalog$assignment[hit] else NA_character_
 }
 db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_log(assignment_id TEXT PRIMARY KEY,assignment_title TEXT,gradebook_item TEXT,policy TEXT,last_synced_at TEXT,status TEXT DEFAULT 'pending',error TEXT,rows_synced INTEGER DEFAULT 0);")
