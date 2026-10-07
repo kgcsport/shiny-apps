@@ -9396,6 +9396,7 @@ server <- function(input, output, session) {
           criterion <- criteria[i,]
           old <- if (nrow(current_scores))
             current_scores[current_scores$criterion_key == criterion$key, , drop=FALSE]
+          else data.frame()
           score_value <- if (nrow(old)) as.numeric(old$score[1]) else NA_real_
           level_value <- if (nrow(old)) old$performance_level[1] %||% "" else ""
           anchors <- policy_rubric_anchor_points(criterion$max_points)

@@ -560,6 +560,7 @@ test_that("policy rubric drafts privately, releases to a team, and writes grades
       rv$active_sections <- "A"
 
       session$setInputs(
+        config_action="policy_rubrics",
         policy_rubric_team="Rubric Team",
         policy_rubric_component="presentation",
         policy_rubric_gradebook_item="Policy Presentation",
@@ -585,6 +586,10 @@ test_that("policy rubric drafts privately, releases to a team, and writes grades
         policy_rubric_overall="Strong early version.",
         policy_rubric_next="Strengthen the evidence section."
       )
+      session$flushReact()
+      expect_true(any(grepl(
+        "Policy Rubrics", as.character(output$config_panel), fixed=TRUE)))
+
       session$setInputs(save_policy_rubric_draft_btn=1)
       session$flushReact()
 

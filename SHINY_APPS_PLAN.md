@@ -408,6 +408,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-10-07** (Codex) - Fixed the first-load Policy Rubrics panel crash:
+  an ungraded team now supplies an explicit empty score data frame before the
+  criterion cards render. Expanded the server test to render the real Settings
+  panel before exercising draft, release, and gradebook write-back.
+
 - **2026-10-07** (Codex) - Added interactive instructor grading for the policy
   presentation, progress/revision report, and written brief. Rubrics support
   editable five-level anchors, criterion and overall feedback, private drafts,
