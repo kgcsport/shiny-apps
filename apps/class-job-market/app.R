@@ -56,6 +56,81 @@ unique_ci <- function(x) {
   x[!duplicated(norm_key(x))]
 }
 
+policy_rubric_catalog <- function() {
+  make_component <- function(label, gradebook_pattern, criteria) {
+    criteria <- as.data.frame(do.call(rbind, criteria), stringsAsFactors = FALSE)
+    names(criteria) <- c("key", "label", "max_points")
+    criteria$max_points <- as.numeric(criteria$max_points)
+    list(label = label, gradebook_pattern = gradebook_pattern, criteria = criteria)
+  }
+  list(
+    presentation = make_component(
+      "Presentation", "presentation",
+      list(
+        c("question", "Policy question and motivation", 15),
+        c("context", "Context and scope", 15),
+        c("economics", "Public-finance economics", 20),
+        c("evidence", "Evidence and research synthesis", 20),
+        c("alternatives", "Alternatives, tradeoffs, and verdict", 15),
+        c("communication", "Communication and discussion", 15)
+      )
+    ),
+    progress = make_component(
+      "Progress report / revision memo", "revision|progress",
+      list(
+        c("feedback", "Identifies useful feedback", 25),
+        c("diagnosis", "Diagnoses revision needs", 25),
+        c("changes", "Plans concrete changes", 30),
+        c("uncertainty", "Names remaining uncertainty", 10),
+        c("clarity", "Clarity and concision", 10)
+      )
+    ),
+    brief = make_component(
+      "Written policy brief", "brief",
+      list(
+        c("executive", "Executive policy argument", 15),
+        c("context", "Context, institutions, and scope", 15),
+        c("economics", "Economic framework", 20),
+        c("evidence", "Evidence and uncertainty", 20),
+        c("alternatives", "Alternatives, tradeoffs, and recommendation", 15),
+        c("writing", "Writing, organization, revision, and sources", 15)
+      )
+    )
+  )
+}
+
+policy_rubric_anchor_points <- function(max_points) {
+  max_points <- as.numeric(max_points)
+  c(
+    excellent = max_points,
+    proficient = round(max_points * 0.85, 1),
+    developing = round(max_points * 0.70, 1),
+    incomplete = round(max_points * 0.50, 1),
+    missing = 0
+  )
+}
+
+policy_rubric_score <- function(component, scores, adjustment = 0) {
+  catalog <- policy_rubric_catalog()
+  if (!component %in% names(catalog))
+    return(list(ok = FALSE, message = "Unknown policy-rubric component."))
+  criteria <- catalog[[component]]$criteria
+  max_points <- as.numeric(criteria$max_points)
+  names(max_points) <- criteria$key
+  scores <- suppressWarnings(as.numeric(scores[criteria$key]))
+  names(scores) <- criteria$key
+  if (length(scores) != nrow(criteria) || any(!is.finite(scores)))
+    return(list(ok = FALSE, message = "Enter a score for every rubric criterion."))
+  if (any(scores < 0 | scores > max_points))
+    return(list(ok = FALSE, message = "Each criterion score must be between zero and its maximum."))
+  adjustment <- suppressWarnings(as.numeric(adjustment))
+  if (!is.finite(adjustment) || adjustment < -10 || adjustment > 2)
+    return(list(ok = FALSE, message = "The timing/word-limit adjustment must be between -10 and +2."))
+  base <- sum(scores)
+  list(ok = TRUE, base_score = base, adjustment = adjustment,
+       final_score = max(0, base + adjustment), max_score = sum(max_points))
+}
+
 # ── Google OAuth config ───────────────────────────────────────────────────────
 GOOGLE_CLIENT_ID     <- Sys.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET <- Sys.getenv("GOOGLE_CLIENT_SECRET", "")
@@ -527,6 +602,37 @@ upsert_policy_group_assignment <- function(user_id, policy_team, presentation_da
     list(user_id, policy_team, presentation_date, course_unit, topic_interests,
          assigned_rank, allocation_seed))
 }
+
+db_exec("CREATE TABLE IF NOT EXISTS policy_rubric_assessments(
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  course           TEXT NOT NULL DEFAULT '',
+  policy_team      TEXT NOT NULL,
+  component        TEXT NOT NULL,
+  rubric_version   TEXT NOT NULL DEFAULT 'fall2026-v1',
+  status           TEXT NOT NULL DEFAULT 'draft',
+  gradebook_item   TEXT,
+  base_score       REAL,
+  adjustment       REAL DEFAULT 0,
+  final_score      REAL,
+  overall_feedback TEXT,
+  next_steps       TEXT,
+  released_at      TEXT,
+  updated_at       TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_by       TEXT,
+  UNIQUE(course, policy_team, component, status)
+);")
+db_exec("CREATE TABLE IF NOT EXISTS policy_rubric_scores(
+  assessment_id    INTEGER NOT NULL,
+  criterion_key    TEXT NOT NULL,
+  criterion_label  TEXT NOT NULL,
+  max_points       REAL NOT NULL,
+  performance_level TEXT,
+  score            REAL NOT NULL,
+  feedback         TEXT,
+  PRIMARY KEY(assessment_id, criterion_key)
+);")
+db_exec("CREATE INDEX IF NOT EXISTS idx_policy_rubric_release
+         ON policy_rubric_assessments(course, policy_team, status, released_at);")
 
 # Job market tables (shared with class-job-market; CREATE IF NOT EXISTS is safe)
 db_exec("CREATE TABLE IF NOT EXISTS job_categories(
@@ -2063,6 +2169,13 @@ body.tutorial-off .tab-howto, body.tutorial-off .tutorial-note { display:none !i
 .grade-tbl .item-row td:first-child { padding-left:1.5rem; }
 .grade-tbl .total-row td { font-weight:700; border-top:2px solid #ddd; background:#f7f7f7; }
 .grade-na { color:#bbb; font-style:italic; }
+.policy-rubric-criterion { background:#fafafa; border:1px solid #e5e5e5; border-radius:8px; margin:.7rem 0; padding:.8rem .9rem; }
+.policy-rubric-card { background:#fff; border:1px solid #ddd; border-left:4px solid #951829; border-radius:8px; margin:1rem 0; padding:1rem; }
+.policy-rubric-card h5 { color:#951829; font-weight:700; margin-top:0; }
+.policy-rubric-table { width:100%; font-size:.84rem; margin:.65rem 0; }
+.policy-rubric-table th, .policy-rubric-table td { border-bottom:1px solid #eee; padding:.42rem .35rem; vertical-align:top; }
+.policy-rubric-table th { color:#666; font-size:.75rem; text-transform:uppercase; }
+.policy-rubric-score { font-size:1.15rem; font-weight:700; color:#951829; white-space:nowrap; }
 .rw-preview { margin:.65rem 0 .9rem; background:#f9f9f9; border:1px solid #eee;
               border-radius:8px; padding:.75rem .9rem; }
 .rw-preview-title { font-size:.75rem; font-weight:700; color:#888; text-transform:uppercase;
@@ -2332,10 +2445,29 @@ server <- function(input, output, session) {
     jobs_ver       = 0L,    # bumped after any job-post or category mutation
     students_ver   = 0L,    # bumped after any student roster mutation
     gradebook_ver  = 0L,    # bumped after any gradebook category/item mutation
+    rubric_ver     = 0L,    # bumped after policy-rubric drafts or releases
     extensions_ver = 0L,    # bumped after extension pricing or assignment mutation
     flex_ver       = 0L,    # bumped after shared question funding/config changes
     policy_ver     = 0L     # bumped after policy-group assignment import
   )
+
+  # Rubric anchors prefill suggested points; the numeric inputs remain editable.
+  rubric_catalog_for_observers <- policy_rubric_catalog()
+  for (component_id in names(rubric_catalog_for_observers)) {
+    component_criteria <- rubric_catalog_for_observers[[component_id]]$criteria
+    for (criterion_index in seq_len(nrow(component_criteria))) local({
+      observed_component <- component_id
+      observed_criterion <- component_criteria[criterion_index, , drop=FALSE]
+      level_id <- paste0("policy_level_", observed_component, "_", observed_criterion$key)
+      score_id <- paste0("policy_score_", observed_component, "_", observed_criterion$key)
+      observeEvent(input[[level_id]], {
+        level <- input[[level_id]] %||% ""
+        anchors <- policy_rubric_anchor_points(observed_criterion$max_points)
+        if (nzchar(level) && level %in% names(anchors))
+          updateNumericInput(session, score_id, value=unname(anchors[[level]]))
+      }, ignoreInit=TRUE)
+    })
+  }
 
   # Empty legacy settings must not silently mean every class/section. These
   # defaults run during session setup, before a reactive consumer exists.
@@ -4940,6 +5072,217 @@ server <- function(input, output, session) {
       type = "message")
   })
 
+  collect_policy_rubric_form <- function() {
+    req(rv$is_admin, !rv$impersonating)
+    catalog <- policy_rubric_catalog()
+    component_id <- input$policy_rubric_component %||% ""
+    team <- trimws(input$policy_rubric_team %||% "")
+    course <- scoped_course()
+    if (!component_id %in% names(catalog) || !nzchar(team) || !nzchar(course))
+      return(list(ok=FALSE, message="Choose a course, team, and rubric component."))
+
+    members <- tryCatch(db_query(
+      "SELECT p.user_id, u.display_name, u.course, u.section
+       FROM policy_group_assignments p
+       JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+       WHERE p.policy_team=? AND LOWER(u.course)=LOWER(?)
+         AND COALESCE(u.active,1)=1 AND COALESCE(u.is_admin,0)=0
+         AND COALESCE(u.is_demo,0)=0
+       ORDER BY COALESCE(u.display_name,p.user_id);",
+      list(team, course)), error=function(e)data.frame())
+    members <- scope_filter_rows(members)
+    if (!nrow(members))
+      return(list(ok=FALSE, message="The selected team has no active students in the current scope."))
+
+    criteria <- catalog[[component_id]]$criteria
+    scores <- setNames(vapply(seq_len(nrow(criteria)), function(i)
+      suppressWarnings(as.numeric(input[[paste0("policy_score_", component_id, "_", criteria$key[i])]] %||% NA_real_)),
+      numeric(1)), criteria$key)
+    levels <- setNames(vapply(seq_len(nrow(criteria)), function(i)
+      input[[paste0("policy_level_", component_id, "_", criteria$key[i])]] %||% "",
+      character(1)), criteria$key)
+    feedback <- setNames(vapply(seq_len(nrow(criteria)), function(i)
+      trimws(input[[paste0("policy_feedback_", component_id, "_", criteria$key[i])]] %||% ""),
+      character(1)), criteria$key)
+    adjustment <- if (identical(component_id, "progress")) 0 else
+      suppressWarnings(as.numeric(input$policy_rubric_adjustment %||% 0))
+    total <- policy_rubric_score(component_id, scores, adjustment)
+    if (!isTRUE(total$ok)) return(total)
+
+    gradebook_item <- trimws(input$policy_rubric_gradebook_item %||% "")
+    available_items <- unname(unlist(get_all_gradebook_items(), use.names=FALSE))
+    if (nzchar(gradebook_item) && !gradebook_item %in% available_items)
+      return(list(ok=FALSE, message="The selected gradebook item no longer exists."))
+
+    list(ok=TRUE, course=course, team=team, component=component_id,
+         criteria=criteria, scores=scores, levels=levels, feedback=feedback,
+         gradebook_item=gradebook_item, members=members,
+         base_score=total$base_score, adjustment=total$adjustment,
+         final_score=total$final_score,
+         overall_feedback=trimws(input$policy_rubric_overall %||% ""),
+         next_steps=trimws(input$policy_rubric_next %||% ""))
+  }
+
+  save_policy_rubric <- function(status=c("draft", "released")) {
+    status <- match.arg(status)
+    form <- collect_policy_rubric_form()
+    if (!isTRUE(form$ok)) {
+      showNotification(form$message %||% "Could not save the rubric.", type="error")
+      return(invisible(FALSE))
+    }
+    db_exec(
+      "INSERT INTO policy_rubric_assessments(
+         course,policy_team,component,rubric_version,status,gradebook_item,
+         base_score,adjustment,final_score,overall_feedback,next_steps,
+         released_at,updated_at,updated_by
+       ) VALUES(?,?,?,'fall2026-v1',?,?,?,?,?,?,?,
+                CASE WHEN ?='released' THEN CURRENT_TIMESTAMP ELSE NULL END,
+                CURRENT_TIMESTAMP,?)
+       ON CONFLICT(course,policy_team,component,status) DO UPDATE SET
+         gradebook_item=excluded.gradebook_item,base_score=excluded.base_score,
+         adjustment=excluded.adjustment,final_score=excluded.final_score,
+         overall_feedback=excluded.overall_feedback,next_steps=excluded.next_steps,
+         released_at=CASE WHEN excluded.status='released' THEN CURRENT_TIMESTAMP
+                          ELSE policy_rubric_assessments.released_at END,
+         updated_at=CURRENT_TIMESTAMP,updated_by=excluded.updated_by;",
+      list(form$course,form$team,form$component,status,form$gradebook_item,
+           form$base_score,form$adjustment,form$final_score,
+           form$overall_feedback,form$next_steps,status,rv$user_id %||% "admin"))
+    assessment <- db_query(
+      "SELECT id FROM policy_rubric_assessments
+       WHERE LOWER(course)=LOWER(?) AND policy_team=? AND component=? AND status=? LIMIT 1;",
+      list(form$course,form$team,form$component,status))
+    assessment_id <- as.integer(assessment$id[1])
+    db_exec("DELETE FROM policy_rubric_scores WHERE assessment_id=?;",list(assessment_id))
+    for (i in seq_len(nrow(form$criteria))) {
+      criterion <- form$criteria[i,,drop=FALSE]
+      db_exec(
+        "INSERT INTO policy_rubric_scores(
+           assessment_id,criterion_key,criterion_label,max_points,performance_level,score,feedback
+         ) VALUES(?,?,?,?,?,?,?);",
+        list(assessment_id,criterion$key,criterion$label,as.numeric(criterion$max_points),
+             form$levels[[criterion$key]],form$scores[[criterion$key]],
+             form$feedback[[criterion$key]]))
+    }
+    if (identical(status,"released")) {
+      drafts <- tryCatch(db_query(
+        "SELECT id FROM policy_rubric_assessments
+         WHERE LOWER(course)=LOWER(?) AND policy_team=? AND component=? AND status='draft';",
+        list(form$course,form$team,form$component)),error=function(e)data.frame())
+      if (nrow(drafts)) {
+        for (draft_id in drafts$id)
+          db_exec("DELETE FROM policy_rubric_scores WHERE assessment_id=?;",list(draft_id))
+        db_exec(
+          "DELETE FROM policy_rubric_assessments
+           WHERE LOWER(course)=LOWER(?) AND policy_team=? AND component=? AND status='draft';",
+          list(form$course,form$team,form$component))
+      }
+      if (nzchar(form$gradebook_item)) {
+        for (student_id in form$members$user_id) db_exec(
+          "INSERT INTO student_grades(
+             user_id,assignment_name,score,max_score,grade_pct,week_tag,uploaded_at
+           ) VALUES(?,?,?,?,?,'Policy project',CURRENT_TIMESTAMP)
+           ON CONFLICT DO UPDATE SET
+             score=excluded.score,max_score=excluded.max_score,
+             grade_pct=excluded.grade_pct,week_tag=excluded.week_tag,
+             uploaded_at=CURRENT_TIMESTAMP;",
+          list(student_id,form$gradebook_item,form$final_score,100,form$final_score))
+        rv$gradebook_ver <- rv$gradebook_ver + 1L
+      }
+    }
+    rv$rubric_ver <- rv$rubric_ver + 1L
+    action <- if (identical(status,"released")) "released to the team" else "saved privately"
+    grade_note <- if (identical(status,"released") && nzchar(form$gradebook_item))
+      paste0(" and written to “",form$gradebook_item,"”") else ""
+    showNotification(sprintf("%s rubric %s%s (%.1f/100).",
+      policy_rubric_catalog()[[form$component]]$label,action,grade_note,form$final_score),
+      type="message",duration=6)
+    invisible(TRUE)
+  }
+
+  observeEvent(input$save_policy_rubric_draft_btn,
+    save_policy_rubric("draft"),ignoreInit=TRUE)
+  observeEvent(input$release_policy_rubric_btn,
+    save_policy_rubric("released"),ignoreInit=TRUE)
+
+  policy_feedback_poll <- reactivePoll(6000,session,
+    checkFunc=function() {
+      if (!isTRUE(rv$authed) || isTRUE(rv$is_admin) || is.null(rv$user_id)) return("")
+      stamp <- tryCatch(db_query(
+        "SELECT COUNT(*) AS n, COALESCE(MAX(a.updated_at),'') AS stamp
+         FROM policy_rubric_assessments a
+         JOIN policy_group_assignments p ON p.policy_team=a.policy_team
+         JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+         WHERE LOWER(p.user_id)=LOWER(?) AND LOWER(a.course)=LOWER(COALESCE(u.course,''))
+           AND a.status='released';",list(rv$user_id)),
+        error=function(e)data.frame(n=0,stamp=""))
+      paste(stamp$n[1] %||% 0,stamp$stamp[1] %||% "")
+    },
+    valueFunc=function() {
+      if (!isTRUE(rv$authed) || isTRUE(rv$is_admin) || is.null(rv$user_id))
+        return(list(assessments=data.frame(),scores=data.frame()))
+      assessments <- tryCatch(db_query(
+        "SELECT a.* FROM policy_rubric_assessments a
+         JOIN policy_group_assignments p ON p.policy_team=a.policy_team
+         JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+         WHERE LOWER(p.user_id)=LOWER(?) AND LOWER(a.course)=LOWER(COALESCE(u.course,''))
+           AND a.status='released'
+         ORDER BY CASE a.component WHEN 'presentation' THEN 1 WHEN 'progress' THEN 2 ELSE 3 END;",
+        list(rv$user_id)),error=function(e)data.frame())
+      scores <- if (nrow(assessments)) tryCatch(db_query(
+        paste0("SELECT * FROM policy_rubric_scores WHERE assessment_id IN (",
+               paste(rep("?",nrow(assessments)),collapse=","),") ORDER BY assessment_id,rowid;"),
+        as.list(assessments$id)),error=function(e)data.frame()) else data.frame()
+      list(assessments=assessments,scores=scores)
+    })
+
+  output$account_policy_feedback <- renderUI({
+    req(rv$authed)
+    feedback_data <- policy_feedback_poll()
+    assessments <- feedback_data$assessments
+    if (!nrow(assessments)) return(NULL)
+    catalog <- policy_rubric_catalog()
+    cards <- lapply(seq_len(nrow(assessments)),function(i) {
+      assessment <- assessments[i,,drop=FALSE]
+      rows <- feedback_data$scores[
+        feedback_data$scores$assessment_id == assessment$id,,drop=FALSE]
+      component_label <- catalog[[assessment$component]]$label %||%
+        tools::toTitleCase(assessment$component)
+      adjustment <- suppressWarnings(as.numeric(assessment$adjustment %||% 0))
+      div(class="policy-rubric-card",
+        div(style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;",
+          div(tags$h5(component_label),
+              tags$p(style="color:#777;font-size:.8rem;margin:0;",
+                     paste("Released",assessment$released_at %||% assessment$updated_at %||% ""))),
+          div(class="policy-rubric-score",sprintf("%.1f / 100",as.numeric(assessment$final_score)))),
+        if (nrow(rows)) tags$table(class="policy-rubric-table",
+          tags$thead(tags$tr(tags$th("Criterion"),tags$th("Level"),
+                             tags$th("Points"),tags$th("Feedback"))),
+          tags$tbody(lapply(seq_len(nrow(rows)),function(j) {
+            row <- rows[j,,drop=FALSE]
+            tags$tr(tags$td(row$criterion_label),
+              tags$td(if(nzchar(row$performance_level %||% ""))
+                tools::toTitleCase(row$performance_level) else "—"),
+              tags$td(sprintf("%g / %g",as.numeric(row$score),as.numeric(row$max_points))),
+              tags$td(if(nzchar(row$feedback %||% "")) row$feedback else "—"))
+          }))),
+        if (is.finite(adjustment) && adjustment != 0)
+          tags$p(style="font-size:.84rem;",sprintf(
+            "Criterion subtotal: %.1f; timing/word-limit adjustment: %+.1f.",
+            as.numeric(assessment$base_score),adjustment)),
+        if (nzchar(assessment$overall_feedback %||% ""))
+          tagList(tags$h6(style="font-weight:700;margin-top:.8rem;","Overall feedback"),
+                  tags$p(assessment$overall_feedback)),
+        if (nzchar(assessment$next_steps %||% ""))
+          tagList(tags$h6(style="font-weight:700;margin-top:.8rem;","Priority for the next stage"),
+                  tags$p(assessment$next_steps)))
+    })
+    tagList(div(class="sec-label","Policy Project Feedback"),
+      tags$p(style="color:#777;font-size:.84rem;",
+             "Released feedback is shared with every member of your policy team."),
+      cards)
+  })
+
   # ── Account tab ───────────────────────────────────────────────────────────────
   output$account_tab <- renderUI({
     req(rv$authed)
@@ -5100,6 +5443,7 @@ server <- function(input, output, session) {
         )
       ),
 
+      uiOutput("account_policy_feedback"),
       uiOutput("account_grade_breakdown")
     )
   })
@@ -8060,6 +8404,7 @@ server <- function(input, output, session) {
           "Job Market Controls"    = "round_setup",
           "Students"              = "students",
           "Token Admin"           = "token_admin",
+          "Policy Rubrics"        = "policy_rubrics",
           "Grades & Gradebook"    = "gradebook",
           "Exports"               = "exports",
           "Extensions"            = "extensions",
@@ -8996,6 +9341,128 @@ server <- function(input, output, session) {
         checkboxInput("fq_replace_all", "Replace all existing questions", value = FALSE),
         actionButton("upload_flex_questions_btn", "Upload", class = "btn btn-sm btn-primary")
       )
+
+    } else if (act == "policy_rubrics") {
+      rv$rubric_ver
+      catalog <- policy_rubric_catalog()
+      component_choices <- setNames(
+        names(catalog), vapply(catalog, function(x) x$label, character(1))
+      )
+      team_rows <- tryCatch(db_query(
+        "SELECT DISTINCT p.policy_team, u.course, u.section
+         FROM policy_group_assignments p
+         JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+         WHERE COALESCE(u.active,1)=1 AND COALESCE(u.is_admin,0)=0
+           AND COALESCE(u.is_demo,0)=0
+         ORDER BY p.policy_team;"), error = function(e) data.frame())
+      team_rows <- scope_filter_rows(team_rows)
+      teams <- sort(unique(nonempty_values(team_rows$policy_team %||% character(0))))
+      if (!length(teams)) {
+        tagList(
+          tags$h6(style="font-weight:700;color:#951829;margin-top:.5rem;", "Policy Rubrics"),
+          tags$p(style="color:#999;", "No policy teams exist in the selected course/section scope. Import or assign policy groups under Settings → Students first.")
+        )
+      } else {
+        selected_team <- isolate(input$policy_rubric_team %||% teams[1])
+        if (!selected_team %in% teams) selected_team <- teams[1]
+        selected_component <- isolate(input$policy_rubric_component %||% "presentation")
+        if (!selected_component %in% names(catalog)) selected_component <- "presentation"
+        course <- scoped_course()
+        draft <- tryCatch(db_query(
+          "SELECT * FROM policy_rubric_assessments
+           WHERE LOWER(course)=LOWER(?) AND policy_team=? AND component=? AND status='draft'
+           LIMIT 1;", list(course, selected_team, selected_component)),
+          error=function(e)data.frame())
+        released <- tryCatch(db_query(
+          "SELECT * FROM policy_rubric_assessments
+           WHERE LOWER(course)=LOWER(?) AND policy_team=? AND component=? AND status='released'
+           LIMIT 1;", list(course, selected_team, selected_component)),
+          error=function(e)data.frame())
+        current <- if (nrow(draft)) draft else released
+        current_scores <- if (nrow(current)) tryCatch(db_query(
+          "SELECT * FROM policy_rubric_scores WHERE assessment_id=?;",
+          list(current$id[1])), error=function(e)data.frame()) else data.frame()
+        component <- catalog[[selected_component]]
+        criteria <- component$criteria
+        gradebook_choices <- c(list("Feedback only" = c("Do not write a gradebook score" = "")),
+                               get_all_gradebook_items())
+        current_gradebook <- if (nrow(current)) current$gradebook_item[1] %||% "" else ""
+        if (!nzchar(current_gradebook)) {
+          flat_items <- unname(unlist(get_all_gradebook_items(), use.names=FALSE))
+          hits <- flat_items[grepl(component$gradebook_pattern, flat_items, ignore.case=TRUE)]
+          if (length(hits)) current_gradebook <- hits[1]
+        }
+        criterion_cards <- lapply(seq_len(nrow(criteria)), function(i) {
+          criterion <- criteria[i,]
+          old <- if (nrow(current_scores))
+            current_scores[current_scores$criterion_key == criterion$key, , drop=FALSE]
+          score_value <- if (nrow(old)) as.numeric(old$score[1]) else NA_real_
+          level_value <- if (nrow(old)) old$performance_level[1] %||% "" else ""
+          anchors <- policy_rubric_anchor_points(criterion$max_points)
+          level_choices <- c(
+            "Choose an anchor (optional)" = "",
+            setNames(names(anchors), sprintf("%s — %g", tools::toTitleCase(names(anchors)), anchors))
+          )
+          div(class="policy-rubric-criterion",
+            tags$h6(style="font-weight:700;margin-bottom:.35rem;",
+                    sprintf("%s (%g points)", criterion$label, as.numeric(criterion$max_points))),
+            fluidRow(
+              column(5, selectInput(
+                paste0("policy_level_", selected_component, "_", criterion$key),
+                "Performance anchor:", choices=level_choices, selected=level_value)),
+              column(3, numericInput(
+                paste0("policy_score_", selected_component, "_", criterion$key),
+                "Points:", value=score_value, min=0,
+                max=as.numeric(criterion$max_points), step=.5)),
+              column(4, tags$p(style="font-size:.78rem;color:#777;margin-top:1.9rem;",
+                "Anchor prefills points; adjust when the work falls between anchors."))
+            ),
+            textAreaInput(
+              paste0("policy_feedback_", selected_component, "_", criterion$key),
+              "Criterion feedback:", rows=2, width="100%",
+              value=if (nrow(old)) old$feedback[1] %||% "" else "")
+          )
+        })
+        status_ui <- tagList(
+          if (nrow(draft)) div(class="alert alert-warning", style="padding:.55rem .75rem;",
+            "Private draft saved ", draft$updated_at[1] %||% "", ". Students still see the last released version, if any."),
+          if (nrow(released)) div(class="alert alert-success", style="padding:.55rem .75rem;",
+            "Released to students ", released$released_at[1] %||% "", ".")
+        )
+        tagList(
+          tags$h6(style="font-weight:700;color:#951829;margin-top:.5rem;", "Policy Rubrics"),
+          tags$p(style="color:#555;font-size:.85rem;",
+            "Choose a performance anchor to prefill points, then fine-tune the score and add criterion feedback. Save privately while grading; Release to team publishes one shared copy to every team member and optionally writes the final score to the gradebook."),
+          fluidRow(
+            column(4, selectInput("policy_rubric_team", "Team:",
+                                  choices=setNames(teams, teams), selected=selected_team)),
+            column(4, selectInput("policy_rubric_component", "Component:",
+                                  choices=component_choices, selected=selected_component)),
+            column(4, selectInput("policy_rubric_gradebook_item", "Gradebook item:",
+                                  choices=gradebook_choices, selected=current_gradebook))
+          ),
+          status_ui,
+          criterion_cards,
+          fluidRow(
+            column(4, numericInput("policy_rubric_adjustment",
+              "Timing / word-limit adjustment:", value=if(nrow(current)) as.numeric(current$adjustment[1] %||% 0) else 0,
+              min=-10, max=2, step=.5)),
+            column(8, tags$p(style="font-size:.8rem;color:#666;margin-top:1.9rem;",
+              "Use 0 for the progress report. Presentation and brief adjustments follow the published +2 / −10 rule."))
+          ),
+          textAreaInput("policy_rubric_overall", "Overall feedback:", rows=3, width="100%",
+                        value=if(nrow(current)) current$overall_feedback[1] %||% "" else ""),
+          textAreaInput("policy_rubric_next", "Priority for the next stage:", rows=2, width="100%",
+                        value=if(nrow(current)) current$next_steps[1] %||% "" else ""),
+          div(style="display:flex;gap:.5rem;flex-wrap:wrap;",
+            actionButton("save_policy_rubric_draft_btn", "Save private draft",
+                         class="btn btn-outline-primary"),
+            actionButton("release_policy_rubric_btn", "Release to team",
+                         class="btn btn-primary",
+                         onclick="if(!confirm('Release this scored rubric to every member of the selected team?')) return false;")
+          )
+        )
+      }
 
     } else if (act == "gradebook") {
       rv$gradebook_ver

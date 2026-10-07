@@ -85,6 +85,7 @@ Sandbox mode is for testing the live class experience without touching student r
 - [x] Add a reusable persistent live-word-cloud question manager for slide-embedded classroom polling. *(2026-09-13: questions are created and edited in the instructor screen, routed by stable URL key, and require no app-code or slide-source change after embedding.)*
 - [x] Stabilize the class-job-market hub around live teaching workflows. *(2026-08-26: round setup, template auto-copy, and settings-panel reactivity fixed; see Work Log.)*
 - [x] Make job setup easier to maintain: fewer defaults, clearer timing, clean in-draw/voluntary controls, and sensible demo mirroring. *(2026-08-26: simplified 4-category / 11-template catalog with one-time migration; template-level timing/voluntary/in-draw/auto-copy controls.)*
+- [x] Add interactive policy-project rubrics with private drafts, team release, student Account feedback, and optional gradebook write-back. *(2026-10-07: presentation, progress/revision, and written-brief forms use five point anchors with Missing separated from Incomplete.)*
 - [ ] Add write-back contracts for one-off games so participation and outcomes can feed the semester economy.
 - [ ] Improve admin observability: what changed, who committed it, and what is still pending.
 - [ ] Keep deployment predictable through GitHub/GHCR and Reclaim Docker Compose.
@@ -161,6 +162,15 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 `tests/smoke-class-job-market.R` (run `Rscript tests/smoke-class-job-market.R` from repo root; needs DBI + RSQLite) exercises the seed migration, template auto-copy, idempotence across restarts, bid-lock windows, and all three clearing-wage rules against a scratch SQLite DB by extracting the relevant functions from `app.R`. The testthat suite in `tests/unit/` has 20 pre-existing failures unrelated to this work (regex/locale issues in the test environment).
 
 ## Decision Log
+
+- **2026-10-07** — Grade policy-project criteria with five editable point anchors
+  rather than wide score bands: Excellent = full credit, Proficient = 85%,
+  Developing = 70%, Incomplete = 50%, and Missing = 0. Zero is a separate
+  missing-work state, not part of the Incomplete band.
+- **2026-10-07** — Keep one private draft and one released snapshot per
+  course/team/component. Saving a draft does not change student-visible
+  feedback; releasing publishes the shared rubric to all team members and may
+  write its score to an existing gradebook item.
 
 - **2026-10-05** - Represent the ECON 342 midterm bank as twelve candidates in three four-question pools. Pool A contributes 3 questions (75% each), Pool B contributes 2 (50% each), and Pool C contributes 1 (25% each); every pool spans the same four topic strands.
 
@@ -397,6 +407,15 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-10-07** (Codex) - Added interactive instructor grading for the policy
+  presentation, progress/revision report, and written brief. Rubrics support
+  editable five-level anchors, criterion and overall feedback, private drafts,
+  released team snapshots, student Account delivery, and optional gradebook
+  write-back. Added startup/scoring assertions, a server-level
+  draft/release/write-back test, and a manual QA script. The container run
+  passed all new coverage; two unrelated pre-existing startup expectations
+  remain failing.
 
 - **2026-10-05** (Codex) - Added topic and draw-probability metadata to Flex Questions, exposed 75/50/25 percent chances to students and admins, and extended private CSV import validation and startup schema tests. The question text remains in the private PubEcon repository rather than the public app repository.
 
@@ -689,8 +708,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Deploy the class-job-market build, then use the authenticated Flex Questions admin upload to replace the ECON 342 bank with the private 12-question CSV and confirm all candidates are active.
-2. Rehearse one single-section and one pooled multi-section contribution through the first public reveal; confirm N, scope membership, and the displayed 75/50/25 percent chance.
+1. Deploy the class-job-market build and complete TC-15 with one sandbox policy team, including a private draft, release, and gradebook write-back.
+2. Use the authenticated Flex Questions admin upload to replace the ECON 342 bank with the private 12-question CSV and confirm all candidates are active.
 3. Complete one end-to-end extension purchase after mapping the active assignment id and target.
 
 ## Questions for Kyle

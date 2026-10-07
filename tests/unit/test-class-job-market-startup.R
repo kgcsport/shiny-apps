@@ -85,6 +85,13 @@ test_that("class-job-market starts against a fresh DB with required tables and c
                       cols(con,"scope_active_rounds")))
     expect_true(all(c("scope_key","round_id") %in% cols(con,"scope_rounds")))
     expect_true("scope_key" %in% cols(con,"public_good_contributions"))
+    expect_true(all(c("course","policy_team","component","status","gradebook_item",
+                      "base_score","adjustment","final_score","overall_feedback",
+                      "next_steps","released_at") %in%
+                    cols(con,"policy_rubric_assessments")))
+    expect_true(all(c("assessment_id","criterion_key","criterion_label","max_points",
+                      "performance_level","score","feedback") %in%
+                    cols(con,"policy_rubric_scores")))
 
     expect_equal(app$section_scope_key("ECON 342",c("B","A","A")),"econ 342::a|b")
     expect_equal(app$serialize_scope_sections(c("B","A","A")),"A||B")
@@ -474,6 +481,136 @@ test_that("custom grade item weights drive category and overall grades", {
     expect_equal(result$cats$graded_weight[1], 30)
     expect_equal(result$overall, expected, tolerance = 1e-8)
     expect_equal(result$items$item_weight, c(5, 10, 15))
+  })
+})
+
+
+test_that("policy rubric uses narrow anchors with a separate missing state", {
+  with_app_env({
+    app <- suppressWarnings(source_app())
+    on.exit(suppressWarnings(try(
+      if (!is.null(app$conn) && DBI::dbIsValid(app$conn)) DBI::dbDisconnect(app$conn),
+      silent = TRUE)), add = TRUE)
+
+    catalog <- app$policy_rubric_catalog()
+    expect_equal(names(catalog), c("presentation","progress","brief"))
+    expect_true(all(vapply(catalog, function(x)
+      sum(as.numeric(x$criteria$max_points)) == 100, logical(1))))
+
+    expect_equal(unname(app$policy_rubric_anchor_points(15)),
+                 c(15,12.8,10.5,7.5,0))
+    expect_equal(unname(app$policy_rubric_anchor_points(20)),
+                 c(20,17,14,10,0))
+    expect_equal(names(app$policy_rubric_anchor_points(15)),
+                 c("excellent","proficient","developing","incomplete","missing"))
+
+    presentation_scores <- setNames(
+      as.numeric(catalog$presentation$criteria$max_points),
+      catalog$presentation$criteria$key)
+    scored <- app$policy_rubric_score("presentation", presentation_scores, -2)
+    expect_true(scored$ok)
+    expect_equal(scored$base_score, 100)
+    expect_equal(scored$final_score, 98)
+
+    presentation_scores[1] <- 16
+    expect_false(app$policy_rubric_score(
+      "presentation", presentation_scores, 0)$ok)
+    expect_false(app$policy_rubric_score(
+      "presentation", presentation_scores * 0, -11)$ok)
+
+    source_text <- paste(readLines(app_file, warn=FALSE), collapse="\n")
+    expect_match(source_text, '"Policy Rubrics"        = "policy_rubrics"', fixed=TRUE)
+    expect_match(source_text, 'Save private draft', fixed=TRUE)
+    expect_match(source_text, 'Release to team', fixed=TRUE)
+    expect_match(source_text, 'account_policy_feedback', fixed=TRUE)
+  })
+})
+
+
+test_that("policy rubric drafts privately, releases to a team, and writes grades", {
+  with_app_env({
+    app <- suppressWarnings(source_app())
+    on.exit(suppressWarnings(try(
+      if (!is.null(app$conn) && DBI::dbIsValid(app$conn)) DBI::dbDisconnect(app$conn),
+      silent = TRUE)), add = TRUE)
+
+    for (uid in c("rubric-alice","rubric-bob")) {
+      app$db_exec(
+        "INSERT INTO users(user_id,display_name,is_admin,course,section,active,is_demo)
+         VALUES(?,?,0,'ECON 342','A',1,0);",
+        list(uid, tools::toTitleCase(sub("rubric-","",uid))))
+      app$upsert_policy_group_assignment(
+        uid, "Rubric Team", "2026-10-07", "Business and capital taxation")
+    }
+    app$db_exec(
+      "INSERT INTO gradebook_categories(name,weight,item_count,item_prefix,max_points,source,display_order)
+       VALUES('Policy project',100,1,'Policy Presentation',100,'manual',1);")
+    category_id <- app$db_query(
+      "SELECT id FROM gradebook_categories WHERE name='Policy project';")$id[1]
+    app$db_exec(
+      "INSERT INTO gradebook_item_names(category_id,item_index,item_name)
+       VALUES(?,1,'Policy Presentation');", list(category_id))
+
+    shiny::testServer(app$server, {
+      rv$authed <- TRUE
+      rv$is_admin <- TRUE
+      rv$impersonating <- FALSE
+      rv$user_id <- "rubric-admin"
+      rv$active_course <- "ECON 342"
+      rv$active_sections <- "A"
+
+      session$setInputs(
+        policy_rubric_team="Rubric Team",
+        policy_rubric_component="presentation",
+        policy_rubric_gradebook_item="Policy Presentation",
+        policy_level_presentation_question="excellent",
+        policy_score_presentation_question=15,
+        policy_feedback_presentation_question="Focused question.",
+        policy_level_presentation_context="proficient",
+        policy_score_presentation_context=12.8,
+        policy_feedback_presentation_context="Add one baseline.",
+        policy_level_presentation_economics="excellent",
+        policy_score_presentation_economics=20,
+        policy_feedback_presentation_economics="Clear mechanism.",
+        policy_level_presentation_evidence="developing",
+        policy_score_presentation_evidence=14,
+        policy_feedback_presentation_evidence="Explain identification.",
+        policy_level_presentation_alternatives="proficient",
+        policy_score_presentation_alternatives=12.8,
+        policy_feedback_presentation_alternatives="Good comparison.",
+        policy_level_presentation_communication="excellent",
+        policy_score_presentation_communication=15,
+        policy_feedback_presentation_communication="Clear delivery.",
+        policy_rubric_adjustment=0,
+        policy_rubric_overall="Strong early version.",
+        policy_rubric_next="Strengthen the evidence section."
+      )
+      session$setInputs(save_policy_rubric_draft_btn=1)
+      session$flushReact()
+
+      expect_equal(db_query(
+        "SELECT COUNT(*) n FROM policy_rubric_assessments WHERE status='draft';")$n[1], 1L)
+      expect_equal(db_query(
+        "SELECT COUNT(*) n FROM student_grades WHERE assignment_name='Policy Presentation';")$n[1], 0L)
+
+      session$setInputs(release_policy_rubric_btn=1)
+      session$flushReact()
+
+      released <- db_query(
+        "SELECT final_score FROM policy_rubric_assessments WHERE status='released';")
+      expect_equal(nrow(released), 1L)
+      expect_equal(released$final_score[1], 89.6)
+      expect_equal(db_query(
+        "SELECT COUNT(*) n FROM policy_rubric_assessments WHERE status='draft';")$n[1], 0L)
+      expect_equal(db_query(
+        "SELECT COUNT(*) n FROM policy_rubric_scores
+         WHERE assessment_id=(SELECT id FROM policy_rubric_assessments WHERE status='released');")$n[1], 6L)
+      grades <- db_query(
+        "SELECT user_id,grade_pct FROM student_grades
+         WHERE assignment_name='Policy Presentation' ORDER BY user_id;")
+      expect_equal(grades$user_id, c("rubric-alice","rubric-bob"))
+      expect_equal(grades$grade_pct, c(89.6,89.6))
+    })
   })
 })
 
