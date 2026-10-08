@@ -529,6 +529,7 @@ db_exec("CREATE TABLE IF NOT EXISTS gradebook_item_names(
   UNIQUE(category_id, item_index)
 );")
 ensure_column("gradebook_item_names", "item_weight REAL")
+ensure_column("gradebook_categories", "drop_lowest INTEGER DEFAULT 0")
 db_exec("CREATE TABLE IF NOT EXISTS student_grades(
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id         TEXT NOT NULL,
@@ -1701,6 +1702,10 @@ compute_student_grade <- function(uid) {
     r      <- cats[i, ]
     items  <- all_items[all_items$cat_idx == i, , drop=FALSE]
     graded <- items[!is.na(items$grade_pct), , drop=FALSE]
+    drop_lowest <- isTRUE(as.integer(r$drop_lowest %||% 0L) == 1L)
+    if (drop_lowest && nrow(graded) > 1L) {
+      graded <- graded[-which.min(graded$grade_pct), , drop=FALSE]
+    }
     cat_wt <- sum(graded$item_weight, na.rm = TRUE)
     cat_avg <- if (nrow(graded) && cat_wt > 0)
       sum(graded$grade_pct * graded$item_weight, na.rm = TRUE) / cat_wt
@@ -9801,7 +9806,11 @@ server <- function(input, output, session) {
                             div(tags$label(style = "font-size:.78rem;color:#555;display:block;", "Source"),
                                 tags$select(id=sprintf("gbcat_source_%d", cid_js), style=inp_style,
                                   tags$option(value="manual",        `selected`=if (!is_part) "selected" else NULL, "Manual entry"),
-                                  tags$option(value="participation", `selected`=if ( is_part) "selected" else NULL, "Participation (auto from app)")))
+                                  tags$option(value="participation", `selected`=if ( is_part) "selected" else NULL, "Participation (auto from app)"))),
+                            div(tags$label(style = "font-size:.78rem;color:#555;display:block;", "Drop lowest item"),
+                                tags$input(type="checkbox", id=sprintf("gbcat_drop_%d", cid_js),
+                                           checked=if (isTRUE(as.integer(r$drop_lowest %||% 0L) == 1L)) "checked" else NULL,
+                                           style="margin-top:.45rem;"))
                           ),
                           div(style = "display:flex;gap:.4rem;margin-bottom:.6rem;",
                             tags$button(
@@ -9814,11 +9823,12 @@ server <- function(input, output, session) {
                                 "var p=document.getElementById('gbcat_prefix_%d').value;",
                                 "var m=document.getElementById('gbcat_max_%d').value;",
                                 "var s=document.getElementById('gbcat_source_%d').value;",
+                                "var d=document.getElementById('gbcat_drop_%d').checked;",
                                 "Shiny.setInputValue('edit_gb_cat_btn',",
-                                "{id:%d,name:n,weight:w,count:c,prefix:p,max:m,source:s},",
+                                "{id:%d,name:n,weight:w,count:c,prefix:p,max:m,source:s,drop_lowest:d},",
                                 "{priority:'event'});",
                                 "this.closest('details').removeAttribute('open');"),
-                                cid_js,cid_js,cid_js,cid_js,cid_js,cid_js,cid_js),
+                                cid_js,cid_js,cid_js,cid_js,cid_js,cid_js,cid_js,cid_js),
                               "Save changes"),
                             tags$button(
                               class = "btn btn-xs btn-outline-danger",
@@ -11484,15 +11494,16 @@ server <- function(input, output, session) {
     prefix <- trimws(ev$prefix %||% "")
     maxpts <- suppressWarnings(as.numeric(ev$max   %||% 100))
     source <- ev$source %||% "manual"
+    drop_lowest <- if (isTRUE(as.logical(ev$drop_lowest %||% FALSE))) 1L else 0L
     if (is.na(cid) || cid <= 0 || !nzchar(nm)) {
       showNotification("Category name required.", type = "error"); return()
     }
     db_exec(
-      "UPDATE gradebook_categories SET name=?,weight=?,item_count=?,item_prefix=?,max_points=?,source=? WHERE id=?;",
+      "UPDATE gradebook_categories SET name=?,weight=?,item_count=?,item_prefix=?,max_points=?,source=?,drop_lowest=? WHERE id=?;",
       list(nm, weight, count,
            if (nzchar(prefix)) prefix else NA_character_,
            if (!is.na(maxpts)) maxpts else 100,
-           source, cid))
+           source, drop_lowest, cid))
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification(sprintf("Category '%s' updated.", nm), type = "message")
   }, ignoreNULL = TRUE)
