@@ -11047,16 +11047,16 @@ server <- function(input, output, session) {
         ext <- key(sub$externalId[1] %||% "")
         nm <- key(sub$name[1] %||% "")
         hit <- which(key(roster$user_id) == ext)
-        if (!length(hit) && nzchar(nm)) hit <- which(key(roster$display_name) == nm)
+        if (!length(hit) && isTRUE(nzchar(nm)[1])) hit <- which(key(roster$display_name) == nm)
         if (!length(hit)) { unmatched <- unmatched + 1L; next }
         scan_ok <- nzchar(as.character(sub$scanVerifiedAt[1] %||% ""))
-        submitted <- identical(as.character(sub$status[1] %||% ""), "submitted") && nzchar(as.character(sub$submittedAt[1] %||% ""))
+        submitted <- identical(as.character(sub$status[1] %||% ""), "submitted") && isTRUE(nzchar(as.character(sub$submittedAt[1] %||% ""))[1])
         score <- suppressWarnings(as.numeric(sub$totalScore[1] %||% NA_real_))
         max_score <- suppressWarnings(as.numeric(sub$maxPoints[1] %||% NA_real_))
-        final_pct <- if (is.finite(score) && is.finite(max_score) && max_score > 0) 100 * score / max_score else NA_real_
-        if (isTRUE(policy == "final_score" && (!submitted || !is.finite(final_pct)))) next
-        if (isTRUE(policy == "split_half" && !scan_ok && (!submitted || !is.finite(final_pct)))) next
-        grade_pct <- if (policy == "split_half") (if (scan_ok) 50 else 0) + if (submitted && is.finite(final_pct)) 0.5 * final_pct else 0 else final_pct
+        final_pct <- if (isTRUE(is.finite(score)[1]) && isTRUE(is.finite(max_score)[1]) && isTRUE(max_score[1] > 0)) 100 * score / max_score else NA_real_
+        if (identical(policy, "final_score") && (!isTRUE(submitted) || !isTRUE(is.finite(final_pct)[1]))) next
+        if (identical(policy, "split_half") && !isTRUE(scan_ok) && (!isTRUE(submitted) || !isTRUE(is.finite(final_pct)[1]))) next
+        grade_pct <- if (identical(policy, "split_half")) (if (isTRUE(scan_ok)) 50 else 0) + if (isTRUE(submitted) && isTRUE(is.finite(final_pct)[1])) 0.5 * final_pct else 0 else final_pct
         upsert_student_grade(roster$user_id[hit[1]], item, grade_pct, 100, grade_pct, title)
         n_rows <- n_rows + 1L
       }
@@ -11116,7 +11116,13 @@ server <- function(input, output, session) {
 
   observeEvent(input$sync_cloudflare_grades_btn, {
     req(rv$is_admin)
-    result <- tryCatch(sync_cloudflare_gradebook(), error=function(e) list(ok=FALSE, message=conditionMessage(e)))
+    result <- tryCatch(
+      sync_cloudflare_gradebook(),
+      error=function(e) {
+        calls <- sys.calls()
+        trace <- if (length(calls)) paste(vapply(tail(calls, min(6L, length(calls))), function(x) paste(deparse(x), collapse=""), character(1)), collapse=" <- ") else "unknown"
+        list(ok=FALSE, message=paste0("Sync failed: ", conditionMessage(e), " [trace: ", trace, "]"))
+      })
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification(result$message, type=if (isTRUE(result$ok)) "message" else "error", duration=12)
   }, ignoreNULL=TRUE)
