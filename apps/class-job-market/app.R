@@ -9577,6 +9577,8 @@ server <- function(input, output, session) {
                      selected = assignment_policy, inline = FALSE),
         tags$p(style = "color:#666;font-size:.82rem;",
                "Sync maps Worker assignments to existing gradebook items (for example, PS1 → Problem Set 1). It never creates new items."),
+        textInput("assignment_grade_protected", "Protect existing grades (comma-separated):", value=as.character(get_setting("assignment_grade_protected", "PS1"))),
+        textInput("assignment_grade_excluded", "Exclude entirely from sync (comma-separated):", value=as.character(get_setting("assignment_grade_excluded", ""))),
         actionButton("save_assignment_grade_policy_btn", "Save policy", class="btn btn-sm btn-outline-primary"),
         actionButton("sync_cloudflare_grades_btn", "Sync now", class="btn btn-sm btn-primary"),
         tags$h6(style="font-weight:700;margin-top:.8rem;", "Manual grade entry"),
@@ -11027,6 +11029,8 @@ server <- function(input, output, session) {
     assignment_key <- function(x) gsub("[^a-z0-9]", "", key(x))
     protected_raw <- as.character(get_setting("assignment_grade_protected", "PS1"))[1]
     protected_items <- assignment_key(strsplit(protected_raw %||% "", "[,;\\n]+")[[1]])
+    excluded_raw <- as.character(get_setting("assignment_grade_excluded", ""))[1]
+    excluded_items <- assignment_key(strsplit(excluded_raw %||% "", "[,;\\n]+")[[1]])
     worker_assignment_key <- function(row) {
       raw <- key(row$gradebookKey[1] %||% "")
       title <- as.character(row$assignmentTitle[1] %||% "")
@@ -11054,6 +11058,7 @@ server <- function(input, output, session) {
       hit_item <- which(assignment_key(catalog$assignment) == worker_key)
       item <- if (length(hit_item)) as.character(catalog$assignment[hit_item[1]]) else ""
       if (!nzchar(item)) { unmatched <- unmatched + 1L; unmatched_key <- unmatched_key + 1L; next }
+      if (assignment_key(item) %in% excluded_items) { skipped <- skipped + 1L; next }
       ext <- key(r$externalId[1] %||% "")
       nm <- key(r$studentName[1] %||% "")
       hit <- which(key(roster$user_id) == ext)
@@ -11109,6 +11114,8 @@ server <- function(input, output, session) {
       return()
     }
     set_setting("assignment_grade_policy", policy)
+    set_setting("assignment_grade_protected", trimws(input$assignment_grade_protected %||% "PS1"))
+    set_setting("assignment_grade_excluded", trimws(input$assignment_grade_excluded %||% ""))
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification("Assignment grade policy saved.", type="message")
   }, ignoreNULL=TRUE)
