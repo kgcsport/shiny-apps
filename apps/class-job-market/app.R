@@ -11045,6 +11045,14 @@ server <- function(input, output, session) {
     if (!nrow(roster)) return(list(ok=FALSE, message="No active students are available for matching."))
     key <- function(x) tolower(trimws(as.character(x %||% "")))
     assignment_key <- function(x) gsub("[^a-z0-9]", "", key(x))
+    worker_assignment_key <- function(row) {
+      raw <- key(row$gradebookKey[1] %||% "")
+      title <- as.character(row$assignmentTitle[1] %||% "")
+      source <- if (nzchar(raw)) raw else title
+      hit <- regmatches(source, regexpr("(problem\\s*set|ps)\\s*[0-9]+", source, ignore.case=TRUE, perl=TRUE))
+      number <- regmatches(assignment_key(hit), regexpr("[0-9]+$", assignment_key(hit)))
+      if (length(number) && nzchar(number)) paste0("ps", number) else assignment_key(source)
+    }
     export <- tryCatch(assignment_review_gradebook_export(), error=function(e)e)
     if (inherits(export, "error")) return(list(ok=FALSE, message=conditionMessage(export)))
     rows <- export$rows %||% data.frame()
@@ -11060,7 +11068,7 @@ server <- function(input, output, session) {
       r <- rows[i, , drop=FALSE]
       aid <- as.character(r$assignmentId[1] %||% "")
       title <- as.character(r$assignmentTitle[1] %||% aid)
-      worker_key <- assignment_key(r$gradebookKey[1] %||% "")
+      worker_key <- worker_assignment_key(r)
       hit_item <- which(assignment_key(catalog$assignment) == worker_key)
       item <- if (length(hit_item)) as.character(catalog$assignment[hit_item[1]]) else ""
       if (!nzchar(item)) { unmatched <- unmatched + 1L; unmatched_key <- unmatched_key + 1L; next }
