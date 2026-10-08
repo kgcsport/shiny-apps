@@ -9540,26 +9540,7 @@ server <- function(input, output, session) {
         "SELECT DISTINCT section FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND section IS NOT NULL AND section != '';"),
         error = function(e) data.frame())
       sec_choices <- c("Current selected scope"="current_scope","All sections (explicit)"="all",sort(sections_df$section %||% character(0)))
-      grade_students <- tryCatch(db_query(
-        "SELECT user_id,display_name,course,section FROM users
-         WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
-         ORDER BY section, display_name;"), error = function(e) data.frame())
-      grade_students <- scope_filter_rows(grade_students)
-      grade_student_choices <- if (nrow(grade_students)) setNames(
-        grade_students$user_id,
-        sprintf("%s — %s%s",
-                grade_students$display_name %||% grade_students$user_id,
-                grade_students$user_id,
-                ifelse(nzchar(grade_students$section %||% ""),
-                       paste0(" (", grade_students$section, ")"), ""))
-      ) else character(0)
-      manual_grade_items <- manual_grade_catalog()
-      manual_grade_choices <- if (nrow(manual_grade_items))
-        setNames(manual_grade_items$assignment, manual_grade_items$assignment) else character(0)
       assignment_policy <- get_setting("assignment_grade_policy", "final_score")
-      assignment_sync_log <- tryCatch(db_query(
-        "SELECT assignment_title,gradebook_item,policy,last_synced_at,status,error,rows_synced
-         FROM assignment_grade_sync_log ORDER BY assignment_title;"), error=function(e)data.frame())
 
       get_item_names_for_cat <- function(cat_row) {
         gradebook_item_specs(cat_row, inames)$item_name
@@ -9581,21 +9562,8 @@ server <- function(input, output, session) {
         textInput("assignment_grade_excluded", "Exclude entirely from sync (comma-separated):", value=as.character(get_setting("assignment_grade_excluded", ""))),
         actionButton("save_assignment_grade_policy_btn", "Save policy", class="btn btn-sm btn-outline-primary"),
         actionButton("sync_cloudflare_grades_btn", "Sync now", class="btn btn-sm btn-primary"),
-        tags$h6(style="font-weight:700;margin-top:.8rem;", "Manual grade entry"),
-        fluidRow(
-          column(3, selectInput("manual_grade_student", "Student:", choices=grade_student_choices)),
-          column(3, selectInput("manual_grade_item", "Assignment:", choices=manual_grade_choices)),
-          column(2, numericInput("manual_grade_score", "Score (%)", value=NA, min=0, max=100)),
-          column(4, textInput("manual_grade_note", "Note:"))
-        ),
-        actionButton("save_manual_grade_btn", "Save manual grade", class="btn btn-sm btn-outline-primary"),
-        if (nrow(assignment_sync_log)) tags$table(class="table table-sm", style="margin-top:.5rem;",
-          tags$thead(tags$tr(tags$th("Assignment"),tags$th("Gradebook item"),tags$th("Status"),tags$th("Rows"),tags$th("Last sync"),tags$th("Note"))),
-          tags$tbody(lapply(seq_len(nrow(assignment_sync_log)), function(i) { r <- assignment_sync_log[i, ]; tags$tr(
-            tags$td(r$assignment_title %||% ""), tags$td(r$gradebook_item %||% "—"), tags$td(r$status %||% ""),
-            tags$td(r$rows_synced %||% 0), tags$td(r$last_synced_at %||% "—"), tags$td(r$error %||% ""))
-          }))
-        ),
+        tags$p(style="color:#555;font-size:.82rem;margin:.5rem 0;",
+               "Edit grade percentages directly in the raw grade rows below. CSV uploads overwrite existing rows when enabled."),
 
         # ── 1. Grade Categories ─────────────────────────────────────────────────
         sec_hdr(1L, "Grade Categories"),
@@ -9778,10 +9746,11 @@ server <- function(input, output, session) {
                  tags$b("Fill either"), " score (with max_score) ", tags$b("or"),
                  " grade_pct. Rows with neither are ignored. Do not rename the headers.")),
         fluidRow(
-          column(5, fileInput("grade_file_upload", NULL,
+          column(4, fileInput("grade_file_upload", NULL,
                               accept = c(".csv",".xls",".xlsx"), width = "100%")),
           column(3, textInput("grade_week_tag", "Week tag (optional):", width = "100%")),
-          column(2, tags$br(),
+          column(2, checkboxInput("grade_upload_overwrite", "Overwrite existing", value = TRUE)),
+          column(1, tags$br(),
                  actionButton("upload_grades_btn", "Upload", class = "btn btn-sm btn-primary")),
           column(2, tags$br(),
                  actionButton("clear_grades_btn", "Clear All",
@@ -9789,15 +9758,8 @@ server <- function(input, output, session) {
                               onclick = "if(!confirm('Delete all grade records?')) return false;"))
         ),
 
-        tags$details(
-          style = "margin:.65rem 0;",
-          open = TRUE,
-          tags$summary(style="cursor:pointer;color:#951829;font-weight:700;",
-                       "Edit gradebook table"),
-          tags$p(style="color:#777;font-size:.8rem;margin:.4rem 0 .5rem;",
-                 "Edit any PS1/PS2/etc. cell directly. Values are percentages and save immediately as protected manual overrides."),
-          DT::DTOutput("manual_grade_matrix")
-        ),
+        tags$p(style="color:#777;font-size:.8rem;margin:.5rem 0;",
+               "Edit grade percentages directly in the raw grade rows below. Changes save immediately as protected manual overrides."),
         tags$hr(),
 
         # ── 3. Grades View & Downloads ──────────────────────────────────────────
@@ -9910,6 +9872,10 @@ server <- function(input, output, session) {
                       )),
                       tags$tbody(lapply(seq_len(nrow(grade_rows)), function(i) {
                         r   <- grade_rows[i, ]
+                        edit_js <- sprintf(
+                          "Shiny.setInputValue('inline_grade_edit',{user_id:%s,assignment:%s,value:this.value},{priority:'event'})",
+                          jsonlite::toJSON(as.character(r$user_id), auto_unbox=TRUE),
+                          jsonlite::toJSON(as.character(r$assignment_name), auto_unbox=TRUE))
                         cat_lbl <- if (nrow(item_cat_map)) {
                           m <- item_cat_map$cat_name[item_cat_map$item_name == (r$assignment_name %||% "")]
                           if (length(m) && nzchar(m[1])) m[1] else tags$span(style="color:#ccc;","—")
@@ -9920,7 +9886,12 @@ server <- function(input, output, session) {
                           tags$td(style="color:#888;font-size:.82em;", cat_lbl),
                           tags$td(if (!is.na(r$score))    r$score    else "—"),
                           tags$td(if (!is.na(r$max_score)) r$max_score else "—"),
-                          tags$td(if (!is.na(r$grade_pct)) sprintf("%.1f%%", r$grade_pct) else "—"),
+                          tags$td(
+                            tags$input(type="number", class="form-control input-sm", style="width:6.5em;",
+                              min=0, max=100, step=0.1,
+                              value=if (!is.na(r$grade_pct)) as.character(r$grade_pct) else "",
+                              `data-user-id`=r$user_id, `data-assignment`=r$assignment_name,
+                              onchange=edit_js)),
                           tags$td(style="color:#888;font-size:.82em;", r$week_tag %||% "")
                         )
                       }))
@@ -11120,38 +11091,6 @@ server <- function(input, output, session) {
     showNotification("Assignment grade policy saved.", type="message")
   }, ignoreNULL=TRUE)
 
-  manual_grade_matrix_data <- function() {
-    items <- manual_grade_catalog()$assignment
-    students <- tryCatch(db_query("SELECT user_id,display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0 ORDER BY display_name COLLATE NOCASE;"), error=function(e)data.frame())
-    if (!length(items) || !nrow(students)) return(data.frame())
-    out <- data.frame(user_id=students$user_id, Student=students$display_name, stringsAsFactors=FALSE, check.names=FALSE)
-    for (item in items) {
-      g <- tryCatch(db_query("SELECT user_id,grade_pct FROM student_grades WHERE LOWER(assignment_name)=LOWER(?);", list(item)), error=function(e)data.frame())
-      vals <- rep(NA_real_, nrow(students)); if (nrow(g)) vals[match(tolower(students$user_id), tolower(g$user_id))] <- as.numeric(g$grade_pct)
-      out[[item]] <- vals
-    }
-    out
-  }
-  output$manual_grade_matrix <- DT::renderDT({
-    req(rv$is_admin)
-    dat <- manual_grade_matrix_data()
-    if (!nrow(dat)) return(DT::datatable(data.frame(Message="Add active students and gradebook items first."), rownames=FALSE, options=list(dom="t")))
-    DT::datatable(dat, rownames=FALSE, editable=list(target="cell"), options=list(pageLength=25, scrollX=TRUE, dom="tip"), selection="none")
-  })
-  observeEvent(input$manual_grade_matrix_cell_edit, {
-    req(rv$is_admin, !rv$impersonating)
-    edit <- input$manual_grade_matrix_cell_edit
-    dat <- manual_grade_matrix_data()
-    if (!nrow(dat) || is.null(edit$row) || is.null(edit$col) || edit$col <= 2 || edit$row > nrow(dat)) return()
-    item <- names(dat)[edit$col]
-    uid <- dat$user_id[edit$row]
-    value <- suppressWarnings(as.numeric(edit$value))
-    if (is.na(value) || value < 0 || value > 100) { showNotification("Grade must be between 0 and 100.", type="error"); return() }
-    upsert_student_grade(uid, item, value, 100, value, "Manual grade matrix")
-    mark_grade_override(uid, item, "Manual grade matrix")
-    rv$gradebook_ver <- rv$gradebook_ver + 1L
-  }, ignoreNULL=TRUE)
-
   observeEvent(input$save_manual_grade_btn, {
     req(rv$is_admin, !rv$impersonating)
     uid <- trimws(input$manual_grade_student %||% "")
@@ -11165,6 +11104,19 @@ server <- function(input, output, session) {
     mark_grade_override(uid, item, note)
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification(sprintf("Saved %s for %s.", item, uid), type="message")
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$inline_grade_edit, {
+    req(rv$is_admin, !rv$impersonating)
+    ev <- input$inline_grade_edit
+    uid <- trimws(as.character(ev$user_id %||% "")); item <- trimws(as.character(ev$assignment %||% ""))
+    value <- suppressWarnings(as.numeric(ev$value %||% NA_real_))
+    if (!nzchar(uid) || !nzchar(item) || is.na(value) || value < 0 || value > 100) {
+      showNotification("Enter a percentage from 0 to 100.", type="error"); return()
+    }
+    upsert_student_grade(uid, item, value, 100, value, "Inline gradebook edit")
+    mark_grade_override(uid, item, "Inline gradebook edit")
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
   }, ignoreNULL=TRUE)
 
   observeEvent(input$sync_cloudflare_grades_btn, {
@@ -11212,6 +11164,21 @@ server <- function(input, output, session) {
     }
     # Resolve week tag (optional input or file column)
     week_tag_val <- trimws(input$grade_week_tag %||% "")
+    catalog <- manual_grade_catalog()
+    compact_item <- function(x) gsub("[^a-z0-9]", "", tolower(trimws(as.character(x %||% ""))))
+    resolve_item <- function(x) {
+      if (!nrow(catalog)) return(NA_character_)
+      raw <- as.character(x %||% "")
+      key <- compact_item(raw)
+      hit <- which(compact_item(catalog$assignment) == key & nzchar(key))
+      if (length(hit)) return(as.character(catalog$assignment[hit[1]]))
+      m <- regmatches(raw, regexec("(?:problem\\s*set|ps)\\s*([0-9]+)", raw, ignore.case=TRUE, perl=TRUE))[[1]]
+      if (length(m) > 1L) {
+        hit <- which(compact_item(catalog$assignment) == paste0("ps", m[2]))
+        if (length(hit)) return(as.character(catalog$assignment[hit[1]]))
+      }
+      NA_character_
+    }
     n_ins <- 0L
     n_invalid <- 0L
     for (i in seq_len(nrow(df))) {
@@ -11223,14 +11190,20 @@ server <- function(input, output, session) {
       wk_file <- if (!is.na(week_col)) trimws(as.character(df[[week_col]][i] %||% "")) else ""
       wk     <- if (nzchar(wk_file)) wk_file else week_tag_val
       if (!nzchar(uid) || !nzchar(asgn)) { n_invalid <- n_invalid + 1L; next }
+      canonical_asgn <- resolve_item(asgn)
+      if (is.na(canonical_asgn)) { n_invalid <- n_invalid + 1L; next }
       # Empty template rows are intentional and should not create blank grades.
       if (all(is.na(c(scr, pct)))) next
       if (is.na(pct) && !is.na(scr) && !is.na(mx) && mx > 0) pct <- round(100 * scr / mx, 2)
       if (is.na(pct) || pct < 0 || pct > 100) { n_invalid <- n_invalid + 1L; next }
+      if (!isTRUE(input$grade_upload_overwrite)) {
+        already <- tryCatch(db_query("SELECT 1 FROM student_grades WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(uid, canonical_asgn)), error=function(e) data.frame())
+        if (nrow(already)) next
+      }
       upsert_student_grade(
-        uid, asgn, scr, mx, pct, if (nzchar(wk)) wk else NA_character_
+        uid, canonical_asgn, scr, mx, pct, if (nzchar(wk)) wk else NA_character_
       )
-      mark_grade_override(uid, asgn, if (nzchar(wk)) wk else "Imported manual grade")
+      mark_grade_override(uid, canonical_asgn, if (nzchar(wk)) wk else "Imported manual grade")
       n_ins <- n_ins + 1L
     }
     msg <- sprintf("Imported %d grade row%s.", n_ins, if (n_ins == 1L) "" else "s")
