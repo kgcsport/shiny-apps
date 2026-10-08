@@ -11033,7 +11033,12 @@ server <- function(input, output, session) {
     if (inherits(export, "error")) return(list(ok=FALSE, message=conditionMessage(export)))
     rows <- export$rows %||% data.frame()
     if (!is.data.frame(rows)) rows <- if (length(rows)) do.call(rbind, lapply(rows, as.data.frame, stringsAsFactors=FALSE)) else data.frame()
-    if (!nrow(rows)) return(list(ok=TRUE, message="Worker returned no grade rows.", rows=0L))
+    if (!nrow(rows)) {
+      n_assign <- as.integer(export$assignments %||% 0L)
+      summary <- export$assignmentSummary %||% data.frame()
+      labels <- if (is.data.frame(summary) && nrow(summary)) paste(sprintf("%s=%s/%s", summary$id, summary$gradebookKey %||% "<missing>", summary$submissionRows %||% 0), collapse=", ") else "none"
+      return(list(ok=TRUE, message=sprintf("Worker returned 0 grade rows across %d assignment%s. Keys/submissions: %s", n_assign, if(n_assign==1)"" else "s", labels), rows=0L))
+    }
     synced <- 0L; skipped <- 0L; unmatched <- 0L
     for (i in seq_len(nrow(rows))) {
       r <- rows[i, , drop=FALSE]
