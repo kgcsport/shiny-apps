@@ -1805,6 +1805,18 @@ freeze_class_wages <- function(round_id, query_fn = db_query, exec_fn = db_exec)
         job_post_id = as.integer(post$id))
       if (!is.na(cleared)) wage <- cleared
     }
+    # Once the draw has been written, use the wage actually assigned to this
+    # post. In uniform-second-price rounds this is the clearing wage; in
+    # pay-as-bid rounds it preserves the winner's submitted minimum.
+    assigned <- tryCatch(query_fn(
+      "SELECT MIN(assigned_wage) AS wage FROM job_assignments
+       WHERE round_id=? AND job_post_id=? AND COALESCE(status,'assigned')='assigned'
+         AND assigned_wage IS NOT NULL;",
+      list(as.integer(round_id), as.integer(post$id))),
+      error = function(e) data.frame())
+    if (nrow(assigned) && is.finite(as.numeric(assigned$wage[1] %||% NA_real_)))
+      wage <- as.numeric(assigned$wage[1])
+
     exec_fn(
       "INSERT INTO class_wage_snapshots(round_id,snapshot_key,job_post_id,category_id,wage,source,snapshotted_at)
        VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
