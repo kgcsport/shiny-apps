@@ -11008,8 +11008,8 @@ server <- function(input, output, session) {
   }
 
   sync_cloudflare_gradebook <- function() {
-    policy <- get_setting("assignment_grade_policy", "final_score")
-    if (!policy %in% unname(assignment_grade_policy_choices)) policy <- "final_score"
+    policy <- as.character(get_setting("assignment_grade_policy", "final_score"))[1]
+    if (!isTRUE(policy %in% unname(assignment_grade_policy_choices))) policy <- "final_score"
     if (!assignment_review_configured())
       return(list(ok=FALSE, message="Set ASSIGNMENT_ADMIN_TOKEN and install httr2 on the Shiny server."))
     catalog <- manual_grade_catalog()
@@ -11028,6 +11028,7 @@ server <- function(input, output, session) {
       aid <- as.character(a$id[1] %||% "")
       title <- as.character(a$title[1] %||% aid)
       item <- assignment_gradebook_item(a, catalog)
+      item <- as.character(item)[1]
       if (is.na(item) || !nzchar(item)) {
         db_exec("INSERT OR REPLACE INTO assignment_grade_sync_log(assignment_id,assignment_title,gradebook_item,policy,last_synced_at,status,error,rows_synced) VALUES(?,?,?,?,CURRENT_TIMESTAMP,'unmatched',?,0);",
                 list(aid,title,NA_character_,policy,"No matching existing Shiny gradebook item"))
@@ -11053,8 +11054,8 @@ server <- function(input, output, session) {
         score <- suppressWarnings(as.numeric(sub$totalScore[1] %||% NA_real_))
         max_score <- suppressWarnings(as.numeric(sub$maxPoints[1] %||% NA_real_))
         final_pct <- if (is.finite(score) && is.finite(max_score) && max_score > 0) 100 * score / max_score else NA_real_
-        if (policy == "final_score" && (!submitted || !is.finite(final_pct))) next
-        if (policy == "split_half" && !scan_ok && (!submitted || !is.finite(final_pct))) next
+        if (isTRUE(policy == "final_score" && (!submitted || !is.finite(final_pct)))) next
+        if (isTRUE(policy == "split_half" && !scan_ok && (!submitted || !is.finite(final_pct)))) next
         grade_pct <- if (policy == "split_half") (if (scan_ok) 50 else 0) + if (submitted && is.finite(final_pct)) 0.5 * final_pct else 0 else final_pct
         upsert_student_grade(roster$user_id[hit[1]], item, grade_pct, 100, grade_pct, title)
         n_rows <- n_rows + 1L
