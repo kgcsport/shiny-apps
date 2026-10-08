@@ -11084,7 +11084,9 @@ server <- function(input, output, session) {
       pct <- suppressWarnings(as.numeric(r$gradePct[1] %||% NA_real_))
       if (identical(policy, "final_score") && (!submitted || !isTRUE(is.finite(pct)))) next
       if (identical(policy, "split_half") && !scan_ok && (!submitted || !isTRUE(is.finite(pct)))) next
-      grade_pct <- if (identical(policy, "split_half")) (if (scan_ok) 50 else 0) + if (submitted && isTRUE(is.finite(pct))) 0.5 * pct else 0 else pct
+      grade_pct <- if (identical(policy, "split_half")) {
+        if (isTRUE(submitted)) 100 else if (isTRUE(scan_ok)) 50 else 0
+      } else pct
       protected <- db_query("SELECT 1 FROM assignment_grade_sync_override WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(roster$user_id[hit[1]], item))
       existing <- db_query("SELECT 1 FROM student_grades WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(roster$user_id[hit[1]], item))
       if (nrow(protected) || (assignment_key(item) %in% protected_items && nrow(existing))) { skipped <- skipped + 1L; next }
