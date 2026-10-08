@@ -9789,33 +9789,13 @@ server <- function(input, output, session) {
 
         tags$details(
           style = "margin:.65rem 0;",
-          tags$summary(style = "cursor:pointer;color:#951829;font-weight:700;",
-                       "Enter or correct one grade manually"),
-          if (!length(grade_student_choices) || !length(manual_grade_choices)) {
-            tags$p(style = "color:#999;font-size:.85rem;margin-top:.5rem;",
-                   "Add active students and at least one manual gradebook item first.")
-          } else {
-            tagList(
-              fluidRow(
-                column(6, selectizeInput("manual_grade_uid", "Student:",
-                                         choices = grade_student_choices, options = list(maxOptions = 1000))),
-                column(6, selectInput("manual_grade_assignment", "Assignment:",
-                                      choices = manual_grade_choices))
-              ),
-              fluidRow(
-                column(3, textInput("manual_grade_score", "Score:", placeholder = "e.g. 50")),
-                column(3, textInput("manual_grade_max", "Max score:",
-                                    value = as.character(manual_grade_items$max_score[1] %||% 100))),
-                column(3, textInput("manual_grade_pct", "Grade % (optional):", placeholder = "0–100")),
-                column(3, textInput("manual_grade_week", "Week tag (optional):", placeholder = "e.g. Week 3"))
-              ),
-              tags$p(style = "color:#777;font-size:.8rem;margin:.1rem 0 .5rem;",
-                     "Enter score and max score, or enter Grade %. Saving replaces any existing grade for this student and assignment."),
-              actionButton("save_manual_grade_btn", "Save grade", class = "btn btn-sm btn-primary")
-            )
-          }
+          open = TRUE,
+          tags$summary(style="cursor:pointer;color:#951829;font-weight:700;",
+                       "Edit gradebook table"),
+          tags$p(style="color:#777;font-size:.8rem;margin:.4rem 0 .5rem;",
+                 "Edit any PS1/PS2/etc. cell directly. Values are percentages and save immediately as protected manual overrides."),
+          DT::DTOutput("manual_grade_matrix")
         ),
-
         tags$hr(),
 
         # ── 3. Grades View & Downloads ──────────────────────────────────────────
@@ -11131,6 +11111,39 @@ server <- function(input, output, session) {
     set_setting("assignment_grade_policy", policy)
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification("Assignment grade policy saved.", type="message")
+  }, ignoreNULL=TRUE)
+
+  manual_grade_matrix_data <- function() {
+    items <- manual_grade_catalog()$assignment
+    students <- tryCatch(db_query("SELECT user_id,display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0 ORDER BY display_name COLLATE NOCASE;"), error=function(e)data.frame())
+    if (!length(items) || !nrow(students)) return(data.frame())
+    out <- data.frame(user_id=students$user_id, Student=students$display_name, stringsAsFactors=FALSE, check.names=FALSE)
+    for (item in items) {
+      g <- tryCatch(db_query("SELECT user_id,grade_pct FROM student_grades WHERE LOWER(assignment_name)=LOWER(?);", list(item)), error=function(e)data.frame())
+      vals <- rep(NA_real_, nrow(students)); if (nrow(g)) vals[match(tolower(students$user_id), tolower(g$user_id))] <- as.numeric(g$grade_pct)
+      out[[item]] <- vals
+    }
+    out
+  }
+  output$manual_grade_matrix <- DT::renderDT({
+    req(rv$is_admin)
+    dat <- manual_grade_matrix_data()
+    if (!nrow(dat)) return(DT::datatable(data.frame(Message="Add active students and gradebook items first."), rownames=FALSE, options=list(dom="t")))
+    DT::datatable(dat, rownames=FALSE, editable="cell", options=list(pageLength=25, scrollX=TRUE, dom="tip"), selection="none") |>
+      DT::formatRound(columns=names(dat)[-(1:2)], digits=1)
+  })
+  observeEvent(input$manual_grade_matrix_cell_edit, {
+    req(rv$is_admin, !rv$impersonating)
+    edit <- input$manual_grade_matrix_cell_edit
+    dat <- manual_grade_matrix_data()
+    if (!nrow(dat) || is.null(edit$row) || is.null(edit$col) || edit$col <= 2 || edit$row > nrow(dat)) return()
+    item <- names(dat)[edit$col]
+    uid <- dat$user_id[edit$row]
+    value <- suppressWarnings(as.numeric(edit$value))
+    if (is.na(value) || value < 0 || value > 100) { showNotification("Grade must be between 0 and 100.", type="error"); return() }
+    upsert_student_grade(uid, item, value, 100, value, "Manual grade matrix")
+    mark_grade_override(uid, item, "Manual grade matrix")
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
   }, ignoreNULL=TRUE)
 
   observeEvent(input$save_manual_grade_btn, {
