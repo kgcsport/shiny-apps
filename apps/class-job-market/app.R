@@ -11156,15 +11156,7 @@ server <- function(input, output, session) {
     showNotification(result$message, type=if (isTRUE(result$ok)) "message" else "error", duration=12)
   }, ignoreNULL=TRUE)
 
-  # Keep the gradebook current while an administrator has the Shiny app open.
-  # Manual sync remains available for an immediate refresh.
-  observe({
-    req(rv$is_admin)
-    invalidateLater(6 * 60 * 60 * 1000, session)
-    result <- tryCatch(sync_cloudflare_gradebook(), error=function(e) list(ok=FALSE, rows=0L))
-    if (isTRUE(result$ok) && isTRUE((result$rows %||% 0L) > 0L))
-      rv$gradebook_ver <- rv$gradebook_ver + 1L
-  })
+  # Scheduled imports run via cron; keep the Shiny session responsive and make Sync manual.
 
   # ── Grade upload ──────────────────────────────────────────────────────────────
   observeEvent(input$upload_grades_btn, {
