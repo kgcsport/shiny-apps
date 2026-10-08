@@ -11136,8 +11136,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     dat <- manual_grade_matrix_data()
     if (!nrow(dat)) return(DT::datatable(data.frame(Message="Add active students and gradebook items first."), rownames=FALSE, options=list(dom="t")))
-    DT::datatable(dat, rownames=FALSE, editable="cell", options=list(pageLength=25, scrollX=TRUE, dom="tip"), selection="none") |>
-      DT::formatRound(columns=names(dat)[-(1:2)], digits=1)
+    DT::datatable(dat, rownames=FALSE, editable=list(target="cell"), options=list(pageLength=25, scrollX=TRUE, dom="tip"), selection="none")
   })
   observeEvent(input$manual_grade_matrix_cell_edit, {
     req(rv$is_admin, !rv$impersonating)
