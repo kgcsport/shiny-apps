@@ -11029,6 +11029,7 @@ server <- function(input, output, session) {
   }
 
   sync_cloudflare_gradebook <- function() {
+    tryCatch({
     policy <- as.character(get_setting("assignment_grade_policy", "final_score"))[1]
     if (!isTRUE(policy %in% unname(assignment_grade_policy_choices))) policy <- "final_score"
     if (!assignment_review_configured())
@@ -11074,8 +11075,11 @@ server <- function(input, output, session) {
       synced <- synced + 1L
     }
     list(ok=TRUE, message=sprintf("Imported %d grade row%s from Worker export (%d unmatched, %d protected manual override%s).", synced, if(synced==1)"" else "s", unmatched, skipped, if(skipped==1)"" else "s"), rows=synced)
+    }, error=function(e) {
+      call_text <- tryCatch(paste(deparse(conditionCall(e)), collapse=""), error=function(x) "unknown")
+      stop(sprintf("grade sync internal error: %s [call: %s]", conditionMessage(e), call_text), call.=FALSE)
+    })
   }
-
   manual_grade_catalog <- function() {
     cats <- tryCatch(db_query(
       "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
