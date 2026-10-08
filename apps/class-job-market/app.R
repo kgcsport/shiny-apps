@@ -11044,6 +11044,7 @@ server <- function(input, output, session) {
     roster <- tryCatch(db_query("SELECT user_id,display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;"), error=function(e)data.frame())
     if (!nrow(roster)) return(list(ok=FALSE, message="No active students are available for matching."))
     key <- function(x) tolower(trimws(as.character(x %||% "")))
+    assignment_key <- function(x) gsub("[^a-z0-9]", "", key(x))
     export <- tryCatch(assignment_review_gradebook_export(), error=function(e)e)
     if (inherits(export, "error")) return(list(ok=FALSE, message=conditionMessage(export)))
     rows <- export$rows %||% data.frame()
@@ -11054,20 +11055,20 @@ server <- function(input, output, session) {
       labels <- if (is.data.frame(summary) && nrow(summary)) paste(sprintf("%s=%s/%s", summary$id, summary$gradebookKey %||% "<missing>", summary$submissionRows %||% 0), collapse=", ") else "none"
       return(list(ok=TRUE, message=sprintf("Worker returned 0 grade rows across %d assignment%s. Keys/submissions: %s", n_assign, if(n_assign==1)"" else "s", labels), rows=0L))
     }
-    synced <- 0L; skipped <- 0L; unmatched <- 0L
+    synced <- 0L; skipped <- 0L; unmatched <- 0L; unmatched_key <- 0L; unmatched_student <- 0L
     for (i in seq_len(nrow(rows))) {
       r <- rows[i, , drop=FALSE]
       aid <- as.character(r$assignmentId[1] %||% "")
       title <- as.character(r$assignmentTitle[1] %||% aid)
-      worker_key <- key(r$gradebookKey[1] %||% "")
-      hit_item <- which(key(catalog$assignment) == worker_key)
+      worker_key <- assignment_key(r$gradebookKey[1] %||% "")
+      hit_item <- which(assignment_key(catalog$assignment) == worker_key)
       item <- if (length(hit_item)) as.character(catalog$assignment[hit_item[1]]) else ""
-      if (!nzchar(item)) { unmatched <- unmatched + 1L; next }
+      if (!nzchar(item)) { unmatched <- unmatched + 1L; unmatched_key <- unmatched_key + 1L; next }
       ext <- key(r$externalId[1] %||% "")
       nm <- key(r$studentName[1] %||% "")
       hit <- which(key(roster$user_id) == ext)
       if (!length(hit) && isTRUE(nzchar(nm))) hit <- which(key(roster$display_name) == nm)
-      if (!length(hit)) { unmatched <- unmatched + 1L; next }
+      if (!length(hit)) { unmatched <- unmatched + 1L; unmatched_student <- unmatched_student + 1L; next }
       submitted <- identical(as.character(r$status[1] %||% ""), "submitted") && isTRUE(nzchar(as.character(r$submittedAt[1] %||% "")))
       scan_ok <- isTRUE(nzchar(as.character(r$scanVerifiedAt[1] %||% "")))
       pct <- suppressWarnings(as.numeric(r$gradePct[1] %||% NA_real_))
@@ -11079,7 +11080,7 @@ server <- function(input, output, session) {
       upsert_student_grade(roster$user_id[hit[1]], item, suppressWarnings(as.numeric(r$score[1] %||% NA_real_)), suppressWarnings(as.numeric(r$maxPoints[1] %||% 100)), grade_pct, title)
       synced <- synced + 1L
     }
-    list(ok=TRUE, message=sprintf("Imported %d grade row%s from Worker export (%d unmatched, %d protected manual override%s).", synced, if(synced==1)"" else "s", unmatched, skipped, if(skipped==1)"" else "s"), rows=synced)
+    list(ok=TRUE, message=sprintf("Imported %d grade row%s from Worker export (%d unmatched: %d assignment-key, %d student-identity; %d protected manual override%s).", synced, if(synced==1)"" else "s", unmatched, unmatched_key, unmatched_student, skipped, if(skipped==1)"" else "s"), rows=synced)
     }, error=function(e) {
       call_text <- tryCatch(paste(deparse(conditionCall(e)), collapse=""), error=function(x) "unknown")
       stop(sprintf("grade sync internal error: %s [call: %s]", conditionMessage(e), call_text), call.=FALSE)
