@@ -1554,18 +1554,26 @@ get_rw_max_points <- function() {
 }
 
 gradebook_item_specs <- function(cat_row, inames_df = data.frame()) {
-  n <- max(1L, as.integer(cat_row$item_count %||% 1L))
-  cat_weight <- as.numeric(cat_row$weight %||% 0)
+  # cat_row should be one row, but scalarize defensively because DBI/data-frame
+  # coercion otherwise turns an if() condition into a vector.
+  first_value <- function(x, default = NA) {
+    x <- x %||% default
+    if (!length(x) || is.na(x[1])) default else x[1]
+  }
+  n <- max(1L, as.integer(first_value(cat_row$item_count, 1L)))
+  cat_weight <- as.numeric(first_value(cat_row$weight, 0))
   equal_weight <- if (n > 0) cat_weight / n else cat_weight
-  prefix <- if (!is.null(cat_row$item_prefix) && !is.na(cat_row$item_prefix) && nzchar(cat_row$item_prefix))
-              cat_row$item_prefix else cat_row$name
+  prefix_value <- first_value(cat_row$item_prefix, "")
+  name_value <- first_value(cat_row$name, "")
+  prefix <- if (nzchar(as.character(prefix_value))) as.character(prefix_value) else as.character(name_value)
+  category_id <- first_value(cat_row$id, NA)
   overrides <- if (nrow(inames_df))
-    inames_df[inames_df$category_id == cat_row$id, , drop = FALSE]
+    inames_df[inames_df$category_id == category_id, , drop = FALSE]
   else data.frame()
   do.call(rbind, lapply(seq_len(n), function(i) {
     ov <- if (nrow(overrides)) overrides[overrides$item_index == i, , drop = FALSE] else data.frame()
     nm <- if (nrow(ov) && nzchar(ov$item_name[1] %||% "")) ov$item_name[1]
-          else if (n == 1) cat_row$name
+          else if (n == 1) name_value
           else paste0(prefix, " ", i)
     custom <- nrow(ov) && "item_weight" %in% names(ov) &&
       !is.na(suppressWarnings(as.numeric(ov$item_weight[1])))
@@ -11025,7 +11033,8 @@ server <- function(input, output, session) {
     if (!isTRUE(policy %in% unname(assignment_grade_policy_choices))) policy <- "final_score"
     if (!assignment_review_configured())
       return(list(ok=FALSE, message="Set ASSIGNMENT_ADMIN_TOKEN and install httr2 on the Shiny server."))
-    catalog <- manual_grade_catalog()
+    catalog <- tryCatch(manual_grade_catalog(), error=function(e)
+      stop("building Shiny gradebook catalog: ", conditionMessage(e)))
     roster <- tryCatch(db_query("SELECT user_id,display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;"), error=function(e)data.frame())
     if (!nrow(roster)) return(list(ok=FALSE, message="No active students are available for matching."))
     key <- function(x) tolower(trimws(as.character(x %||% "")))
