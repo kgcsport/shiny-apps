@@ -29,7 +29,12 @@ shared_sqlite <- shared_sqlite[[1]]
 source(shared_sqlite, local = TRUE)
 source(file.path(dirname(shared_sqlite), "demo_login.R"), local = TRUE)
 
-`%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 && !is.na(a[1])) a else b
+`%||%` <- function(a, b) {
+  if (is.null(a) || !length(a)) return(b)
+  # Only scalar NA is missing; preserve data frames and multi-value vectors.
+  if (is.atomic(a) && length(a) == 1L && is.na(a)) return(b)
+  a
+}
 nonempty_values <- function(x) {
   x <- as.character(x %||% character(0))
   x[!is.na(x) & nzchar(x)]

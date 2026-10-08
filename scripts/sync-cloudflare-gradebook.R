@@ -2,7 +2,12 @@
 # Flat Cloudflare -> Shiny gradebook import. The Worker returns normalized rows;
 # this script performs only explicit-key matching and an idempotent upsert.
 suppressPackageStartupMessages({library(DBI); library(RSQLite); library(jsonlite); library(httr2)})
-`%||%` <- function(a,b) if (!is.null(a) && length(a)>0 && !is.na(a[1])) a else b
+`%||%` <- function(a, b) {
+  if (is.null(a) || !length(a)) return(b)
+  # Only scalar NA is missing; preserve data frames and multi-value vectors.
+  if (is.atomic(a) && length(a) == 1L && is.na(a)) return(b)
+  a
+}
 script_args <- commandArgs(trailingOnly=FALSE)
 script_file <- sub("^--file=", "", script_args[grepl("^--file=", script_args)][1])
 script_dir <- if (nzchar(script_file)) dirname(normalizePath(script_file, mustWork=FALSE)) else getwd()
