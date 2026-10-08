@@ -79,8 +79,10 @@ assignment_review_get <- function(path) {
     httr2::req_perform()
   body <- tryCatch(httr2::resp_body_json(response, simplifyVector=TRUE),
                    error=function(e) list())
-  if (httr2::resp_status(response) >= 300)
-    stop(body$error %||% paste("Cloudflare returned", httr2::resp_status(response)))
+  if (httr2::resp_status(response) >= 300) {
+    detail <- body$error %||% body$message %||% "no response body"
+    stop(sprintf("Cloudflare assignment API failed: HTTP %s at %s%s — %s", httr2::resp_status(response), ASSIGNMENT_API_ORIGIN, path, detail))
+  }
   body
 }
 

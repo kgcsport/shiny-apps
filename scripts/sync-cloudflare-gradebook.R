@@ -22,7 +22,7 @@ if (!nzchar(token)) stop("ASSIGNMENT_ADMIN_TOKEN is missing")
 get_json <- function(path) {
   r <- request(paste0(origin,path)) |> req_headers(Authorization=paste("Bearer",token)) |> req_timeout(30) |> req_error(is_error=function(x) FALSE) |> req_perform()
   body <- tryCatch(resp_body_json(r,simplifyVector=TRUE), error=function(e) list())
-  if (resp_status(r) >= 300) stop(body$error %||% paste("Worker returned",resp_status(r)))
+  if (resp_status(r) >= 300) { detail <- body$error %||% body$message %||% "no response body"; stop(sprintf("Cloudflare gradebook request failed: HTTP %s at %s%s — %s", resp_status(r), origin, path, detail)) }
   body
 }
 rows_df <- function(x) {
