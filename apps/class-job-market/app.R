@@ -653,6 +653,23 @@ db_exec("CREATE TABLE IF NOT EXISTS policy_rubric_scores(
 db_exec("CREATE INDEX IF NOT EXISTS idx_policy_rubric_release
          ON policy_rubric_assessments(course, policy_team, status, released_at);")
 
+db_exec("CREATE TABLE IF NOT EXISTS policy_progress_reports(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  course TEXT NOT NULL DEFAULT '',
+  policy_team TEXT NOT NULL,
+  feedback TEXT NOT NULL DEFAULT '',
+  why_matters TEXT NOT NULL DEFAULT '',
+  diagnosis TEXT NOT NULL DEFAULT '',
+  revision_plan TEXT NOT NULL DEFAULT '',
+  uncertainty TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  submitted_at TEXT,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_by TEXT,
+  UNIQUE(course, policy_team)
+);")
+db_exec("CREATE INDEX IF NOT EXISTS idx_policy_progress_reports_team ON policy_progress_reports(course, policy_team, status);")
+
 # Job market tables (shared with class-job-market; CREATE IF NOT EXISTS is safe)
 db_exec("CREATE TABLE IF NOT EXISTS job_categories(
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5303,6 +5320,26 @@ server <- function(input, output, session) {
   observeEvent(input$release_policy_rubric_btn,
     save_policy_rubric("released"),ignoreInit=TRUE)
 
+  save_policy_progress <- function(status=c("draft", "submitted")) {
+    status <- match.arg(status)
+    req(rv$authed, !isTRUE(rv$is_admin), rv$user_id)
+    team <- tryCatch(db_query("SELECT policy_team, COALESCE(course,'') AS course FROM policy_group_assignments p LEFT JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id) WHERE LOWER(p.user_id)=LOWER(?) LIMIT 1;", list(rv$user_id)), error=function(e) data.frame())
+    if (!nrow(team)) { showNotification("You are not assigned to a policy team yet.", type="error"); return(invisible(FALSE)) }
+    values <- vapply(c("feedback", "why_matters", "diagnosis", "revision_plan", "uncertainty"), function(key)
+      trimws(as.character(input[[paste0("policy_progress_", key)]] %||% "")), character(1))
+    if (identical(status, "submitted") && any(!nzchar(values))) {
+      showNotification("Complete all four progress-report prompts before submitting.", type="error")
+      return(invisible(FALSE))
+    }
+    db_exec("INSERT INTO policy_progress_reports(course,policy_team,feedback,why_matters,diagnosis,revision_plan,uncertainty,status,submitted_at,updated_at,updated_by) VALUES(?,?,?,?,?,?,?, ?, CASE WHEN ?='submitted' THEN CURRENT_TIMESTAMP ELSE NULL END, CURRENT_TIMESTAMP, ?) ON CONFLICT(course,policy_team) DO UPDATE SET feedback=excluded.feedback,why_matters=excluded.why_matters,diagnosis=excluded.diagnosis,revision_plan=excluded.revision_plan,uncertainty=excluded.uncertainty,status=excluded.status,submitted_at=CASE WHEN excluded.status='submitted' THEN CURRENT_TIMESTAMP ELSE policy_progress_reports.submitted_at END,updated_at=CURRENT_TIMESTAMP,updated_by=excluded.updated_by;", c(as.character(team$course[1] %||% ""), as.character(team$policy_team[1]), unname(values), status, status, rv$user_id))
+    rv$policy_ver <- rv$policy_ver + 1L
+    showNotification(if (identical(status, "submitted")) "Progress report submitted to your team record." else "Progress report draft saved.", type="message")
+    invisible(TRUE)
+  }
+
+  observeEvent(input$save_policy_progress_draft_btn, save_policy_progress("draft"), ignoreInit=TRUE)
+  observeEvent(input$submit_policy_progress_btn, save_policy_progress("submitted"), ignoreInit=TRUE)
+
   policy_feedback_poll <- reactivePoll(6000,session,
     checkFunc=function() {
       if (!isTRUE(rv$authed) || isTRUE(rv$is_admin) || is.null(rv$user_id)) return("")
@@ -5314,11 +5351,12 @@ server <- function(input, output, session) {
          WHERE LOWER(p.user_id)=LOWER(?) AND LOWER(a.course)=LOWER(COALESCE(u.course,''))
            AND a.status='released';",list(rv$user_id)),
         error=function(e)data.frame(n=0,stamp=""))
-      paste(stamp$n[1] %||% 0,stamp$stamp[1] %||% "")
+      report_stamp <- tryCatch(db_query("SELECT COALESCE(MAX(r.updated_at),'') AS stamp FROM policy_progress_reports r JOIN policy_group_assignments p ON p.policy_team=r.policy_team JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id) WHERE LOWER(p.user_id)=LOWER(?) AND LOWER(r.course)=LOWER(COALESCE(u.course,''));", list(rv$user_id)), error=function(e)data.frame(stamp=""))
+      paste(stamp$n[1] %||% 0,stamp$stamp[1] %||% "",report_stamp$stamp[1] %||% "")
     },
     valueFunc=function() {
       if (!isTRUE(rv$authed) || isTRUE(rv$is_admin) || is.null(rv$user_id))
-        return(list(assessments=data.frame(),scores=data.frame()))
+        return(list(assessments=data.frame(),scores=data.frame(),report=data.frame()))
       assessments <- tryCatch(db_query(
         "SELECT a.* FROM policy_rubric_assessments a
          JOIN policy_group_assignments p ON p.policy_team=a.policy_team
@@ -5331,14 +5369,21 @@ server <- function(input, output, session) {
         paste0("SELECT * FROM policy_rubric_scores WHERE assessment_id IN (",
                paste(rep("?",nrow(assessments)),collapse=","),") ORDER BY assessment_id,rowid;"),
         as.list(assessments$id)),error=function(e)data.frame()) else data.frame()
-      list(assessments=assessments,scores=scores)
+      report <- tryCatch({
+        team <- db_query("SELECT policy_team FROM policy_group_assignments WHERE LOWER(user_id)=LOWER(?) LIMIT 1;", list(rv$user_id))
+        if (!nrow(team)) data.frame() else db_query("SELECT * FROM policy_progress_reports WHERE LOWER(course)=LOWER(COALESCE((SELECT course FROM users WHERE LOWER(user_id)=LOWER(?)),'')) AND policy_team=? LIMIT 1;", list(rv$user_id, team$policy_team[1]))
+      }, error=function(e) data.frame())
+      list(assessments=assessments,scores=scores,report=report)
     })
 
   output$account_policy_feedback <- renderUI({
     req(rv$authed)
+    rv$policy_ver
     feedback_data <- policy_feedback_poll()
     assessments <- feedback_data$assessments
-    if (!nrow(assessments)) return(NULL)
+    report <- feedback_data$report %||% data.frame()
+    team_row <- tryCatch(db_query("SELECT policy_team FROM policy_group_assignments WHERE LOWER(user_id)=LOWER(?) LIMIT 1;", list(rv$user_id)), error=function(e) data.frame())
+    if (!nrow(assessments) && !nrow(team_row)) return(NULL)
     catalog <- policy_rubric_catalog()
     cards <- lapply(seq_len(nrow(assessments)),function(i) {
       assessment <- assessments[i,,drop=FALSE]
@@ -5378,6 +5423,38 @@ server <- function(input, output, session) {
     tagList(div(class="sec-label","Policy Project Feedback"),
       tags$p(style="color:#777;font-size:.84rem;",
              "Released feedback is shared with every member of your policy team."),
+      if (nrow(team_row)) {
+        existing <- function(field) if (nrow(report) && field %in% names(report)) as.character(report[[field]][1] %||% "") else ""
+        tagList(
+          div(class="policy-rubric-card",
+            tags$h5("Progress Report / Revision Memo"),
+            tags$p(style="color:#777;font-size:.84rem;",
+              "Complete this shared team report within one week of your presentation. Your responses are saved for the whole team."),
+            if (!nrow(assessments)) tags$p(style="color:#996515;font-size:.84rem;",
+              "Your presentation feedback has not been released yet; you can still draft the report below."),
+            textAreaInput("policy_progress_feedback",
+              "1. What did you hear? Identify the most consequential feedback from class discussion and instructor comments.",
+              value=existing("feedback"), rows=3, width="100%"),
+            textAreaInput("policy_progress_why_matters",
+              "Why does this feedback matter for the policy decision?",
+              value=existing("why_matters"), rows=2, width="100%"),
+            textAreaInput("policy_progress_diagnosis",
+              "2. What does it reveal? Diagnose the claim, evidence, explanation, policy comparison, or organization that most needs work.",
+              value=existing("diagnosis"), rows=3, width="100%"),
+            textAreaInput("policy_progress_revision_plan",
+              "3. What will change? Name specific revisions and the evidence or work needed.",
+              value=existing("revision_plan"), rows=3, width="100%"),
+            textAreaInput("policy_progress_uncertainty",
+              "4. What remains unresolved? State one important uncertainty or implementation issue and how the final brief will handle it honestly.",
+              value=existing("uncertainty"), rows=3, width="100%"),
+            div(style="display:flex;gap:.5rem;align-items:center;",
+              actionButton("save_policy_progress_draft_btn", "Save draft", class="btn btn-default"),
+              actionButton("submit_policy_progress_btn", "Submit progress report", class="btn btn-primary"),
+              if (nrow(report) && identical(as.character(report$status[1]), "submitted"))
+                tags$p(style="color:#397339;font-size:.84rem;", "Submitted; you can still update it if needed."))
+          )
+        )
+      } else NULL,
       cards)
   })
 
