@@ -9206,8 +9206,46 @@ server <- function(input, output, session) {
       )
 
     } else if (act == "exports") {
+      invalidateLater(5000, session)
+      bid_round <- tryCatch(active_round_row(), error = function(e) data.frame())
+      live_bids <- if (nrow(bid_round)) tryCatch(db_query(
+        "SELECT u.display_name AS student, jp.job_name AS job, jc.name AS category,
+                jwb.min_wage AS bid, jwb.submitted_at
+         FROM job_wage_bids jwb
+         JOIN users u ON u.user_id=jwb.user_id
+         JOIN job_posts jp ON jp.id=jwb.job_post_id
+         LEFT JOIN job_categories jc ON jc.id=jp.category_id
+         WHERE jwb.round_id=?
+         UNION ALL
+         SELECT u.display_name AS student, \x27(legacy category bid)\x27 AS job,
+                jc.name AS category, wb.min_wage AS bid, wb.submitted_at
+         FROM wage_bids wb
+         JOIN users u ON u.user_id=wb.user_id
+         JOIN job_categories jc ON jc.id=wb.category_id
+         WHERE wb.round_id=?
+         ORDER BY submitted_at DESC, student, job;",
+        list(as.integer(bid_round$id[1]), as.integer(bid_round$id[1]))),
+        error = function(e) data.frame()) else data.frame()
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Export Data"),
+        tags$h6(style = "font-weight:700;color:#951829;margin-top:1rem;", "Live Wage Bids — Selected Class"),
+        if (nrow(bid_round)) tags$p(style = "color:#555;font-size:.84rem;",
+          paste0(bid_round$label[1] %||% "Selected class", " · ", bid_round$class_date[1] %||% "")) else NULL,
+        if (nrow(live_bids)) {
+          div(style = "overflow-x:auto;", tags$table(class = "table table-sm table-hover",
+            tags$thead(tags$tr(tags$th("Student"), tags$th("Job"), tags$th("Category"),
+                               tags$th("Bid"), tags$th("Submitted"))),
+            tags$tbody(lapply(seq_len(nrow(live_bids)), function(i) {
+              r <- live_bids[i, ]
+              tags$tr(tags$td(r$student %||% ""), tags$td(r$job %||% ""),
+                      tags$td(r$category %||% ""),
+                      tags$td(style="text-align:right;font-weight:600;", sprintf("%g", as.numeric(r$bid))),
+                      tags$td(style="white-space:nowrap;color:#666;", r$submitted_at %||% ""))
+            }))
+          ))
+        } else if (nrow(bid_round)) {
+          div(style = "color:#999;font-size:.88rem;margin:.4rem 0;", "No wage bids have been submitted for this class yet.")
+        } else NULL,
         tags$p(style = "color:#555;font-size:.88rem;", "Download records as CSV files."),
         div(style = "display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.5rem;",
           downloadButton("dl_assignments",          "Assignments",          class = "btn btn-sm btn-outline-secondary"),
