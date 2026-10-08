@@ -2925,17 +2925,29 @@ server <- function(input, output, session) {
     rv$game_detail_id <- NULL
   })
 
+  # Poll only the data needed by the visible tab. Event-driven saves still work
+  # regardless of tab selection; this gate suppresses background checks only.
+  tab_is_active <- function(...) {
+    if (!isTRUE(rv$authed)) return(FALSE)
+    current <- as.character(input$arc_tabs %||% "Today")
+    current %in% c(...)
+  }
+
   # ── Polls ─────────────────────────────────────────────────────────────────────
   arcade_poll <- reactivePoll(3000, session,
-    checkFunc = function()
-      db_query("SELECT updated_at FROM arcade_state WHERE id=1;")$updated_at[1] %||% "",
+    checkFunc = function() {
+      if (!tab_is_active("Today", "Games & Demos")) return("")
+      db_query("SELECT updated_at FROM arcade_state WHERE id=1;")$updated_at[1] %||% ""
+    },
     valueFunc = function()
       db_query("SELECT * FROM arcade_state WHERE id=1;")
   )
 
   olig_poll <- reactivePoll(3000, session,
-    checkFunc = function()
-      db_query("SELECT updated_at FROM olig_settings WHERE id=1;")$updated_at[1] %||% "",
+    checkFunc = function() {
+      if (!tab_is_active("Games & Demos")) return("")
+      db_query("SELECT updated_at FROM olig_settings WHERE id=1;")$updated_at[1] %||% ""
+    },
     valueFunc = function() {
       list(
         settings = db_query("SELECT * FROM olig_settings WHERE id=1;"),
@@ -3038,6 +3050,7 @@ server <- function(input, output, session) {
 
   flex_poll <- reactivePoll(5000, session,
     checkFunc = function() {
+      if (!tab_is_active("Today", "Games & Demos", "Spend")) return("")
       rv$flex_ver
       c1 <- tryCatch(db_query(
         "SELECT COUNT(*) n, COALESCE(MAX(contributed_at),'') ts
@@ -3054,6 +3067,7 @@ server <- function(input, output, session) {
 
   pubgood_poll <- reactivePoll(10000, session,
     checkFunc = function() {
+      if (!tab_is_active("Games & Demos", "Spend")) return("")
       if (!isTRUE(rv$authed)) return("")
       tryCatch(
         db_query(
@@ -3076,6 +3090,7 @@ server <- function(input, output, session) {
 
   tracker_poll <- reactivePoll(5000, session,
     checkFunc = function() {
+      if (!tab_is_active("Live Tracker", "Settings")) return("")
       if (!isTRUE(rv$is_admin)) return("")
       t1 <- tryCatch(db_query("SELECT MAX(created_at) ts FROM token_ledger;")$ts[1] %||% "", error=function(e)"")
       t2 <- tryCatch(db_query("SELECT MAX(COALESCE(updated_at,created_at)) ts FROM job_assignments;")$ts[1] %||% "", error=function(e)"")
@@ -3239,6 +3254,7 @@ server <- function(input, output, session) {
   # shown (and cleared) on Today even when no market round exists.
   announcement_poll <- reactivePoll(8000, session,
     checkFunc = function() {
+      if (!tab_is_active("Today")) return("")
       if (!isTRUE(rv$authed)) return("")
       tryCatch(get_scoped_setting("today_announcement", ""), error = function(e) "")
     },
@@ -3250,6 +3266,7 @@ server <- function(input, output, session) {
   # Poll for job market data (Today + Job Market tabs)
   jobs_poll <- reactivePoll(8000, session,
     checkFunc = function() {
+      if (!tab_is_active("Today", "Job Market", "Account")) return("")
       uid <- rv$user_id
       if (is.null(uid)) return("")
       r1 <- tryCatch({
@@ -5342,6 +5359,7 @@ server <- function(input, output, session) {
 
   policy_feedback_poll <- reactivePoll(6000,session,
     checkFunc=function() {
+      if (!tab_is_active("Account")) return("")
       if (!isTRUE(rv$authed) || isTRUE(rv$is_admin) || is.null(rv$user_id)) return("")
       stamp <- tryCatch(db_query(
         "SELECT COUNT(*) AS n, COALESCE(MAX(a.updated_at),'') AS stamp
