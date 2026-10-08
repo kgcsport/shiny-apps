@@ -11045,6 +11045,8 @@ server <- function(input, output, session) {
     if (!nrow(roster)) return(list(ok=FALSE, message="No active students are available for matching."))
     key <- function(x) tolower(trimws(as.character(x %||% "")))
     assignment_key <- function(x) gsub("[^a-z0-9]", "", key(x))
+    protected_raw <- as.character(get_setting("assignment_grade_protected", "PS1"))[1]
+    protected_items <- assignment_key(strsplit(protected_raw %||% "", "[,;\\n]+")[[1]])
     worker_assignment_key <- function(row) {
       raw <- key(row$gradebookKey[1] %||% "")
       title <- as.character(row$assignmentTitle[1] %||% "")
@@ -11084,7 +11086,8 @@ server <- function(input, output, session) {
       if (identical(policy, "split_half") && !scan_ok && (!submitted || !isTRUE(is.finite(pct)))) next
       grade_pct <- if (identical(policy, "split_half")) (if (scan_ok) 50 else 0) + if (submitted && isTRUE(is.finite(pct))) 0.5 * pct else 0 else pct
       protected <- db_query("SELECT 1 FROM assignment_grade_sync_override WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(roster$user_id[hit[1]], item))
-      if (nrow(protected)) { skipped <- skipped + 1L; next }
+      existing <- db_query("SELECT 1 FROM student_grades WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(roster$user_id[hit[1]], item))
+      if (nrow(protected) || (assignment_key(item) %in% protected_items && nrow(existing))) { skipped <- skipped + 1L; next }
       upsert_student_grade(roster$user_id[hit[1]], item, suppressWarnings(as.numeric(r$score[1] %||% NA_real_)), suppressWarnings(as.numeric(r$maxPoints[1] %||% 100)), grade_pct, title)
       synced <- synced + 1L
     }
