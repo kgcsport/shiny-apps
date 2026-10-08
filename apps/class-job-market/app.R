@@ -366,6 +366,7 @@ db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('active_course',
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('hide_archived_students','0');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('today_announcement','');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('flex_cost_schedule','2,4,6,8,10');")
+db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('flex_cost_schedule_hide','0');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('grade_reweight_max_points','5');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('extension_base_hours','24');")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('extension_base_tokens','3');")
@@ -2952,6 +2953,12 @@ server <- function(input, output, session) {
     get_setting(paste0("flex_cost_schedule::",current_scope_key()),
                 get_setting("flex_cost_schedule","2,4,6,8,10"))
 
+  flex_cost_schedule_hidden_for_scope <- function() {
+    raw <- get_setting(paste0("flex_cost_schedule_hide::", current_scope_key()),
+                       get_setting("flex_cost_schedule_hide", "0"))
+    isTRUE(as.integer(raw %||% 0L) == 1L)
+  }
+
   flex_roster_size <- function() {
     students <- tryCatch(db_query(
       "SELECT user_id,course,section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0;"),
@@ -3352,14 +3359,16 @@ server <- function(input, output, session) {
         list(rid)), error = function(e) data.frame())
 
       posts <- tryCatch(db_query(
-        "SELECT jp.id, jp.job_name, jp.slots,
+        "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
                 COALESCE(jp.description,'') AS description,
                 COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time,
-                COALESCE(jp.wage_override, jc.default_wage) AS wage,
+                COALESCE(cws.wage, jp.wage_override, jc.default_wage) AS wage,
                 jc.name AS category_name,
                 COALESCE(fill.n, 0) AS filled
          FROM job_posts jp
          LEFT JOIN job_categories jc ON jc.id=jp.category_id
+         LEFT JOIN class_wage_snapshots cws
+           ON cws.round_id=jp.round_id AND cws.snapshot_key=('post:' || jp.id)
          LEFT JOIN (
            SELECT ja2.job_post_id, COUNT(*) n
            FROM job_assignments ja2
@@ -3532,7 +3541,16 @@ server <- function(input, output, session) {
       hidden_my_assign_n <- sum(!visible)
     }
 
-    today_posts <- if (!is.null(jp$posts)) jp$posts else data.frame()
+    all_today_posts <- if (!is.null(jp$posts)) jp$posts else data.frame()
+    cold_call_posts <- all_today_posts
+    if (nrow(cold_call_posts)) {
+      cold_call_posts <- cold_call_posts[
+        (norm_key(cold_call_posts$category_name) == "cold call" |
+           grepl("^cold call", norm_key(cold_call_posts$job_name))) &
+          norm_key(cold_call_posts$selection_time) %in% c("during", "during class"),
+        , drop = FALSE]
+    }
+    today_posts <- all_today_posts
     if (nrow(today_posts)) {
       post_timing <- norm_key(today_posts$selection_time)
       post_category <- norm_key(today_posts$category_name)
@@ -3739,8 +3757,17 @@ server <- function(input, output, session) {
       } else {
         div(style = "color:#999;font-size:.9rem;", "No jobs configured for the selected class date.")
       },
-
-      div(style = "margin-top:1.5rem;"),
+      if (wage_mode && nrow(cold_call_posts)) {
+        cold_wages <- vapply(seq_len(nrow(cold_call_posts)), function(i) {
+          r <- cold_call_posts[i, ]
+          w <- tryCatch(compute_clearing_wage(as.integer(r$category_id), as.integer(jp$round$id[1]), as.integer(r$slots %||% 1L), job_post_id=as.integer(r$id)), error=function(e) NA_real_)
+          if (!is.finite(w)) as.numeric(r$wage %||% NA_real_) else w
+        }, numeric(1))
+        div(class="today-card", style="margin-top:.7rem;",
+            tags$strong("Cold-call wages"),
+            tags$p(style="color:#666;font-size:.82rem;margin:.2rem 0 .4rem;", "Current during-class wages; these can change as bids clear."),
+            paste(sprintf("%s: %g tokens", cold_call_posts$job_name, cold_wages), collapse=" · "))
+      },
       tags$details(style = "font-size:.83rem;color:#888;",
         tags$summary(style = "cursor:pointer;color:#951829;font-weight:600;",
                      "How to use this site"),
@@ -4638,6 +4665,14 @@ server <- function(input, output, session) {
       contribution_value <- if (max_contribution > 0L) min(typed, max_contribution) else 1L
       div(class = "spend-form-box",
         tags$h6(style = "color:#951829;font-weight:700;", "📚 Candidate Question Fund"),
+        if (!flex_cost_schedule_hidden_for_scope()) {
+          sched <- flex_cost_schedule_for_scope()
+          costs <- vapply(seq_len(nrow(fq$questions)), function(i)
+            question_cost_for_n(i, sched, fq$class_size), numeric(1))
+          div(style="background:#f0f4f8;border-radius:5px;padding:.45rem .65rem;margin-bottom:.55rem;font-size:.82rem;",
+              tags$strong("Question price schedule: "),
+              paste(sprintf("Q%d: %g tokens", seq_along(costs), costs), collapse=" · "))
+        },
         tags$p(style = "color:#555;font-size:.88rem;",
                "Contributions fund a public good: every unlocked candidate becomes visible to everyone in your pooled section scope."),
         if (fq$total == 0) {
@@ -7536,6 +7571,8 @@ server <- function(input, output, session) {
       }
     }
     set_setting(paste0("flex_cost_schedule::",current_scope_key()),sched)
+    set_setting(paste0("flex_cost_schedule_hide::", current_scope_key()),
+                if (isTRUE(input$flex_hide_schedule_input)) "1" else "0")
     showNotification("Price schedule saved.", type = "message")
     rv$flex_ver <- rv$flex_ver + 1L
   })
@@ -9296,6 +9333,8 @@ server <- function(input, output, session) {
         tags$h6(style = "font-weight:700;margin-top:.75rem;", "Price Schedule"),
         textInput("flex_cost_input", NULL, value = cur_schedule, width = "100%",
                   placeholder = "e.g. 20,25,40,65  or  N*(1+(q/2)^2)"),
+        checkboxInput("flex_hide_schedule_input", "Hide the price schedule from students",
+                       value = flex_cost_schedule_hidden_for_scope()),
         tags$p(style = "color:#888;font-size:.82em;margin-top:-.4rem;",
           tags$b("Table:"), " comma-separated scope-wide thresholds in order (e.g. ",
           tags$code("20,25,40,65"), ") — the final step continues beyond the list. ",
