@@ -90,6 +90,10 @@ assignment_review_assignments <- function() {
   assignment_review_get("/api/admin/review/assignments")
 }
 
+assignment_review_gradebook_export <- function() {
+  assignment_review_get("/api/admin/review/gradebook-export")
+}
+
 assignment_review_assignment <- function(assignment_id) {
   assignment_review_get(paste0("/api/admin/review/assignments/",
                                utils::URLencode(as.character(assignment_id), reserved=TRUE)))

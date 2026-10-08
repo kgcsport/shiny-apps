@@ -552,7 +552,20 @@ db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_log(
   error TEXT,
   rows_synced INTEGER DEFAULT 0
 );")
+db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_override(
+  user_id TEXT NOT NULL,
+  assignment_name TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(user_id COLLATE NOCASE, assignment_name COLLATE NOCASE)
+);")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('assignment_grade_policy','final_score');")
+
+mark_grade_override <- function(user_id, assignment_name, reason = "Manual grade") {
+  db_exec("INSERT INTO assignment_grade_sync_override(user_id,assignment_name,reason)
+           VALUES(?,?,?) ON CONFLICT(user_id,assignment_name) DO UPDATE SET reason=excluded.reason,created_at=CURRENT_TIMESTAMP;",
+          list(user_id, assignment_name, reason))
+}
 
 upsert_student_grade <- function(user_id, assignment_name, score = NA_real_,
                                  max_score = NA_real_, grade_pct = NA_real_,
@@ -11016,55 +11029,37 @@ server <- function(input, output, session) {
     roster <- tryCatch(db_query("SELECT user_id,display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;"), error=function(e)data.frame())
     if (!nrow(roster)) return(list(ok=FALSE, message="No active students are available for matching."))
     key <- function(x) tolower(trimws(as.character(x %||% "")))
-    assignment_rows <- tryCatch(assignment_review_assignments(), error=function(e)e)
-    if (inherits(assignment_rows, "error")) return(list(ok=FALSE, message=conditionMessage(assignment_rows)))
-    if (!is.data.frame(assignment_rows)) {
-      assignment_rows <- if (length(assignment_rows)) do.call(rbind, lapply(assignment_rows, as.data.frame, stringsAsFactors=FALSE)) else data.frame()
+    export <- tryCatch(assignment_review_gradebook_export(), error=function(e)e)
+    if (inherits(export, "error")) return(list(ok=FALSE, message=conditionMessage(export)))
+    rows <- export$rows %||% data.frame()
+    if (!is.data.frame(rows)) rows <- if (length(rows)) do.call(rbind, lapply(rows, as.data.frame, stringsAsFactors=FALSE)) else data.frame()
+    if (!nrow(rows)) return(list(ok=TRUE, message="Worker returned no grade rows.", rows=0L))
+    synced <- 0L; skipped <- 0L; unmatched <- 0L
+    for (i in seq_len(nrow(rows))) {
+      r <- rows[i, , drop=FALSE]
+      aid <- as.character(r$assignmentId[1] %||% "")
+      title <- as.character(r$assignmentTitle[1] %||% aid)
+      worker_key <- key(r$gradebookKey[1] %||% "")
+      hit_item <- which(key(catalog$assignment) == worker_key)
+      item <- if (length(hit_item)) as.character(catalog$assignment[hit_item[1]]) else ""
+      if (!nzchar(item)) { unmatched <- unmatched + 1L; next }
+      ext <- key(r$externalId[1] %||% "")
+      nm <- key(r$studentName[1] %||% "")
+      hit <- which(key(roster$user_id) == ext)
+      if (!length(hit) && isTRUE(nzchar(nm))) hit <- which(key(roster$display_name) == nm)
+      if (!length(hit)) { unmatched <- unmatched + 1L; next }
+      submitted <- identical(as.character(r$status[1] %||% ""), "submitted") && isTRUE(nzchar(as.character(r$submittedAt[1] %||% "")))
+      scan_ok <- isTRUE(nzchar(as.character(r$scanVerifiedAt[1] %||% "")))
+      pct <- suppressWarnings(as.numeric(r$gradePct[1] %||% NA_real_))
+      if (identical(policy, "final_score") && (!submitted || !isTRUE(is.finite(pct)))) next
+      if (identical(policy, "split_half") && !scan_ok && (!submitted || !isTRUE(is.finite(pct)))) next
+      grade_pct <- if (identical(policy, "split_half")) (if (scan_ok) 50 else 0) + if (submitted && isTRUE(is.finite(pct))) 0.5 * pct else 0 else pct
+      protected <- db_query("SELECT 1 FROM assignment_grade_sync_override WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(roster$user_id[hit[1]], item))
+      if (nrow(protected)) { skipped <- skipped + 1L; next }
+      upsert_student_grade(roster$user_id[hit[1]], item, suppressWarnings(as.numeric(r$score[1] %||% NA_real_)), suppressWarnings(as.numeric(r$maxPoints[1] %||% 100)), grade_pct, title)
+      synced <- synced + 1L
     }
-    if (!nrow(assignment_rows)) return(list(ok=TRUE, message="No Worker assignments returned.", rows=0L))
-    synced <- 0L; unmatched <- 0L; notes <- character(0)
-    for (i in seq_len(nrow(assignment_rows))) {
-      a <- assignment_rows[i, , drop=FALSE]
-      aid <- as.character(a$id[1] %||% "")
-      title <- as.character(a$title[1] %||% aid)
-      item <- assignment_gradebook_item(a, catalog)
-      item <- as.character(item)[1]
-      if (is.na(item) || !nzchar(item)) {
-        db_exec("INSERT OR REPLACE INTO assignment_grade_sync_log(assignment_id,assignment_title,gradebook_item,policy,last_synced_at,status,error,rows_synced) VALUES(?,?,?,?,CURRENT_TIMESTAMP,'unmatched',?,0);",
-                list(aid,title,NA_character_,policy,"No matching existing Shiny gradebook item"))
-        notes <- c(notes, paste(title, "has no matching gradebook item")); next
-      }
-      detail <- tryCatch(assignment_review_assignment(aid), error=function(e)e)
-      if (inherits(detail, "error")) {
-        db_exec("INSERT OR REPLACE INTO assignment_grade_sync_log(assignment_id,assignment_title,gradebook_item,policy,last_synced_at,status,error,rows_synced) VALUES(?,?,?,?,CURRENT_TIMESTAMP,'failed',?,0);",
-                list(aid,title,item,policy,conditionMessage(detail))); notes <- c(notes, conditionMessage(detail)); next
-      }
-      subs <- detail$submissions %||% data.frame()
-      if (!is.data.frame(subs)) subs <- if (length(subs)) do.call(rbind, lapply(subs, as.data.frame, stringsAsFactors=FALSE)) else data.frame()
-      n_rows <- 0L
-      if (nrow(subs)) for (j in seq_len(nrow(subs))) {
-        sub <- subs[j, , drop=FALSE]
-        ext <- key(sub$externalId[1] %||% "")
-        nm <- key(sub$name[1] %||% "")
-        hit <- which(key(roster$user_id) == ext)
-        if (!length(hit) && isTRUE(nzchar(nm)[1])) hit <- which(key(roster$display_name) == nm)
-        if (!length(hit)) { unmatched <- unmatched + 1L; next }
-        scan_ok <- nzchar(as.character(sub$scanVerifiedAt[1] %||% ""))
-        submitted <- identical(as.character(sub$status[1] %||% ""), "submitted") && isTRUE(nzchar(as.character(sub$submittedAt[1] %||% ""))[1])
-        score <- suppressWarnings(as.numeric(sub$totalScore[1] %||% NA_real_))
-        max_score <- suppressWarnings(as.numeric(sub$maxPoints[1] %||% NA_real_))
-        final_pct <- if (isTRUE(is.finite(score)[1]) && isTRUE(is.finite(max_score)[1]) && isTRUE(max_score[1] > 0)) 100 * score / max_score else NA_real_
-        if (identical(policy, "final_score") && (!isTRUE(submitted) || !isTRUE(is.finite(final_pct)[1]))) next
-        if (identical(policy, "split_half") && !isTRUE(scan_ok) && (!isTRUE(submitted) || !isTRUE(is.finite(final_pct)[1]))) next
-        grade_pct <- if (identical(policy, "split_half")) (if (isTRUE(scan_ok)) 50 else 0) + if (isTRUE(submitted) && isTRUE(is.finite(final_pct)[1])) 0.5 * final_pct else 0 else final_pct
-        upsert_student_grade(roster$user_id[hit[1]], item, grade_pct, 100, grade_pct, title)
-        n_rows <- n_rows + 1L
-      }
-      db_exec("INSERT OR REPLACE INTO assignment_grade_sync_log(assignment_id,assignment_title,gradebook_item,policy,last_synced_at,status,error,rows_synced) VALUES(?,?,?,?,CURRENT_TIMESTAMP,'synced',?,?);",
-              list(aid,title,item,policy,if (unmatched) sprintf("%d student(s) unmatched", unmatched) else "",n_rows))
-      synced <- synced + n_rows
-    }
-    list(ok=TRUE, message=sprintf("Synced %d grade row%s across %d Worker assignment%s.%s", synced, if(synced==1)"" else "s", nrow(assignment_rows), if(nrow(assignment_rows)==1)"" else "s", if(length(notes)) paste0(" ",paste(unique(notes),collapse="; ")) else ""), rows=synced)
+    list(ok=TRUE, message=sprintf("Imported %d grade row%s from Worker export (%d unmatched, %d protected manual override%s).", synced, if(synced==1)"" else "s", unmatched, skipped, if(skipped==1)"" else "s"), rows=synced)
   }
 
   manual_grade_catalog <- function() {
@@ -11109,7 +11104,9 @@ server <- function(input, output, session) {
     if (!nzchar(uid) || !nzchar(item) || !is.finite(score) || score < 0 || score > 100) {
       showNotification("Choose a student and assignment, then enter a score from 0 to 100.", type="error"); return()
     }
-    upsert_student_grade(uid, item, score, 100, score, trimws(input$manual_grade_note %||% "Manual entry"))
+    note <- trimws(input$manual_grade_note %||% "Manual entry")
+    upsert_student_grade(uid, item, score, 100, score, note)
+    mark_grade_override(uid, item, note)
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification(sprintf("Saved %s for %s.", item, uid), type="message")
   }, ignoreNULL=TRUE)
@@ -11185,6 +11182,7 @@ server <- function(input, output, session) {
       upsert_student_grade(
         uid, asgn, scr, mx, pct, if (nzchar(wk)) wk else NA_character_
       )
+      mark_grade_override(uid, asgn, if (nzchar(wk)) wk else "Imported manual grade")
       n_ins <- n_ins + 1L
     }
     msg <- sprintf("Imported %d grade row%s.", n_ins, if (n_ins == 1L) "" else "s")
@@ -11256,6 +11254,7 @@ server <- function(input, output, session) {
       student$user_id[1], matched_assignment[1], score, max_score, grade_pct,
       if (nzchar(week_tag)) week_tag else NA_character_
     )
+    mark_grade_override(student$user_id[1], matched_assignment[1], if (nzchar(week_tag)) week_tag else "Manual grade")
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification(sprintf("Saved %s for %s: %.1f%%.",
                              matched_assignment[1], student$user_id[1], grade_pct),
