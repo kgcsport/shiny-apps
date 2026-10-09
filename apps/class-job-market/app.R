@@ -603,6 +603,9 @@ db_exec("CREATE TABLE IF NOT EXISTS policy_group_assignments(
 );")
 ensure_column("policy_group_assignments", "policy_topic TEXT")
 ensure_column("policy_group_assignments", "policy_question TEXT")
+ensure_column("policy_group_assignments", "topic_status TEXT DEFAULT 'pending'")
+ensure_column("policy_group_assignments", "topic_note TEXT")
+ensure_column("policy_group_assignments", "topic_reviewed_at TEXT")
 
 upsert_policy_group_assignment <- function(user_id, policy_team, presentation_date,
                                            course_unit, topic_interests=NA_character_,
@@ -2531,7 +2534,8 @@ server <- function(input, output, session) {
     rubric_ver     = 0L,    # bumped after policy-rubric drafts or releases
     extensions_ver = 0L,    # bumped after extension pricing or assignment mutation
     flex_ver       = 0L,    # bumped after shared question funding/config changes
-    policy_ver     = 0L     # bumped after policy-group assignment import
+    policy_ver     = 0L,    # bumped after policy-group assignment import
+    policy_grader_team = NULL
   )
 
   # Rubric anchors prefill suggested points; the numeric inputs remain editable.
@@ -5494,7 +5498,9 @@ server <- function(input, output, session) {
     policy_row <- tryCatch(db_query(
       "SELECT policy_team, presentation_date, course_unit,
               COALESCE(policy_topic,'') AS policy_topic,
-              COALESCE(policy_question,'') AS policy_question
+              COALESCE(policy_question,'') AS policy_question,
+              COALESCE(topic_status,'pending') AS topic_status,
+              COALESCE(topic_note,'') AS topic_note
        FROM policy_group_assignments WHERE LOWER(user_id)=LOWER(?) LIMIT 1;",
       list(rv$user_id)), error=function(e) data.frame())
     members <- if (nrow(policy_row)) tryCatch(db_query(
@@ -5505,6 +5511,57 @@ server <- function(input, output, session) {
     fmt_date <- function(x) {
       d <- suppressWarnings(as.Date(x)); if (is.na(d)) as.character(x %||% "")
       else format(d, "%A, %B %d, %Y")
+    }
+    if (isTRUE(rv$is_admin) && !isTRUE(rv$impersonating)) {
+      team_rows <- tryCatch(db_query(
+        "SELECT DISTINCT p.policy_team, u.course, u.section
+         FROM policy_group_assignments p JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+         WHERE COALESCE(u.active,1)=1 AND COALESCE(u.is_admin,0)=0 AND COALESCE(u.is_demo,0)=0
+         ORDER BY p.policy_team;"), error=function(e) data.frame())
+      team_rows <- scope_filter_rows(team_rows)
+      teams <- sort(unique(nonempty_values(team_rows$policy_team %||% character(0))))
+      if (!length(teams))
+        return(tagList(div(class="tab-howto", "Review policy topics, presentations, and team feedback."),
+                       div(class="today-card", tags$h4("Policy brief review"),
+                           tags$p(style="color:#777;", "No policy teams exist in the selected course/section scope."))))
+      selected <- isolate(input$policy_admin_team %||% teams[1])
+      if (!selected %in% teams) selected <- teams[1]
+      team_row <- tryCatch(db_query(
+        "SELECT policy_team, course_unit, presentation_date, COALESCE(policy_topic,'') AS policy_topic,
+                COALESCE(policy_question,'') AS policy_question, COALESCE(topic_status,'pending') AS topic_status,
+                COALESCE(topic_note,'') AS topic_note
+         FROM policy_group_assignments WHERE policy_team=? ORDER BY user_id LIMIT 1;", list(selected)),
+        error=function(e) data.frame())
+      team_members <- tryCatch(db_query(
+        "SELECT COALESCE(u.display_name,p.user_id) AS display_name
+         FROM policy_group_assignments p LEFT JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+         WHERE p.policy_team=? ORDER BY COALESCE(u.display_name,p.user_id);", list(selected)),
+        error=function(e) data.frame())
+      tr <- if (nrow(team_row)) team_row[1,] else data.frame(policy_team=selected,course_unit="",presentation_date="",policy_topic="",policy_question="",topic_status="pending",topic_note="")
+      return(tagList(
+        div(class="tab-howto", "Review team topics, approve the question, and open the rubric grader for the selected team."),
+        div(class="today-card",
+          selectInput("policy_admin_team", "Team to review:", choices=teams, selected=selected),
+          tags$p(tags$strong("Unit: "), tr$course_unit, " · ", tags$strong("Presentation: "), fmt_date(tr$presentation_date)),
+          if (nrow(team_members)) tags$p(tags$strong("Group: "), paste(team_members$display_name, collapse=", ")),
+          tags$h5("Student-submitted topic and question"),
+          tags$p(if (nzchar(tr$policy_topic %||% "")) tr$policy_topic else "No topic submitted yet."),
+          tags$p(if (nzchar(tr$policy_question %||% "")) tr$policy_question else "No guiding question submitted yet."),
+          selectInput("policy_topic_status", "Topic status:",
+                      choices=c("Pending review"="pending", "Approved"="approved", "Needs revision"="needs_revision"),
+                      selected=tr$topic_status %||% "pending"),
+          textAreaInput("policy_topic_note", "Quick note to the team:",
+                        value=tr$topic_note %||% "", rows=2, width="100%",
+                        placeholder="Optional approval or revision note"),
+          div(style="display:flex;gap:.5rem;flex-wrap:wrap;",
+            actionButton("save_policy_topic_review_btn", "Save topic review", class="btn btn-primary"),
+            actionButton("policy_admin_open_grader_btn", "Open rubric grader", class="btn btn-default"))
+        ),
+        tags$h4("Milestones"),
+        tags$ul(tags$li(paste("Presentation —", fmt_date(tr$presentation_date))),
+                tags$li("Progress report / revision memo — after presentation feedback"),
+                tags$li("Final brief submission — official final-exam period"))
+      ))
     }
     if (!nrow(policy_row))
       return(tagList(div(class="tab-howto", "Your policy brief milestones and instructor feedback."),
@@ -5525,6 +5582,12 @@ server <- function(input, output, session) {
         textAreaInput("student_policy_question", "Guiding question:", value=r$policy_question %||% "",
                       rows=2, width="100%", placeholder="What question should the brief answer?"),
         actionButton("save_student_policy_brief_btn", "Save topic and question", class="btn btn-primary"),
+        if (identical(r$topic_status %||% "pending", "approved"))
+          tags$p(style="color:#1a6e3c;font-size:.84rem;", "Topic approved by instructor."),
+        if (identical(r$topic_status %||% "pending", "needs_revision"))
+          tags$p(style="color:#9a5b00;font-size:.84rem;", "Topic needs revision."),
+        if (nzchar(r$topic_note %||% ""))
+          tags$p(style="color:#666;font-size:.84rem;", tags$strong("Instructor note: "), r$topic_note),
         tags$p(tags$strong("Presentation: "), fmt_date(r$presentation_date)),
         if (nrow(members)) tags$p(tags$strong("Group: "), paste(members$display_name, collapse=", ")),
         tags$p(style="color:#777;font-size:.84rem;margin-bottom:0;",
@@ -5532,6 +5595,29 @@ server <- function(input, output, session) {
       uiOutput("account_policy_feedback")
     )
   })
+
+  observeEvent(input$save_policy_topic_review_btn, {
+    req(rv$authed, rv$is_admin, !rv$impersonating)
+    team <- trimws(input$policy_admin_team %||% "")
+    if (!nzchar(team)) return()
+    status <- input$policy_topic_status %||% "pending"
+    if (!status %in% c("pending", "approved", "needs_revision")) status <- "pending"
+    db_exec("UPDATE policy_group_assignments SET topic_status=?, topic_note=?, topic_reviewed_at=CURRENT_TIMESTAMP WHERE policy_team=?;",
+            list(status, trimws(input$policy_topic_note %||% ""), team))
+    rv$policy_ver <- rv$policy_ver + 1L
+    showNotification("Saved topic review for the selected team.", type="message")
+  }, ignoreInit=TRUE)
+
+  observeEvent(input$policy_admin_open_grader_btn, {
+    req(rv$authed, rv$is_admin, !rv$impersonating)
+    team <- trimws(input$policy_admin_team %||% "")
+    if (nzchar(team)) {
+      rv$policy_grader_team <- team
+      updateSelectInput(session, "policy_rubric_team", selected=team)
+    }
+    updateSelectInput(session, "config_action", selected="policy_rubrics")
+    updateTabsetPanel(session, "arc_tabs", selected="Settings")
+  }, ignoreInit=TRUE)
 
   observeEvent(input$save_student_policy_brief_btn, {
     req(rv$authed, rv$user_id)
@@ -9699,7 +9785,7 @@ server <- function(input, output, session) {
           tags$p(style="color:#999;", "No policy teams exist in the selected course/section scope. Import or assign policy groups under Settings → Students first.")
         )
       } else {
-        selected_team <- isolate(input$policy_rubric_team %||% teams[1])
+        selected_team <- isolate(input$policy_rubric_team %||% rv$policy_grader_team %||% teams[1])
         if (!selected_team %in% teams) selected_team <- teams[1]
         selected_component <- isolate(input$policy_rubric_component %||% "presentation")
         if (!selected_component %in% names(catalog)) selected_component <- "presentation"
