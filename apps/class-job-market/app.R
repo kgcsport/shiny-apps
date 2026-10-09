@@ -601,16 +601,19 @@ db_exec("CREATE TABLE IF NOT EXISTS policy_group_assignments(
   allocation_seed   TEXT,
   imported_at       TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+ensure_column("policy_group_assignments", "policy_topic TEXT")
+ensure_column("policy_group_assignments", "policy_question TEXT")
 
 upsert_policy_group_assignment <- function(user_id, policy_team, presentation_date,
                                            course_unit, topic_interests=NA_character_,
                                            assigned_rank=NA_integer_, allocation_seed=NA_character_,
+                                           policy_topic=NA_character_, policy_question=NA_character_,
                                            exec_fn=db_exec) {
   exec_fn(
     "INSERT INTO policy_group_assignments(
        user_id, policy_team, presentation_date, course_unit, topic_interests,
-       assigned_rank, allocation_seed, imported_at
-     ) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+       assigned_rank, allocation_seed, policy_topic, policy_question, imported_at
+     ) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
      ON CONFLICT(user_id) DO UPDATE SET
        policy_team=excluded.policy_team,
        presentation_date=excluded.presentation_date,
@@ -618,9 +621,11 @@ upsert_policy_group_assignment <- function(user_id, policy_team, presentation_da
        topic_interests=excluded.topic_interests,
        assigned_rank=excluded.assigned_rank,
        allocation_seed=excluded.allocation_seed,
+       policy_topic=excluded.policy_topic,
+       policy_question=excluded.policy_question,
        imported_at=CURRENT_TIMESTAMP;",
     list(user_id, policy_team, presentation_date, course_unit, topic_interests,
-         assigned_rank, allocation_seed))
+         assigned_rank, allocation_seed, policy_topic, policy_question))
 }
 
 db_exec("CREATE TABLE IF NOT EXISTS policy_rubric_assessments(
@@ -2822,9 +2827,10 @@ server <- function(input, output, session) {
           tabsetPanel(id = "arc_tabs", type = "tabs", selected = "Today",
             tabPanel("Today",        br(), uiOutput("today_tab")),
             tabPanel("Job Market",   br(), uiOutput("job_market_tab")),
-            tabPanel("Games & Demos", br(), uiOutput("games_tab")),
             tabPanel("Spend",        br(), uiOutput("spend_tab")),
             tabPanel("Account",      br(), uiOutput("account_tab")),
+            tabPanel("Policy Brief", br(), uiOutput("policy_brief_tab")),
+            tabPanel("Games & Demos", br(), uiOutput("games_tab")),
             tabPanel("Live Tracker", br(), uiOutput("live_tracker_tab")),
             tabPanel("Settings",     br(), uiOutput("settings_tab"))
           )
@@ -5364,7 +5370,7 @@ server <- function(input, output, session) {
 
   policy_feedback_poll <- reactivePoll(6000,session,
     checkFunc=function() {
-      if (!tab_is_active("Account")) return("")
+      if (!tab_is_active("Account", "Policy Brief")) return("")
       if (!isTRUE(rv$authed) || isTRUE(rv$is_admin) || is.null(rv$user_id)) return("")
       stamp <- tryCatch(db_query(
         "SELECT COUNT(*) AS n, COALESCE(MAX(a.updated_at),'') AS stamp
@@ -5481,6 +5487,78 @@ server <- function(input, output, session) {
       cards)
   })
 
+  # ── Policy Brief tab ─────────────────────────────────────────────────────────
+  output$policy_brief_tab <- renderUI({
+    req(rv$authed)
+    rv$policy_ver
+    policy_row <- tryCatch(db_query(
+      "SELECT policy_team, presentation_date, course_unit,
+              COALESCE(policy_topic,'') AS policy_topic,
+              COALESCE(policy_question,'') AS policy_question
+       FROM policy_group_assignments WHERE LOWER(user_id)=LOWER(?) LIMIT 1;",
+      list(rv$user_id)), error=function(e) data.frame())
+    members <- if (nrow(policy_row)) tryCatch(db_query(
+      "SELECT COALESCE(u.display_name,p.user_id) AS display_name
+       FROM policy_group_assignments p LEFT JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+       WHERE p.policy_team=? ORDER BY COALESCE(u.display_name,p.user_id);",
+      list(policy_row$policy_team[1])), error=function(e) data.frame()) else data.frame()
+    fmt_date <- function(x) {
+      d <- suppressWarnings(as.Date(x)); if (is.na(d)) as.character(x %||% "")
+      else format(d, "%A, %B %d, %Y")
+    }
+    if (!nrow(policy_row))
+      return(tagList(div(class="tab-howto", "Your policy brief milestones and instructor feedback."),
+                     div(class="today-card", tags$h4("Policy brief"),
+                         tags$p(style="color:#777;", "Your instructor has not assigned your policy group yet."))))
+    r <- policy_row[1,]
+    tagList(
+      div(class="tab-howto", "Your policy brief milestones, group question, and feedback."),
+      div(class="today-card",
+        tags$h4("Your policy brief"),
+        tags$p(tags$strong("Team: "), r$policy_team, " · ", r$course_unit),
+        tags$hr(style="margin:.8rem 0 .65rem;"),
+        tags$h5("Your working topic and guiding question"),
+        tags$p(style="color:#777;font-size:.84rem;",
+               "Use the syllabus guidance to state what your group is studying and the question your brief will answer. This is shared with your policy team and your instructor."),
+        textInput("student_policy_topic", "Policy brief topic:", value=r$policy_topic %||% "",
+                  placeholder="Short topic or policy area"),
+        textAreaInput("student_policy_question", "Guiding question:", value=r$policy_question %||% "",
+                      rows=2, width="100%", placeholder="What question should the brief answer?"),
+        actionButton("save_student_policy_brief_btn", "Save topic and question", class="btn btn-primary"),
+        tags$p(tags$strong("Presentation: "), fmt_date(r$presentation_date)),
+        if (nrow(members)) tags$p(tags$strong("Group: "), paste(members$display_name, collapse=", ")),
+        tags$p(style="color:#777;font-size:.84rem;margin-bottom:0;",
+               "Final brief submission is during the official final-exam period; your instructor will post the exact date.")),
+      uiOutput("account_policy_feedback")
+    )
+  })
+
+  observeEvent(input$save_student_policy_brief_btn, {
+    req(rv$authed, rv$user_id)
+    if (isTRUE(rv$is_admin) && !isTRUE(rv$impersonating)) {
+      showNotification("Use a student view to enter the group topic and question.", type="warning")
+      return()
+    }
+    current <- tryCatch(db_query(
+      "SELECT policy_team FROM policy_group_assignments WHERE LOWER(user_id)=LOWER(?) LIMIT 1;",
+      list(rv$user_id)), error=function(e) data.frame())
+    if (!nrow(current)) {
+      showNotification("You are not assigned to a policy team yet.", type="error")
+      return()
+    }
+    topic <- trimws(input$student_policy_topic %||% "")
+    question <- trimws(input$student_policy_question %||% "")
+    if (!nzchar(topic) || !nzchar(question)) {
+      showNotification("Enter both a topic and a guiding question.", type="error")
+      return()
+    }
+    db_exec("UPDATE policy_group_assignments
+             SET policy_topic=?, policy_question=?, imported_at=CURRENT_TIMESTAMP
+             WHERE policy_team=?;", list(topic, question, current$policy_team[1]))
+    rv$policy_ver <- rv$policy_ver + 1L
+    showNotification("Saved for your policy team.", type="message")
+  }, ignoreInit=TRUE)
+
   # ── Account tab ───────────────────────────────────────────────────────────────
   output$account_tab <- renderUI({
     req(rv$authed)
@@ -5510,7 +5588,7 @@ server <- function(input, output, session) {
       list(rv$user_id)), error = function(e) data.frame())
 
     policy_row <- tryCatch(db_query(
-      "SELECT policy_team, presentation_date, course_unit
+      "SELECT policy_team, presentation_date, course_unit, policy_topic, policy_question
        FROM policy_group_assignments WHERE LOWER(user_id)=LOWER(?) LIMIT 1;",
       list(rv$user_id)), error = function(e) data.frame())
     policy_members <- if (nrow(policy_row)) tryCatch(db_query(
@@ -5519,6 +5597,34 @@ server <- function(input, output, session) {
        LEFT JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
        WHERE p.policy_team=? ORDER BY COALESCE(u.display_name, p.user_id);",
       list(policy_row$policy_team[1])), error = function(e) data.frame()) else data.frame()
+
+    problem_sets <- tryCatch(db_query(
+      "SELECT name, original_deadline, solutions_posted_at
+       FROM problem_sets WHERE COALESCE(active,1)=1
+       ORDER BY CASE WHEN original_deadline IS NULL OR original_deadline='' THEN 1 ELSE 0 END, original_deadline ASC;"),
+      error=function(e) data.frame())
+    fmt_due <- function(x) {
+      d <- suppressWarnings(as.Date(x)); if (is.na(d)) as.character(x %||% "Not set")
+      else format(d, "%b %d, %Y")
+    }
+    pending_assignments_ui <- div(class="today-card pending-assignments-card",
+      tags$h4("Pending assignments"),
+      tags$p(style="color:#777;font-size:.84rem;",
+             "Upcoming deadlines and policy-brief milestones are collected here."),
+      if (nrow(problem_sets)) tags$table(class="table table-sm",
+        tags$thead(tags$tr(tags$th("Assignment"),tags$th("Due"),tags$th("Solutions"))),
+        tags$tbody(lapply(seq_len(nrow(problem_sets)), function(i) {
+          ps <- problem_sets[i,]
+          tags$tr(tags$td(ps$name %||% "Problem set"),
+                  tags$td(fmt_due(ps$original_deadline)),
+                  tags$td(if (nzchar(ps$solutions_posted_at %||% "")) fmt_due(ps$solutions_posted_at) else "—"))
+        }))
+      ) else tags$p(style="color:#999;", "No problem-set deadlines have been posted yet."),
+      if (nrow(policy_row)) tags$ul(style="margin:.45rem 0 0;padding-left:1.2rem;",
+        tags$li(paste("Policy presentation —", fmt_due(policy_row$presentation_date))),
+        tags$li("Policy brief progress report — submit after presentation feedback"),
+        tags$li("Final brief submission — official final-exam period"))
+    )
 
     job_history_ui <- div(
       class = "profile-panel account-jobs-panel",
@@ -5566,6 +5672,7 @@ server <- function(input, output, session) {
     )
 
     tagList(
+      pending_assignments_ui,
       div(class = "tab-howto", "Your assigned jobs, token summary, transaction history, and profile."),
 
       job_history_ui,
@@ -5623,25 +5730,10 @@ server <- function(input, output, session) {
               tags$p(tags$strong("Class: "), rv$course),
             if (nzchar(rv$section %||% ""))
               tags$p(tags$strong("Section: "), rv$section),
-            tags$hr(style = "margin:.75rem 0;"),
-            tags$h6(style = "color:#951829;font-weight:700;", "Policy Presentation"),
-            if (nrow(policy_row)) {
-              tagList(
-                tags$p(tags$strong(policy_row$policy_team[1]), " — ", policy_row$course_unit[1]),
-                tags$p(tags$strong("Date: "),
-                       tryCatch(format(as.Date(policy_row$presentation_date[1]), "%A, %B %d"),
-                                error = function(e) policy_row$presentation_date[1])),
-                if (nrow(policy_members))
-                  tags$p(tags$strong("Group: "), paste(policy_members$display_name, collapse = ", "))
-              )
-            } else {
-              tags$p(style = "color:#999;font-size:.9em;", "No policy group assigned yet.")
-            }
           )
         )
       ),
 
-      uiOutput("account_policy_feedback"),
       uiOutput("account_grade_breakdown")
     )
   })
@@ -6083,7 +6175,8 @@ server <- function(input, output, session) {
     upsert_policy_group_assignment(
       user$user_id[1], team, as.character(presentation_date), unit,
       blank_to_na(input$manual_policy_interests), rank,
-      blank_to_na(input$manual_policy_seed), exec_fn=db_exec)
+      blank_to_na(input$manual_policy_seed),
+      exec_fn=db_exec)
     rv$policy_ver <- rv$policy_ver + 1L
     showNotification(sprintf("Updated policy group for %s.", user$display_name[1] %||% user$user_id[1]),
                      type="message")
@@ -6115,6 +6208,7 @@ server <- function(input, output, session) {
         user$user_id[1], trimws(df$policy_team[i]), trimws(df$presentation_date[i]),
         trimws(df$course_unit[i]), optional("topic_interests", i),
         optional("assigned_rank", i), optional("allocation_seed", i),
+        optional("policy_topic", i), optional("policy_question", i),
         exec_fn=db_exec)
       imported <- imported + 1L
     }
