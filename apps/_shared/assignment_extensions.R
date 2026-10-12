@@ -63,6 +63,37 @@ sync_extension_purchase <- function(purchase_id) {
 }
 
 
+revoke_extension_purchase <- function(purchase_id) {
+  row <- db_query(
+    "SELECT ep.id, ep.user_id, ep.hours, ep.purchased_at,
+            ps.cloudflare_assignment_id, COALESCE(ps.extension_target,'submission') extension_target
+     FROM extension_purchases ep JOIN problem_sets ps ON ps.id=ep.problem_set_id
+     WHERE ep.id=?;", list(as.integer(purchase_id)))
+  if (!nrow(row)) return(list(ok=FALSE, status="failed", error="Extension purchase not found"))
+  if (!extension_sync_configured())
+    return(list(ok=FALSE, status="not_configured", error="Set ASSIGNMENT_ADMIN_TOKEN in the Shiny server environment"))
+  if (!nzchar(trimws(row$cloudflare_assignment_id[1] %||% "")))
+    return(list(ok=FALSE, status="not_configured", error="Assignment is not mapped to a Cloudflare assignment ID"))
+  result <- tryCatch({
+    response <- httr2::request(paste0(ASSIGNMENT_API_ORIGIN, "/api/admin/extensions/revoke")) |>
+      httr2::req_headers(Authorization=paste("Bearer", ASSIGNMENT_ADMIN_TOKEN)) |>
+      httr2::req_body_json(list(
+        source="shiny-class-job-market",
+        sourcePurchaseId=as.character(row$id[1]),
+        assignmentId=as.character(row$cloudflare_assignment_id[1]),
+        userId=as.character(row$user_id[1])), auto_unbox=TRUE) |>
+      httr2::req_timeout(12) |>
+      httr2::req_error(is_error=function(resp) FALSE) |>
+      httr2::req_perform()
+    body <- tryCatch(httr2::resp_body_json(response, simplifyVector=TRUE), error=function(e) list())
+    if (httr2::resp_status(response) >= 300)
+      stop(body$error %||% paste("Cloudflare returned", httr2::resp_status(response)))
+    list(ok=TRUE, status="revoked", error="", response=body)
+  }, error=function(e) list(ok=FALSE, status="failed", error=conditionMessage(e)))
+  result
+}
+
+
 # Read-only server-side access to the Worker instructor review API. This uses
 # the same ADMIN_TOKEN as extension syncing; no credential is exposed to clients.
 assignment_review_configured <- function() {

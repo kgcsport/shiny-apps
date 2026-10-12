@@ -261,6 +261,10 @@ ensure_column("problem_sets", "extension_target TEXT DEFAULT 'submission'")
 ensure_column("extension_purchases", "sync_status TEXT DEFAULT 'pending'")
 ensure_column("extension_purchases", "sync_error TEXT")
 ensure_column("extension_purchases", "synced_at TEXT")
+ensure_column("extension_purchases", "refunded_at TEXT")
+ensure_column("extension_purchases", "refund_ledger_id INTEGER")
+ensure_column("extension_purchases", "refund_status TEXT DEFAULT 'not_refunded'")
+ensure_column("extension_purchases", "refund_error TEXT")
 source(file.path(dirname(shared_sqlite), "assignment_extensions.R"), local = TRUE)
 db_exec("CREATE TABLE IF NOT EXISTS grade_reweight_requests(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5056,13 +5060,52 @@ server <- function(input, output, session) {
 
   output$spend_history <- renderUI({
     req(rv$authed)
+    rv$extensions_ver
+    purchases <- tryCatch(db_query(
+      "SELECT ep.id, ep.hours, ep.cost, ep.purchased_at,
+              COALESCE(ep.refund_status,'not_refunded') AS refund_status,
+              ep.refunded_at, ep.refund_error, ps.name AS problem_set,
+              ps.original_deadline, COALESCE(ep.sync_status,'pending') AS sync_status
+       FROM extension_purchases ep
+       LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id
+       WHERE ep.user_id=? ORDER BY ep.purchased_at DESC LIMIT 20;",
+      list(rv$user_id)), error = function(e) data.frame())
     rows <- tryCatch(db_query(
       "SELECT amount, source_type, note, created_at FROM token_ledger
        WHERE user_id=? AND earning=0 ORDER BY created_at DESC LIMIT 20;",
       list(rv$user_id)), error = function(e) data.frame())
-    if (!nrow(rows))
-      return(div(style = "color:#999;font-size:.88rem;", "No spending history yet."))
-    tags$table(class = "table table-sm",
+    purchase_ui <- if (nrow(purchases)) tagList(
+      tags$h6(style="font-weight:700;color:#951829;margin-top:.2rem;", "Extension purchases"),
+      tags$p(style="color:#666;font-size:.82rem;", "Refunds are available before the original deadline. A successful refund restores the tokens and removes the extension from the assignment portal."),
+      tags$table(class="table table-sm",
+        tags$thead(tags$tr(tags$th("Assignment"), tags$th("Hours"), tags$th("Purchased"), tags$th("Status"), tags$th(""))),
+        tags$tbody(lapply(seq_len(nrow(purchases)), function(i) {
+          r <- purchases[i, ]
+          deadline <- suppressWarnings(as.POSIXct(r$original_deadline, tz="UTC"))
+          eligible <- identical(as.character(r$refund_status %||% "not_refunded"), "not_refunded") &&
+            !is.na(deadline) && deadline > Sys.time() &&
+            identical(as.character(r$sync_status %||% "pending"), "synced")
+          status <- if (identical(as.character(r$refund_status %||% ""), "refunded")) {
+            paste("Refunded", as.character(r$refunded_at %||% ""))
+          } else if (!identical(as.character(r$sync_status %||% "pending"), "synced")) {
+            "Pending sync"
+          } else if (!is.na(deadline) && deadline <= Sys.time()) {
+            "Past deadline"
+          } else "Active"
+          tags$tr(
+            tags$td(r$problem_set %||% "Assignment"),
+            tags$td(sprintf("%g", as.numeric(r$hours))),
+            tags$td(tryCatch(format(as.POSIXct(r$purchased_at), "%b %d"), error=function(e) "")),
+            tags$td(title=as.character(r$refund_error %||% ""), status),
+            tags$td(if (eligible) tags$button(class="btn btn-xs btn-outline-warning",
+              style="padding:.1rem .35rem;font-size:.72rem;",
+              onclick=sprintf("if(confirm('Refund this extension and restore the tokens?')) Shiny.setInputValue('refund_extension_purchase',%d,{priority:'event'});", as.integer(r$id)),
+              "Refund") else "")
+          )
+        }))
+      )
+    ) else NULL
+    history_ui <- if (nrow(rows)) tags$table(class = "table table-sm",
       tags$thead(tags$tr(
         tags$th("Date"), tags$th("Type"), tags$th("Note"),
         tags$th(style = "text-align:right;", "Tokens")
@@ -5076,9 +5119,56 @@ server <- function(input, output, session) {
           tags$td(style = "text-align:right;font-weight:600;color:#b00020;",
                   as.integer(r$amount))
         )
-      }))
-    )
+      }))) else div(style = "color:#999;font-size:.88rem;", "No spending history yet.")
+    tagList(purchase_ui, tags$h6(style="font-weight:700;color:#951829;margin-top:.8rem;", "Spending history"), history_ui)
   })
+
+  observeEvent(input$refund_extension_purchase, {
+    req(rv$authed, rv$user_id)
+    if (rv$is_demo) { showNotification("Demo mode purchases cannot be refunded.", type="warning"); return() }
+    purchase_id <- suppressWarnings(as.integer(input$refund_extension_purchase %||% 0L))
+    row <- tryCatch(db_query(
+      "SELECT ep.id, ep.user_id, ep.cost, ep.purchased_at,
+              COALESCE(ep.refund_status,'not_refunded') AS refund_status,
+              COALESCE(ep.sync_status,'pending') AS sync_status,
+              ps.name AS problem_set, ps.original_deadline
+       FROM extension_purchases ep LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id
+       WHERE ep.id=? AND ep.user_id=? LIMIT 1;", list(purchase_id, rv$user_id)),
+      error=function(e) data.frame())
+    if (!nrow(row)) { showNotification("Extension purchase not found.", type="error"); return() }
+    if (!identical(as.character(row$refund_status[1] %||% "not_refunded"), "not_refunded")) {
+      showNotification("That extension has already been refunded or is being processed.", type="warning"); return()
+    }
+    deadline_raw <- as.character(row$original_deadline[1] %||% "")
+    deadline <- suppressWarnings(as.POSIXct(
+      if (grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", deadline_raw)) paste(deadline_raw, "23:59:59") else deadline_raw,
+      tz="UTC"))
+    if (is.na(deadline) || deadline <= Sys.time()) {
+      showNotification("Extensions can only be refunded before the original assignment deadline.", type="warning"); return()
+    }
+    if (!identical(as.character(row$sync_status[1] %||% "pending"), "synced")) {
+      showNotification("This extension has not finished syncing, so it cannot be refunded yet.", type="warning"); return()
+    }
+    claimed <- db_exec("UPDATE extension_purchases SET refund_status='processing',refund_error='' WHERE id=? AND user_id=? AND COALESCE(refund_status,'not_refunded')='not_refunded';",
+                       list(purchase_id, rv$user_id))
+    if (!identical(as.integer(claimed), 1L)) {
+      showNotification("That extension has already been refunded or is being processed.", type="warning"); return()
+    }
+    revoke <- revoke_extension_purchase(purchase_id)
+    if (!isTRUE(revoke$ok)) {
+      db_exec("UPDATE extension_purchases SET refund_status='failed',refund_error=? WHERE id=?;",
+              list(revoke$error %||% "Worker entitlement could not be revoked", purchase_id))
+      showNotification(paste("Refund failed:", revoke$error %||% "Worker entitlement could not be revoked"), type="error", duration=10)
+      return()
+    }
+    refund_lid <- token_credit(rv$user_id, rv$name, as.numeric(row$cost[1]), 0L,
+                               "extension_refund", purchase_id,
+                               note=sprintf("Refund for %s extension", row$problem_set[1] %||% "assignment"))
+    db_exec("UPDATE extension_purchases SET refund_status='refunded',refunded_at=CURRENT_TIMESTAMP,refund_ledger_id=?,refund_error='' WHERE id=? AND COALESCE(refund_status,'not_refunded')='not_refunded';",
+            list(as.integer(refund_lid %||% NA_integer_), purchase_id))
+    rv$extensions_ver <- rv$extensions_ver + 1L
+    showNotification(sprintf("Refunded %d tokens for %s.", as.integer(row$cost[1]), row$problem_set[1] %||% "the extension"), type="message", duration=8)
+  }, ignoreNULL=TRUE)
 
   observeEvent(input$submit_extension, {
     req(rv$authed, rv$user_id)
