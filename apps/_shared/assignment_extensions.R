@@ -25,12 +25,18 @@ extension_sync_payload <- function(row) {
 sync_extension_purchase <- function(purchase_id) {
   row <- db_query(
     "SELECT ep.id, ep.user_id, ep.hours, ep.purchased_at,
+            COALESCE(ep.refund_status,'not_refunded') refund_status,
             ps.cloudflare_assignment_id, COALESCE(ps.extension_target,'submission') extension_target
      FROM extension_purchases ep
      JOIN problem_sets ps ON ps.id=ep.problem_set_id
      WHERE ep.id=?;",
     list(as.integer(purchase_id)))
   if (!nrow(row)) return(list(ok=FALSE, status="failed", error="Extension purchase not found"))
+  if (identical(as.character(row$refund_status[1] %||% "not_refunded"), "refunded")) {
+    db_exec("UPDATE extension_purchases SET sync_status='refunded',sync_error='Purchase was refunded locally' WHERE id=?;",
+            list(as.integer(purchase_id)))
+    return(list(ok=TRUE, status="refunded", error="Purchase was refunded locally"))
+  }
   if (!nzchar(trimws(row$cloudflare_assignment_id[1] %||% ""))) {
     error <- "Assignment is not mapped to a Cloudflare assignment ID"
     db_exec("UPDATE extension_purchases SET sync_status='not_configured',sync_error=? WHERE id=?;",
