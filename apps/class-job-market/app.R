@@ -5085,14 +5085,17 @@ server <- function(input, output, session) {
         tags$tbody(lapply(seq_len(nrow(purchases)), function(i) {
           r <- purchases[i, ]
           deadline <- suppressWarnings(as.POSIXct(r$original_deadline, tz="UTC"))
-          eligible <- identical(as.character(r$refund_status %||% "not_refunded"), "not_refunded") &&
-            !is.na(deadline) && deadline > Sys.time() &&
-            identical(as.character(r$sync_status %||% "pending"), "synced")
+          synced <- identical(as.character(r$sync_status %||% "pending"), "synced")
+          refundable <- identical(as.character(r$refund_status %||% "not_refunded"), "not_refunded") && synced
+          after_deadline <- !is.na(deadline) && deadline <= Sys.time()
+          eligible <- refundable && !after_deadline
           status <- if (identical(as.character(r$refund_status %||% ""), "refunded")) {
             paste("Refunded", as.character(r$refunded_at %||% ""))
+          } else if (identical(as.character(r$refund_status %||% ""), "requested")) {
+            "Refund requested"
           } else if (identical(as.character(r$approval_status %||% "approved"), "pending")) {
             "Awaiting instructor approval"
-          } else if (!identical(as.character(r$sync_status %||% "pending"), "synced")) {
+          } else if (!synced) {
             "Pending sync"
           } else if (!is.na(deadline) && deadline <= Sys.time()) {
             "Past deadline"
@@ -5105,7 +5108,10 @@ server <- function(input, output, session) {
             tags$td(if (eligible) tags$button(class="btn btn-xs btn-outline-warning",
               style="padding:.1rem .35rem;font-size:.72rem;",
               onclick=sprintf("if(confirm('Refund this extension and restore the tokens?')) Shiny.setInputValue('refund_extension_purchase',%d,{priority:'event'});", as.integer(r$id)),
-              "Refund") else "")
+              "Refund") else if (refundable && after_deadline && !identical(as.character(r$refund_status %||% ""), "requested")) tags$button(class="btn btn-xs btn-outline-warning",
+              style="padding:.1rem .35rem;font-size:.72rem;",
+              onclick=sprintf("if(confirm('Request an instructor refund for this extension?')) Shiny.setInputValue('request_extension_refund',%d,{priority:'event'});", as.integer(r$id)),
+              "Request refund") else "")
           )
         }))
       )
@@ -5127,6 +5133,16 @@ server <- function(input, output, session) {
       }))) else div(style = "color:#999;font-size:.88rem;", "No spending history yet.")
     tagList(purchase_ui, tags$h6(style="font-weight:700;color:#951829;margin-top:.8rem;", "Spending history"), history_ui)
   })
+
+  observeEvent(input$request_extension_refund, {
+    req(rv$authed, rv$user_id)
+    purchase_id <- suppressWarnings(as.integer(input$request_extension_refund %||% 0L))
+    changed <- db_exec("UPDATE extension_purchases SET refund_status='requested',refund_error='' WHERE id=? AND user_id=? AND COALESCE(refund_status,'not_refunded')='not_refunded' AND COALESCE(sync_status,'pending')='synced';", list(purchase_id, rv$user_id))
+    if (identical(as.integer(changed), 1L)) {
+      rv$extensions_ver <- rv$extensions_ver + 1L
+      showNotification("Refund request sent to your instructor. Tokens will be restored if approved.", type="message", duration=8)
+    } else showNotification("That extension is not available for a new refund request.", type="warning")
+  }, ignoreNULL=TRUE)
 
   observeEvent(input$refund_extension_purchase, {
     req(rv$authed, rv$user_id)
@@ -9751,7 +9767,7 @@ server <- function(input, output, session) {
             tags$td(if (identical(r$approval_status, "pending")) tagList(tags$button(class="btn btn-xs btn-success", style="padding:.1rem .35rem;font-size:.72rem;margin-right:.2rem;", onclick=sprintf("Shiny.setInputValue('approve_extension_purchase',%d,{priority:'event'});", as.integer(r$id)), "Approve"), tags$button(class="btn btn-xs btn-outline-warning", style="padding:.1rem .35rem;font-size:.72rem;", onclick=sprintf("if(confirm('Reject this post-deadline purchase and return the tokens?')) Shiny.setInputValue('admin_refund_extension_purchase',%d,{priority:'event'});", as.integer(r$id)), "Reject/refund")) else r$approval_status),
             tags$td(tags$span(title=r$sync_error %||% "", r$sync_status)),
             tags$td(tagList(if (!identical(r$sync_status, "synced") && !identical(r$approval_status, "pending")) tags$button(class="btn btn-xs btn-outline-primary", style="padding:.1rem .35rem;font-size:.72rem;", onclick=sprintf("Shiny.setInputValue('retry_extension_sync',%d,{priority:'event'});", as.integer(r$id)), "Retry") else NULL,
-              if (identical(r$sync_status, "synced") && !identical(r$refund_status, "refunded")) tags$button(class="btn btn-xs btn-outline-warning", style="padding:.1rem .35rem;font-size:.72rem;", onclick=sprintf("if(confirm('Refund this extension for this student?')) Shiny.setInputValue('admin_refund_extension_purchase',%d,{priority:'event'});", as.integer(r$id)), "Refund") else NULL))
+              if (identical(r$sync_status, "synced") && !identical(r$refund_status, "refunded") && !identical(r$approval_status, "pending")) tags$button(class="btn btn-xs btn-outline-warning", style="padding:.1rem .35rem;font-size:.72rem;", onclick=sprintf("if(confirm('Refund this extension for this student?')) Shiny.setInputValue('admin_refund_extension_purchase',%d,{priority:'event'});", as.integer(r$id)), "Refund") else NULL))
           )}))) else div(style="color:#999;", "No extension purchases yet.")
       )
 
@@ -11184,7 +11200,7 @@ server <- function(input, output, session) {
     req(rv$is_admin, !rv$impersonating)
     purchase_id <- suppressWarnings(as.integer(input$admin_refund_extension_purchase %||% 0L))
     row <- tryCatch(db_query("SELECT ep.id,ep.user_id,ep.cost,COALESCE(ep.approval_status,'approved') approval_status,COALESCE(ep.refund_status,'not_refunded') refund_status,COALESCE(ep.sync_status,'pending') sync_status FROM extension_purchases ep WHERE ep.id=? LIMIT 1;", list(purchase_id)), error=function(e)data.frame())
-    if (!nrow(row) || !identical(as.character(row$refund_status[1]), "not_refunded") || !(identical(as.character(row$sync_status[1]), "synced") || identical(as.character(row$approval_status[1]), "pending"))) { showNotification("That purchase is not eligible for an instructor refund.", type="warning"); return() }
+    if (!nrow(row) || !(identical(as.character(row$refund_status[1]), "not_refunded") || identical(as.character(row$refund_status[1]), "requested")) || !(identical(as.character(row$sync_status[1]), "synced") || identical(as.character(row$approval_status[1]), "pending"))) { showNotification("That purchase is not eligible for an instructor refund.", type="warning"); return() }
     claimed <- db_exec("UPDATE extension_purchases SET refund_status='processing',refund_error='' WHERE id=? AND COALESCE(refund_status,'not_refunded')='not_refunded';", list(purchase_id))
     if (!identical(as.integer(claimed), 1L)) { showNotification("That refund is already being processed.", type="warning"); return() }
     if (identical(as.character(row$sync_status[1]), "synced")) {
