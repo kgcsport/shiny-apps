@@ -79,6 +79,27 @@ Use `docker compose logs --tail=200 shiny` for Shiny errors and
 require updating the checkout on the host before `docker compose up -d`; app
 source changes are delivered by `docker compose pull`.
 
+## External uptime monitoring
+
+Reclaim’s status page monitors Reclaim infrastructure, not this individual
+Shiny app. For app-specific alerts, use an external HTTP monitor such as
+Better Stack Uptime:
+
+1. Create an **HTTP** monitor named `Class Job Market`.
+2. Monitor `https://shiny.kylecoombs.com/class-job-market/`.
+3. Expect HTTP status `200` and use an hourly check interval.
+4. Add an email alert contact; requiring two failed checks helps avoid alerts
+   for a transient request failure.
+5. Add a recurring maintenance window from **00:00 to 06:00** in the
+   `America/New_York` timezone, every day.
+
+This suppresses expected overnight alerts while notifying the instructor when
+the app fails during teaching hours. Better Stack’s setup and maintenance
+window documentation is at:
+
+- https://betterstack.com/docs/uptime/monitoring-start/
+- https://betterstack.com/docs/uptime/pausing-monitors-and-maintenances/
+
 ## Tuning worker/session settings
 
 Shiny Server reads worker/session settings at container startup. Change these
