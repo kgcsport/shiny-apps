@@ -54,6 +54,31 @@ Everything else is **optional**, for legacy/extra functionality only:
 | `DB_PATH_OVERRIDE` | coordination-games | Override the shared DB path |
 | `SHINY_PASSWORD` | bonus-entry, class-job-picker, club-insurance-game | Shared admin password for those apps |
 
+## Reclaim deployment procedure
+
+GitHub Actions builds and publishes the Docker image. On the Reclaim host, do
+not rebuild the image locally. Pull the published image and recreate the
+services:
+
+```bash
+cd ~/shiny-server
+docker compose pull
+docker compose up -d
+docker compose ps -a
+```
+
+Then verify the public app:
+
+```bash
+curl -I https://shiny.kylecoombs.com/class-job-market/
+```
+
+Use `docker compose logs --tail=200 shiny` for Shiny errors and
+`docker compose logs --tail=200 nginx` for proxy errors. Changes to
+`docker-compose.yml`, `nginx.conf`, or other bind-mounted host files still
+require updating the checkout on the host before `docker compose up -d`; app
+source changes are delivered by `docker compose pull`.
+
 ## Tuning worker/session settings
 
 Shiny Server reads worker/session settings at container startup. Change these
