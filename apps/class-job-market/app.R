@@ -5086,7 +5086,10 @@ server <- function(input, output, session) {
           r <- purchases[i, ]
           deadline <- suppressWarnings(as.POSIXct(r$original_deadline, tz="UTC"))
           synced <- identical(as.character(r$sync_status %||% "pending"), "synced")
-          refundable <- identical(as.character(r$refund_status %||% "not_refunded"), "not_refunded") && synced
+          # A pending Worker sync must not strand the student's local purchase.
+          # If no entitlement was created remotely, refunding only needs to
+          # restore the local token debit; the handler below skips revocation.
+          refundable <- identical(as.character(r$refund_status %||% "not_refunded"), "not_refunded")
           after_deadline <- !is.na(deadline) && deadline <= Sys.time()
           eligible <- refundable && !after_deadline
           status <- if (identical(as.character(r$refund_status %||% ""), "refunded")) {
@@ -5137,7 +5140,7 @@ server <- function(input, output, session) {
   observeEvent(input$request_extension_refund, {
     req(rv$authed, rv$user_id)
     purchase_id <- suppressWarnings(as.integer(input$request_extension_refund %||% 0L))
-    changed <- db_exec("UPDATE extension_purchases SET refund_status='requested',refund_error='' WHERE id=? AND user_id=? AND COALESCE(refund_status,'not_refunded')='not_refunded' AND COALESCE(sync_status,'pending')='synced';", list(purchase_id, rv$user_id))
+    changed <- db_exec("UPDATE extension_purchases SET refund_status='requested',refund_error='' WHERE id=? AND user_id=? AND COALESCE(refund_status,'not_refunded')='not_refunded';", list(purchase_id, rv$user_id))
     if (identical(as.integer(changed), 1L)) {
       rv$extensions_ver <- rv$extensions_ver + 1L
       showNotification("Refund request sent to your instructor. Tokens will be restored if approved.", type="message", duration=8)
@@ -5167,20 +5170,19 @@ server <- function(input, output, session) {
     if (is.na(deadline) || deadline <= Sys.time()) {
       showNotification("Extensions can only be refunded before the original assignment deadline.", type="warning"); return()
     }
-    if (!identical(as.character(row$sync_status[1] %||% "pending"), "synced")) {
-      showNotification("This extension has not finished syncing, so it cannot be refunded yet.", type="warning"); return()
-    }
     claimed <- db_exec("UPDATE extension_purchases SET refund_status='processing',refund_error='' WHERE id=? AND user_id=? AND COALESCE(refund_status,'not_refunded')='not_refunded';",
                        list(purchase_id, rv$user_id))
     if (!identical(as.integer(claimed), 1L)) {
       showNotification("That extension has already been refunded or is being processed.", type="warning"); return()
     }
-    revoke <- revoke_extension_purchase(purchase_id)
-    if (!isTRUE(revoke$ok)) {
-      db_exec("UPDATE extension_purchases SET refund_status='failed',refund_error=? WHERE id=?;",
-              list(revoke$error %||% "Worker entitlement could not be revoked", purchase_id))
-      showNotification(paste("Refund failed:", revoke$error %||% "Worker entitlement could not be revoked"), type="error", duration=10)
-      return()
+    if (identical(as.character(row$sync_status[1] %||% "pending"), "synced")) {
+      revoke <- revoke_extension_purchase(purchase_id)
+      if (!isTRUE(revoke$ok)) {
+        db_exec("UPDATE extension_purchases SET refund_status='failed',refund_error=? WHERE id=?;",
+                list(revoke$error %||% "Worker entitlement could not be revoked", purchase_id))
+        showNotification(paste("Refund failed:", revoke$error %||% "Worker entitlement could not be revoked"), type="error", duration=10)
+        return()
+      }
     }
     refund_lid <- token_credit(rv$user_id, rv$name, as.numeric(row$cost[1]), 0L,
                                "extension_refund", purchase_id,
