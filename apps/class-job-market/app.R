@@ -265,6 +265,9 @@ ensure_column("extension_purchases", "refunded_at TEXT")
 ensure_column("extension_purchases", "refund_ledger_id INTEGER")
 ensure_column("extension_purchases", "refund_status TEXT DEFAULT 'not_refunded'")
 ensure_column("extension_purchases", "refund_error TEXT")
+ensure_column("extension_purchases", "approval_status TEXT DEFAULT 'approved'")
+ensure_column("extension_purchases", "approved_at TEXT")
+ensure_column("extension_purchases", "approved_by TEXT")
 source(file.path(dirname(shared_sqlite), "assignment_extensions.R"), local = TRUE)
 db_exec("CREATE TABLE IF NOT EXISTS grade_reweight_requests(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5064,7 +5067,7 @@ server <- function(input, output, session) {
     purchases <- tryCatch(db_query(
       "SELECT ep.id, ep.hours, ep.cost, ep.purchased_at,
               COALESCE(ep.refund_status,'not_refunded') AS refund_status,
-              ep.refunded_at, ep.refund_error, ps.name AS problem_set,
+              ep.refunded_at, ep.refund_error, COALESCE(ep.approval_status,'approved') AS approval_status, ps.name AS problem_set,
               ps.original_deadline, COALESCE(ep.sync_status,'pending') AS sync_status
        FROM extension_purchases ep
        LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id
@@ -5087,6 +5090,8 @@ server <- function(input, output, session) {
             identical(as.character(r$sync_status %||% "pending"), "synced")
           status <- if (identical(as.character(r$refund_status %||% ""), "refunded")) {
             paste("Refunded", as.character(r$refunded_at %||% ""))
+          } else if (identical(as.character(r$approval_status %||% "approved"), "pending")) {
+            "Awaiting instructor approval"
           } else if (!identical(as.character(r$sync_status %||% "pending"), "synced")) {
             "Pending sync"
           } else if (!is.na(deadline) && deadline <= Sys.time()) {
@@ -5192,21 +5197,31 @@ server <- function(input, output, session) {
                        type = "error"); return()
     }
     ps_id <- as.integer(input$ext_ps %||% 0)
-    ps <- tryCatch(db_query("SELECT name FROM problem_sets WHERE id=? AND COALESCE(active,1)=1;", list(ps_id)),
+    ps <- tryCatch(db_query("SELECT name, original_deadline FROM problem_sets WHERE id=? AND COALESCE(active,1)=1;", list(ps_id)),
                    error = function(e) data.frame())
     if (ps_id <= 0 || !nrow(ps)) { showNotification("Select an active assignment.", type = "error"); return() }
+    deadline_raw <- as.character(ps$original_deadline[1] %||% "")
+    deadline <- suppressWarnings(as.POSIXct(
+      if (grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", deadline_raw)) paste(deadline_raw, "23:59:59") else deadline_raw,
+      tz="UTC"))
+    approval_status <- if (!is.na(deadline) && deadline <= Sys.time()) "pending" else "approved"
     lid <- token_debit(rv$user_id, rv$name, cost, "extension", ps_id,
-                       note = sprintf("%g-hour extension for %s", hrs, ps$name[1]))
-    db_exec(
-      "INSERT INTO extension_purchases(problem_set_id,user_id,hours,cost,ledger_id) VALUES(?,?,?,?,?);",
-      list(ps_id, rv$user_id, hrs, cost, as.integer(lid %||% NA_integer_)))
+                       note = sprintf("%g-hour extension for %s%s", hrs, ps$name[1],
+                                      if (approval_status == "pending") " (awaiting instructor approval)" else ""))
+    db_exec("INSERT INTO extension_purchases(problem_set_id,user_id,hours,cost,ledger_id,approval_status) VALUES(?,?,?,?,?,?);",
+            list(ps_id, rv$user_id, hrs, cost, as.integer(lid %||% NA_integer_), approval_status))
     purchase_id <- as.integer(db_query("SELECT last_insert_rowid() id;")$id[1])
-    sync <- sync_extension_purchase(purchase_id)
     rv$extensions_ver <- rv$extensions_ver + 1L
-    if (isTRUE(sync$ok))
-      showNotification(sprintf("Purchased a %g-hour extension for %d tokens. Your online assignment deadline is updated.", hrs, as.integer(cost)), type = "message", duration = 8)
-    else
-      showNotification(sprintf("Extension purchased and recorded, but online deadline sync is pending: %s", sync$error), type = "warning", duration = 12)
+    if (approval_status == "pending") {
+      showNotification(sprintf("Purchase recorded for %d tokens and sent for instructor approval because the original deadline has passed.", as.integer(cost)), type="message", duration=10)
+    } else {
+      sync <- sync_extension_purchase(purchase_id)
+      rv$extensions_ver <- rv$extensions_ver + 1L
+      if (isTRUE(sync$ok))
+        showNotification(sprintf("Purchased a %g-hour extension for %d tokens. Your online assignment deadline is updated.", hrs, as.integer(cost)), type = "message", duration = 8)
+      else
+        showNotification(sprintf("Extension purchased and recorded, but online deadline sync is pending: %s", sync$error), type = "warning", duration = 12)
+    }
     rv$spend_mode <- NULL
   })
 
@@ -9651,7 +9666,7 @@ server <- function(input, output, session) {
       ps   <- tryCatch(db_query("SELECT * FROM problem_sets ORDER BY original_deadline DESC;"),
                        error = function(e) data.frame())
       pricing <- extension_pricing_settings()
-      purchases <- tryCatch(db_query("SELECT ep.id,ep.user_id,COALESCE(u.display_name,ep.user_id) student,ps.name problem_set,COALESCE(ps.extension_target,'submission') extension_target,ep.hours,ep.purchased_at,COALESCE(ep.sync_status,'pending') sync_status,COALESCE(ep.sync_error,'') sync_error FROM extension_purchases ep LEFT JOIN users u ON u.user_id=ep.user_id LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id ORDER BY ep.purchased_at DESC;"), error=function(e) data.frame())
+      purchases <- tryCatch(db_query("SELECT ep.id,ep.user_id,COALESCE(u.display_name,ep.user_id) student,ps.name problem_set,COALESCE(ps.extension_target,'submission') extension_target,ep.hours,ep.purchased_at,COALESCE(ep.approval_status,'approved') approval_status,COALESCE(ep.sync_status,'pending') sync_status,COALESCE(ep.sync_error,'') sync_error,COALESCE(ep.refund_status,'not_refunded') refund_status FROM extension_purchases ep LEFT JOIN users u ON u.user_id=ep.user_id LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id ORDER BY ep.purchased_at DESC;"), error=function(e) data.frame())
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;",
                 "Extension Pricing"),
@@ -9728,13 +9743,15 @@ server <- function(input, output, session) {
         tags$h6(style="font-weight:700;color:#951829;", "Student Extension Purchases"),
         tags$p(style="color:#555;font-size:.85rem;", "Purchases sync server-to-server to the assignment portal. Failed or unmapped purchases remain here for retry."),
         if (nrow(purchases)) tags$table(class="table table-sm",
-          tags$thead(tags$tr(tags$th("Student"), tags$th("Assignment"), tags$th("Applies to"), tags$th("Hours"), tags$th("Purchased"), tags$th("Sync"), tags$th(""))),
+          tags$thead(tags$tr(tags$th("Student"), tags$th("Assignment"), tags$th("Applies to"), tags$th("Hours"), tags$th("Purchased"), tags$th("Approval"), tags$th("Sync"), tags$th(""))),
           tags$tbody(lapply(seq_len(nrow(purchases)), function(i) { r <- purchases[i, ]; tags$tr(
             tags$td(paste0(r$student, " (", r$user_id, ")")), tags$td(r$problem_set),
             tags$td(if (identical(r$extension_target, "self_grading")) "Self-grading/corrections" else "Problem set"),
             tags$td(r$hours), tags$td(r$purchased_at),
+            tags$td(if (identical(r$approval_status, "pending")) tags$button(class="btn btn-xs btn-success", style="padding:.1rem .35rem;font-size:.72rem;", onclick=sprintf("Shiny.setInputValue('approve_extension_purchase',%d,{priority:'event'});", as.integer(r$id)), "Approve") else r$approval_status),
             tags$td(tags$span(title=r$sync_error %||% "", r$sync_status)),
-            tags$td(if (!identical(r$sync_status, "synced")) tags$button(class="btn btn-xs btn-outline-primary", style="padding:.1rem .35rem;font-size:.72rem;", onclick=sprintf("Shiny.setInputValue('retry_extension_sync',%d,{priority:'event'});", as.integer(r$id)), "Retry") else "✓")
+            tags$td(tagList(if (!identical(r$sync_status, "synced") && !identical(r$approval_status, "pending")) tags$button(class="btn btn-xs btn-outline-primary", style="padding:.1rem .35rem;font-size:.72rem;", onclick=sprintf("Shiny.setInputValue('retry_extension_sync',%d,{priority:'event'});", as.integer(r$id)), "Retry") else NULL,
+              if (identical(r$sync_status, "synced") && !identical(r$refund_status, "refunded")) tags$button(class="btn btn-xs btn-outline-warning", style="padding:.1rem .35rem;font-size:.72rem;", onclick=sprintf("if(confirm('Refund this extension for this student?')) Shiny.setInputValue('admin_refund_extension_purchase',%d,{priority:'event'});", as.integer(r$id)), "Refund") else NULL))
           )}))) else div(style="color:#999;", "No extension purchases yet.")
       )
 
@@ -11148,6 +11165,34 @@ server <- function(input, output, session) {
     result <- sync_extension_purchase(purchase_id)
     rv$extensions_ver <- rv$extensions_ver + 1L
     showNotification(if (isTRUE(result$ok)) "Extension synced to the assignment portal." else paste("Sync failed:", result$error), type=if (isTRUE(result$ok)) "message" else "error", duration=10)
+  }, ignoreNULL=TRUE)
+
+
+  observeEvent(input$approve_extension_purchase, {
+    req(rv$is_admin, !rv$impersonating)
+    purchase_id <- suppressWarnings(as.integer(input$approve_extension_purchase %||% 0L))
+    row <- tryCatch(db_query("SELECT id,user_id,COALESCE(approval_status,'approved') approval_status FROM extension_purchases WHERE id=? LIMIT 1;", list(purchase_id)), error=function(e)data.frame())
+    if (!nrow(row) || !identical(as.character(row$approval_status[1]), "pending")) { showNotification("That purchase is no longer awaiting approval.", type="warning"); return() }
+    result <- sync_extension_purchase(purchase_id)
+    if (!isTRUE(result$ok)) { showNotification(paste("Approval failed:", result$error), type="error", duration=10); rv$extensions_ver <- rv$extensions_ver + 1L; return() }
+    db_exec("UPDATE extension_purchases SET approval_status='approved',approved_at=CURRENT_TIMESTAMP,approved_by=?,refund_error='' WHERE id=?;", list(rv$user_id %||% rv$name, purchase_id))
+    rv$extensions_ver <- rv$extensions_ver + 1L
+    showNotification("Extension approved and applied to the assignment portal.", type="message", duration=8)
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$admin_refund_extension_purchase, {
+    req(rv$is_admin, !rv$impersonating)
+    purchase_id <- suppressWarnings(as.integer(input$admin_refund_extension_purchase %||% 0L))
+    row <- tryCatch(db_query("SELECT ep.id,ep.user_id,ep.cost,COALESCE(ep.refund_status,'not_refunded') refund_status,COALESCE(ep.sync_status,'pending') sync_status FROM extension_purchases ep WHERE ep.id=? LIMIT 1;", list(purchase_id)), error=function(e)data.frame())
+    if (!nrow(row) || !identical(as.character(row$refund_status[1]), "not_refunded") || !identical(as.character(row$sync_status[1]), "synced")) { showNotification("That purchase is not eligible for an instructor refund.", type="warning"); return() }
+    claimed <- db_exec("UPDATE extension_purchases SET refund_status='processing',refund_error='' WHERE id=? AND COALESCE(refund_status,'not_refunded')='not_refunded';", list(purchase_id))
+    if (!identical(as.integer(claimed), 1L)) { showNotification("That refund is already being processed.", type="warning"); return() }
+    revoke <- revoke_extension_purchase(purchase_id)
+    if (!isTRUE(revoke$ok)) { db_exec("UPDATE extension_purchases SET refund_status='failed',refund_error=? WHERE id=?;", list(revoke$error %||% "Worker entitlement could not be revoked", purchase_id)); showNotification(paste("Refund failed:", revoke$error), type="error", duration=10); return() }
+    lid <- token_credit(row$user_id[1], "", as.numeric(row$cost[1]), 0L, "extension_refund", purchase_id, "Instructor-approved extension refund")
+    db_exec("UPDATE extension_purchases SET refund_status='refunded',refunded_at=CURRENT_TIMESTAMP,refund_ledger_id=?,refund_error='' WHERE id=?;", list(as.integer(lid %||% NA_integer_), purchase_id))
+    rv$extensions_ver <- rv$extensions_ver + 1L
+    showNotification("Extension refunded and tokens restored.", type="message", duration=8)
   }, ignoreNULL=TRUE)
 
 
