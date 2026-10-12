@@ -7,8 +7,10 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
-      - shiny
-      - demo-kit
+      shiny:
+        condition: service_healthy
+      demo-kit:
+        condition: service_started
 
   shiny:
     image: ghcr.io/kgcsport/shiny-apps:latest
@@ -45,6 +47,12 @@ services:
       # SHINY_SIMPLE_SCHEDULER: "15"
       # SHINY_APP_IDLE_TIMEOUT: "30"
       # SHINY_APP_SESSION_TIMEOUT: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/shiny-server/ext/node/bin/node -e \"require('http').get('http://127.0.0.1:3838/',r=>process.exit(r.statusCode < 500 ? 0 : 1)).on('error',()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
 
   # Demo / sandbox instance — identical image, separate DB files (*-demo.sqlite).
   # Quick-login panel is always visible (no ?demo=1 needed).
@@ -95,5 +103,8 @@ services:
       DEMO_KIT_DEMO_USER: ${DEMO_KIT_DEMO_USER:-}
       DEMO_KIT_DEMO_PASS: ${DEMO_KIT_DEMO_PASS:-}
       DEMO_KIT_OPENAI_KEY: ${DEMO_KIT_OPENAI_KEY:-}
+      OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-gpt-6-sol}
+      OPENAI_DEMO_MODEL: ${OPENAI_DEMO_MODEL:-gpt-6-luna}
+      OPENAI_ESCALATION_MODEL: ${OPENAI_ESCALATION_MODEL:-gpt-6-astra}
       SHINY_BASE_URL: ${SHINY_BASE_URL:-}
       SHINY_DB_PATH: /app/data/class-job-market.sqlite

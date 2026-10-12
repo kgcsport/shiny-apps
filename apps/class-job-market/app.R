@@ -3924,14 +3924,29 @@ server <- function(input, output, session) {
     req(rv$authed)
     jp <- jobs_poll()
 
+    mode_for_help <- if (nrow(jp$round)) normalize_assignment_mode(jp$round$assignment_mode[1]) else "random"
+    mode_help <- switch(mode_for_help,
+      random = c(
+        "Random draw: no student bid is required. Read the available job descriptions, then wait for the instructor’s draw and check Today for your assignment.",
+        "If you are assigned a job, complete it by the class deadline; the instructor records the outcome and awards the posted/default wage.",
+        "You may still review job descriptions and ask the instructor about a job before the draw."),
+      wage_bidding = c(
+        "Wage bidding: enter the minimum wage you would accept for each listed job, then select Save wage bids before bidding closes.",
+        "The instructor clears jobs from the lowest acceptable bids. Your bid is a reservation wage, not a guarantee that you will receive the job.",
+        "Cold-call/volunteer jobs use the class cold-call/clearing wage; do not submit a separate volunteer bid. Check Today after the draw for the equilibrium wages and assignment."),
+      application_bidding = c(
+        "Ticket allocation: distribute up to the displayed ticket budget across job types, then select Save tickets before bidding closes.",
+        "More tickets assigned to a job type increase your chance of receiving it; tickets are not wages and are not deducted as tokens.",
+        "The instructor runs the weighted lottery and posts assignments in Today. You may receive more than one job when that class setting allows it."),
+      c("Read the selected class date and assignment instructions, then follow the bidding directions shown below."))
     tagList(
       div(class = "tab-howto",
-        "Submit bids for class jobs for each class date. The mode (random / wage bid / ticket allocation) is set by your instructor."
+        "Submit bids for class jobs for each class date. The allocation mode is set by your instructor."
       ),
       tutorial_note("How to use the Job Market", c(
         "Read the selected class date and assignment mode at the top.",
+        mode_help,
         "Expand job descriptions before deciding which work fits you.",
-        "Enter wages or allocate tickets, then submit before the bid window closes.",
         "Return here after the draw to confirm your assignments and instructions."
       )),
 
