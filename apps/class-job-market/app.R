@@ -5079,7 +5079,7 @@ server <- function(input, output, session) {
       list(rv$user_id)), error = function(e) data.frame())
     purchase_ui <- if (nrow(purchases)) tagList(
       tags$h6(style="font-weight:700;color:#951829;margin-top:.2rem;", "Extension purchases"),
-      tags$p(style="color:#666;font-size:.82rem;", "Refunds are available before the original deadline. A successful refund restores the tokens and removes the extension from the assignment portal."),
+      tags$p(style="color:#666;font-size:.82rem;", "Before the original deadline, you can refund an extension directly. After the deadline, request a refund here; your instructor must approve it before tokens are restored and the extension is removed from the assignment portal."),
       tags$table(class="table table-sm",
         tags$thead(tags$tr(tags$th("Assignment"), tags$th("Hours"), tags$th("Purchased"), tags$th("Status"), tags$th(""))),
         tags$tbody(lapply(seq_len(nrow(purchases)), function(i) {
