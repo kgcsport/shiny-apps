@@ -9783,6 +9783,8 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style="font-weight:700;color:#951829;", "Student Extension Purchases"),
         tags$p(style="color:#555;font-size:.85rem;", "Purchases sync server-to-server to the assignment portal. Failed or unmapped purchases remain here for retry."),
+        actionButton("repair_extension_sync_btn", "Repair pending syncs", class="btn btn-sm btn-outline-primary",
+                     title="Retry approved, non-refunded purchases that are pending or not configured"),
         if (nrow(purchases)) tags$table(class="table table-sm",
           tags$thead(tags$tr(tags$th("Student"), tags$th("Assignment"), tags$th("Applies to"), tags$th("Hours"), tags$th("Purchased"), tags$th("Approval"), tags$th("Sync"), tags$th(""))),
           tags$tbody(lapply(seq_len(nrow(purchases)), function(i) { r <- purchases[i, ]; tags$tr(
@@ -11206,6 +11208,24 @@ server <- function(input, output, session) {
     result <- sync_extension_purchase(purchase_id)
     rv$extensions_ver <- rv$extensions_ver + 1L
     showNotification(if (isTRUE(result$ok)) "Extension synced to the assignment portal." else paste("Sync failed:", result$error), type=if (isTRUE(result$ok)) "message" else "error", duration=10)
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$repair_extension_sync_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    rows <- tryCatch(db_query("SELECT ep.id FROM extension_purchases ep JOIN problem_sets ps ON ps.id=ep.problem_set_id WHERE COALESCE(ep.approval_status,'approved')='approved' AND COALESCE(ep.refund_status,'not_refunded') NOT IN ('refunded','processing') AND COALESCE(ep.sync_status,'pending') <> 'synced' AND TRIM(COALESCE(ps.cloudflare_assignment_id,''))<>'' ORDER BY ep.id;"), error=function(e) data.frame())
+    if (!nrow(rows)) {
+      showNotification("No approved extension purchases need repair.", type="message", duration=8)
+      return()
+    }
+    ok <- 0L; failed <- 0L
+    errors <- character(0)
+    for (purchase_id in rows$id) {
+      result <- tryCatch(sync_extension_purchase(as.integer(purchase_id)), error=function(e) list(ok=FALSE,error=conditionMessage(e)))
+      if (isTRUE(result$ok)) ok <- ok + 1L else { failed <- failed + 1L; errors <- c(errors, result$error %||% "unknown error") }
+    }
+    rv$extensions_ver <- rv$extensions_ver + 1L
+    suffix <- if (failed) paste0(" First error: ", errors[1]) else ""
+    showNotification(sprintf("Repaired %d extension sync%s; %d still need attention.%s", ok, if (ok==1) "" else "s", failed, suffix), type=if (failed) "warning" else "message", duration=12)
   }, ignoreNULL=TRUE)
 
 
