@@ -8,6 +8,12 @@ import { mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import os from 'os';
+import {
+  extractOpenAIResponseText,
+  extractOpenAIStreamDelta,
+  makeOpenAIResponseBody,
+  selectOpenAIModel,
+} from './openai-api.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -162,13 +168,13 @@ app.use(session({
   cookie: { maxAge: 7 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: BASE_URL.startsWith('https') }
 }));
 
-// ── Overnight maintenance window (10 PM – 8 AM ET) ───────────────────────────
+// ── Overnight maintenance window (midnight – 6 AM ET) ───────────────────────
 const MAINTENANCE_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Site offline overnight</title>
+<title>Site offline for scheduled maintenance</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,sans-serif;background:#f0f2f6;color:#1a1f2e;
@@ -183,7 +189,7 @@ p{color:#6b7280;font-size:.92rem;line-height:1.7}
 <body>
 <div class="card">
   <h1>🌙 Site offline overnight</h1>
-  <p>This site is offline between <strong>10 PM and 8 AM ET</strong> to refresh and save on server costs.<br><br>
+  <p>This site is offline between <strong>12 AM and 6 AM ET</strong> for scheduled maintenance.<br><br>
      Come back in the morning — everything will be ready to go.</p>
 </div>
 </body>
@@ -599,7 +605,6 @@ function detectProvider(key) {
 
 const DEFAULT_MODELS = {
   anthropic:   'claude-sonnet-5',
-  openai:      'gpt-4o',
   openrouter:  'anthropic/claude-sonnet-5'
 };
 
@@ -624,8 +629,11 @@ async function* normalizeStream(provider, response) {
             yield event.delta.text;
           else if (event.type === 'error')
             throw new Error(event.error?.message || JSON.stringify(event.error));
+        } else if (provider === 'openai') {
+          const text = extractOpenAIStreamDelta(event);
+          if (text) yield text;
         } else {
-          // OpenAI-compatible (OpenAI + OpenRouter)
+          // OpenRouter uses the Chat Completions streaming schema.
           const text = event.choices?.[0]?.delta?.content;
           if (text) yield text;
         }
@@ -722,7 +730,9 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Enter an API key (Anthropic, OpenAI, or OpenRouter) in the bar above.' });
 
   const provider = detectProvider(apiKey);
-  const model    = (!usingOwnKey && provider === 'openai') ? 'gpt-4o-mini' : DEFAULT_MODELS[provider];
+  const model = provider === 'openai'
+    ? selectOpenAIModel(usingOwnKey)
+    : DEFAULT_MODELS[provider];
 
   // Select system prompt: multiplayer always uses SYSTEM_MULTI; solo uses variant by structureMode
   const system = multiplayer ? SYSTEM_MULTI : ({
@@ -758,11 +768,14 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, max_tokens: 8192, stream: true, system, messages })
       });
+    } else if (provider === 'openai') {
+      upstream = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(makeOpenAIResponseBody({ model, instructions: system, input: messages, stream: true }))
+      });
     } else {
-      const baseUrl = provider === 'openrouter'
-        ? 'https://openrouter.ai/api/v1'
-        : 'https://api.openai.com/v1';
-      upstream = await fetch(`${baseUrl}/chat/completions`, {
+      upstream = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -929,7 +942,9 @@ app.post('/api/export', requireAuth, async (req, res) => {
   catch (e) { return res.status(e.code || 429).json({ error: e.message }); }
 
   const provider = detectProvider(apiKey);
-  const model    = (!usingOwnKey && provider === 'openai') ? 'gpt-4o-mini' : DEFAULT_MODELS[provider];
+  const model = provider === 'openai'
+    ? selectOpenAIModel(usingOwnKey, 'export')
+    : DEFAULT_MODELS[provider];
   const isR      = language === 'r_shiny';
   const isStata  = language === 'stata';
 
@@ -978,9 +993,23 @@ Convert the provided HTML to a single app.py file. Rules:
       }
       const data = await upstream.json();
       responseText = data.content?.[0]?.text || '';
+    } else if (provider === 'openai') {
+      const upstream = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(makeOpenAIResponseBody({
+          model,
+          instructions: systemPrompt,
+          input: `Convert this to ${isR ? 'R Shiny' : isStata ? 'Stata' : 'Python Streamlit'}:\n\n${html}`,
+        }))
+      });
+      if (!upstream.ok) {
+        const err = await upstream.text();
+        return res.status(502).json({ error: `API error: ${err.slice(0, 300)}` });
+      }
+      responseText = extractOpenAIResponseText(await upstream.json());
     } else {
-      const baseUrl = provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1';
-      const upstream = await fetch(`${baseUrl}/chat/completions`, {
+      const upstream = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
