@@ -268,6 +268,29 @@ ensure_column("extension_purchases", "refund_error TEXT")
 ensure_column("extension_purchases", "approval_status TEXT DEFAULT 'approved'")
 ensure_column("extension_purchases", "approved_at TEXT")
 ensure_column("extension_purchases", "approved_by TEXT")
+
+# The Worker uses stable canonical IDs (econ342-2026-ps01, ...). Older
+# Shiny databases were created before the mapping column existed, leaving
+# every assignment looking "unmapped" even though its Worker assignment was
+# deployed. Fill only blank mappings for numbered problem sets; never replace
+# an instructor-specified ID.
+canonical_problem_set_rows <- tryCatch(
+  db_query("SELECT id,name FROM problem_sets WHERE cloudflare_assignment_id IS NULL OR TRIM(cloudflare_assignment_id)='';"),
+  error = function(e) data.frame())
+if (nrow(canonical_problem_set_rows)) {
+  for (i in seq_len(nrow(canonical_problem_set_rows))) {
+    label <- as.character(canonical_problem_set_rows$name[i] %||% "")
+    hit <- regexec("(?:problem\\s*set|ps)\\s*([0-9]+)", label,
+                   ignore.case = TRUE, perl = TRUE)
+    parts <- regmatches(label, hit)[[1]]
+    if (length(parts) > 1L && nzchar(parts[2])) {
+      canonical_id <- sprintf("econ342-2026-ps%02d", as.integer(parts[2]))
+      db_exec("UPDATE problem_sets SET cloudflare_assignment_id=?
+               WHERE id=? AND (cloudflare_assignment_id IS NULL OR TRIM(cloudflare_assignment_id)='');",
+              list(canonical_id, as.integer(canonical_problem_set_rows$id[i])))
+    }
+  }
+}
 source(file.path(dirname(shared_sqlite), "assignment_extensions.R"), local = TRUE)
 db_exec("CREATE TABLE IF NOT EXISTS grade_reweight_requests(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
