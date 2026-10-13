@@ -5757,6 +5757,14 @@ server <- function(input, output, session) {
     )
   })
 
+  # These selectors are rendered inside policy_brief_tab. The renderer uses
+  # isolate() so ordinary typing/editing in the review form does not rebuild
+  # the whole tab; explicitly invalidate it when the admin changes teams.
+  observeEvent(input$policy_admin_team, {
+    req(rv$authed, rv$is_admin, !rv$impersonating)
+    rv$policy_ver <- rv$policy_ver + 1L
+  }, ignoreInit=TRUE)
+
   observeEvent(input$save_policy_topic_review_btn, {
     req(rv$authed, rv$is_admin, !rv$impersonating)
     team <- trimws(input$policy_admin_team %||% "")
@@ -10727,6 +10735,18 @@ server <- function(input, output, session) {
       demo_settings_panel(.sandbox)
     }
   })
+
+  # Team and component determine which rubric/assessment is loaded. The
+  # panel intentionally reads them in isolate() to avoid rebuilding on every
+  # score edit, so changing either selector must explicitly invalidate it.
+  # Do not invalidate on gradebook-item changes: that selection is consumed by
+  # save/release and rebuilding there would replace the user's choice with the
+  # last saved value.
+  observeEvent(list(input$policy_rubric_team, input$policy_rubric_component), {
+    req(rv$authed, rv$is_admin, !rv$impersonating)
+    rv$rubric_ver <- rv$rubric_ver + 1L
+  }, ignoreInit=TRUE)
+
 
   output$rw_requests_panel <- renderUI({
     req(rv$is_admin)
