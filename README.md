@@ -99,12 +99,12 @@ Better Stack Uptime:
 
 This suppresses expected overnight alerts while notifying the instructor when
 the app fails during teaching hours. **This is an alert-suppression window,
-not a server shutdown schedule.** Better Stack must not be configured to stop,
-restart, or suspend the Reclaim host. If the host provider uses a scheduled
-restart/sleep task, set its timezone explicitly to `America/New_York`; a fixed
-UTC schedule will shift by one hour across daylight-saving time (for example,
-midnight–6 AM Eastern is 04:00–10:00 UTC during EDT and 05:00–11:00 UTC during
-EST).
+not a server shutdown schedule.** Keep the Reclaim Stop/Start toggles OFF for
+the live class app. Stopping the host creates a real outage while the app is
+starting, and students must not be asked to use a cache-busting URL. If you
+choose to stop it anyway, start it at least 15 minutes before class access and
+expect a brief outage at startup; a fixed UTC schedule will also shift by one
+hour across daylight-saving time.
 
 Better Stack’s setup and maintenance window documentation is at:
 
