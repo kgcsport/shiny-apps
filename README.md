@@ -79,6 +79,22 @@ Use `docker compose logs --tail=200 shiny` for Shiny errors and
 require updating the checkout on the host before `docker compose up -d`; app
 source changes are delivered by `docker compose pull`.
 
+For recurring host tasks, use the checked-in wrapper instead of retyping the
+commands:
+
+```bash
+cd ~/shiny-server
+scripts/reclaim.sh shiny       # deploy Shiny + nginx
+scripts/reclaim.sh demo-kit    # deploy login/demo-kit
+scripts/reclaim.sh health      # public HTTP check
+scripts/reclaim.sh status      # container status
+scripts/reclaim.sh sync        # one manual grade sync
+scripts/reclaim.sh logs        # recent Shiny/nginx logs
+```
+
+`scripts/reclaim.sh all` pulls and recreates the full stack. It uses
+`git pull --ff-only`, never rebuilds images locally, and does not modify `.env`.
+
 ## External uptime monitoring
 
 Reclaim’s status page monitors Reclaim infrastructure, not this individual
