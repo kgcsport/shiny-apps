@@ -94,8 +94,15 @@ Better Stack Uptime:
    `America/New_York` timezone, every day.
 
 This suppresses expected overnight alerts while notifying the instructor when
-the app fails during teaching hours. Better Stack’s setup and maintenance
-window documentation is at:
+the app fails during teaching hours. **This is an alert-suppression window,
+not a server shutdown schedule.** Better Stack must not be configured to stop,
+restart, or suspend the Reclaim host. If the host provider uses a scheduled
+restart/sleep task, set its timezone explicitly to `America/New_York`; a fixed
+UTC schedule will shift by one hour across daylight-saving time (for example,
+midnight–6 AM Eastern is 04:00–10:00 UTC during EDT and 05:00–11:00 UTC during
+EST).
+
+Better Stack’s setup and maintenance window documentation is at:
 
 - https://betterstack.com/docs/uptime/monitoring-start/
 - https://betterstack.com/docs/uptime/pausing-monitors-and-maintenances/
