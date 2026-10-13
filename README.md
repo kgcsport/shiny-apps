@@ -86,12 +86,16 @@ Shiny app. For app-specific alerts, use an external HTTP monitor such as
 Better Stack Uptime:
 
 1. Create an **HTTP** monitor named `Class Job Market`.
-2. Monitor `https://shiny.kylecoombs.com/class-job-market/`.
+2. Monitor `https://shiny.kylecoombs.com/class-job-market/` (include the
+   trailing slash so the monitor does not test the redirect endpoint).
 3. Expect HTTP status `200` and use an hourly check interval.
 4. Add an email alert contact; requiring two failed checks helps avoid alerts
    for a transient request failure.
 5. Add a recurring maintenance window from **00:00 to 06:00** in the
-   `America/New_York` timezone, every day.
+   `America/New_York` timezone, every day. Because the provider starts the
+   stack at the beginning of that window's end boundary, schedule the host
+   start at least 10–15 minutes before 06:00 (or extend the monitor maintenance
+   window to 06:15) so the first check is not a cold-start 502.
 
 This suppresses expected overnight alerts while notifying the instructor when
 the app fails during teaching hours. **This is an alert-suppression window,
