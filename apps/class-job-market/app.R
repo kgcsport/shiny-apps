@@ -8042,14 +8042,26 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     txt  <- trimws(input$new_fq_text %||% "")
     etag <- trimws(input$new_fq_exam %||% "")
+    topic <- trimws(input$new_fq_topic %||% "")
+    draw_group <- trimws(input$new_fq_draw_group %||% "")
+    draw_count <- suppressWarnings(as.integer(input$new_fq_draw_count %||% NA_integer_))
+    pool_size <- suppressWarnings(as.integer(input$new_fq_pool_size %||% NA_integer_))
     if (!nzchar(txt)) { showNotification("Question text required.", type = "error"); return() }
+    if (xor(is.na(draw_count), is.na(pool_size)) ||
+        (!is.na(draw_count) && (draw_count < 1L || pool_size < 1L || draw_count > pool_size))) {
+      showNotification("Draw count and pool size must both be blank or satisfy 1 <= draw count <= pool size.", type = "error")
+      return()
+    }
     max_idx <- tryCatch(
       db_query(
         "SELECT COALESCE(MAX(order_index),0) n FROM flex_questions WHERE trim(COALESCE(course,''))='' OR LOWER(course)=LOWER(?);",
         list(scoped_course()))$n[1], error=function(e)0L)
-    db_exec("INSERT INTO flex_questions(question_text,order_index,exam_tag,course) VALUES(?,?,?,?);",
-            list(txt, as.integer(max_idx %||% 0L) + 1L,
-                 if (nzchar(etag)) etag else NA_character_, scoped_course()))
+    db_exec(
+      "INSERT INTO flex_questions(question_text,order_index,exam_tag,course,topic,draw_group,draw_count,pool_size) VALUES(?,?,?,?,?,?,?,?);",
+      list(txt, as.integer(max_idx %||% 0L) + 1L,
+           if (nzchar(etag)) etag else NA_character_, scoped_course(),
+           if (nzchar(topic)) topic else NA_character_,
+           if (nzchar(draw_group)) draw_group else NA_character_, draw_count, pool_size))
     rv$flex_ver <- rv$flex_ver + 1L
     showNotification("Question added.", type = "message")
   })
@@ -8062,6 +8074,52 @@ server <- function(input, output, session) {
     rv$flex_ver <- rv$flex_ver + 1L
     showNotification("Question removed.", type = "message")
   }, ignoreNULL = TRUE)
+
+  observeEvent(input$edit_flex_question_btn, {
+    req(rv$is_admin)
+    qid <- suppressWarnings(as.integer(input$edit_flex_question_btn %||% 0))
+    if (is.na(qid) || qid <= 0) return()
+    row <- tryCatch(db_query("SELECT * FROM flex_questions WHERE id=? AND COALESCE(active,1)=1 LIMIT 1;", list(qid)),
+                    error=function(e)data.frame())
+    if (!nrow(row)) { showNotification("That question is no longer active.", type="warning"); return() }
+    showModal(modalDialog(
+      title = sprintf("Edit flex question #%d", qid),
+      textAreaInput("edit_fq_text", "Question text:", value=row$question_text[1] %||% "", rows=4, width="100%"),
+      textInput("edit_fq_exam", "Exam (optional):", value=row$exam_tag[1] %||% ""),
+      textInput("edit_fq_topic", "Topic (optional):", value=row$topic[1] %||% ""),
+      textInput("edit_fq_draw_group", "Draw group (optional):", value=row$draw_group[1] %||% ""),
+      fluidRow(
+        column(6, numericInput("edit_fq_draw_count", "Draw count:", value=if (!is.na(row$draw_count[1])) as.integer(row$draw_count[1]) else NA, min=1, step=1)),
+        column(6, numericInput("edit_fq_pool_size", "Pool size:", value=if (!is.na(row$pool_size[1])) as.integer(row$pool_size[1]) else NA, min=1, step=1))
+      ),
+      tags$p(style="color:#666;font-size:.82rem;", "Leave both draw fields blank for no probability weighting. Otherwise, draw count / pool size defines the question's chance within its draw group."),
+      footer=tagList(modalButton("Cancel"), actionButton("save_edit_flex_question_btn", "Save changes", class="btn btn-primary")),
+      easyClose=TRUE
+    ))
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$save_edit_flex_question_btn, {
+    req(rv$is_admin)
+    qid <- suppressWarnings(as.integer(input$edit_flex_question_btn %||% 0))
+    txt <- trimws(input$edit_fq_text %||% "")
+    draw_count <- suppressWarnings(as.integer(input$edit_fq_draw_count %||% NA_integer_))
+    pool_size <- suppressWarnings(as.integer(input$edit_fq_pool_size %||% NA_integer_))
+    if (is.na(qid) || qid <= 0 || !nzchar(txt)) { showNotification("Question text is required.", type="error"); return() }
+    if (xor(is.na(draw_count), is.na(pool_size)) ||
+        (!is.na(draw_count) && (draw_count < 1L || pool_size < 1L || draw_count > pool_size))) {
+      showNotification("Draw count and pool size must both be blank or satisfy 1 <= draw count <= pool size.", type="error")
+      return()
+    }
+    db_exec(
+      "UPDATE flex_questions SET question_text=?,exam_tag=?,topic=?,draw_group=?,draw_count=?,pool_size=? WHERE id=? AND COALESCE(active,1)=1;",
+      list(txt, trimws(input$edit_fq_exam %||% "") %||% NA_character_,
+           trimws(input$edit_fq_topic %||% "") %||% NA_character_,
+           trimws(input$edit_fq_draw_group %||% "") %||% NA_character_,
+           draw_count, pool_size, qid))
+    removeModal()
+    rv$flex_ver <- rv$flex_ver + 1L
+    showNotification("Question updated.", type="message")
+  }, ignoreNULL=TRUE)
 
   observeEvent(input$upload_flex_questions_btn, {
     req(rv$is_admin)
@@ -9818,7 +9876,8 @@ server <- function(input, output, session) {
            ON fqs.question_id=fq.id AND fqs.scope_key=?
          LEFT JOIN flex_question_contributions fqc
            ON fqc.question_id=fq.id AND fqc.scope_key=?
-         WHERE ?='' OR trim(COALESCE(fq.course,''))='' OR LOWER(fq.course)=LOWER(?)
+         WHERE COALESCE(fq.active,1)=1
+           AND (?='' OR trim(COALESCE(fq.course,''))='' OR LOWER(fq.course)=LOWER(?))
          GROUP BY fq.id
          ORDER BY fq.order_index ASC, fq.id ASC;",
         list(scope_key,scope_key,scope_course,scope_course)),
@@ -9872,7 +9931,7 @@ server <- function(input, output, session) {
           tags$table(class = "table table-sm",
             tags$thead(tags$tr(
               tags$th("#"),tags$th("Question"),tags$th("Topic"),tags$th("Draw chance"),
-              tags$th("Exam"),tags$th("Funding"),tags$th("Active"),tags$th("")
+              tags$th("Exam"),tags$th("Funding"),tags$th("Active"),tags$th("Edit / remove")
             )),
             tags$tbody(lapply(seq_len(nrow(fqs)), function(i) {
               r <- fqs[i, ]
@@ -9900,10 +9959,17 @@ server <- function(input, output, session) {
                 tags$td(if (is_active) "✓" else ""),
                 tags$td(
                   tags$button(
+                    class = "btn btn-xs btn-outline-primary",
+                    style = "padding:.1rem .35rem;font-size:.72rem;margin-right:.2rem;",
+                    onclick = sprintf(
+                      "Shiny.setInputValue('edit_flex_question_btn',%d,{priority:'event'});",
+                      as.integer(r$id)),
+                    "Edit"),
+                  tags$button(
                     class = "btn btn-xs btn-outline-danger",
                     style = "padding:.1rem .35rem;font-size:.72rem;",
                     onclick = sprintf(
-                      "Shiny.setInputValue('delete_flex_question_btn',%d,{priority:'event'});",
+                      "if(confirm('Remove this question from the active pool?')) Shiny.setInputValue('delete_flex_question_btn',%d,{priority:'event'});",
                       as.integer(r$id)),
                     "Remove"))
               )
@@ -9918,6 +9984,13 @@ server <- function(input, output, session) {
           div(style = "padding:.5rem 0;",
             textAreaInput("new_fq_text", "Question text:", rows = 3, width = "100%"),
             textInput("new_fq_exam", "Exam (optional):", placeholder = "e.g. Midterm 1"),
+            textInput("new_fq_topic", "Topic (optional):", placeholder = "e.g. tax incidence"),
+            textInput("new_fq_draw_group", "Draw group (optional):", placeholder = "e.g. tax-policy"),
+            fluidRow(
+              column(6, numericInput("new_fq_draw_count", "Draw count:", value = NA, min = 1, step = 1)),
+              column(6, numericInput("new_fq_pool_size", "Pool size:", value = NA, min = 1, step = 1))
+            ),
+            tags$p(style="color:#666;font-size:.8rem;", "Leave both draw fields blank for an ordinary question. Otherwise, draw count / pool size sets its probability within the draw group."),
             actionButton("add_flex_question_btn", "Add question",
                          class = "btn btn-sm btn-primary")
           )
