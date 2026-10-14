@@ -14,7 +14,7 @@ services:
         condition: service_started
 
   shiny:
-    image: ghcr.io/kgcsport/shiny-apps:latest
+    image: ${SHINY_IMAGE:-ghcr.io/kgcsport/shiny-apps:latest}
     build: .
     restart: always
     volumes:
@@ -60,7 +60,7 @@ services:
   # Seed:  ./scripts/rtest.sh seed-demo
   # Reset: ./scripts/rtest.sh reset-demo
   shiny-demo:
-    image: ghcr.io/kgcsport/shiny-apps:latest
+    image: ${SHINY_IMAGE:-ghcr.io/kgcsport/shiny-apps:latest}
     build: .
     restart: always
     ports:

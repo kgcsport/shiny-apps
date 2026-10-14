@@ -21,6 +21,7 @@ Commands:
   health    Check the public Class Job Market URL
   sync      Run the Cloudflare gradebook sync once
   logs      Show recent Shiny and nginx logs
+  promote   Pin production to an immutable Shiny image tag
 EOF
 }
 
@@ -57,6 +58,25 @@ case "$command" in
     ;;
   logs)
     "${COMPOSE[@]}" logs --tail=150 shiny nginx
+    ;;
+  promote)
+    image="${2:-}"
+    [[ "$image" =~ ^ghcr.io/kgcsport/shiny-apps:[A-Za-z0-9._/-]+$ ]] || {
+      echo "Usage: scripts/reclaim.sh promote ghcr.io/kgcsport/shiny-apps:sha-<commit>" >&2
+      exit 2
+    }
+    [[ -f .env ]] || { echo ".env is required on the Reclaim host" >&2; exit 1; }
+    backup=".env.before-promote.$(date +%Y%m%d%H%M%S)"
+    cp .env "$backup"
+    tmp="$(mktemp)"
+    awk -v image="$image" 'BEGIN{found=0} /^SHINY_IMAGE=/{print "SHINY_IMAGE=" image; found=1; next} {print} END{if(!found) print "SHINY_IMAGE=" image}' .env > "$tmp"
+    mv "$tmp" .env
+    if ! "${COMPOSE[@]}" pull shiny || ! "${COMPOSE[@]}" up -d shiny nginx; then
+      cp "$backup" .env
+      echo "Promotion failed; restored $backup" >&2
+      exit 1
+    fi
+    echo "Promoted $image (previous .env saved as $backup)."
     ;;
   *)
     usage >&2

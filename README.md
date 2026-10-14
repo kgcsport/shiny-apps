@@ -79,6 +79,39 @@ Use `docker compose logs --tail=200 shiny` for Shiny errors and
 require updating the checkout on the host before `docker compose up -d`; app
 source changes are delivered by `docker compose pull`.
 
+### Staging before production
+
+The app image is published with both `:latest` and an immutable SHA tag. Test a
+candidate without touching production using the separate staging service:
+
+```bash
+cd ~/shiny-server
+scripts/staging.sh up ghcr.io/kgcsport/shiny-apps:sha-<commit>
+scripts/staging.sh smoke
+scripts/staging.sh seed        # optional: populate the separate staging DB
+```
+
+Staging listens only on `127.0.0.1:8081` and uses `staging-appdata/`, not the
+production database. From your laptop, inspect it through an SSH tunnel:
+
+```bash
+ssh -N -L 8081:127.0.0.1:8081 root@YOUR_RECLAIM_HOST
+```
+
+Then open `http://127.0.0.1:8081/`. This is intentionally not a public URL;
+if you later add a hostname, put it behind Cloudflare Access or equivalent
+authentication rather than relying on an unlisted URL.
+
+Only promote the exact image that passed staging:
+
+```bash
+scripts/reclaim.sh promote ghcr.io/kgcsport/shiny-apps:sha-<commit>
+```
+
+Promotion pins `SHINY_IMAGE` in the host `.env`, saves a timestamped backup,
+and recreates Shiny/nginx. `scripts/staging.sh down` removes only the staging
+container; its separate database remains on disk.
+
 For recurring host tasks, use the checked-in wrapper instead of retyping the
 commands:
 

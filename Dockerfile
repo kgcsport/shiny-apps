@@ -11,5 +11,8 @@ COPY scripts/ /srv/shiny-server/scripts/
 COPY shiny-server.conf.template /etc/shiny-server/shiny-server.conf.template
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+# Fail the image build before publication if the main Shiny app cannot even
+# be parsed. Runtime startup is exercised separately by the staging smoke test.
+RUN Rscript --vanilla -e "parse(file='/srv/shiny-server/class-job-market/app.R'); cat('class-job-market parse OK\n')"
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
