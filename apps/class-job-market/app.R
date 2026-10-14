@@ -10400,6 +10400,8 @@ server <- function(input, output, session) {
                        stringsAsFactors = FALSE)
           })) else data.frame()
 
+          raw_assignment_choices <- sort(unique(nonempty_values(grade_rows$assignment_name)))
+
           tagList(
             # Downloads
             fluidRow(
@@ -10414,6 +10416,19 @@ server <- function(input, output, session) {
             tags$p(style = "color:#888;font-size:.78rem;margin-top:.25rem;",
               tags$b("Upload template:"), " upload-ready long format with user_id, assignment, and max_score pre-filled; enter score or grade_pct. ",
               tags$b("Filled gradebook:"), " all uploaded scores filled in, category averages and weighted total appended."),
+
+
+            # Explicit raw-data cleanup for duplicate or obsolete assignment names.
+            div(style="border:1px solid #e7caca;border-radius:5px;padding:.55rem .7rem;margin:.55rem 0 .8rem;background:#fffafa;",
+            tags$strong("Remove raw assignment rows"),
+            tags$p(style="color:#666;font-size:.8rem;margin:.25rem 0 .45rem;",
+                   "Select assignment names to delete from student_grades for all students. This is useful for stray duplicates such as ‘PS 1’; it does not alter the configured category item ‘PS1’."),
+            selectizeInput("delete_grade_assignments", NULL, choices=raw_assignment_choices, multiple=TRUE,
+                           options=list(placeholder="Choose one or more raw assignment names…"), width="100%"),
+            actionButton("delete_grade_assignments_btn", "Delete selected raw rows",
+                         class="btn btn-sm btn-outline-danger",
+                         onclick="if(!confirm('Delete every raw grade row for the selected assignment name(s), for all students?')) return false;")
+            ),
 
             # Online grade summary (if grades uploaded)
             if (!nrow(grade_rows)) {
@@ -11961,6 +11976,26 @@ server <- function(input, output, session) {
                              matched_assignment[1], student$user_id[1], grade_pct),
                      type = "message")
   }, ignoreNULL = TRUE)
+
+  observeEvent(input$delete_grade_assignments_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    items <- unique(trimws(as.character(input$delete_grade_assignments %||% character(0))))
+    items <- items[nzchar(items)]
+    if (!length(items)) {
+      showNotification("Choose at least one raw assignment name to delete.", type="warning")
+      return()
+    }
+    deleted <- 0L
+    overrides <- 0L
+    for (item in items) {
+      before <- tryCatch(db_query("SELECT COUNT(*) AS n FROM student_grades WHERE LOWER(assignment_name)=LOWER(?);", list(item))$n[1], error=function(e)0L)
+      db_exec("DELETE FROM student_grades WHERE LOWER(assignment_name)=LOWER(?);", list(item))
+      db_exec("DELETE FROM assignment_grade_sync_override WHERE LOWER(assignment_name)=LOWER(?);", list(item))
+      deleted <- deleted + as.integer(before %||% 0L)
+    }
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification(sprintf("Deleted %d raw grade row%s for: %s.", deleted, if (deleted == 1L) "" else "s", paste(items, collapse=", ")), type="message", duration=8)
+  }, ignoreNULL=TRUE)
 
   observeEvent(input$clear_grades_btn, {
     req(rv$is_admin)
