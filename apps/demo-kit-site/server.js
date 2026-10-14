@@ -8,6 +8,7 @@ import { mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import os from 'os';
+import { safeShinyReturnPath } from './lib/shiny-oauth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -105,8 +106,9 @@ db.exec(`
     created_at     TEXT DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS oauth_states (
-    state      TEXT PRIMARY KEY,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    state       TEXT PRIMARY KEY,
+    return_path TEXT,
+    created_at  TEXT DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS sessions (
     sid     TEXT PRIMARY KEY,
@@ -118,6 +120,11 @@ db.exec(`
     hidden_at   TEXT DEFAULT CURRENT_TIMESTAMP
   );
 `);
+
+// Older deployments created oauth_states before return paths were needed.
+if (!db.prepare("PRAGMA table_info(oauth_states)").all().some(col => col.name === 'return_path')) {
+  db.exec('ALTER TABLE oauth_states ADD COLUMN return_path TEXT');
+}
 
 // ── Inline SQLite session store (uses the same better-sqlite3 db) ─────────────
 function makeSQLiteStore(Store) {
@@ -294,7 +301,8 @@ app.get('/shiny-auth/login', (req, res) => {
     return res.status(503).send('Google OAuth or SHINY_BASE_URL not configured.');
   }
   const state = crypto.randomBytes(16).toString('hex');
-  db.prepare('INSERT INTO oauth_states(state) VALUES(?)').run(state);
+  const returnPath = safeShinyReturnPath(req.query.return_to, SHINY_BASE_URL);
+  db.prepare('INSERT INTO oauth_states(state, return_path) VALUES(?,?)').run(state, returnPath);
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
     redirect_uri: `${SHINY_BASE_URL}/auth/callback`,
@@ -310,7 +318,8 @@ app.get('/shiny-auth/callback', async (req, res) => {
   const { code, state, error } = req.query;
   if (error) return res.status(400).send(`Google returned error: ${error}`);
 
-  const stateRow = db.prepare('DELETE FROM oauth_states WHERE state=? RETURNING state').get(state);
+  const stateRow = db.prepare('DELETE FROM oauth_states WHERE state=? RETURNING state, return_path').get(state);
+  const returnPath = safeShinyReturnPath(stateRow?.return_path, SHINY_BASE_URL);
   if (!stateRow) return res.status(400).send('Invalid or expired OAuth state. <a href="/auth/login">Try again</a>');
 
   try {
@@ -338,14 +347,14 @@ app.get('/shiny-auth/callback', async (req, res) => {
       console.error('Cannot open Shiny DB:', e.message);
       return res.status(500).send('Authentication unavailable (cannot read course database).');
     }
-    const enrolled = shinyDb.prepare('SELECT user_id FROM users WHERE user_id=?').get(profile.email);
+    const enrolled = shinyDb.prepare('SELECT user_id FROM users WHERE LOWER(user_id)=LOWER(?)').get(profile.email);
     shinyDb.close();
     if (!enrolled) {
       return res.status(403).send(`
         <html><body style="font-family:system-ui;max-width:480px;margin:80px auto;padding:0 1rem">
           <h2>Access restricted</h2>
           <p>Your account (<strong>${profile.email}</strong>) is not enrolled in this course.</p>
-          <a href="/auth/login" style="display:inline-block;margin-top:1rem;padding:.5rem 1.2rem;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none">Try a different account</a>
+          <a href="/auth/login?return_to=${encodeURIComponent(returnPath)}" style="display:inline-block;margin-top:1rem;padding:.5rem 1.2rem;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none">Try a different account</a>
         </body></html>
       `);
     }
@@ -371,7 +380,7 @@ app.get('/shiny-auth/callback', async (req, res) => {
     const cookieExpires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toUTCString();
     // Not httpOnly — Shiny JS reads arcade_token via document.cookie
     res.setHeader('Set-Cookie', `arcade_token=${encodeURIComponent(token)}; Expires=${cookieExpires}; Path=/; SameSite=Lax`);
-    res.redirect('/class-job-market/');
+    res.redirect(returnPath);
   } catch (e) {
     console.error('Shiny OAuth callback error:', e);
     res.status(500).send(`Authentication failed: ${e.message}. <a href="/auth/login">Try again</a>`);
