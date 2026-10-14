@@ -67,6 +67,7 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true(all(c("round_id", "job_post_id", "user_id", "min_wage", "submitted_at") %in%
                       cols(con, "job_wage_bids")))
     expect_true(all(c("cloudflare_assignment_id", "extension_target") %in% cols(con, "problem_sets")))
+    expect_true("job_name" %in% cols(con, "job_posts"))
     expect_true(all(c("sync_status", "sync_error", "synced_at") %in% cols(con, "extension_purchases")))
     expect_true(all(c("round_id", "snapshot_key", "job_post_id", "category_id", "wage", "source") %in%
                       cols(con, "class_wage_snapshots")))

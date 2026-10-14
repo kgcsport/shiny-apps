@@ -783,6 +783,19 @@ db_exec("CREATE TABLE IF NOT EXISTS job_posts(
   selection_time TEXT,
   created_at    TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+# Older databases used `name` (or lacked a job-name column entirely).
+# Make the canonical column exist before any reactive observer can query it,
+# then preserve legacy values without overwriting an existing canonical name.
+job_post_columns <- tryCatch(db_query("PRAGMA table_info(job_posts);")$name,
+                             error=function(e) character(0))
+if (!"job_name" %in% job_post_columns) {
+  db_exec("ALTER TABLE job_posts ADD COLUMN job_name TEXT;")
+  job_post_columns <- c(job_post_columns, "job_name")
+}
+if ("name" %in% job_post_columns) {
+  db_exec("UPDATE job_posts SET job_name=COALESCE(NULLIF(job_name,''),name)
+           WHERE job_name IS NULL OR TRIM(job_name)='';")
+}
 ensure_column("job_posts", "job_name TEXT")
 ensure_column("job_posts", "category_id INTEGER")
 ensure_column("job_posts", "wage_override REAL")
