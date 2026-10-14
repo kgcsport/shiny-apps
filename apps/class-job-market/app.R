@@ -1584,34 +1584,70 @@ question_cost_for_n <- function(n, schedule_text = NULL, class_size = 1L) {
   val <- eval_flex_cost_expr(sched$expr, n - 1L, class_size)
   as.integer(if (is.na(val)) 2 * n else max(1, val))
 }
-parse_rw_costs <- function() {
-  raw <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
-                  error = function(e) "1:2,2:5,3:9,4:14,5:20")
-  pairs <- strsplit(trimws(raw), ",")[[1]]
+parse_rw_costs <- function(schedule_text = NULL) {
+  raw <- if (is.null(schedule_text))
+    tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
+             error = function(e) "1:2,2:5,3:9,4:14,5:20")
+  else schedule_text
+  pairs <- strsplit(trimws(raw %||% ""), ",")[[1]]
   v <- numeric(0)
   for (p in pairs) {
     parts <- strsplit(trimws(p), ":")[[1]]
     if (length(parts) == 2) {
-      k <- trimws(parts[1]); val <- as.numeric(trimws(parts[2]))
-      if (!is.na(val)) v[k] <- val
+      k <- suppressWarnings(as.integer(trimws(parts[1])))
+      val <- suppressWarnings(as.numeric(trimws(parts[2])))
+      if (is.finite(k) && k >= 1L && is.finite(val) && val >= 0) v[as.character(k)] <- val
     }
   }
   v
 }
-# Cost lookup that handles both table (k:v) and expression (variable n) formats
+# Cost lookup supports point:token tables and arithmetic expressions in n.
+# Table schedules are cumulative costs; after the final listed point, costs
+# double for each additional point so a table cannot silently reset or flatten.
 rw_cost_for_n <- function(n, schedule_text = NULL) {
+  n <- suppressWarnings(as.integer(n))
+  if (!is.finite(n) || n < 1L) return(NA_real_)
   if (is.null(schedule_text))
     schedule_text <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
                               error = function(e) "1:2,2:5,3:9,4:14,5:20")
-  tbl <- parse_rw_costs()
-  if (length(tbl) > 0) {
-    v <- as.numeric(tbl[as.character(n)] %||% NA)
-    if (!is.na(v)) return(v)
-  }
-  # Fall through to expression if no table match (or table didn't parse)
   text <- trimws(schedule_text %||% "")
-  if (grepl("[a-zA-Z]", text)) return(eval_cost_expr(text, "n", n))
+  tbl <- parse_rw_costs(text)
+  exact <- as.numeric(tbl[as.character(n)] %||% NA_real_)
+  if (is.finite(exact)) return(exact)
+  if (grepl("[a-zA-Z]", text)) {
+    val <- eval_cost_expr(text, "n", n)
+    return(if (is.finite(val)) val else NA_real_)
+  }
+  if (length(tbl)) {
+    keys <- suppressWarnings(as.integer(names(tbl)))
+    last_key <- max(keys, na.rm=TRUE)
+    last_value <- as.numeric(tbl[as.character(last_key)])
+    if (is.finite(last_value) && last_value >= 0)
+      return(min(.Machine$double.xmax / 4, last_value * 2^(n - last_key)))
+  }
   NA_real_
+}
+# Reweight prices are cumulative per student. A second request therefore pays
+# the marginal cost of moving from the student's existing total to the new
+# total, rather than restarting the schedule at one point. Rejected requests
+# are excluded because their tokens are returned.
+rw_points_requested <- function(uid) {
+  if (is.null(uid) || !length(uid) || !nzchar(trimws(as.character(uid[1])))) return(0)
+  val <- tryCatch(db_query(
+    "SELECT COALESCE(SUM(points),0) AS total FROM grade_reweight_requests
+     WHERE LOWER(user_id)=LOWER(?) AND COALESCE(status,'pending') <> 'rejected';",
+    list(uid[1]))$total[1], error=function(e) 0)
+  val <- suppressWarnings(as.numeric(val %||% 0))
+  if (!is.finite(val) || val < 0) 0 else as.integer(val)
+}
+rw_cost_for_request <- function(uid, points, schedule_text = NULL) {
+  points <- suppressWarnings(as.integer(points))
+  if (!is.finite(points) || points < 1L) return(NA_real_)
+  prior <- rw_points_requested(uid)
+  before <- if (prior > 0L) rw_cost_for_n(prior, schedule_text) else 0
+  after <- rw_cost_for_n(prior + points, schedule_text)
+  if (!is.finite(after) || !is.finite(before)) return(NA_real_)
+  max(0, after - before)
 }
 get_rw_max_points <- function() {
   as.integer(tryCatch(get_setting("grade_reweight_max_points", "5"), error=function(e)"5") %||% 5L)
@@ -4895,12 +4931,13 @@ server <- function(input, output, session) {
   output$rw_cost_preview <- renderUI({
     req(rv$authed)
     pts  <- as.integer(input$rw_points %||% 1)
-    cost <- rw_cost_for_n(pts) %||% 0
+    prior <- rw_points_requested(rv$user_id)
+    cost <- rw_cost_for_request(rv$user_id, pts) %||% 0
     if (is.na(cost)) cost <- 0
     bal  <- token_bal()
     div(style = "font-size:.86rem;color:#555;margin:.4rem 0 .6rem;",
-        sprintf("Cost: %d tokens  ·  Balance: %d  ·  After: %d",
-                as.integer(cost), as.integer(bal), as.integer(bal - cost)))
+        sprintf("This request: %d tokens  ·  Your prior total: %d pts  ·  New cumulative total: %d pts  ·  Balance after: %d",
+                as.integer(cost), as.integer(prior), as.integer(prior + pts), as.integer(bal - cost)))
   })
 
   output$rw_grade_preview <- renderUI({
@@ -5281,7 +5318,7 @@ server <- function(input, output, session) {
         type = "error"); return()
     }
     pts  <- as.integer(input$rw_points %||% 1)
-    cost <- rw_cost_for_n(pts) %||% 0
+    cost <- rw_cost_for_request(rv$user_id, pts) %||% 0
     if (is.na(cost)) cost <- 0
     bal  <- isolate(token_bal())
     if (cost <= 0) { showNotification("Cost not configured for that point value.", type = "error"); return() }
