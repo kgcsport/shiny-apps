@@ -62,7 +62,7 @@ case "$command" in
   promote)
     image="${2:-}"
     [[ "$image" =~ ^ghcr.io/kgcsport/shiny-apps:[A-Za-z0-9._/-]+$ ]] || {
-      echo "Usage: scripts/reclaim.sh promote ghcr.io/kgcsport/shiny-apps:sha-<commit>" >&2
+      echo "Usage: scripts/reclaim.sh promote ghcr.io/kgcsport/shiny-apps:<full-commit-sha>" >&2
       exit 2
     }
     [[ -f .env ]] || { echo ".env is required on the Reclaim host" >&2; exit 1; }

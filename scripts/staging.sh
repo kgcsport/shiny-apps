@@ -20,7 +20,7 @@ Commands:
   down       Stop/remove the staging service (data volume remains)
 
 Examples:
-  scripts/staging.sh up ghcr.io/kgcsport/shiny-apps:sha-<commit>
+  scripts/staging.sh up ghcr.io/kgcsport/shiny-apps:<full-commit-sha>
   scripts/staging.sh smoke
   scripts/staging.sh seed
 USAGE

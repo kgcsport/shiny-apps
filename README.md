@@ -86,7 +86,7 @@ candidate without touching production using the separate staging service:
 
 ```bash
 cd ~/shiny-server
-scripts/staging.sh up ghcr.io/kgcsport/shiny-apps:sha-<commit>
+scripts/staging.sh up ghcr.io/kgcsport/shiny-apps:<full-commit-sha>
 scripts/staging.sh smoke
 scripts/staging.sh seed        # optional: populate the separate staging DB
 ```
@@ -105,7 +105,7 @@ authentication rather than relying on an unlisted URL.
 Only promote the exact image that passed staging:
 
 ```bash
-scripts/reclaim.sh promote ghcr.io/kgcsport/shiny-apps:sha-<commit>
+scripts/reclaim.sh promote ghcr.io/kgcsport/shiny-apps:<full-commit-sha>
 ```
 
 Promotion pins `SHINY_IMAGE` in the host `.env`, saves a timestamped backup,
