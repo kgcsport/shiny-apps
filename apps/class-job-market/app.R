@@ -304,6 +304,8 @@ db_exec("CREATE TABLE IF NOT EXISTS grade_reweight_requests(
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );")
 try(db_exec("ALTER TABLE grade_reweight_requests ADD COLUMN level TEXT DEFAULT 'category';"), silent=TRUE)
+ensure_column("grade_reweight_requests", "reviewed_at TEXT")
+ensure_column("grade_reweight_requests", "reviewed_by TEXT")
 db_exec("CREATE TABLE IF NOT EXISTS public_goods(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -10551,7 +10553,7 @@ server <- function(input, output, session) {
                         tags$table(class = "table table-sm",
                           tags$thead(tags$tr(
                             tags$th("Student"), tags$th("Level"), tags$th("From"), tags$th("To"),
-                            tags$th("Pts"), tags$th("Cost"), tags$th("Status"), tags$th("Date")
+                            tags$th("Pts"), tags$th("Cost"), tags$th("Status"), tags$th("Date"), tags$th("Action")
                           )),
                           tags$tbody(lapply(seq_len(nrow(rw_rows)), function(i) {
                             r <- rw_rows[i, ]
@@ -10567,7 +10569,19 @@ server <- function(input, output, session) {
                               tags$td(style = if (identical(r$status, "pending")) "color:#856404;" else "color:#1a6e3c;",
                                       r$status %||% ""),
                               tags$td(style = "color:#888;font-size:.82em;",
-                                      tryCatch(format(as.POSIXct(r$created_at), "%b %d"), error=function(e)""))
+                                      tryCatch(format(as.POSIXct(r$created_at), "%b %d"), error=function(e)"")),
+                              tags$td(
+                                if (identical(as.character(r$status %||% "pending"), "pending"))
+                                  tagList(
+                                    tags$button(class="btn btn-xs btn-success", style="padding:.1rem .35rem;font-size:.72rem;margin-right:.2rem;",
+                                      onclick=sprintf("if(confirm('Approve this grade adjustment request?')) Shiny.setInputValue('approve_grade_reweight_request',%d,{priority:'event'});", as.integer(r$id)),
+                                      "Approve"),
+                                    tags$button(class="btn btn-xs btn-outline-warning", style="padding:.1rem .35rem;font-size:.72rem;",
+                                      onclick=sprintf("if(confirm('Reject this request and return %g tokens to the student?')) Shiny.setInputValue('reject_grade_reweight_request',%d,{priority:'event'});", as.numeric(r$cost %||% 0), as.integer(r$id)),
+                                      "Reject + refund")
+                                  )
+                                else tags$span(style="color:#888;font-size:.78rem;", "Reviewed")
+                              )
                             )
                           }))
                         )
@@ -11995,6 +12009,39 @@ server <- function(input, output, session) {
     }
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification(sprintf("Deleted %d raw grade row%s for: %s.", deleted, if (deleted == 1L) "" else "s", paste(items, collapse=", ")), type="message", duration=8)
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$approve_grade_reweight_request, {
+    req(rv$is_admin, !rv$impersonating)
+    rid <- suppressWarnings(as.integer(input$approve_grade_reweight_request %||% 0L))
+    if (is.na(rid) || rid <= 0L) return()
+    row <- tryCatch(db_query("SELECT id,status FROM grade_reweight_requests WHERE id=? LIMIT 1;", list(rid)), error=function(e)data.frame())
+    if (!nrow(row) || !identical(as.character(row$status[1] %||% "pending"), "pending")) {
+      showNotification("That request has already been reviewed.", type="warning")
+      return()
+    }
+    db_exec("UPDATE grade_reweight_requests SET status='approved', reviewed_at=CURRENT_TIMESTAMP, reviewed_by=? WHERE id=? AND COALESCE(status,'pending')='pending';",
+            list(rv$user_id %||% rv$name %||% "admin", rid))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification("Grade adjustment request approved.", type="message")
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$reject_grade_reweight_request, {
+    req(rv$is_admin, !rv$impersonating)
+    rid <- suppressWarnings(as.integer(input$reject_grade_reweight_request %||% 0L))
+    if (is.na(rid) || rid <= 0L) return()
+    row <- tryCatch(db_query("SELECT id,user_id,cost,status FROM grade_reweight_requests WHERE id=? LIMIT 1;", list(rid)), error=function(e)data.frame())
+    if (!nrow(row) || !identical(as.character(row$status[1] %||% "pending"), "pending")) {
+      showNotification("That request has already been reviewed.", type="warning")
+      return()
+    }
+    student <- tryCatch(db_query("SELECT display_name FROM users WHERE LOWER(user_id)=LOWER(?) LIMIT 1;", list(row$user_id[1])), error=function(e)data.frame())
+    dname <- if (nrow(student)) student$display_name[1] %||% row$user_id[1] else row$user_id[1]
+    token_credit(row$user_id[1], dname, as.numeric(row$cost[1] %||% 0), 0L, "grade_reweight_refund", rid, "Rejected grade adjustment request")
+    db_exec("UPDATE grade_reweight_requests SET status='rejected', reviewed_at=CURRENT_TIMESTAMP, reviewed_by=? WHERE id=? AND COALESCE(status,'pending')='pending';",
+            list(rv$user_id %||% rv$name %||% "admin", rid))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification("Request rejected and tokens returned.", type="message")
   }, ignoreNULL=TRUE)
 
   observeEvent(input$clear_grades_btn, {
