@@ -12344,23 +12344,24 @@ server <- function(input, output, session) {
     if (tiebreak == "random") {
       bids_df[sample(nrow(bids_df)), , drop=FALSE]
     } else if (tiebreak %in% c("lowest_grade", "lowest_tokens", "weighted_lottery", "most_misses")) {
-      uids <- bids_df$user_id
+      uids <- as.character(bids_df$user_id)
+      uid_placeholders <- paste(rep("?", length(uids)), collapse = ",")
       aux <- switch(tiebreak,
         lowest_grade = tryCatch(db_query(
           paste0("SELECT user_id, AVG(grade_pct) AS val FROM student_grades WHERE user_id IN (",
-                 paste(sprintf("'%s'", uids), collapse=","), ") GROUP BY user_id;")),
+                 uid_placeholders, ") GROUP BY user_id;"), as.list(uids)),
           error=function(e) data.frame()),
         lowest_tokens = tryCatch(db_query(
           paste0("SELECT user_id, COALESCE(SUM(amount),0) AS val FROM token_ledger WHERE user_id IN (",
-                 paste(sprintf("'%s'", uids), collapse=","), ") AND earning=1 GROUP BY user_id;")),
+                 uid_placeholders, ") AND earning=1 GROUP BY user_id;"), as.list(uids)),
           error=function(e) data.frame()),
         weighted_lottery = tryCatch(db_query(
           paste0("SELECT user_id, COALESCE(SUM(amount),0) AS val FROM token_ledger WHERE user_id IN (",
-                 paste(sprintf("'%s'", uids), collapse=","), ") AND earning=1 GROUP BY user_id;")),
+                 uid_placeholders, ") AND earning=1 GROUP BY user_id;"), as.list(uids)),
           error=function(e) data.frame()),
         most_misses = tryCatch(db_query(
           paste0("SELECT user_id, COUNT(*) AS val FROM job_assignments WHERE user_id IN (",
-                 paste(sprintf("'%s'", uids), collapse=","), ") AND outcome='missed' GROUP BY user_id;")),
+                 uid_placeholders, ") AND outcome='missed' GROUP BY user_id;"), as.list(uids)),
           error=function(e) data.frame())
       )
       val_map <- if (nrow(aux)) setNames(as.numeric(aux$val), aux$user_id) else numeric(0)
@@ -12375,9 +12376,11 @@ server <- function(input, output, session) {
         bids_df[order(bids_df$sort_val, na.last=TRUE), , drop=FALSE]
       }
     } else if (tiebreak == "alphabetical") {
+      uids <- as.character(bids_df$user_id)
+      uid_placeholders <- paste(rep("?", length(uids)), collapse = ",")
       uids_df <- tryCatch(db_query(
         paste0("SELECT user_id, display_name FROM users WHERE user_id IN (",
-               paste(sprintf("'%s'", bids_df$user_id), collapse=","), ");")),
+               uid_placeholders, ");"), as.list(uids)),
         error=function(e) data.frame())
       nm_map <- if (nrow(uids_df)) setNames(uids_df$display_name, uids_df$user_id) else character(0)
       bids_df$sort_name <- sapply(bids_df$user_id, function(u) nm_map[u] %||% u)

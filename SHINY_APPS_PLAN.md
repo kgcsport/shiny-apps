@@ -407,7 +407,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
-
+- **2026-10-14** (Codex) - Removed username interpolation from class-job-market tiebreak SQL: all user-id lists now use bound SQLite placeholders. Added Shiny proxy request-size and browser-response protections that preserve normal Shiny WebSockets and slide embeds. The app parses cleanly; the existing smoke test still stops at its volunteer-clearing-wage assertion.
 - **2026-10-07** (Codex) - Fixed the first-load Policy Rubrics panel crash:
   an ungraded team now supplies an explicit empty score data frame before the
   criterion cards render. Expanded the server test to render the real Settings
