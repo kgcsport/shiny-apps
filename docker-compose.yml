@@ -10,8 +10,6 @@ services:
     depends_on:
       shiny:
         condition: service_healthy
-      demo-kit:
-        condition: service_started
 
   shiny:
     image: ${SHINY_IMAGE:-ghcr.io/kgcsport/shiny-apps:latest}
