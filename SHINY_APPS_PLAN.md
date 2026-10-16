@@ -163,6 +163,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-10-16** — Make assessment-grade disclosure an import-level instructor choice. When enabled, students must explicitly reveal the assessment; its score/details and any linked weighted-gradebook impact remain hidden until then. Persist that reveal per student and import so it is a one-time acknowledgement rather than a per-session hurdle.
+
 - **2026-10-16** — Require an explicit assessment-summary target for weighted-gradebook write-back: match the assessment name, choose an existing item, skip gradebook write-back, or deliberately add a new item to a selected manual category. This prevents an uploaded assessment label from silently overwriting a weighted course-grade component while keeping the intended Midterm workflow one step.
 
 - **2026-10-16** — Treat a mapped `overall_exam_note` as a per-student text field, distinct from the assessment-wide and cap-adjustment notes. It appears in the student’s assessment overview and is not coerced to a score or buried in the numeric subpart table.
@@ -415,6 +417,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-16** (Codex) - Added the per-assessment “students must click Reveal grade” import option. A locked assessment shows only a Reveal button; its linked course-grade breakdown is also withheld until the student reveals it. Reveals persist per student and assessment. R parsing and a disposable SQLite reveal-flow check pass.
 - **2026-10-16** (Codex) - Put each student’s final assessment grade behind a closed “Reveal grade” control; score-detail expansion remains a separate action.
 - **2026-10-16** (Codex) - Restyled the student assessment-detail disclosure as a bordered “Show score details” control so its clickability is obvious.
 - **2026-10-16** (Codex) - Added assessment-summary final-grade write-back controls: an explicit item dropdown, exact-name matching, and a deliberate new-item path. The importer now writes mapped final scores, maximums, and percentages to the selected gradebook item and protects them as manual imports.

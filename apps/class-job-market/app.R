@@ -602,9 +602,17 @@ db_exec("CREATE TABLE IF NOT EXISTS assessment_grade_values(
   PRIMARY KEY(import_id, user_id COLLATE NOCASE, field_key)
 );")
 ensure_column("assessment_grade_imports", "general_note TEXT")
+ensure_column("assessment_grade_imports", "require_reveal INTEGER DEFAULT 0")
+ensure_column("assessment_grade_imports", "gradebook_item TEXT")
 ensure_column("assessment_grade_values", "note TEXT")
 db_exec("CREATE INDEX IF NOT EXISTS idx_assessment_grade_values_user
          ON assessment_grade_values(user_id COLLATE NOCASE, import_id);")
+db_exec("CREATE TABLE IF NOT EXISTS assessment_grade_reveals(
+  import_id INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  revealed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(import_id, user_id COLLATE NOCASE)
+);")
 db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_log(
   assignment_id TEXT PRIMARY KEY,
   assignment_title TEXT,
@@ -2645,6 +2653,7 @@ server <- function(input, output, session) {
     jobs_ver       = 0L,    # bumped after any job-post or category mutation
     students_ver   = 0L,    # bumped after any student roster mutation
     gradebook_ver  = 0L,    # bumped after any gradebook category/item mutation
+    revealed_assessment_imports = integer(0),
     rubric_ver     = 0L,    # bumped after policy-rubric drafts or releases
     extensions_ver = 0L,    # bumped after extension pricing or assignment mutation
     flex_ver       = 0L,    # bumped after shared question funding/config changes
@@ -5101,7 +5110,8 @@ server <- function(input, output, session) {
     req(rv$authed)
     rv$gradebook_ver
     rows <- tryCatch(db_query(
-      "SELECT ai.id, ai.assessment_name, ai.general_note, ai.adjustment_note, ai.imported_at,
+      "SELECT ai.id, ai.assessment_name, ai.general_note, ai.adjustment_note,
+              COALESCE(ai.require_reveal,0) AS require_reveal, ai.imported_at,
               av.field_key, av.field_label, av.value, av.note
        FROM assessment_grade_imports ai
        JOIN assessment_grade_values av ON av.import_id=ai.id
@@ -5109,6 +5119,13 @@ server <- function(input, output, session) {
        ORDER BY ai.imported_at DESC, ai.id DESC, av.field_key;",
       list(rv$user_id)), error = function(e) data.frame())
     if (!nrow(rows)) return(NULL)
+    revealed_rows <- tryCatch(db_query(
+      "SELECT import_id FROM assessment_grade_reveals WHERE LOWER(user_id)=LOWER(?);",
+      list(rv$user_id)), error = function(e) data.frame())
+    revealed_ids <- unique(c(
+      suppressWarnings(as.integer(revealed_rows$import_id %||% integer(0))),
+      as.integer(rv$revealed_assessment_imports %||% integer(0))
+    ))
     batch_ids <- unique(rows$id)
     cards <- lapply(batch_ids, function(batch_id) {
       batch <- rows[rows$id == batch_id, , drop = FALSE]
@@ -5117,28 +5134,32 @@ server <- function(input, output, session) {
       student_note <- batch[batch$field_key == "overall_exam_note", , drop = FALSE]
       detail <- batch[!(batch$field_key %in% c("final_grade", "overall_exam_note")), , drop = FALSE]
       heading <- tags$strong(batch$assessment_name[1] %||% "Assessment")
+      needs_reveal <- isTRUE(as.integer(batch$require_reveal[1] %||% 0L) == 1L)
+      revealed <- !needs_reveal || as.integer(batch_id) %in% revealed_ids
       div(class = "grade-section", style = "margin-top:.9rem;",
         div(class = "sec-label", heading),
-        if (is.finite(final_value)) tags$details(
-          tags$summary(style="display:inline-block;cursor:pointer;color:#951829;font-size:.85rem;font-weight:600;border:1px solid #951829;border-radius:4px;padding:.3rem .55rem;background:#fff;", "Reveal grade"),
-          tags$p(style="font-size:1.1rem;color:#951829;font-weight:700;margin:.45rem 0 .25rem;",
-                 sprintf("Final grade: %.4g", final_value))
-        ) else tags$p(style="color:#777;font-size:.85rem;", "Grade not available."),
-        if (nzchar(trimws(batch$general_note[1] %||% "")))
-          tags$p(style="font-size:.85rem;color:#555;margin:.2rem 0 .45rem;", batch$general_note[1]),
-        if (nrow(student_note) && nzchar(trimws(student_note$note[1] %||% "")))
-          tags$p(style="font-size:.85rem;color:#555;margin:.2rem 0 .45rem;", student_note$note[1]),
-        if (nzchar(trimws(batch$adjustment_note[1] %||% "")))
-          tags$p(style="font-size:.8rem;color:#666;margin:.2rem 0 .45rem;", batch$adjustment_note[1]),
-        tags$details(
-          tags$summary(style="display:inline-block;cursor:pointer;color:#951829;font-size:.85rem;font-weight:600;border:1px solid #951829;border-radius:4px;padding:.3rem .55rem;background:#fff;", "Show score details"),
-          div(style="overflow-x:auto;margin-top:.35rem;",
-            tags$table(class="grade-tbl",
-              tags$thead(tags$tr(tags$th("Component"), tags$th(style="text-align:right;", "Points"))),
-              tags$tbody(lapply(seq_len(nrow(detail)), function(i) {
-                tags$tr(tags$td(detail$field_label[i]),
-                        tags$td(style="text-align:right;", sprintf("%.4g", detail$value[i])))
-              }))
+        if (!revealed) tags$button(type="button", class="btn btn-outline-primary btn-sm",
+          onclick=sprintf("Shiny.setInputValue('reveal_assessment_grade',%d,{priority:'event'});", as.integer(batch_id)),
+          "Reveal grade") else tagList(
+          if (is.finite(final_value)) tags$p(style="font-size:1.1rem;color:#951829;font-weight:700;margin:.45rem 0 .25rem;",
+                                         sprintf("Final grade: %.4g", final_value))
+          else tags$p(style="color:#777;font-size:.85rem;", "Grade not available."),
+          if (nzchar(trimws(batch$general_note[1] %||% "")))
+            tags$p(style="font-size:.85rem;color:#555;margin:.2rem 0 .45rem;", batch$general_note[1]),
+          if (nrow(student_note) && nzchar(trimws(student_note$note[1] %||% "")))
+            tags$p(style="font-size:.85rem;color:#555;margin:.2rem 0 .45rem;", student_note$note[1]),
+          if (nzchar(trimws(batch$adjustment_note[1] %||% "")))
+            tags$p(style="font-size:.8rem;color:#666;margin:.2rem 0 .45rem;", batch$adjustment_note[1]),
+          tags$details(
+            tags$summary(style="display:inline-block;cursor:pointer;color:#951829;font-size:.85rem;font-weight:600;border:1px solid #951829;border-radius:4px;padding:.3rem .55rem;background:#fff;", "Show score details"),
+            div(style="overflow-x:auto;margin-top:.35rem;",
+              tags$table(class="grade-tbl",
+                tags$thead(tags$tr(tags$th("Component"), tags$th(style="text-align:right;", "Points"))),
+                tags$tbody(lapply(seq_len(nrow(detail)), function(i) {
+                  tags$tr(tags$td(detail$field_label[i]),
+                          tags$td(style="text-align:right;", sprintf("%.4g", detail$value[i])))
+                }))
+              )
             )
           )
         )
@@ -5147,8 +5168,35 @@ server <- function(input, output, session) {
     tagList(cards)
   })
 
+  observeEvent(input$reveal_assessment_grade, {
+    req(rv$authed)
+    import_id <- suppressWarnings(as.integer(input$reveal_assessment_grade %||% NA))
+    if (is.na(import_id)) return()
+    db_exec("INSERT OR IGNORE INTO assessment_grade_reveals(import_id,user_id) VALUES(?,?);",
+            list(import_id, rv$user_id))
+    rv$revealed_assessment_imports <- unique(c(as.integer(rv$revealed_assessment_imports %||% integer(0)), import_id))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+  }, ignoreNULL = TRUE)
+
   output$account_grade_breakdown <- renderUI({
     req(rv$authed)
+    rv$gradebook_ver
+    hidden <- tryCatch(db_query(
+      "SELECT DISTINCT ai.id, ai.assessment_name
+       FROM assessment_grade_imports ai JOIN assessment_grade_values av ON av.import_id=ai.id
+       WHERE LOWER(av.user_id)=LOWER(?) AND COALESCE(ai.require_reveal,0)=1
+         AND TRIM(COALESCE(ai.gradebook_item,''))<>'';", list(rv$user_id)), error=function(e)data.frame())
+    revealed_rows <- tryCatch(db_query(
+      "SELECT import_id FROM assessment_grade_reveals WHERE LOWER(user_id)=LOWER(?);",
+      list(rv$user_id)), error = function(e) data.frame())
+    revealed_ids <- unique(c(
+      suppressWarnings(as.integer(revealed_rows$import_id %||% integer(0))),
+      as.integer(rv$revealed_assessment_imports %||% integer(0))
+    ))
+    unrevealed <- if (nrow(hidden)) hidden[!(as.integer(hidden$id) %in% revealed_ids), , drop=FALSE] else data.frame()
+    if (nrow(unrevealed)) return(div(class="grade-section",
+      div(class="sec-label", "Grade Breakdown"),
+      tags$p(style="color:#666;font-size:.88rem;", "Reveal ", paste(unrevealed$assessment_name, collapse=", "), " above to view its effect on your current course grade.")))
     gb <- compute_student_grade(rv$user_id)
     if (!nrow(gb$cats)) return(NULL)
 
@@ -6259,7 +6307,7 @@ server <- function(input, output, session) {
     "arcade_sessions", "extension_purchases", "grade_reweight_requests",
     "public_good_contributions", "flex_purchases", "flex_question_contributions", "token_ledger",
     "olig_submissions", "olig_payouts", "pledges", "participation_events",
-    "live_score_events", "student_grades", "assessment_grade_values", "job_assignments", "round_absences",
+    "live_score_events", "student_grades", "assessment_grade_values", "assessment_grade_reveals", "job_assignments", "round_absences",
     "wage_bids", "job_wage_bids", "application_bids"
   )
 
@@ -10552,6 +10600,7 @@ server <- function(input, output, session) {
           textAreaInput("assessment_summary_general_note", "General note to students (optional):",
                         placeholder = "e.g. This report shows your final score after the stated grading adjustments.",
                         rows = 2, width = "100%"),
+          checkboxInput("assessment_summary_require_reveal", "Students must click Reveal grade before this assessment affects their visible course grade", value = FALSE),
           fluidRow(
             column(6, selectInput("assessment_summary_gradebook_item", "Write Final grade to gradebook:",
                                   choices = gradebook_target_choices, selected = "__match__", width = "100%")),
@@ -12170,15 +12219,16 @@ server <- function(input, output, session) {
         list(scope_key, assessment_name)), error = function(e) data.frame())
       if (nrow(old_batches)) for (old_id in old_batches$id) {
         db_exec("DELETE FROM assessment_grade_values WHERE import_id=?;", list(old_id))
+        db_exec("DELETE FROM assessment_grade_reveals WHERE import_id=?;", list(old_id))
         db_exec("DELETE FROM assessment_grade_imports WHERE id=?;", list(old_id))
       }
     }
-    db_exec("INSERT INTO assessment_grade_imports(assessment_name,scope_key,course,sections,general_note,adjustment_note,source_filename,imported_by)
-             VALUES(?,?,?,?,?,?,?,?);",
+    db_exec("INSERT INTO assessment_grade_imports(assessment_name,scope_key,course,sections,general_note,adjustment_note,require_reveal,source_filename,imported_by)
+             VALUES(?,?,?,?,?,?,?,?,?);",
             list(assessment_name, scope_key, scoped_course(), serialize_scope_sections(scoped_sections()),
                  trimws(input$assessment_summary_general_note %||% ""),
-                 trimws(input$assessment_summary_adjustment_note %||% ""), fdata$name %||% "",
-                 rv$user_id %||% "admin"))
+                 trimws(input$assessment_summary_adjustment_note %||% ""), as.integer(isTRUE(input$assessment_summary_require_reveal)),
+                 fdata$name %||% "", rv$user_id %||% "admin"))
     import_id <- as.integer(db_query("SELECT last_insert_rowid() AS id;")$id[1])
     roster_key <- tolower(roster$user_id)
     n_students <- 0L; n_values <- 0L; n_unmatched <- 0L; n_invalid <- 0L
@@ -12256,6 +12306,7 @@ server <- function(input, output, session) {
         mark_grade_override(final_row$user_id, target_assignment, paste0("Assessment-summary import: ", assessment_name))
         n_gradebook <- n_gradebook + 1L
       }
+      db_exec("UPDATE assessment_grade_imports SET gradebook_item=? WHERE id=?;", list(target_assignment, import_id))
     }
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     msg <- sprintf("Imported %d value%s for %d student%s.", n_values, if (n_values == 1L) "" else "s", n_students, if (n_students == 1L) "" else "s")
