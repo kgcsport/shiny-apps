@@ -10293,6 +10293,21 @@ server <- function(input, output, session) {
         error = function(e) data.frame())
       sec_choices <- c("Current selected scope"="current_scope","All sections (explicit)"="all",sort(sections_df$section %||% character(0)))
       assignment_policy <- get_setting("assignment_grade_policy", "final_score")
+      gradebook_target_rows <- do.call(rbind, lapply(seq_len(nrow(cats)), function(i) {
+        specs <- gradebook_item_specs(cats[i, ], inames)
+        data.frame(category_id = as.integer(cats$id[i]), category = as.character(cats$name[i]),
+                   assignment = as.character(specs$item_name),
+                   max_score = as.numeric(cats$max_points[i] %||% 100), stringsAsFactors = FALSE)
+      }))
+      if (is.null(gradebook_target_rows)) gradebook_target_rows <- data.frame(category_id=integer(), category=character(), assignment=character(), max_score=numeric())
+      gradebook_target_choices <- c(
+        "Match assessment name to an existing gradebook item" = "__match__",
+        "Do not write final grade to gradebook" = "",
+        if (nrow(gradebook_target_rows)) stats::setNames(gradebook_target_rows$assignment,
+          paste0(gradebook_target_rows$category, " — ", gradebook_target_rows$assignment)) else character(0),
+        "Add a new gradebook item…" = "__new__"
+      )
+      gradebook_category_choices <- if (nrow(cats)) stats::setNames(as.character(cats$id), cats$name) else character(0)
 
       get_item_names_for_cat <- function(cat_row) {
         gradebook_item_specs(cat_row, inames)$item_name
@@ -10524,7 +10539,7 @@ server <- function(input, output, session) {
                        "Import assessment summary (mapped columns)"),
           tags$p(style = "color:#555;font-size:.85rem;margin:.55rem 0;",
                  "Upload one row per student, such as ", tags$code("midterm_fall2026_bonus_summary.csv"),
-                 ". Map only the columns you want to retain. Values are stored as an assessment breakdown, not folded into the weighted course-grade calculation."),
+                 ". Map only the columns you want to retain. You may also explicitly write the mapped Final grade to a selected weighted-gradebook item below."),
           fluidRow(
             column(4, fileInput("assessment_summary_file", "Summary CSV/XLSX:",
                                 accept = c(".csv", ".xls", ".xlsx"), width = "100%")),
@@ -10536,6 +10551,21 @@ server <- function(input, output, session) {
           textAreaInput("assessment_summary_general_note", "General note to students (optional):",
                         placeholder = "e.g. This report shows your final score after the stated grading adjustments.",
                         rows = 2, width = "100%"),
+          fluidRow(
+            column(6, selectInput("assessment_summary_gradebook_item", "Write Final grade to gradebook:",
+                                  choices = gradebook_target_choices, selected = "__match__", width = "100%")),
+            column(3, numericInput("assessment_summary_gradebook_max", "Gradebook maximum:",
+                                   value = 100, min = 0.01, step = 1, width = "100%"))
+          ),
+          conditionalPanel('input.assessment_summary_gradebook_item === "__new__"',
+            fluidRow(
+              column(5, textInput("assessment_summary_new_gradebook_item", "New item name:", placeholder = "e.g. Midterm")),
+              column(5, selectInput("assessment_summary_new_gradebook_category", "Add it to category:",
+                                    choices = gradebook_category_choices))
+            ),
+            tags$p(style="color:#856404;font-size:.78rem;margin-top:-.3rem;",
+                   "Adding an item changes the selected category’s item count and its within-category weighting.")
+          ),
           uiOutput("assessment_summary_mapper"),
           uiOutput("assessment_summary_preview"),
           div(style = "display:flex;align-items:end;gap:.7rem;flex-wrap:wrap;margin-top:.35rem;",
@@ -12123,6 +12153,10 @@ server <- function(input, output, session) {
       field_types <- c(field_types, stats::setNames(rep("number", length(extra_keys)), extra_keys))
     }
     if (!length(maps)) { showNotification("Map at least one assessment value column.", type = "error"); return() }
+    gradebook_choice <- input$assessment_summary_gradebook_item %||% "__match__"
+    if (nzchar(gradebook_choice) && !identical(gradebook_choice, "") && !("final_grade" %in% names(maps))) {
+      showNotification("Map a Final grade column before writing this assessment to the gradebook.", type = "error"); return()
+    }
     roster <- tryCatch(scope_filter_rows(db_query(
       "SELECT user_id, display_name, course, section FROM users
        WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;")),
@@ -12147,6 +12181,7 @@ server <- function(input, output, session) {
     import_id <- as.integer(db_query("SELECT last_insert_rowid() AS id;")$id[1])
     roster_key <- tolower(roster$user_id)
     n_students <- 0L; n_values <- 0L; n_unmatched <- 0L; n_invalid <- 0L
+    final_grade_rows <- list()
     for (i in seq_len(nrow(df))) {
       supplied_uid <- trimws(as.character(df[[uid_col]][i] %||% ""))
       hit <- match(tolower(supplied_uid), roster_key)
@@ -12166,6 +12201,7 @@ server <- function(input, output, session) {
           if (!is.finite(value)) { n_invalid <- n_invalid + 1L; next }
           db_exec("INSERT INTO assessment_grade_values(import_id,user_id,field_key,field_label,value,note) VALUES(?,?,?,?,?,?);",
                   list(import_id, roster$user_id[hit], key, label, value, NA_character_))
+          if (identical(key, "final_grade")) final_grade_rows[[length(final_grade_rows) + 1L]] <- list(user_id = roster$user_id[hit], score = value)
           n_values <- n_values + 1L; wrote_student <- TRUE
         }
       }
@@ -12175,8 +12211,54 @@ server <- function(input, output, session) {
       db_exec("DELETE FROM assessment_grade_imports WHERE id=?;", list(import_id))
       showNotification("No mapped values were found; nothing was imported.", type = "error"); return()
     }
+    n_gradebook <- 0L
+    if (nzchar(gradebook_choice)) {
+      catalog <- manual_grade_catalog()
+      target_assignment <- gradebook_choice
+      if (identical(target_assignment, "__match__")) {
+        hit <- which(norm_key(catalog$assignment) == norm_key(assessment_name))
+        if (!length(hit)) {
+          showNotification("The assessment name does not match a configured gradebook item. Choose one from the dropdown or add a new item.", type = "error")
+          return()
+        }
+        target_assignment <- as.character(catalog$assignment[hit[1]])
+      } else if (identical(target_assignment, "__new__")) {
+        target_assignment <- trimws(input$assessment_summary_new_gradebook_item %||% "")
+        category_id <- suppressWarnings(as.integer(input$assessment_summary_new_gradebook_category %||% NA))
+        category <- tryCatch(db_query("SELECT id,item_count,source FROM gradebook_categories WHERE id=? LIMIT 1;", list(category_id)), error=function(e)data.frame())
+        if (!nzchar(target_assignment) || !nrow(category) || identical(as.character(category$source[1] %||% "manual"), "participation")) {
+          showNotification("Enter a new item name and choose a manual-entry category.", type = "error"); return()
+        }
+        duplicate <- which(norm_key(catalog$assignment) == norm_key(target_assignment))
+        if (length(duplicate)) {
+          showNotification("That gradebook item already exists. Select it from the dropdown instead.", type = "error"); return()
+        }
+        next_index <- max(as.integer(category$item_count[1] %||% 0L),
+                          as.integer(tryCatch(db_query("SELECT COALESCE(MAX(item_index),0) AS n FROM gradebook_item_names WHERE category_id=?;", list(category_id))$n[1], error=function(e)0L))) + 1L
+        db_exec("INSERT INTO gradebook_item_names(category_id,item_index,item_name,item_weight) VALUES(?,?,?,NULL);", list(category_id, next_index, target_assignment))
+        db_exec("UPDATE gradebook_categories SET item_count=? WHERE id=?;", list(next_index, category_id))
+      } else {
+        hit <- which(norm_key(catalog$assignment) == norm_key(target_assignment))
+        if (!length(hit)) {
+          showNotification("Choose a configured gradebook item or add a new one.", type = "error"); return()
+        }
+        target_assignment <- as.character(catalog$assignment[hit[1]])
+      }
+      max_score <- suppressWarnings(as.numeric(input$assessment_summary_gradebook_max %||% NA_real_))
+      if (!is.finite(max_score) || max_score <= 0) {
+        showNotification("Enter a positive gradebook maximum.", type = "error"); return()
+      }
+      for (final_row in final_grade_rows) {
+        grade_pct <- 100 * final_row$score / max_score
+        upsert_student_grade(final_row$user_id, target_assignment, final_row$score, max_score, grade_pct,
+                             paste0("Imported from ", assessment_name))
+        mark_grade_override(final_row$user_id, target_assignment, paste0("Assessment-summary import: ", assessment_name))
+        n_gradebook <- n_gradebook + 1L
+      }
+    }
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     msg <- sprintf("Imported %d value%s for %d student%s.", n_values, if (n_values == 1L) "" else "s", n_students, if (n_students == 1L) "" else "s")
+    if (n_gradebook) msg <- paste0(msg, sprintf(" Wrote %d final grade%s to %s.", n_gradebook, if (n_gradebook == 1L) "" else "s", target_assignment))
     if (n_unmatched || n_invalid) msg <- paste0(msg, sprintf(" Skipped %d unmatched row%s and %d nonnumeric cell%s.", n_unmatched, if (n_unmatched == 1L) "" else "s", n_invalid, if (n_invalid == 1L) "" else "s"))
     showNotification(msg, type = if (n_unmatched || n_invalid) "warning" else "message", duration = 10)
   }, ignoreNULL = TRUE)
