@@ -5130,7 +5130,7 @@ server <- function(input, output, session) {
         if (nzchar(trimws(batch$adjustment_note[1] %||% "")))
           tags$p(style="font-size:.8rem;color:#666;margin:.2rem 0 .45rem;", batch$adjustment_note[1]),
         tags$details(
-          tags$summary(style="cursor:pointer;color:#555;font-size:.85rem;", "View score details"),
+          tags$summary(style="display:inline-block;cursor:pointer;color:#951829;font-size:.85rem;font-weight:600;border:1px solid #951829;border-radius:4px;padding:.3rem .55rem;background:#fff;", "Show score details"),
           div(style="overflow-x:auto;margin-top:.35rem;",
             tags$table(class="grade-tbl",
               tags$thead(tags$tr(tags$th("Component"), tags$th(style="text-align:right;", "Points"))),

@@ -415,6 +415,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-16** (Codex) - Restyled the student assessment-detail disclosure as a bordered “Show score details” control so its clickability is obvious.
 - **2026-10-16** (Codex) - Added assessment-summary final-grade write-back controls: an explicit item dropdown, exact-name matching, and a deliberate new-item path. The importer now writes mapped final scores, maximums, and percentages to the selected gradebook item and protects them as manual imports.
 - **2026-10-16** (Codex) - Made `overall_exam_note` a first-class text mapping in the assessment-summary importer. It auto-selects the matching column in a midterm summary and appears as individual feedback on the corresponding student Account card.
 - **2026-10-16** (Codex) - Added an optional assessment-wide note field to the mapped summary importer. It is independent of the cap-adjustment note and appears to students before the collapsed score-detail table.
