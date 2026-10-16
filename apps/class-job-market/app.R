@@ -5116,13 +5116,14 @@ server <- function(input, output, session) {
       final_value <- if (nrow(final)) final$value[1] else NA_real_
       student_note <- batch[batch$field_key == "overall_exam_note", , drop = FALSE]
       detail <- batch[!(batch$field_key %in% c("final_grade", "overall_exam_note")), , drop = FALSE]
-      heading <- tagList(tags$strong(batch$assessment_name[1] %||% "Assessment"), " ",
-                         if (is.finite(final_value))
-                           tags$span(style="float:right;color:#951829;font-weight:700;",
-                                     sprintf("Final grade: %.4g", final_value))
-                         else tags$span(style="float:right;color:#777;", "Details available"))
+      heading <- tags$strong(batch$assessment_name[1] %||% "Assessment")
       div(class = "grade-section", style = "margin-top:.9rem;",
         div(class = "sec-label", heading),
+        if (is.finite(final_value)) tags$details(
+          tags$summary(style="display:inline-block;cursor:pointer;color:#951829;font-size:.85rem;font-weight:600;border:1px solid #951829;border-radius:4px;padding:.3rem .55rem;background:#fff;", "Reveal grade"),
+          tags$p(style="font-size:1.1rem;color:#951829;font-weight:700;margin:.45rem 0 .25rem;",
+                 sprintf("Final grade: %.4g", final_value))
+        ) else tags$p(style="color:#777;font-size:.85rem;", "Grade not available."),
         if (nzchar(trimws(batch$general_note[1] %||% "")))
           tags$p(style="font-size:.85rem;color:#555;margin:.2rem 0 .45rem;", batch$general_note[1]),
         if (nrow(student_note) && nzchar(trimws(student_note$note[1] %||% "")))
