@@ -581,6 +581,27 @@ db_exec("DELETE FROM student_grades
          );")
 db_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_student_grades_student_assignment
          ON student_grades(user_id COLLATE NOCASE, assignment_name COLLATE NOCASE);")
+db_exec("CREATE TABLE IF NOT EXISTS assessment_grade_imports(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  assessment_name TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  course TEXT,
+  sections TEXT,
+  adjustment_note TEXT,
+  source_filename TEXT,
+  imported_by TEXT,
+  imported_at TEXT DEFAULT CURRENT_TIMESTAMP
+);")
+db_exec("CREATE TABLE IF NOT EXISTS assessment_grade_values(
+  import_id INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  field_key TEXT NOT NULL,
+  field_label TEXT NOT NULL,
+  value REAL,
+  PRIMARY KEY(import_id, user_id COLLATE NOCASE, field_key)
+);")
+db_exec("CREATE INDEX IF NOT EXISTS idx_assessment_grade_values_user
+         ON assessment_grade_values(user_id COLLATE NOCASE, import_id);")
 db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_log(
   assignment_id TEXT PRIMARY KEY,
   assignment_title TEXT,
@@ -623,6 +644,14 @@ upsert_student_grade <- function(user_id, assignment_name, score = NA_real_,
     list(user_id, assignment_name, score, max_score, grade_pct, week_tag)
   )
 }
+
+assessment_grade_fields <- data.frame(
+  key = c("part_i", "part_ii", "part_iii", "exam_points", "pool_bonus",
+          "total_bonus", "cap_adjustment", "final_grade"),
+  label = c("Part I", "Part II", "Part III", "Exam points", "Pool bonus",
+            "Total bonus", "Cap adjustment", "Final grade"),
+  stringsAsFactors = FALSE
+)
 db_exec("CREATE TABLE IF NOT EXISTS policy_group_assignments(
   user_id           TEXT PRIMARY KEY,
   policy_team       TEXT NOT NULL,
@@ -5064,6 +5093,50 @@ server <- function(input, output, session) {
     )
   })
 
+  output$account_assessment_breakdowns <- renderUI({
+    req(rv$authed)
+    rv$gradebook_ver
+    rows <- tryCatch(db_query(
+      "SELECT ai.id, ai.assessment_name, ai.adjustment_note, ai.imported_at,
+              av.field_key, av.field_label, av.value
+       FROM assessment_grade_imports ai
+       JOIN assessment_grade_values av ON av.import_id=ai.id
+       WHERE LOWER(av.user_id)=LOWER(?)
+       ORDER BY ai.imported_at DESC, ai.id DESC, av.field_key;",
+      list(rv$user_id)), error = function(e) data.frame())
+    if (!nrow(rows)) return(NULL)
+    batch_ids <- unique(rows$id)
+    cards <- lapply(batch_ids, function(batch_id) {
+      batch <- rows[rows$id == batch_id, , drop = FALSE]
+      final <- batch[batch$field_key == "final_grade", , drop = FALSE]
+      final_value <- if (nrow(final)) final$value[1] else NA_real_
+      detail <- batch[batch$field_key != "final_grade", , drop = FALSE]
+      heading <- tagList(tags$strong(batch$assessment_name[1] %||% "Assessment"), " ",
+                         if (is.finite(final_value))
+                           tags$span(style="float:right;color:#951829;font-weight:700;",
+                                     sprintf("Final grade: %.4g", final_value))
+                         else tags$span(style="float:right;color:#777;", "Details available"))
+      div(class = "grade-section", style = "margin-top:.9rem;",
+        div(class = "sec-label", heading),
+        if (nzchar(trimws(batch$adjustment_note[1] %||% "")))
+          tags$p(style="font-size:.8rem;color:#666;margin:.2rem 0 .45rem;", batch$adjustment_note[1]),
+        tags$details(
+          tags$summary(style="cursor:pointer;color:#555;font-size:.85rem;", "View score details"),
+          div(style="overflow-x:auto;margin-top:.35rem;",
+            tags$table(class="grade-tbl",
+              tags$thead(tags$tr(tags$th("Component"), tags$th(style="text-align:right;", "Points"))),
+              tags$tbody(lapply(seq_len(nrow(detail)), function(i) {
+                tags$tr(tags$td(detail$field_label[i]),
+                        tags$td(style="text-align:right;", sprintf("%.4g", detail$value[i])))
+              }))
+            )
+          )
+        )
+      )
+    })
+    tagList(cards)
+  })
+
   output$account_grade_breakdown <- renderUI({
     req(rv$authed)
     gb <- compute_student_grade(rv$user_id)
@@ -6043,7 +6116,8 @@ server <- function(input, output, session) {
         )
       ),
 
-      uiOutput("account_grade_breakdown")
+      uiOutput("account_grade_breakdown"),
+      uiOutput("account_assessment_breakdowns")
     )
   })
 
@@ -6175,7 +6249,7 @@ server <- function(input, output, session) {
     "arcade_sessions", "extension_purchases", "grade_reweight_requests",
     "public_good_contributions", "flex_purchases", "flex_question_contributions", "token_ledger",
     "olig_submissions", "olig_payouts", "pledges", "participation_events",
-    "live_score_events", "student_grades", "job_assignments", "round_absences",
+    "live_score_events", "student_grades", "assessment_grade_values", "job_assignments", "round_absences",
     "wage_bids", "job_wage_bids", "application_bids"
   )
 
@@ -10434,6 +10508,31 @@ server <- function(input, output, session) {
 
         tags$p(style="color:#777;font-size:.8rem;margin:.5rem 0;",
                "Edit grade percentages directly in the raw grade rows below. Changes save immediately as protected manual overrides."),
+
+        tags$details(
+          style = "margin:.75rem 0;background:#f8f9fa;border:1px solid #e2e5e8;border-radius:8px;padding:.65rem .8rem;",
+          tags$summary(style = "cursor:pointer;color:#951829;font-weight:700;",
+                       "Import assessment summary (mapped columns)"),
+          tags$p(style = "color:#555;font-size:.85rem;margin:.55rem 0;",
+                 "Upload one row per student, such as ", tags$code("midterm_fall2026_bonus_summary.csv"),
+                 ". Map only the columns you want to retain. Values are stored as an assessment breakdown, not folded into the weighted course-grade calculation."),
+          fluidRow(
+            column(4, fileInput("assessment_summary_file", "Summary CSV/XLSX:",
+                                accept = c(".csv", ".xls", ".xlsx"), width = "100%")),
+            column(4, textInput("assessment_summary_name", "Assessment name:",
+                                value = "Fall 2026 Midterm", width = "100%")),
+            column(4, textInput("assessment_summary_adjustment_note", "Cap-adjustment note (optional):",
+                                placeholder = "e.g. Restored points deducted for excess sentences", width = "100%"))
+          ),
+          uiOutput("assessment_summary_mapper"),
+          uiOutput("assessment_summary_preview"),
+          div(style = "display:flex;align-items:end;gap:.7rem;flex-wrap:wrap;margin-top:.35rem;",
+            checkboxInput("assessment_summary_replace", "Replace this assessment in the current class/section scope", value = TRUE),
+            actionButton("import_assessment_summary_btn", "Import mapped summary", class = "btn btn-sm btn-primary")
+          ),
+          tags$p(style = "color:#777;font-size:.78rem;margin:.45rem 0 0;",
+                 "Student identifier must match the Class Job Market username (often the Vassar email). Only active students in the selected class and section(s) can be imported; unmatched rows are skipped and reported.")
+        ),
         tags$hr(),
 
         # ── 3. Grades View & Downloads ──────────────────────────────────────────
@@ -11894,6 +11993,170 @@ server <- function(input, output, session) {
   }, ignoreNULL=TRUE)
 
   # Scheduled imports run via cron; keep the Shiny session responsive and make Sync manual.
+
+  read_assessment_summary_file <- function(fdata, header_only = FALSE) {
+    ext <- tolower(tools::file_ext(fdata$name %||% ""))
+    if (ext == "csv") {
+      read.csv(fdata$datapath, stringsAsFactors = FALSE, check.names = FALSE,
+               nrows = if (header_only) 0 else -1)
+    } else if (ext %in% c("xls", "xlsx")) {
+      if (!requireNamespace("readxl", quietly = TRUE)) stop("readxl is not available")
+      readxl::read_excel(fdata$datapath, n_max = if (header_only) 0 else Inf) |> as.data.frame()
+    } else stop("Choose a CSV or Excel file.")
+  }
+
+  assessment_summary_guess_column <- function(columns, aliases) {
+    normalized <- tolower(gsub("[^a-z0-9]", "", columns))
+    targets <- tolower(gsub("[^a-z0-9]", "", aliases))
+    hit <- match(targets, normalized)
+    hit <- hit[!is.na(hit)]
+    if (length(hit)) columns[hit[1]] else ""
+  }
+
+  output$assessment_summary_mapper <- renderUI({
+    req(rv$is_admin)
+    fdata <- input$assessment_summary_file
+    if (is.null(fdata)) return(NULL)
+    headers <- tryCatch(read_assessment_summary_file(fdata, header_only = TRUE), error = function(e) e)
+    if (inherits(headers, "error"))
+      return(tags$p(style = "color:#856404;font-size:.85rem;", paste("Could not read headers:", headers$message)))
+    cols <- names(headers)
+    if (!length(cols)) return(tags$p(style = "color:#856404;font-size:.85rem;", "The file has no column headers."))
+    optional <- c("Do not import" = "", stats::setNames(cols, cols))
+    required <- c("Choose column" = "", stats::setNames(cols, cols))
+    default_for <- function(key) switch(key,
+      part_i = c("part_i", "part_i_best_five_with_sentence_deduction", "part_i_best_five"),
+      part_ii = c("part_ii"),
+      part_iii = c("part_iii"),
+      exam_points = c("exam_points", "exam_points_after_sentence_deduction_cap"),
+      pool_bonus = c("common_pool_share", "pool_bonus"),
+      total_bonus = c("final_bonus_points", "total_bonus"),
+      cap_adjustment = c("sentence_points_restored_by_cap", "cap_adjustment"),
+      final_grade = c("final_points_after_sentence_deduction_cap", "final_points"),
+      character(0)
+    )
+    tagList(
+      tags$p(style = "color:#555;font-size:.85rem;margin:.45rem 0 .15rem;",
+             "Map the student identifier and any desired point columns."),
+      fluidRow(column(4, selectInput("assessment_summary_uid_col", "Student identifier:",
+                                     choices = required,
+                                     selected = assessment_summary_guess_column(cols, c("user_id", "userid", "email", "student_id", "studentemail"))))),
+      fluidRow(lapply(seq_len(nrow(assessment_grade_fields)), function(i) {
+        field <- assessment_grade_fields[i, ]
+        column(3, selectInput(paste0("assessment_summary_map_", field$key),
+                              paste0(field$label, ":"), choices = optional,
+                              selected = assessment_summary_guess_column(cols, default_for(field$key))))
+      })),
+      selectizeInput("assessment_summary_extra_cols", "Additional detail columns (optional):",
+                     choices = stats::setNames(cols, cols), multiple = TRUE,
+                     options = list(placeholder = "Choose scored subparts or other detail to show students…")),
+      tags$p(style = "color:#777;font-size:.78rem;margin:-.3rem 0 .15rem;",
+             "These keep their spreadsheet column names and appear only inside the student’s expandable assessment details.")
+    )
+  })
+
+  output$assessment_summary_preview <- renderUI({
+    req(rv$is_admin)
+    fdata <- input$assessment_summary_file
+    if (is.null(fdata)) return(NULL)
+    uid_col <- input$assessment_summary_uid_col %||% ""
+    selected <- vapply(assessment_grade_fields$key, function(key) input[[paste0("assessment_summary_map_", key)]] %||% "", character(1))
+    selected <- c(selected[nzchar(selected)], input$assessment_summary_extra_cols %||% character(0))
+    selected <- unique(selected[nzchar(selected)])
+    if (!nzchar(uid_col) || !length(selected)) return(NULL)
+    df <- tryCatch(read_assessment_summary_file(fdata), error = function(e) NULL)
+    if (is.null(df) || !uid_col %in% names(df)) return(NULL)
+    roster <- tryCatch(scope_filter_rows(db_query(
+      "SELECT user_id, display_name, course, section FROM users
+       WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;")),
+      error = function(e) data.frame())
+    supplied <- trimws(as.character(df[[uid_col]] %||% character(0)))
+    matched <- if (nrow(roster)) tolower(supplied) %in% tolower(roster$user_id) else rep(FALSE, length(supplied))
+    tagList(
+      tags$p(style = "color:#555;font-size:.8rem;margin:.4rem 0;",
+             sprintf("Preview: %d rows; %d match the current class/section scope; %d mapped value column%s.",
+                     nrow(df), sum(matched), length(selected), if (length(selected) == 1L) "" else "s")),
+      if (any(!matched)) tags$p(style = "color:#856404;font-size:.78rem;margin:-.2rem 0 .35rem;",
+                                 sprintf("%d row%s will be skipped because the identifier is not an active student in this scope.",
+                                         sum(!matched), if (sum(!matched) == 1L) "" else "s"))
+    )
+  })
+
+  observeEvent(input$import_assessment_summary_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    fdata <- input$assessment_summary_file
+    if (is.null(fdata)) { showNotification("Choose an assessment-summary file first.", type = "error"); return() }
+    assessment_name <- trimws(input$assessment_summary_name %||% "")
+    uid_col <- input$assessment_summary_uid_col %||% ""
+    if (!nzchar(assessment_name) || !nzchar(uid_col)) {
+      showNotification("Enter an assessment name and map the student identifier column.", type = "error"); return()
+    }
+    df <- tryCatch(read_assessment_summary_file(fdata), error = function(e) {
+      showNotification(paste("Read error:", e$message), type = "error"); NULL
+    })
+    if (is.null(df) || !uid_col %in% names(df)) {
+      showNotification("The mapped student-identifier column is not present in the file.", type = "error"); return()
+    }
+    maps <- vapply(assessment_grade_fields$key, function(key) input[[paste0("assessment_summary_map_", key)]] %||% "", character(1))
+    maps <- maps[nzchar(maps) & maps %in% names(df)]
+    field_labels <- stats::setNames(assessment_grade_fields$label, assessment_grade_fields$key)
+    extra_cols <- unique(input$assessment_summary_extra_cols %||% character(0))
+    extra_cols <- extra_cols[extra_cols %in% names(df) & !(extra_cols %in% unname(maps))]
+    if (length(extra_cols)) {
+      extra_keys <- paste0("detail_", seq_along(extra_cols))
+      maps <- c(maps, stats::setNames(extra_cols, extra_keys))
+      field_labels <- c(field_labels, stats::setNames(extra_cols, extra_keys))
+    }
+    if (!length(maps)) { showNotification("Map at least one assessment value column.", type = "error"); return() }
+    roster <- tryCatch(scope_filter_rows(db_query(
+      "SELECT user_id, display_name, course, section FROM users
+       WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;")),
+      error = function(e) data.frame())
+    if (!nrow(roster)) { showNotification("No active students exist in the selected class/section scope.", type = "error"); return() }
+    scope_key <- current_scope_key()
+    if (isTRUE(input$assessment_summary_replace)) {
+      old_batches <- tryCatch(db_query(
+        "SELECT id FROM assessment_grade_imports WHERE scope_key=? AND LOWER(assessment_name)=LOWER(?);",
+        list(scope_key, assessment_name)), error = function(e) data.frame())
+      if (nrow(old_batches)) for (old_id in old_batches$id) {
+        db_exec("DELETE FROM assessment_grade_values WHERE import_id=?;", list(old_id))
+        db_exec("DELETE FROM assessment_grade_imports WHERE id=?;", list(old_id))
+      }
+    }
+    db_exec("INSERT INTO assessment_grade_imports(assessment_name,scope_key,course,sections,adjustment_note,source_filename,imported_by)
+             VALUES(?,?,?,?,?,?,?);",
+            list(assessment_name, scope_key, scoped_course(), serialize_scope_sections(scoped_sections()),
+                 trimws(input$assessment_summary_adjustment_note %||% ""), fdata$name %||% "",
+                 rv$user_id %||% "admin"))
+    import_id <- as.integer(db_query("SELECT last_insert_rowid() AS id;")$id[1])
+    roster_key <- tolower(roster$user_id)
+    n_students <- 0L; n_values <- 0L; n_unmatched <- 0L; n_invalid <- 0L
+    for (i in seq_len(nrow(df))) {
+      supplied_uid <- trimws(as.character(df[[uid_col]][i] %||% ""))
+      hit <- match(tolower(supplied_uid), roster_key)
+      if (!nzchar(supplied_uid) || is.na(hit)) { n_unmatched <- n_unmatched + 1L; next }
+      wrote_student <- FALSE
+      for (key in names(maps)) {
+        raw <- trimws(as.character(df[[maps[[key]]]][i] %||% ""))
+        if (!nzchar(raw) || is.na(raw)) next
+        value <- suppressWarnings(as.numeric(gsub("[$,]", "", raw)))
+        if (!is.finite(value)) { n_invalid <- n_invalid + 1L; next }
+        label <- field_labels[[key]] %||% key
+        db_exec("INSERT INTO assessment_grade_values(import_id,user_id,field_key,field_label,value) VALUES(?,?,?,?,?);",
+                list(import_id, roster$user_id[hit], key, label, value))
+        n_values <- n_values + 1L; wrote_student <- TRUE
+      }
+      if (wrote_student) n_students <- n_students + 1L
+    }
+    if (!n_values) {
+      db_exec("DELETE FROM assessment_grade_imports WHERE id=?;", list(import_id))
+      showNotification("No numeric mapped values were found; nothing was imported.", type = "error"); return()
+    }
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    msg <- sprintf("Imported %d value%s for %d student%s.", n_values, if (n_values == 1L) "" else "s", n_students, if (n_students == 1L) "" else "s")
+    if (n_unmatched || n_invalid) msg <- paste0(msg, sprintf(" Skipped %d unmatched row%s and %d nonnumeric cell%s.", n_unmatched, if (n_unmatched == 1L) "" else "s", n_invalid, if (n_invalid == 1L) "" else "s"))
+    showNotification(msg, type = if (n_unmatched || n_invalid) "warning" else "message", duration = 10)
+  }, ignoreNULL = TRUE)
 
   # ── Grade upload ──────────────────────────────────────────────────────────────
   observeEvent(input$upload_grades_btn, {

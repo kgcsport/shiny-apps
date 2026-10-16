@@ -163,6 +163,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-10-16** — Store uploaded exam/assessment summaries separately from the weighted course-grade rows. A summary import is scoped to the active class and selected sections, maps a stable student identifier plus instructor-chosen columns, and retains the source labels so students can see a concise final-grade overview and opt into subpart detail.
+
 - **2026-10-14** — Treat slide-embedded class-job controls as a top-level OAuth entry point. Google OAuth cannot run inside the Reveal iframe; preserve only the validated class-job-market return path and optional `view=cold-call-slide` state through the login callback.
 
 - **2026-10-07** — Grade policy-project criteria with five editable point anchors
@@ -409,6 +411,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-16** (Codex) - Added a section-scoped mapped assessment-summary importer to Class Job Market. It accepts CSV/XLSX, auto-suggests midterm-summary columns, supports arbitrary additional subpart columns, safely skips unmatched roster rows, persists an optional cap-adjustment note, and shows each student’s final grade at a glance with details collapsed in Account. App parsing and diff checks pass; existing smoke/startup suites retain unrelated pre-existing failures.
 - **2026-10-14** (Codex) - Repaired the slide-embedded cold-call login after the Google OAuth migration: the sign-in button now leaves the iframe, nginx forwards the requested return path, the relay stores a validated return path and restores the compact `view=cold-call-slide` panel after authentication, and roster matching is case-insensitive.
 - **2026-10-14** (Codex) - Removed username interpolation from class-job-market tiebreak SQL: all user-id lists now use bound SQLite placeholders. Added Shiny proxy request-size and browser-response protections that preserve normal Shiny WebSockets and slide embeds. The app parses cleanly; the existing smoke test still stops at its volunteer-clearing-wage assertion.
 - **2026-10-07** (Codex) - Fixed the first-load Policy Rubrics panel crash:
@@ -716,8 +719,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Deploy the cold-call OAuth repair and verify a top-level Google login returns to the compact panel from a published lecture slide.
-2. Deploy the class-job-market build and complete TC-15 with one sandbox policy team, including a private draft, release, and gradebook write-back.
+1. Deploy the class-job-market build and verify one live assessment-summary import from the Fall 2026 midterm export in its intended class/section scope.
+2. Deploy the cold-call OAuth repair and verify a top-level Google login returns to the compact panel from a published lecture slide.
 3. Complete one end-to-end extension purchase after mapping the active assignment id and target.
 
 ## Questions for Kyle
