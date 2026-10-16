@@ -600,6 +600,7 @@ db_exec("CREATE TABLE IF NOT EXISTS assessment_grade_values(
   value REAL,
   PRIMARY KEY(import_id, user_id COLLATE NOCASE, field_key)
 );")
+ensure_column("assessment_grade_imports", "general_note TEXT")
 db_exec("CREATE INDEX IF NOT EXISTS idx_assessment_grade_values_user
          ON assessment_grade_values(user_id COLLATE NOCASE, import_id);")
 db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_log(
@@ -5097,7 +5098,7 @@ server <- function(input, output, session) {
     req(rv$authed)
     rv$gradebook_ver
     rows <- tryCatch(db_query(
-      "SELECT ai.id, ai.assessment_name, ai.adjustment_note, ai.imported_at,
+      "SELECT ai.id, ai.assessment_name, ai.general_note, ai.adjustment_note, ai.imported_at,
               av.field_key, av.field_label, av.value
        FROM assessment_grade_imports ai
        JOIN assessment_grade_values av ON av.import_id=ai.id
@@ -5118,6 +5119,8 @@ server <- function(input, output, session) {
                          else tags$span(style="float:right;color:#777;", "Details available"))
       div(class = "grade-section", style = "margin-top:.9rem;",
         div(class = "sec-label", heading),
+        if (nzchar(trimws(batch$general_note[1] %||% "")))
+          tags$p(style="font-size:.85rem;color:#555;margin:.2rem 0 .45rem;", batch$general_note[1]),
         if (nzchar(trimws(batch$adjustment_note[1] %||% "")))
           tags$p(style="font-size:.8rem;color:#666;margin:.2rem 0 .45rem;", batch$adjustment_note[1]),
         tags$details(
@@ -10524,6 +10527,9 @@ server <- function(input, output, session) {
             column(4, textInput("assessment_summary_adjustment_note", "Cap-adjustment note (optional):",
                                 placeholder = "e.g. Restored points deducted for excess sentences", width = "100%"))
           ),
+          textAreaInput("assessment_summary_general_note", "General note to students (optional):",
+                        placeholder = "e.g. This report shows your final score after the stated grading adjustments.",
+                        rows = 2, width = "100%"),
           uiOutput("assessment_summary_mapper"),
           uiOutput("assessment_summary_preview"),
           div(style = "display:flex;align-items:end;gap:.7rem;flex-wrap:wrap;margin-top:.35rem;",
@@ -12123,9 +12129,10 @@ server <- function(input, output, session) {
         db_exec("DELETE FROM assessment_grade_imports WHERE id=?;", list(old_id))
       }
     }
-    db_exec("INSERT INTO assessment_grade_imports(assessment_name,scope_key,course,sections,adjustment_note,source_filename,imported_by)
-             VALUES(?,?,?,?,?,?,?);",
+    db_exec("INSERT INTO assessment_grade_imports(assessment_name,scope_key,course,sections,general_note,adjustment_note,source_filename,imported_by)
+             VALUES(?,?,?,?,?,?,?,?);",
             list(assessment_name, scope_key, scoped_course(), serialize_scope_sections(scoped_sections()),
+                 trimws(input$assessment_summary_general_note %||% ""),
                  trimws(input$assessment_summary_adjustment_note %||% ""), fdata$name %||% "",
                  rv$user_id %||% "admin"))
     import_id <- as.integer(db_query("SELECT last_insert_rowid() AS id;")$id[1])
