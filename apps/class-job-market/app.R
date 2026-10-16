@@ -10625,6 +10625,14 @@ server <- function(input, output, session) {
           tags$p(style = "color:#777;font-size:.78rem;margin:.45rem 0 0;",
                  "Student identifier must match the Class Job Market username (often the Vassar email). Only active students in the selected class and section(s) can be imported; unmatched rows are skipped and reported.")
         ),
+        tags$details(
+          style = "margin:.75rem 0;background:#f8f9fa;border:1px solid #e2e5e8;border-radius:8px;padding:.65rem .8rem;",
+          tags$summary(style = "cursor:pointer;color:#951829;font-weight:700;",
+                       "Assessment display settings"),
+          tags$p(style = "color:#555;font-size:.85rem;margin:.55rem 0;",
+                 "Change whether students must reveal an already imported assessment. Enabling reveal clears prior reveals for that assessment, so every student must click it before seeing the assessment or its linked course-grade effect."),
+          uiOutput("assessment_summary_import_settings")
+        ),
         tags$hr(),
 
         # ── 3. Grades View & Downloads ──────────────────────────────────────────
@@ -12174,6 +12182,52 @@ server <- function(input, output, session) {
                                          sum(!matched), if (sum(!matched) == 1L) "" else "s"))
     )
   })
+
+  output$assessment_summary_import_settings <- renderUI({
+    req(rv$is_admin)
+    rv$gradebook_ver
+    batches <- tryCatch(db_query(
+      "SELECT id, assessment_name, COALESCE(require_reveal,0) AS require_reveal,
+              COALESCE(NULLIF(TRIM(COALESCE(gradebook_item,'')), ''), '') AS gradebook_item, imported_at
+       FROM assessment_grade_imports
+       WHERE scope_key=?
+       ORDER BY imported_at DESC, id DESC;",
+      list(current_scope_key())), error = function(e) data.frame())
+    if (!nrow(batches)) return(tags$p(style = "color:#777;font-size:.82rem;margin:.35rem 0;",
+                                      "No assessment summaries have been imported for the current class/section scope."))
+    tagList(lapply(seq_len(nrow(batches)), function(i) {
+      batch <- batches[i, , drop = FALSE]
+      requires_reveal <- isTRUE(as.integer(batch$require_reveal[1] %||% 0L) == 1L)
+      div(style = "display:flex;align-items:center;justify-content:space-between;gap:.65rem;flex-wrap:wrap;border-top:1px solid #e5e5e5;padding:.55rem 0;",
+        div(
+          tags$strong(batch$assessment_name[1] %||% "Assessment"),
+          tags$div(style = "color:#777;font-size:.78rem;",
+            if (nzchar(batch$gradebook_item[1] %||% ""))
+              paste0("Linked gradebook item: ", batch$gradebook_item[1])
+            else "No linked gradebook item")
+        ),
+        tags$button(type = "button", class = if (requires_reveal) "btn btn-outline-secondary btn-sm" else "btn btn-outline-primary btn-sm",
+          onclick = sprintf("Shiny.setInputValue('toggle_assessment_reveal',%d,{priority:'event'});", as.integer(batch$id[1])),
+          if (requires_reveal) "Show immediately" else "Require reveal")
+      )
+    }))
+  })
+
+  observeEvent(input$toggle_assessment_reveal, {
+    req(rv$is_admin, !rv$impersonating)
+    import_id <- suppressWarnings(as.integer(input$toggle_assessment_reveal %||% NA))
+    if (is.na(import_id)) return()
+    batch <- tryCatch(db_query(
+      "SELECT id, COALESCE(require_reveal,0) AS require_reveal
+       FROM assessment_grade_imports WHERE id=? AND scope_key=? LIMIT 1;",
+      list(import_id, current_scope_key())), error = function(e) data.frame())
+    if (!nrow(batch)) { showNotification("Assessment import is not in the current class/section scope.", type = "error"); return() }
+    next_state <- 1L - as.integer(batch$require_reveal[1] %||% 0L)
+    db_exec("UPDATE assessment_grade_imports SET require_reveal=? WHERE id=?;", list(next_state, import_id))
+    db_exec("DELETE FROM assessment_grade_reveals WHERE import_id=?;", list(import_id))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification(if (next_state == 1L) "Students must now reveal this assessment before seeing it or its linked grade effect." else "This assessment now shows immediately to students.", type = "message")
+  }, ignoreNULL = TRUE)
 
   observeEvent(input$import_assessment_summary_btn, {
     req(rv$is_admin, !rv$impersonating)
