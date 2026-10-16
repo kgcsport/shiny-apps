@@ -598,9 +598,11 @@ db_exec("CREATE TABLE IF NOT EXISTS assessment_grade_values(
   field_key TEXT NOT NULL,
   field_label TEXT NOT NULL,
   value REAL,
+  note TEXT,
   PRIMARY KEY(import_id, user_id COLLATE NOCASE, field_key)
 );")
 ensure_column("assessment_grade_imports", "general_note TEXT")
+ensure_column("assessment_grade_values", "note TEXT")
 db_exec("CREATE INDEX IF NOT EXISTS idx_assessment_grade_values_user
          ON assessment_grade_values(user_id COLLATE NOCASE, import_id);")
 db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_log(
@@ -648,9 +650,10 @@ upsert_student_grade <- function(user_id, assignment_name, score = NA_real_,
 
 assessment_grade_fields <- data.frame(
   key = c("part_i", "part_ii", "part_iii", "exam_points", "pool_bonus",
-          "total_bonus", "cap_adjustment", "final_grade"),
+          "total_bonus", "cap_adjustment", "final_grade", "overall_exam_note"),
   label = c("Part I", "Part II", "Part III", "Exam points", "Pool bonus",
-            "Total bonus", "Cap adjustment", "Final grade"),
+            "Total bonus", "Cap adjustment", "Final grade", "Overall exam note"),
+  type = c(rep("number", 8), "text"),
   stringsAsFactors = FALSE
 )
 db_exec("CREATE TABLE IF NOT EXISTS policy_group_assignments(
@@ -5099,7 +5102,7 @@ server <- function(input, output, session) {
     rv$gradebook_ver
     rows <- tryCatch(db_query(
       "SELECT ai.id, ai.assessment_name, ai.general_note, ai.adjustment_note, ai.imported_at,
-              av.field_key, av.field_label, av.value
+              av.field_key, av.field_label, av.value, av.note
        FROM assessment_grade_imports ai
        JOIN assessment_grade_values av ON av.import_id=ai.id
        WHERE LOWER(av.user_id)=LOWER(?)
@@ -5111,7 +5114,8 @@ server <- function(input, output, session) {
       batch <- rows[rows$id == batch_id, , drop = FALSE]
       final <- batch[batch$field_key == "final_grade", , drop = FALSE]
       final_value <- if (nrow(final)) final$value[1] else NA_real_
-      detail <- batch[batch$field_key != "final_grade", , drop = FALSE]
+      student_note <- batch[batch$field_key == "overall_exam_note", , drop = FALSE]
+      detail <- batch[!(batch$field_key %in% c("final_grade", "overall_exam_note")), , drop = FALSE]
       heading <- tagList(tags$strong(batch$assessment_name[1] %||% "Assessment"), " ",
                          if (is.finite(final_value))
                            tags$span(style="float:right;color:#951829;font-weight:700;",
@@ -5121,6 +5125,8 @@ server <- function(input, output, session) {
         div(class = "sec-label", heading),
         if (nzchar(trimws(batch$general_note[1] %||% "")))
           tags$p(style="font-size:.85rem;color:#555;margin:.2rem 0 .45rem;", batch$general_note[1]),
+        if (nrow(student_note) && nzchar(trimws(student_note$note[1] %||% "")))
+          tags$p(style="font-size:.85rem;color:#555;margin:.2rem 0 .45rem;", student_note$note[1]),
         if (nzchar(trimws(batch$adjustment_note[1] %||% "")))
           tags$p(style="font-size:.8rem;color:#666;margin:.2rem 0 .45rem;", batch$adjustment_note[1]),
         tags$details(
@@ -12039,6 +12045,7 @@ server <- function(input, output, session) {
       total_bonus = c("final_bonus_points", "total_bonus"),
       cap_adjustment = c("sentence_points_restored_by_cap", "cap_adjustment"),
       final_grade = c("final_points_after_sentence_deduction_cap", "final_points"),
+      overall_exam_note = c("overall_exam_note"),
       character(0)
     )
     tagList(
@@ -12106,12 +12113,14 @@ server <- function(input, output, session) {
     maps <- vapply(assessment_grade_fields$key, function(key) input[[paste0("assessment_summary_map_", key)]] %||% "", character(1))
     maps <- maps[nzchar(maps) & maps %in% names(df)]
     field_labels <- stats::setNames(assessment_grade_fields$label, assessment_grade_fields$key)
+    field_types <- stats::setNames(assessment_grade_fields$type, assessment_grade_fields$key)
     extra_cols <- unique(input$assessment_summary_extra_cols %||% character(0))
     extra_cols <- extra_cols[extra_cols %in% names(df) & !(extra_cols %in% unname(maps))]
     if (length(extra_cols)) {
       extra_keys <- paste0("detail_", seq_along(extra_cols))
       maps <- c(maps, stats::setNames(extra_cols, extra_keys))
       field_labels <- c(field_labels, stats::setNames(extra_cols, extra_keys))
+      field_types <- c(field_types, stats::setNames(rep("number", length(extra_keys)), extra_keys))
     }
     if (!length(maps)) { showNotification("Map at least one assessment value column.", type = "error"); return() }
     roster <- tryCatch(scope_filter_rows(db_query(
@@ -12146,18 +12155,25 @@ server <- function(input, output, session) {
       for (key in names(maps)) {
         raw <- trimws(as.character(df[[maps[[key]]]][i] %||% ""))
         if (!nzchar(raw) || is.na(raw)) next
-        value <- suppressWarnings(as.numeric(gsub("[$,]", "", raw)))
-        if (!is.finite(value)) { n_invalid <- n_invalid + 1L; next }
         label <- field_labels[[key]] %||% key
-        db_exec("INSERT INTO assessment_grade_values(import_id,user_id,field_key,field_label,value) VALUES(?,?,?,?,?);",
-                list(import_id, roster$user_id[hit], key, label, value))
-        n_values <- n_values + 1L; wrote_student <- TRUE
+        field_type <- field_types[[key]] %||% "number"
+        if (identical(field_type, "text")) {
+          db_exec("INSERT INTO assessment_grade_values(import_id,user_id,field_key,field_label,value,note) VALUES(?,?,?,?,?,?);",
+                  list(import_id, roster$user_id[hit], key, label, NA_real_, raw))
+          n_values <- n_values + 1L; wrote_student <- TRUE
+        } else {
+          value <- suppressWarnings(as.numeric(gsub("[$,]", "", raw)))
+          if (!is.finite(value)) { n_invalid <- n_invalid + 1L; next }
+          db_exec("INSERT INTO assessment_grade_values(import_id,user_id,field_key,field_label,value,note) VALUES(?,?,?,?,?,?);",
+                  list(import_id, roster$user_id[hit], key, label, value, NA_character_))
+          n_values <- n_values + 1L; wrote_student <- TRUE
+        }
       }
       if (wrote_student) n_students <- n_students + 1L
     }
     if (!n_values) {
       db_exec("DELETE FROM assessment_grade_imports WHERE id=?;", list(import_id))
-      showNotification("No numeric mapped values were found; nothing was imported.", type = "error"); return()
+      showNotification("No mapped values were found; nothing was imported.", type = "error"); return()
     }
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     msg <- sprintf("Imported %d value%s for %d student%s.", n_values, if (n_values == 1L) "" else "s", n_students, if (n_students == 1L) "" else "s")

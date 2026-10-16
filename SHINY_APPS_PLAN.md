@@ -163,6 +163,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-10-16** — Treat a mapped `overall_exam_note` as a per-student text field, distinct from the assessment-wide and cap-adjustment notes. It appears in the student’s assessment overview and is not coerced to a score or buried in the numeric subpart table.
+
 - **2026-10-16** — Store uploaded exam/assessment summaries separately from the weighted course-grade rows. A summary import is scoped to the active class and selected sections, maps a stable student identifier plus instructor-chosen columns, and retains the source labels so students can see a concise final-grade overview and opt into subpart detail. Assessment-wide notes and cap-adjustment notes are entered outside the spreadsheet and persist with the import.
 
 - **2026-10-14** — Treat slide-embedded class-job controls as a top-level OAuth entry point. Google OAuth cannot run inside the Reveal iframe; preserve only the validated class-job-market return path and optional `view=cold-call-slide` state through the login callback.
@@ -411,6 +413,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-16** (Codex) - Made `overall_exam_note` a first-class text mapping in the assessment-summary importer. It auto-selects the matching column in a midterm summary and appears as individual feedback on the corresponding student Account card.
 - **2026-10-16** (Codex) - Added an optional assessment-wide note field to the mapped summary importer. It is independent of the cap-adjustment note and appears to students before the collapsed score-detail table.
 - **2026-10-16** (Codex) - Added a section-scoped mapped assessment-summary importer to Class Job Market. It accepts CSV/XLSX, auto-suggests midterm-summary columns, supports arbitrary additional subpart columns, safely skips unmatched roster rows, persists an optional cap-adjustment note, and shows each student’s final grade at a glance with details collapsed in Account. App parsing and diff checks pass; existing smoke/startup suites retain unrelated pre-existing failures.
 - **2026-10-14** (Codex) - Repaired the slide-embedded cold-call login after the Google OAuth migration: the sign-in button now leaves the iframe, nginx forwards the requested return path, the relay stores a validated return path and restores the compact `view=cold-call-slide` panel after authentication, and roster matching is case-insensitive.
