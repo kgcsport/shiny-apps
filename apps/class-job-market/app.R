@@ -12195,23 +12195,53 @@ server <- function(input, output, session) {
       list(current_scope_key())), error = function(e) data.frame())
     if (!nrow(batches)) return(tags$p(style = "color:#777;font-size:.82rem;margin:.35rem 0;",
                                       "No assessment summaries have been imported for the current class/section scope."))
+    catalog <- tryCatch(manual_grade_catalog(), error = function(e) data.frame(assignment = character(0)))
+    gradebook_choices <- c("No linked gradebook item" = "", stats::setNames(catalog$assignment, catalog$assignment))
     tagList(lapply(seq_len(nrow(batches)), function(i) {
       batch <- batches[i, , drop = FALSE]
       requires_reveal <- isTRUE(as.integer(batch$require_reveal[1] %||% 0L) == 1L)
+      item_id <- paste0("assessment_gradebook_item_", as.integer(batch$id[1]))
+      selected_item <- as.character(batch$gradebook_item[1] %||% "")
+      if (!selected_item %in% unname(gradebook_choices)) selected_item <- ""
       div(style = "display:flex;align-items:center;justify-content:space-between;gap:.65rem;flex-wrap:wrap;border-top:1px solid #e5e5e5;padding:.55rem 0;",
         div(
           tags$strong(batch$assessment_name[1] %||% "Assessment"),
           tags$div(style = "color:#777;font-size:.78rem;",
-            if (nzchar(batch$gradebook_item[1] %||% ""))
-              paste0("Linked gradebook item: ", batch$gradebook_item[1])
-            else "No linked gradebook item")
+            "Link this import to the weighted gradebook item whose effect should be withheld until reveal.")
         ),
-        tags$button(type = "button", class = if (requires_reveal) "btn btn-outline-secondary btn-sm" else "btn btn-outline-primary btn-sm",
-          onclick = sprintf("Shiny.setInputValue('toggle_assessment_reveal',%d,{priority:'event'});", as.integer(batch$id[1])),
-          if (requires_reveal) "Show immediately" else "Require reveal")
+        div(style = "display:flex;align-items:end;gap:.35rem;flex-wrap:wrap;",
+          div(style = "min-width:12rem;", selectInput(item_id, NULL, choices = gradebook_choices,
+                                                        selected = selected_item, width = "100%")),
+          tags$button(type = "button", class = "btn btn-outline-secondary btn-sm",
+            onclick = sprintf("var s=document.getElementById('%s');Shiny.setInputValue('save_assessment_gradebook_link',{id:%d,item:s?s.value:'',nonce:Date.now()},{priority:'event'});",
+                              item_id, as.integer(batch$id[1])),
+            "Save link"),
+          tags$button(type = "button", class = if (requires_reveal) "btn btn-outline-secondary btn-sm" else "btn btn-outline-primary btn-sm",
+            onclick = sprintf("Shiny.setInputValue('toggle_assessment_reveal',%d,{priority:'event'});", as.integer(batch$id[1])),
+            if (requires_reveal) "Show immediately" else "Require reveal")
+        )
       )
     }))
   })
+
+  observeEvent(input$save_assessment_gradebook_link, {
+    req(rv$is_admin, !rv$impersonating)
+    payload <- input$save_assessment_gradebook_link
+    import_id <- suppressWarnings(as.integer(payload$id %||% NA))
+    item <- trimws(as.character(payload$item %||% ""))
+    if (is.na(import_id)) return()
+    batch <- tryCatch(db_query(
+      "SELECT id FROM assessment_grade_imports WHERE id=? AND scope_key=? LIMIT 1;",
+      list(import_id, current_scope_key())), error = function(e) data.frame())
+    if (!nrow(batch)) { showNotification("Assessment import is not in the current class/section scope.", type = "error"); return() }
+    catalog <- tryCatch(manual_grade_catalog(), error = function(e) data.frame(assignment = character(0)))
+    if (nzchar(item) && !(item %in% catalog$assignment)) {
+      showNotification("Choose a current gradebook item before saving the link.", type = "error"); return()
+    }
+    db_exec("UPDATE assessment_grade_imports SET gradebook_item=? WHERE id=?;", list(item, import_id))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification(if (nzchar(item)) paste0("Linked assessment display to ", item, ".") else "Removed the assessment’s gradebook link.", type = "message")
+  }, ignoreNULL = TRUE)
 
   observeEvent(input$toggle_assessment_reveal, {
     req(rv$is_admin, !rv$impersonating)
