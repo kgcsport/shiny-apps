@@ -1787,7 +1787,7 @@ parse_grade_categories <- function() {
   }, error = function(e) data.frame(name=character(0), weight=numeric(0)))
 }
 
-compute_student_grade <- function(uid) {
+compute_student_grade <- function(uid, exclude_assignments = character(0)) {
   cats      <- tryCatch(db_query(
     "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
     error = function(e) data.frame())
@@ -1799,6 +1799,8 @@ compute_student_grade <- function(uid) {
     list(uid)), error = function(e) data.frame())
 
   if (!nrow(cats)) return(list(cats = data.frame(), items = data.frame(), overall = NA_real_))
+  excluded_keys <- tolower(trimws(as.character(exclude_assignments %||% character(0))))
+  excluded_keys <- unique(excluded_keys[nzchar(excluded_keys)])
 
   all_items <- data.frame(item_name=character(), cat_idx=integer(),
                           category_name=character(), weight=numeric(),
@@ -1813,6 +1815,7 @@ compute_student_grade <- function(uid) {
       nm <- specs$item_name[j]
       matched <- if (nrow(grades)) grades[grades$assignment_name == nm, , drop=FALSE]
                  else data.frame()
+      is_excluded <- tolower(trimws(nm)) %in% excluded_keys
       all_items <- rbind(all_items, data.frame(
         item_name     = nm,
         cat_idx       = i,
@@ -1820,9 +1823,9 @@ compute_student_grade <- function(uid) {
         weight        = as.numeric(r$weight %||% 0),
         item_weight   = as.numeric(specs$item_weight[j] %||% 0),
         item_count    = n,
-        grade_pct     = if (nrow(matched)) as.numeric(matched$grade_pct[1]) else NA_real_,
-        score         = if (nrow(matched)) as.numeric(matched$score[1] %||% NA) else NA_real_,
-        max_score     = if (nrow(matched)) as.numeric(matched$max_score[1] %||% NA) else NA_real_,
+        grade_pct     = if (nrow(matched) && !is_excluded) as.numeric(matched$grade_pct[1]) else NA_real_,
+        score         = if (nrow(matched) && !is_excluded) as.numeric(matched$score[1] %||% NA) else NA_real_,
+        max_score     = if (nrow(matched) && !is_excluded) as.numeric(matched$max_score[1] %||% NA) else NA_real_,
         stringsAsFactors = FALSE
       ))
     }
@@ -5182,7 +5185,7 @@ server <- function(input, output, session) {
     req(rv$authed)
     rv$gradebook_ver
     hidden <- tryCatch(db_query(
-      "SELECT DISTINCT ai.id, ai.assessment_name
+      "SELECT DISTINCT ai.id, ai.assessment_name, ai.gradebook_item
        FROM assessment_grade_imports ai JOIN assessment_grade_values av ON av.import_id=ai.id
        WHERE LOWER(av.user_id)=LOWER(?) AND COALESCE(ai.require_reveal,0)=1
          AND TRIM(COALESCE(ai.gradebook_item,''))<>'';", list(rv$user_id)), error=function(e)data.frame())
@@ -5194,10 +5197,9 @@ server <- function(input, output, session) {
       as.integer(rv$revealed_assessment_imports %||% integer(0))
     ))
     unrevealed <- if (nrow(hidden)) hidden[!(as.integer(hidden$id) %in% revealed_ids), , drop=FALSE] else data.frame()
-    if (nrow(unrevealed)) return(div(class="grade-section",
-      div(class="sec-label", "Grade Breakdown"),
-      tags$p(style="color:#666;font-size:.88rem;", "Reveal ", paste(unrevealed$assessment_name, collapse=", "), " above to view its effect on your current course grade.")))
-    gb <- compute_student_grade(rv$user_id)
+    hidden_items <- if (nrow(unrevealed)) unique(trimws(as.character(unrevealed$gradebook_item %||% character(0)))) else character(0)
+    hidden_items <- hidden_items[nzchar(hidden_items)]
+    gb <- compute_student_grade(rv$user_id, exclude_assignments = hidden_items)
     if (!nrow(gb$cats)) return(NULL)
 
     fmt_pct <- function(x) if (is.na(x)) span(class="grade-na", "—")
@@ -6039,10 +6041,17 @@ server <- function(input, output, session) {
       list(policy_row$policy_team[1])), error = function(e) data.frame()) else data.frame()
 
     problem_sets <- tryCatch(db_query(
-      "SELECT name, original_deadline, solutions_posted_at
-       FROM problem_sets WHERE COALESCE(active,1)=1
-       ORDER BY CASE WHEN original_deadline IS NULL OR original_deadline='' THEN 1 ELSE 0 END, original_deadline ASC;"),
-      error=function(e) data.frame())
+      "SELECT ps.name, ps.original_deadline, ps.solutions_posted_at
+       FROM problem_sets ps
+       WHERE COALESCE(ps.active,1)=1
+         AND NOT EXISTS (
+           SELECT 1 FROM student_grades sg
+           WHERE LOWER(sg.user_id)=LOWER(?)
+             AND LOWER(TRIM(COALESCE(sg.assignment_name,'')))=LOWER(TRIM(COALESCE(ps.name,'')))
+             AND sg.grade_pct IS NOT NULL
+         )
+       ORDER BY CASE WHEN ps.original_deadline IS NULL OR ps.original_deadline='' THEN 1 ELSE 0 END, ps.original_deadline ASC;",
+      list(rv$user_id)), error=function(e) data.frame())
     fmt_due <- function(x) {
       d <- suppressWarnings(as.Date(x)); if (is.na(d)) as.character(x %||% "Not set")
       else format(d, "%b %d, %Y")
@@ -6050,7 +6059,7 @@ server <- function(input, output, session) {
     pending_assignments_ui <- div(class="today-card pending-assignments-card",
       tags$h4("Pending assignments"),
       tags$p(style="color:#777;font-size:.84rem;",
-             "Upcoming deadlines and policy-brief milestones are collected here."),
+             "Assignments with a recorded grade no longer appear here; upcoming deadlines and policy-brief milestones are collected here."),
       if (nrow(problem_sets)) tags$table(class="table table-sm",
         tags$thead(tags$tr(tags$th("Assignment"),tags$th("Due"),tags$th("Solutions"))),
         tags$tbody(lapply(seq_len(nrow(problem_sets)), function(i) {

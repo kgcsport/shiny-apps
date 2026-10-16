@@ -163,6 +163,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-10-16** — Treat an unrevealed assessment as absent from the student-facing grade calculation, rather than suppressing the whole Gradebook. The student continues to see a coherent current grade based on revealed work; revealing the assessment adds its linked item and recalculates that visible grade.
+
 - **2026-10-16** — Let instructors repair or change an assessment’s linked gradebook item after import. This association is display metadata only: it tells the student-facing reveal gate which weighted grade effect to withhold, without reuploading data or rewriting score rows.
 
 - **2026-10-16** — Assessment-display choices remain editable after import. Instructors can switch a scoped assessment between immediate display and explicit student reveal without reuploading or rewriting grades; turning the gate on clears past acknowledgements so it takes effect uniformly.
@@ -421,6 +423,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-16** (Codex) - Changed assessment reveal behavior so student Gradebook remains visible: unrevealed linked items are excluded from the displayed calculation until revealed. Also made Account → Pending assignments exclude active problem sets once the student has a recorded grade for the matching gradebook item. App parsing and diff checks pass.
 - **2026-10-16** (Codex) - Added a per-import post-upload gradebook-item selector and Save link control in Assessment display settings. It repairs legacy imports that lack a stored link, enabling the reveal gate to withhold the appropriate overall-grade effect without touching grades. App parsing and diff checks pass.
 - **2026-10-16** (Codex) - Added post-import Assessment display settings in the Gradebook panel. Each import in the active class/section scope can now toggle between immediate display and required reveal without altering summary values or gradebook rows; enabling the gate resets prior reveals. App parsing and diff checks pass.
 - **2026-10-16** (Codex) - Added the per-assessment “students must click Reveal grade” import option. A locked assessment shows only a Reveal button; its linked course-grade breakdown is also withheld until the student reveals it. Reveals persist per student and assessment. R parsing and a disposable SQLite reveal-flow check pass.
