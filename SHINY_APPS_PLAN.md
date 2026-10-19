@@ -423,6 +423,13 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-19** (Codex, `feature/lightweight-js-apps`) - Created an isolated
+  lightweight-apps planning branch and added `LIGHTWEIGHT_APPS_PLAN.md`. The
+  plan follows the existing Cloudflare audit: plain JavaScript/TypeScript for
+  deterministic browser tools, Durable Objects for anonymous temporary rooms,
+  and no migration or synchronization of the authoritative Shiny course
+  database until separately decided.
+
 - **2026-10-16** (Codex) - Changed assessment reveal behavior so student Gradebook remains visible: unrevealed linked items are excluded from the displayed calculation until revealed. Also made Account → Pending assignments exclude active problem sets once the student has a recorded grade for the matching gradebook item. App parsing and diff checks pass.
 - **2026-10-16** (Codex) - Added a per-import post-upload gradebook-item selector and Save link control in Assessment display settings. It repairs legacy imports that lack a stored link, enabling the reveal gate to withhold the appropriate overall-grade effect without touching grades. App parsing and diff checks pass.
 - **2026-10-16** (Codex) - Added post-import Assessment display settings in the Gradebook panel. Each import in the active class/section scope can now toggle between immediate display and required reveal without altering summary values or gradebook rows; enabling the gate resets prior reveals. App parsing and diff checks pass.
