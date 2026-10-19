@@ -423,6 +423,13 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-19** (Codex, `feature/lightweight-js-apps`) - Implemented the
+  first isolated lightweight static pilots: browser-only Tax Incidence and
+  Airplane Production tools, a minimal Cloudflare Worker asset scaffold and
+  health route, pure-logic/state/CSV/page tests, and a local Worker smoke
+  check. The preview has no production hostname or Cloudflare deployment, and
+  does not access the Shiny database or course records.
+
 - **2026-10-19** (Codex, `feature/lightweight-js-apps`) - Created an isolated
   lightweight-apps planning branch and added `LIGHTWEIGHT_APPS_PLAN.md`. The
   plan follows the existing Cloudflare audit: plain JavaScript/TypeScript for

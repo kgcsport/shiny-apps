@@ -55,10 +55,12 @@ R/Shiny version and JavaScript port can be compared with fixture tests.
 
 ### 0. Baseline and harness
 
-- [ ] Add the minimal Worker/TypeScript project, local development command,
-  deployment configuration, and a static health route.
-- [ ] Add unit tests for pure calculations and browser smoke tests for the two
-  initial static pages.
+- [x] Add the minimal Worker/JavaScript project, local development command,
+  deployment configuration, and a static health route. *(2026-10-19: static
+  Worker scaffold has no production deployment or hostname.)*
+- [x] Add unit tests for pure calculations and static-page smoke checks for the
+  two initial static pages. *(2026-10-19: `npm test` passes; browser-device
+  checks remain part of Phase 1.)*
 - [ ] Record image/process memory and cold-start measurements for the existing
   Shiny routes and the replacement URLs.
 - [ ] Add separate preview and production environments; no production route
@@ -66,10 +68,12 @@ R/Shiny version and JavaScript port can be compared with fixture tests.
 
 ### 1. Static browser pilot
 
-- [ ] Port `tax-incidence` exactly: sliders, numerical results, welfare areas,
-  labels, and responsive projected/phone layout.
-- [ ] Port `airplanes-game`: editable table, add/reset, SVG scatter plot, CSV
-  export, and `localStorage` recovery.
+- [x] Port `tax-incidence`: sliders, numerical results, welfare areas, labels,
+  and responsive projected/phone layout. *(2026-10-19: formula fixtures pass;
+  visual parity review remains.)*
+- [x] Port `airplanes-game`: editable table, add/reset, SVG scatter plot, CSV
+  export, and `localStorage` recovery. *(2026-10-19: state/CSV fixtures pass;
+  browser-device checks remain.)*
 - [ ] Compare fixed input fixtures with the R output and manually test Chrome,
   Safari/iOS, and a projected 16:9 display.
 - [ ] Publish preview-only URLs and use them in one live class while retaining
