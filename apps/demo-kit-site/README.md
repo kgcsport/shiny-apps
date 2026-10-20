@@ -68,6 +68,15 @@ The kit does not:
 7. Complete `05_review_form.md`.
 8. Only then consider live classroom use.
 
+## OpenAI model configuration
+
+Direct OpenAI traffic uses the Responses API. Server-funded demo generations
+default to GPT-6 Luna, while requests made with a user-provided OpenAI key and
+all exports default to GPT-6 Sol. Override these deployment defaults with
+`OPENAI_DEMO_MODEL` and `OPENAI_DEFAULT_MODEL`. GPT-6 Astra is available through
+`OPENAI_ESCALATION_MODEL` for a future explicit escalation workflow. OpenRouter
+continues to use its Chat Completions-compatible endpoint.
+
 ## Optional Examples From the Parent Repository
 
 This folder was incubated inside `kgcsport/shiny-apps`, which contains instructor-built Shiny teaching tools. These are optional examples only; the kit does not depend on them.

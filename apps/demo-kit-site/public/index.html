@@ -612,7 +612,7 @@ header {
       <p>To reload a downloaded game: open the Library (📚), click <strong>↑ Upload HTML</strong>, and pick the <code>.html</code> file. Your last session is also restored automatically on return.</p>
 
       <h3>API key</h3>
-      <p>If the server provides a demo key you can use it immediately (limited to <code>gpt-4o-mini</code>). Add your own Anthropic, OpenAI, or OpenRouter key via <strong>+ Use your own key</strong> to unlock better models and higher limits.</p>
+      <p>If the server provides a demo key you can use it immediately (using the efficient GPT-6 Luna model). Add your own Anthropic, OpenAI, or OpenRouter key via <strong>+ Use your own key</strong> to unlock better models and higher limits.</p>
 
       <h3>Multi-device limitations</h3>
       <p>GameSync (the built-in sync layer) keeps all state fully public and in-memory — it resets if the server restarts. For games that need private per-student state, persistent data between sessions, or an instructor admin panel, see the <a href="/advanced.html" target="_blank">Advanced guide →</a></p>
@@ -1166,7 +1166,7 @@ function setGenerating(v) {
 function updateUsageLine() {
   const el = document.getElementById('usage-line');
   let text = dailyRemaining !== null ? dailyRemaining + ' generations left today' : '';
-  if (hasServerKey && !getKey()) text += (text ? ' · ' : '') + 'Using gpt-4o-mini — add your own key for more models';
+  if (hasServerKey && !getKey()) text += (text ? ' · ' : '') + 'Using GPT-6 Luna — add your own key for GPT-6 Sol';
   el.textContent = text;
 }
 

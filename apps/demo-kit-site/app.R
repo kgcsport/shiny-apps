@@ -69,8 +69,9 @@ ANTHROPIC_MODELS <- c(
   "Claude Haiku 4.5 (fast)"   = "claude-haiku-4-5-20251001"
 )
 OPENAI_MODELS <- c(
-  "GPT-4o"        = "gpt-4o",
-  "GPT-4o mini"   = "gpt-4o-mini"
+  "GPT-6 Sol (recommended)" = "gpt-6-sol",
+  "GPT-6 Luna (efficient)"  = "gpt-6-luna",
+  "GPT-6 Astra (powerful)"  = "gpt-6-astra"
 )
 OPENROUTER_MODELS <- c(
   "Claude Sonnet 5"           = "anthropic/claude-sonnet-5",
@@ -110,19 +111,27 @@ call_anthropic <- function(api_key, prompt, model) {
   httr::content(resp, "parsed")$content[[1]]$text
 }
 
+openai_output_text <- function(data) {
+  if (!is.null(data$output_text)) return(data$output_text)
+  parts <- unlist(lapply(data$output %||% list(), function(item) {
+    if (!identical(item$type, "message")) return(character())
+    vapply(Filter(function(x) identical(x$type, "output_text"), item$content %||% list()),
+           function(x) x$text %||% "", character(1))
+  }))
+  paste0(parts, collapse = "")
+}
+
 call_openai <- function(api_key, prompt, model) {
   resp <- httr::POST(
-    "https://api.openai.com/v1/chat/completions",
+    "https://api.openai.com/v1/responses",
     httr::add_headers(Authorization = paste("Bearer", api_key)),
-    body = list(model = model,
-                messages = list(
-                  list(role = "system", content = GEN_SYSTEM),
-                  list(role = "user",   content = prompt)
-                )),
+    body = list(model = model, instructions = GEN_SYSTEM, input = prompt,
+                max_output_tokens = 8000, reasoning = list(effort = "low"),
+                store = FALSE),
     encode = "json"
   )
   if (httr::http_error(resp)) stop(httr::content(resp, "text", encoding = "UTF-8"))
-  httr::content(resp, "parsed")$choices[[1]]$message$content
+  openai_output_text(httr::content(resp, "parsed"))
 }
 
 call_openrouter <- function(api_key, prompt, model) {
