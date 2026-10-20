@@ -26,12 +26,13 @@ export function roundChartPoints(state) {
 }
 
 export function normalizeExperimentState(saved) {
-  if (Array.isArray(saved)) return { round: 1, rows: normalizeRows(saved), history: [] };
+  if (Array.isArray(saved)) return { round: 1, rows: normalizeRows(saved), history: [], future: [] };
   const rows = Array.isArray(saved?.rows) && saved.rows.length ? saved.rows : INITIAL_ROWS;
   return {
     round: Math.max(1, Number.parseInt(saved?.round, 10) || 1),
     rows: normalizeRows(rows),
-    history: Array.isArray(saved?.history) ? saved.history : []
+    history: Array.isArray(saved?.history) ? saved.history : [],
+    future: Array.isArray(saved?.future) ? saved.future : []
   };
 }
 
@@ -40,7 +41,8 @@ export function advanceRound(state, completedAt = new Date().toISOString()) {
   return {
     round: Math.max(1, Number(state.round) || 1) + 1,
     rows: currentRows.map(row => ({ ...row, output: "" })),
-    history: [...(state.history || []), { round: Math.max(1, Number(state.round) || 1), completedAt, rows: currentRows }]
+    history: [...(state.history || []), { round: Math.max(1, Number(state.round) || 1), completedAt, rows: currentRows }],
+    future: []
   };
 }
 
@@ -51,7 +53,20 @@ export function rewindRound(state) {
   return {
     round: previous.round,
     rows: normalizeRows(previous.rows),
-    history: history.slice(0, -1)
+    history: history.slice(0, -1),
+    future: [...(state.future || []), { round: state.round, rows: normalizeRows(state.rows) }]
+  };
+}
+
+export function forwardRound(state, completedAt = new Date().toISOString()) {
+  const future = state.future || [];
+  if (!future.length) return normalizeExperimentState(state);
+  const next = future.at(-1);
+  return {
+    round: next.round,
+    rows: normalizeRows(next.rows),
+    history: [...(state.history || []), { round: state.round, completedAt, rows: normalizeRows(state.rows) }],
+    future: future.slice(0, -1)
   };
 }
 

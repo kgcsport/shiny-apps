@@ -2,6 +2,7 @@ import {
   INITIAL_ROWS,
   advanceRound,
   airplanesCsv,
+  forwardRound,
   normalizeExperimentState,
   normalizeRows,
   rewindRound,
@@ -25,8 +26,9 @@ export function startAirplanesExperiment(documentRef = document, storage = local
 
   function save(message = "Saved on this browser.") {
     storage.setItem(STORAGE_KEY, JSON.stringify(state));
-    $("round").textContent = `Round ${state.round} · ${state.history.length} completed`;
+    $("round").textContent = `Round ${state.round} · ${state.history.length} completed · ${state.future.length} saved ahead`;
     $("back").disabled = state.round === 1 || state.history.length === 0;
+    $("forward").disabled = state.future.length === 0;
     $("status").textContent = message;
   }
 
@@ -146,9 +148,14 @@ export function startAirplanesExperiment(documentRef = document, storage = local
     render(`Saved round ${completed}; ready for round ${state.round}.`);
   });
   $("back").addEventListener("click", () => {
-    if (!window.confirm(`Go back to round ${state.round - 1}? Current round ${state.round} entries will be discarded.`)) return;
+    const savedRound = state.round;
     state = rewindRound(state);
-    render(`Restored round ${state.round}.`);
+    render(`Restored round ${state.round}; round ${savedRound} is saved ahead.`);
+  });
+  $("forward").addEventListener("click", () => {
+    const restoredRound = state.future.at(-1).round;
+    state = forwardRound(state);
+    render(`Restored saved round ${restoredRound}.`);
   });
   $("reset").addEventListener("click", () => {
     state = normalizeExperimentState({ rows: INITIAL_ROWS });

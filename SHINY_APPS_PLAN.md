@@ -425,8 +425,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 ## Work Log
 - **2026-10-20** (Codex, `feature/lightweight-js-apps`) - Added guarded
   **Back one round** control to Airplane Production. It restores the saved
-  prior round and removes it from completed history; an explicit confirmation
-  protects the current round's unsaved-in-history draft from accidental loss.
+  prior round without discarding the active round: that draft is preserved for
+  the matching **Forward one round** control. Advancing after edits creates a
+  new path and clears saved-forward drafts.
 
 - **2026-10-20** (Codex, `feature/lightweight-js-apps`) - Accepted the local
   Tax Incidence pilot for demo. Reworked Airplane Production so the full-width
