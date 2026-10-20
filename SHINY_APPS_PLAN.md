@@ -423,6 +423,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-20** (Codex, `feature/lightweight-js-apps`) - Accepted the local
+  Tax Incidence pilot for demo. Reworked Airplane Production so the full-width
+  chart appears above the data-entry table; every completed round remains
+  plotted with its own round color/label, and the CSV export now includes all
+  rounds.
+
 - **2026-10-20** (Codex, `feature/lightweight-js-apps`) - Repaired the
   lightweight Tax Incidence page's inline JavaScript syntax error, which had
   prevented its SVG graph from rendering. Added an Airplane Production

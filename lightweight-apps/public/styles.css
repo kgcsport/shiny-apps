@@ -13,6 +13,7 @@ h1 { margin:.25rem 0 .5rem; color:#621128; font-size:clamp(2rem, 5vw, 3.5rem); }
 .app { width:min(1180px, calc(100% - 24px)); margin:0 auto; padding:16px 0 32px; }
 .app header { margin-bottom:16px; }.app h1 { font-size:clamp(1.55rem, 3vw, 2.2rem); }.app header p { margin:.2rem 0; color:#5b6470; }
 .layout { display:grid; grid-template-columns:minmax(245px, 310px) minmax(0, 1fr); gap:16px; align-items:start; }
+.airplanes-layout { display:grid; gap:16px; }.entry-panel { width:100%; }.entry-header { display:flex; justify-content:space-between; gap:16px; align-items:baseline; }.entry-header h2 { margin:0; font-size:1.1rem; }.entry-header .status { margin:4px 0 0; }
 .panel { background:#fff; border:1px solid #d8dee8; border-radius:10px; padding:16px; box-shadow:0 1px 2px #00000008; }
 .control { margin:0 0 18px; }.control label { display:flex; justify-content:space-between; gap:8px; font-weight:700; }.control output { color:#7a1731; font-variant-numeric:tabular-nums; }.control input { width:100%; accent-color:#7a1731; }.hint { margin:4px 0 0; color:#667085; font-size:.82rem; }
 .results { display:grid; gap:0; margin-top:20px; border-top:1px solid #e5e7eb; }.results h2 { margin:14px 0 4px; color:#374151; font-size:1rem; }.result-row { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid #edf0f4; font-size:.9rem; }.result-row span:first-child { color:#5b6470; }.result-row strong { font-variant-numeric:tabular-nums; }.buyer { color:#1769aa; }.seller { color:#19723b; }.danger { color:#a21c34; }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { advanceRound, airplanesCsv, chartPoints, normalizeExperimentState, normalizeRows } from "../public/modules/airplanes-game.js";
+import { advanceRound, airplanesCsv, chartPoints, normalizeExperimentState, normalizeRows, roundChartPoints } from "../public/modules/airplanes-game.js";
 
 test("airplane rows preserve blank outputs but chart only uses completed observations", () => {
   const rows = normalizeRows([{ firm: "A", workers: 1, output: "" }, { firm: "B", workers: 2, output: 9 }]);
@@ -18,4 +18,16 @@ test("advance round archives completed work and retains each firm's workers", ()
   assert.deepEqual(next.rows.map(({ firm, workers, output }) => ({ firm, workers, output })), [{ firm: "A", workers: 3, output: "" }]);
   assert.equal(next.history[0].round, 2);
   assert.equal(next.history[0].rows[0].output, 11);
+});
+
+test("chart points include completed rounds as well as the current round", () => {
+  const state = {
+    round: 2,
+    history: [{ round: 1, rows: [{ firm: "A", workers: 1, output: 4 }] }],
+    rows: [{ firm: "A", workers: 2, output: 9 }]
+  };
+  assert.deepEqual(roundChartPoints(state), [
+    { firm: "A", workers: 1, output: 4, round: 1, current: false },
+    { firm: "A", workers: 2, output: 9, round: 2, current: true }
+  ]);
 });

@@ -17,6 +17,14 @@ export function chartPoints(rows) {
   return normalizeRows(rows).filter(row => row.firm && row.output !== "").map(({ firm, workers, output }) => ({ firm, workers, output }));
 }
 
+export function roundChartPoints(state) {
+  const completed = (state.history || []).flatMap(snapshot =>
+    chartPoints(snapshot.rows).map(point => ({ ...point, round: snapshot.round, current: false }))
+  );
+  const current = chartPoints(state.rows || []).map(point => ({ ...point, round: state.round, current: true }));
+  return [...completed, ...current];
+}
+
 export function normalizeExperimentState(saved) {
   if (Array.isArray(saved)) return { round: 1, rows: normalizeRows(saved), history: [] };
   const rows = Array.isArray(saved?.rows) && saved.rows.length ? saved.rows : INITIAL_ROWS;

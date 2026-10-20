@@ -5,6 +5,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 test("static pilots reference their local calculation modules and accessible charts", async () => {
   const [tax, airplanes] = await Promise.all([
@@ -14,9 +15,9 @@ test("static pilots reference their local calculation modules and accessible cha
   assert.match(tax, /type="module"/);
   assert.match(tax, /\/modules\/tax-incidence\.js/);
   assert.match(tax, /role="img"/);
-  assert.match(airplanes, /\/modules\/airplanes-game\.js/);
-  assert.match(airplanes, /localStorage/);
-  assert.match(airplanes, /Download CSV/);
+  assert.match(airplanes, /\/modules\/airplanes-page\.js/);
+  assert.match(airplanes, /Advance round/);
+  assert.match(airplanes, /Download all rounds/);
 });
 
 test("inline page modules remain valid JavaScript", async () => {
@@ -30,4 +31,7 @@ test("inline page modules remain valid JavaScript", async () => {
     const check = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });
     assert.equal(check.status, 0, check.stderr);
   }
+  const pageModule = fileURLToPath(new URL("../public/modules/airplanes-page.js", import.meta.url));
+  const moduleCheck = spawnSync(process.execPath, ["--check", pageModule], { encoding: "utf8" });
+  assert.equal(moduleCheck.status, 0, moduleCheck.stderr);
 });

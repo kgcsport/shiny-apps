@@ -69,8 +69,8 @@ R/Shiny version and JavaScript port can be compared with fixture tests.
 ### 1. Static browser pilot
 
 - [x] Port `tax-incidence`: sliders, numerical results, welfare areas, labels,
-  and responsive projected/phone layout. *(2026-10-19: formula fixtures pass;
-  visual parity review remains.)*
+  and responsive projected/phone layout. *(2026-10-20: formula fixtures pass;
+  accepted for demo after local review.)*
 - [x] Port `airplanes-game`: editable table, add/reset, SVG scatter plot, CSV
   export, and `localStorage` recovery. *(2026-10-19: state/CSV fixtures pass;
   browser-device checks remain.)*
