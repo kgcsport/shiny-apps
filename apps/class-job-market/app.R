@@ -1874,7 +1874,7 @@ server <- function(input, output, session) {
           pending_join, status_filter), list(rid)),
           error = function(e) data.frame())
       } else data.frame()
-      pending_scores <- if (!is.na(rid)) {
+      pending_scores <- {
         required_lse <- c("id", "round_id", "user_id", "job_assignment_id",
                           "job_post_id", "event_kind", "outcome", "tokens",
                           "created_at", "committed_at")
@@ -1882,16 +1882,18 @@ server <- function(input, output, session) {
           "SELECT lse.id, lse.round_id, lse.user_id, u.display_name, u.course, u.section,
                   lse.job_assignment_id, lse.job_post_id, lse.event_kind,
                   lse.outcome, lse.tokens, lse.created_at,
-                  COALESCE(jp.job_name, ap.job_name, '') AS job_name
+                  COALESCE(jp.job_name, ap.job_name, '') AS job_name,
+                  COALESCE(wr.label, 'Round ' || lse.round_id) AS round_label
            FROM live_score_events lse
            JOIN users u ON u.user_id=lse.user_id
+           LEFT JOIN weekly_rounds wr ON wr.id=lse.round_id
            LEFT JOIN job_posts jp ON jp.id=lse.job_post_id
            LEFT JOIN job_assignments ja ON ja.id=lse.job_assignment_id
            LEFT JOIN job_posts ap ON ap.id=ja.job_post_id
-           WHERE lse.round_id=? AND lse.committed_at IS NULL
-           ORDER BY u.course, u.section, u.display_name, lse.created_at;", list(rid)),
+           WHERE lse.committed_at IS NULL
+           ORDER BY lse.round_id, u.course, u.section, u.display_name, lse.created_at;"),
           error = function(e) data.frame())
-      } else data.frame()
+      }
       list(students=students, subs=subs, assignments=assignments,
            round=round, revealed=revealed, section_reveals=section_reveals,
            pending_scores=pending_scores)
@@ -4115,15 +4117,18 @@ server <- function(input, output, session) {
     if (identical(as.character(ev$event_kind[1]), "assignment")) {
       assign_id <- as.integer(ev$job_assignment_id[1])
       cur <- tryCatch(db_query(
-        "SELECT COALESCE(tokens_awarded,0) AS tokens_awarded FROM job_assignments WHERE id=?;",
+        "SELECT COALESCE(outcome,'') AS outcome,
+                COALESCE(tokens_credited,0) AS tokens_credited
+         FROM job_assignments WHERE id=?;",
         list(assign_id)), error=function(e) data.frame())
-      if (!nrow(cur) || as.integer(cur$tokens_awarded[1] %||% 0L) == 1L) {
+      if (!nrow(cur)) {
         db_exec("UPDATE live_score_events SET committed_at=datetime('now') WHERE id=?;",
                 list(as.integer(ev$id[1])))
         return(FALSE)
       }
       db_exec(
         "UPDATE job_assignments SET outcome=?, tokens_awarded=?, tokens_credited=?,
+                status='graded',
                 updated_at=datetime('now') WHERE id=?;",
         list(outcome, tokens_to_award, if (tokens_revealed) 1L else 0L, assign_id))
       if (tokens_to_award > 0 && tokens_revealed) {
@@ -7678,13 +7683,13 @@ server <- function(input, output, session) {
     }
     row <- db_query(
       "SELECT ja.user_id, u.display_name, ja.assigned_wage,
-              COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
+              COALESCE(ja.outcome,'') AS outcome,
               ja.round_id
        FROM job_assignments ja
        JOIN users u ON u.user_id=ja.user_id
        WHERE ja.id=?;", list(assign_id))
     if (!nrow(row)) { showNotification("Assignment not found.", type = "error"); return() }
-    if (as.integer(row$tokens_awarded[1]) == 1L) {
+    if (nzchar(row$outcome[1] %||% "")) {
       showNotification("Tokens already awarded — outcome cannot be changed.", type = "warning")
       return()
     }
@@ -7697,11 +7702,25 @@ server <- function(input, output, session) {
       tried    = round(wage * half_mult),
       missed   = 0,
       0)
-    db_exec(
-      "INSERT INTO live_score_events(round_id, user_id, job_assignment_id, event_kind,
-              outcome, tokens, logged_by)
-       VALUES(?,?,?,'assignment',?,?,?);",
-      list(as.integer(row$round_id[1]), uid, assign_id, outcome, tokens_to_award, rv$user_id %||% "admin"))
+    pending_eval <- tryCatch(db_query(
+      "SELECT id FROM live_score_events
+       WHERE job_assignment_id=? AND committed_at IS NULL
+       ORDER BY id DESC LIMIT 1;",
+      list(assign_id)), error = function(e) data.frame())
+    if (nrow(pending_eval)) {
+      db_exec(
+        "UPDATE live_score_events
+         SET outcome=?, tokens=?, logged_by=?, created_at=datetime('now')
+         WHERE id=?;",
+        list(outcome, tokens_to_award, rv$user_id %||% "admin",
+             as.integer(pending_eval$id[1])))
+    } else {
+      db_exec(
+        "INSERT INTO live_score_events(round_id, user_id, job_assignment_id, event_kind,
+                outcome, tokens, logged_by)
+         VALUES(?,?,?,'assignment',?,?,?);",
+        list(as.integer(row$round_id[1]), uid, assign_id, outcome, tokens_to_award, rv$user_id %||% "admin"))
+    }
     showNotification(
       sprintf("%s queued for audit (%d token%s).", dname, as.integer(tokens_to_award),
               if (tokens_to_award == 1) "" else "s"),
@@ -8359,10 +8378,6 @@ server <- function(input, output, session) {
         list(target_rid))$user_id, error = function(e) character(0))
       students <- students[!(students$user_id %in% already), , drop = FALSE]
       if (!nrow(students)) { showNotification("No unassigned students available for this timed draw.", type = "warning"); return() }
-    }
-
-    if (identical(timing_filter, "all")) {
-      db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(target_rid))
     }
 
     pairs <- compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
