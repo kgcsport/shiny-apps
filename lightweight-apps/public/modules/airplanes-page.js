@@ -4,6 +4,7 @@ import {
   airplanesCsv,
   normalizeExperimentState,
   normalizeRows,
+  rewindRound,
   roundChartPoints
 } from "/modules/airplanes-game.js";
 
@@ -25,6 +26,7 @@ export function startAirplanesExperiment(documentRef = document, storage = local
   function save(message = "Saved on this browser.") {
     storage.setItem(STORAGE_KEY, JSON.stringify(state));
     $("round").textContent = `Round ${state.round} · ${state.history.length} completed`;
+    $("back").disabled = state.round === 1 || state.history.length === 0;
     $("status").textContent = message;
   }
 
@@ -142,6 +144,11 @@ export function startAirplanesExperiment(documentRef = document, storage = local
     const completed = state.round;
     state = advanceRound(state);
     render(`Saved round ${completed}; ready for round ${state.round}.`);
+  });
+  $("back").addEventListener("click", () => {
+    if (!window.confirm(`Go back to round ${state.round - 1}? Current round ${state.round} entries will be discarded.`)) return;
+    state = rewindRound(state);
+    render(`Restored round ${state.round}.`);
   });
   $("reset").addEventListener("click", () => {
     state = normalizeExperimentState({ rows: INITIAL_ROWS });

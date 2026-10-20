@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { advanceRound, airplanesCsv, chartPoints, normalizeExperimentState, normalizeRows, roundChartPoints } from "../public/modules/airplanes-game.js";
+import { advanceRound, airplanesCsv, chartPoints, normalizeExperimentState, normalizeRows, rewindRound, roundChartPoints } from "../public/modules/airplanes-game.js";
 
 test("airplane rows preserve blank outputs but chart only uses completed observations", () => {
   const rows = normalizeRows([{ firm: "A", workers: 1, output: "" }, { firm: "B", workers: 2, output: 9 }]);
@@ -30,4 +30,15 @@ test("chart points include completed rounds as well as the current round", () =>
     { firm: "A", workers: 1, output: 4, round: 1, current: false },
     { firm: "A", workers: 2, output: 9, round: 2, current: true }
   ]);
+});
+
+test("rewind restores the prior round and drops the active round draft", () => {
+  const rewound = rewindRound({
+    round: 3,
+    history: [{ round: 1, rows: [{ firm: "A", workers: 1, output: 3 }] }, { round: 2, rows: [{ firm: "A", workers: 2, output: 8 }] }],
+    rows: [{ firm: "A", workers: 4, output: 15 }]
+  });
+  assert.equal(rewound.round, 2);
+  assert.equal(rewound.history.length, 1);
+  assert.deepEqual(rewound.rows.map(({ firm, workers, output }) => ({ firm, workers, output })), [{ firm: "A", workers: 2, output: 8 }]);
 });

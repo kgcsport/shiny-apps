@@ -423,6 +423,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-20** (Codex, `feature/lightweight-js-apps`) - Added guarded
+  **Back one round** control to Airplane Production. It restores the saved
+  prior round and removes it from completed history; an explicit confirmation
+  protects the current round's unsaved-in-history draft from accidental loss.
+
 - **2026-10-20** (Codex, `feature/lightweight-js-apps`) - Accepted the local
   Tax Incidence pilot for demo. Reworked Airplane Production so the full-width
   chart appears above the data-entry table; every completed round remains

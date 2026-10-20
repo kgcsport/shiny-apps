@@ -44,6 +44,17 @@ export function advanceRound(state, completedAt = new Date().toISOString()) {
   };
 }
 
+export function rewindRound(state) {
+  const history = state.history || [];
+  if (!history.length || Number(state.round) <= 1) return normalizeExperimentState(state);
+  const previous = history.at(-1);
+  return {
+    round: previous.round,
+    rows: normalizeRows(previous.rows),
+    history: history.slice(0, -1)
+  };
+}
+
 function escapeCsv(value) {
   const string = String(value ?? "");
   return /[",\n]/.test(string) ? `"${string.replaceAll('"', '""')}"` : string;
