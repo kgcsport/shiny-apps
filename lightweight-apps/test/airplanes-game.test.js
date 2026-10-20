@@ -64,3 +64,15 @@ test("forward restores the saved draft and retains any edits to the round revisi
   assert.equal(forward.history[0].rows[0].output, 5);
   assert.equal(forward.future.length, 0);
 });
+
+test("round history and cumulative plot have no three-round limit", () => {
+  let state = normalizeExperimentState({ rows: [{ firm: "A", workers: 1, output: 1 }] });
+  for (let round = 1; round <= 8; round += 1) {
+    state.rows[0].output = round;
+    state = advanceRound(state, `2026-10-20T12:00:0${round}.000Z`);
+  }
+  assert.equal(state.round, 9);
+  assert.equal(state.history.length, 8);
+  assert.equal(roundChartPoints(state).length, 8);
+  assert.deepEqual(roundChartPoints(state).map(point => point.round), [1, 2, 3, 4, 5, 6, 7, 8]);
+});
