@@ -35,3 +35,10 @@ test("inline page modules remain valid JavaScript", async () => {
   const moduleCheck = spawnSync(process.execPath, ["--check", pageModule], { encoding: "utf8" });
   assert.equal(moduleCheck.status, 0, moduleCheck.stderr);
 });
+
+test("airplane live entry does not rebuild the focused table on every keystroke", async () => {
+  const source = await readFile(new URL("../public/modules/airplanes-page.js", import.meta.url), "utf8");
+  const updateRow = source.match(/function updateRow\([\s\S]*?\n  \}/)?.[0] || "";
+  assert.match(updateRow, /renderChart\(\)/);
+  assert.doesNotMatch(updateRow, /render\(/);
+});

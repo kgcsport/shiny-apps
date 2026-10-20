@@ -34,7 +34,10 @@ export function startAirplanesExperiment(documentRef = document, storage = local
 
   function updateRow(index, patch) {
     state.rows[index] = normalizeRows([{ ...state.rows[index], ...patch }])[0];
-    render();
+    // Do not rebuild the table while someone is typing: replacing the input
+    // element would drop its focus after every character.
+    renderChart();
+    save();
   }
 
   function field(type, value, label, onInput) {
