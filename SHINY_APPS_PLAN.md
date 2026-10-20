@@ -423,6 +423,14 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-20** (Codex, `feature/lightweight-js-apps`) - Repaired the
+  lightweight Tax Incidence page's inline JavaScript syntax error, which had
+  prevented its SVG graph from rendering. Added an Airplane Production
+  **Advance round** control: it archives the completed local round, preserves
+  each firm's worker count, clears outputs for the next round, and displays
+  round status. Expanded automated coverage to parse both browser modules and
+  test archived-round state; local Worker smoke routes pass.
+
 - **2026-10-19** (Codex, `feature/lightweight-js-apps`) - Implemented the
   first isolated lightweight static pilots: browser-only Tax Incidence and
   Airplane Production tools, a minimal Cloudflare Worker asset scaffold and
