@@ -6,8 +6,12 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 COMPOSE=(docker compose)
-PUBLIC_URL="${PUBLIC_URL:-https://shiny.kylecoombs.com/class-job-market/}"
-AUTH_URL="${AUTH_URL:-https://shiny.kylecoombs.com/auth/login}"
+# Probe the local origin, not the public Cloudflare hostname. Reclaim's own
+# outbound request can be rejected by Cloudflare even when student traffic is
+# healthy. The Host header selects the same Nginx virtual host students use.
+PUBLIC_URL="${PUBLIC_URL:-http://127.0.0.1/class-job-market/}"
+AUTH_URL="${AUTH_URL:-http://127.0.0.1/auth/login}"
+PUBLIC_HOST="${PUBLIC_HOST:-shiny.kylecoombs.com}"
 
 usage() {
   cat <<'EOF'
@@ -52,10 +56,10 @@ case "$command" in
     ;;
   health)
     command -v curl >/dev/null || { echo "curl is required for health checks" >&2; exit 1; }
-    curl --fail --silent --show-error --max-time 20 -o /dev/null -w 'HTTP %{http_code} %{url_effective}\n' "$PUBLIC_URL"
+    curl --fail --silent --show-error --max-time 20 -H "Host: $PUBLIC_HOST" -o /dev/null -w 'HTTP %{http_code} %{url_effective}\n' "$PUBLIC_URL"
     # A working OAuth relay redirects to Google; a 502/503 indicates the
     # otherwise-independent demo-kit service is unavailable.
-    curl --fail --silent --show-error --max-time 20 -o /dev/null -w 'HTTP %{http_code} %{url_effective}\n' "$AUTH_URL"
+    curl --fail --silent --show-error --max-time 20 -H "Host: $PUBLIC_HOST" -o /dev/null -w 'HTTP %{http_code} %{url_effective}\n' "$AUTH_URL"
     ;;
   sync)
     "${COMPOSE[@]}" exec -T shiny Rscript /srv/shiny-server/scripts/sync-cloudflare-gradebook.R
