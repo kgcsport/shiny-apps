@@ -72,8 +72,11 @@ R/Shiny version and JavaScript port can be compared with fixture tests.
   and responsive projected/phone layout. *(2026-10-20: formula fixtures pass;
   accepted for demo after local review.)*
 - [x] Port `airplanes-game`: editable table, add/reset, SVG scatter plot, CSV
-  export, and `localStorage` recovery. *(2026-10-19: state/CSV fixtures pass;
-  browser-device checks remain.)*
+  export, and `localStorage` recovery. *(2026-10-20: accepted for demo after
+  local review; team names carry through round history.)*
+- [x] Port `indifference-to-demand`: four utility models, SVG choice and demand
+  diagrams, responsive controls, and optional equilibrium table. *(2026-10-20:
+  pure-formula fixtures pass; awaiting local visual review.)*
 - [ ] Compare fixed input fixtures with the R output and manually test Chrome,
   Safari/iOS, and a projected 16:9 display.
 - [ ] Publish preview-only URLs and use them in one live class while retaining
@@ -133,9 +136,22 @@ Shiny default it must meet all of these:
 
 ## Immediate next actions
 
-1. Confirm the Cloudflare account/project and preview hostname to use for this
-   isolated service.
-2. Scaffold Phase 0 and port `tax-incidence` as the first parity-tested static
-   page.
-3. Classroom-test that preview alongside the current Shiny route before
-   starting the shared-room migration.
+1. Locally review `indifference-to-demand` alongside its Shiny counterpart,
+   including all four utility models and a phone-width layout.
+2. Compare fixed-input outputs across the three completed static pilots and
+   manually test Chrome, Safari/iOS, and a projected 16:9 display.
+3. Confirm the Cloudflare account/project and preview hostname before any
+   preview-only deployment; keep the branch unmerged and unpublished until then.
+
+## Decisions and work log
+
+- **2026-10-20** — Tax Incidence and Airplane Production are locked in as
+  accepted browser-only pilots on `feature/lightweight-js-apps`. They remain
+  separate from the Shiny defaults and no route has been published.
+- **2026-10-20** — Defer cross-team airplane entry (for example, Team A logging
+  Team B) to a later shared-room build. It needs a room identity, permissions,
+  and concurrent-update design, so it is outside this browser-local pilot.
+- **2026-10-20** — Added the `indifference-to-demand` static pilot with the
+  original Cobb–Douglas, perfect-substitutes, perfect-complements, and
+  quasilinear equations. Formula fixtures and JavaScript syntax checks pass;
+  local visual review remains before acceptance.

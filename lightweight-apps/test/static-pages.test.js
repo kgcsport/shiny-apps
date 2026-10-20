@@ -8,9 +8,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 test("static pilots reference their local calculation modules and accessible charts", async () => {
-  const [tax, airplanes] = await Promise.all([
+  const [tax, airplanes, consumer] = await Promise.all([
     readFile(new URL("../public/tax-incidence/index.html", import.meta.url), "utf8"),
-    readFile(new URL("../public/airplanes-game/index.html", import.meta.url), "utf8")
+    readFile(new URL("../public/airplanes-game/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/indifference-to-demand/index.html", import.meta.url), "utf8")
   ]);
   assert.match(tax, /type="module"/);
   assert.match(tax, /\/modules\/tax-incidence\.js/);
@@ -18,6 +19,8 @@ test("static pilots reference their local calculation modules and accessible cha
   assert.match(airplanes, /\/modules\/airplanes-page\.js/);
   assert.match(airplanes, /Advance round/);
   assert.match(airplanes, /Download all rounds/);
+  assert.match(consumer, /\/modules\/indifference-page\.js/);
+  assert.match(consumer, /role="img"/);
 });
 
 test("inline page modules remain valid JavaScript", async () => {
@@ -34,6 +37,9 @@ test("inline page modules remain valid JavaScript", async () => {
   const pageModule = fileURLToPath(new URL("../public/modules/airplanes-page.js", import.meta.url));
   const moduleCheck = spawnSync(process.execPath, ["--check", pageModule], { encoding: "utf8" });
   assert.equal(moduleCheck.status, 0, moduleCheck.stderr);
+  const consumerModule = fileURLToPath(new URL("../public/modules/indifference-page.js", import.meta.url));
+  const consumerCheck = spawnSync(process.execPath, ["--check", consumerModule], { encoding: "utf8" });
+  assert.equal(consumerCheck.status, 0, consumerCheck.stderr);
 });
 
 test("airplane live entry does not rebuild the focused table on every keystroke", async () => {
