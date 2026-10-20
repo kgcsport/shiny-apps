@@ -18,6 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test fresh student login path
+        working-directory: apps/demo-kit-site
+        run: npm test
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR

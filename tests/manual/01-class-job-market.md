@@ -198,3 +198,26 @@ Seed users via the admin panel or directly in SQLite before starting.
 1. On the **Assignments** tab, click **Export CSV**.
 
 **Expected:** CSV with round, user_id, display_name, category, wage, tokens, outcome.
+
+
+---
+
+## TC-15 — Admin: grade and release a policy-project rubric
+
+**Precondition:** Two active students share a policy team in the selected course/section. The gradebook has a matching policy-project item if grade write-back will be tested.
+
+1. As admin, open **Settings → Policy Rubrics**.
+2. Select the team and **Presentation**.
+3. Choose anchors across the rubric. Confirm each choice prefills points, including **Incomplete** at half credit and **Missing** at zero; fine-tune at least one numeric score.
+4. Add criterion feedback, overall feedback, and a priority for the next stage.
+5. Select **Feedback only**, click **Save private draft**, then impersonate a team member and open **Account**.
+6. Confirm the draft is not visible. Return to admin, reopen the draft, select a gradebook item, and click **Release to team**.
+7. Impersonate each team member and open **Account**.
+8. Return to admin, revise the released rubric, save it as a private draft, and confirm students still see the prior released version. Release again.
+
+**Expected:**
+- The rubric uses five anchors: Excellent, Proficient, Developing, Incomplete, and Missing; zero is not part of the Incomplete anchor.
+- A private draft restores all criterion scores and feedback for the instructor but is invisible to students.
+- Release publishes the same criterion-level feedback and final score to every team member.
+- If a gradebook item is selected, each team member receives the same score for that item.
+- Saving a later draft does not replace the current student-visible release; releasing it does.

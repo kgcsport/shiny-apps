@@ -1,0 +1,26 @@
+# Local-only staging overlay. It deliberately has a separate database and is
+# not routed by production nginx. Inspect it through an SSH tunnel or add a
+# separately protected hostname later.
+services:
+  shiny-staging:
+    image: ${SHINY_IMAGE:-ghcr.io/kgcsport/shiny-apps:latest}
+    restart: "no"
+    ports:
+      - "127.0.0.1:${STAGING_PORT:-8081}:3838"
+    volumes:
+      - ./staging-appdata:/srv/shiny-server/appdata
+      - ./staging-shiny-logs:/var/log/shiny-server
+    env_file:
+      - .env
+    environment:
+      DEMO_MODE: "0"
+      CONNECT_CONTENT_DIR: /srv/shiny-server/appdata
+      SHINY_SIMPLE_SCHEDULER: "40"
+      SHINY_APP_IDLE_TIMEOUT: "60"
+      SHINY_APP_SESSION_TIMEOUT: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/shiny-server/ext/node/bin/node -e \"require('http').get('http://127.0.0.1:3838/',r=>process.exit(r.statusCode < 500 ? 0 : 1)).on('error',()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 45s

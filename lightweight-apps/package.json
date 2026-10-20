@@ -1,0 +1,14 @@
+{
+  "name": "lightweight-teaching-apps",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "dry-run": "npx wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "3.114.15"
+  }
+}

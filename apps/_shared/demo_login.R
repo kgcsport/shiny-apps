@@ -34,7 +34,15 @@ demo_login_ui <- tagList(
         style = "margin:0 0 8px;font-size:13px;"
       ),
       tags$button("Demo (Admin)",   onclick = "window.location.href='?demo_db=1&demo_as=teacher'", class = "btn btn-sm btn-warning", style = "margin:2px;"),
-      tags$button("Demo (Student)", onclick = "window.location.href='?demo_db=1&demo_as=student'", class = "btn btn-sm btn-default", style = "margin:2px;")
+      tags$button("Demo (Student)", onclick = "window.location.href='?demo_db=1&demo_as=student'", class = "btn btn-sm btn-default", style = "margin:2px;"),
+      tags$details(
+        style = "margin-top:8px;font-size:12px;color:#6b5b22;",
+        tags$summary(style = "cursor:pointer;font-weight:600;", "Manual demo credentials"),
+        tags$div(style = "margin-top:4px;",
+          tags$code("instructor / admin123"), tags$br(),
+          tags$code("alice / test123")
+        )
+      )
     ),
   ),
   tags$script(HTML('
@@ -165,6 +173,164 @@ demo_settings_panel <- function(is_demo) {
   )
 }
 
+# CREATE TABLE IF NOT EXISTS does not migrate an existing sandbox. Bring the
+# job-market tables up to the columns used by the current Settings and bidding
+# paths before attempting to seed or edit fake jobs.
+reconcile_demo_job_schema <- function(demo_con) {
+  DBI::dbExecute(demo_con, "CREATE TABLE IF NOT EXISTS class_wage_snapshots(
+    round_id INTEGER NOT NULL, snapshot_key TEXT NOT NULL, job_post_id INTEGER,
+    category_id INTEGER, wage REAL NOT NULL, source TEXT,
+    snapshotted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (round_id, snapshot_key));")
+  required <- list(
+    job_categories = c(
+      "default_wage REAL DEFAULT 10", "description TEXT",
+      "display_order INTEGER DEFAULT 99", "voluntary INTEGER DEFAULT 0",
+      "in_draw INTEGER DEFAULT 1", "selection_time TEXT",
+      "contribution_type TEXT", "purpose TEXT", "expected_output TEXT",
+      "completion_criterion TEXT"
+    ),
+    weekly_rounds = c(
+      "assignment_mode TEXT DEFAULT 'random'", "bidding_enabled INTEGER DEFAULT 1",
+      "bid_open_date TEXT", "bid_close_date TEXT",
+      "tickets_per_student INTEGER DEFAULT 10", "class_date TEXT", "tokens_revealed INTEGER DEFAULT 1",
+      "tiebreak_method TEXT DEFAULT 'weighted_lottery'",
+      "allow_multiple_jobs INTEGER DEFAULT 1",
+      "wage_pricing_rule TEXT DEFAULT 'pay_as_bid'"
+    ),
+    job_posts = c(
+      "job_name TEXT", "category_id INTEGER", "slots INTEGER DEFAULT 1",
+      "wage_override REAL", "active INTEGER DEFAULT 1",
+      "display_order INTEGER DEFAULT 99", "voluntary INTEGER DEFAULT 0",
+      "in_draw INTEGER DEFAULT 1", "selection_time TEXT", "description TEXT",
+      "created_at TEXT"
+    ),
+    job_templates = c(
+      "category_id INTEGER", "slots INTEGER DEFAULT 1", "suggested_wage REAL",
+      "active INTEGER DEFAULT 1", "selection_time TEXT",
+      "voluntary INTEGER DEFAULT 0", "in_draw INTEGER DEFAULT 1",
+      "display_order INTEGER DEFAULT 99", "description TEXT", "created_at TEXT"
+    ),
+    job_assignments = c(
+      "job_post_id INTEGER", "assigned_wage REAL", "assignment_mode TEXT",
+      "status TEXT DEFAULT 'assigned'", "outcome TEXT",
+      "tokens_awarded INTEGER DEFAULT 0", "updated_at TEXT",
+      "tokens_credited INTEGER DEFAULT 1", "created_at TEXT",
+      "scheduled_date TEXT", "display_on_today INTEGER DEFAULT 1"
+    ),
+    wage_bids = c("min_wage REAL", "submitted_at TEXT"),
+    job_wage_bids = c("round_id INTEGER", "job_post_id INTEGER", "user_id TEXT",
+                      "min_wage REAL", "submitted_at TEXT"),
+    application_bids = c("tickets INTEGER DEFAULT 0", "submitted_at TEXT")
+  )
+
+  for (table_name in names(required)) {
+    existing <- DBI::dbGetQuery(
+      demo_con, sprintf("PRAGMA table_info(%s);", table_name))$name
+    if (!length(existing))
+      stop(sprintf("Demo schema is missing required table %s.", table_name))
+    for (column_def in required[[table_name]]) {
+      column_name <- strsplit(column_def, "\\s+")[[1]][1]
+      if (!column_name %in% existing) {
+        DBI::dbExecute(
+          demo_con,
+          sprintf("ALTER TABLE %s ADD COLUMN %s;", table_name, column_def))
+        existing <- c(existing, column_name)
+      }
+    }
+  }
+  tryCatch(
+    DBI::dbExecute(demo_con,
+      "UPDATE weekly_rounds SET bidding_enabled=0 WHERE assignment_mode='random' AND COALESCE(bidding_enabled,0)<>0;"),
+    error = function(e) NULL)
+  tryCatch(
+    DBI::dbExecute(demo_con,
+      "UPDATE weekly_rounds SET class_date=substr(COALESCE(created_at,CURRENT_TIMESTAMP),1,10)
+       WHERE class_date IS NULL OR trim(class_date)='';"),
+    error = function(e) NULL)
+  invisible(TRUE)
+}
+
+# ── Synthetic job market for the sandbox ─────────────────────────────────────
+# Seed once per disposable demo database. Subsequent browser sessions must not
+# reset these tables or they would erase another student's rehearsal bids.
+seed_demo_job_market <- function(demo_con) {
+  marker <- tryCatch(DBI::dbGetQuery(
+    demo_con,
+    "SELECT value FROM labor_settings WHERE key='demo_fake_job_market_v1';"),
+    error = function(e) data.frame())
+  if (nrow(marker)) return(invisible(FALSE))
+
+  DBI::dbWithTransaction(demo_con, {
+    fake_jobs <- list(
+      list(category="Recap & Synthesis", job="Opening Recap", timing="start", wage=2,
+           description="Give a two-minute summary of the previous class and one unresolved question."),
+      list(category="Notes & Records", job="Class Note Taker", timing="end", wage=3,
+           description="Capture the main claims, graphs, and questions from today's class."),
+      list(category="Examples & Evidence", job="Policy Example Scout", timing="end", wage=2,
+           description="Find one real-world example or source connected to today's topic."),
+      list(category="Critique & Questions", job="Critic / Skeptic", timing="end", wage=2,
+           description="Identify one assumption worth questioning and explain why it matters.")
+    )
+
+    category_ids <- integer(length(fake_jobs))
+    for (i in seq_along(fake_jobs)) {
+      job <- fake_jobs[[i]]
+      existing <- DBI::dbGetQuery(demo_con,
+        "SELECT id FROM job_categories WHERE lower(name)=lower(?) ORDER BY id LIMIT 1;",
+        list(job$category))
+      if (nrow(existing)) {
+        category_ids[i] <- existing$id[1]
+      } else {
+        DBI::dbExecute(demo_con,
+          "INSERT INTO job_categories(name,default_wage,description,display_order,voluntary,in_draw)
+           VALUES(?,?,?,?,0,1);",
+          list(job$category, job$wage, job$description, i))
+        category_ids[i] <- DBI::dbGetQuery(demo_con, "SELECT last_insert_rowid() AS id;")$id[1]
+      }
+    }
+
+    DBI::dbExecute(demo_con,
+      "INSERT INTO weekly_rounds(label,class_date,assignment_mode,bidding_enabled,bid_open_date,
+                                  bid_close_date,tickets_per_student,tokens_revealed,tiebreak_method)
+       VALUES('Demo Practice',date('now','localtime'),'application_bidding',1,NULL,NULL,10,0,'weighted_lottery');")
+    round_id <- DBI::dbGetQuery(demo_con, "SELECT last_insert_rowid() AS id;")$id[1]
+
+    for (i in seq_along(fake_jobs)) {
+      job <- fake_jobs[[i]]
+      existing_template <- DBI::dbGetQuery(demo_con,
+        "SELECT id FROM job_templates WHERE lower(name)=lower(?) ORDER BY id LIMIT 1;",
+        list(job$job))
+      if (!nrow(existing_template)) {
+        DBI::dbExecute(demo_con,
+          "INSERT INTO job_templates(name,category_id,slots,suggested_wage,active,
+                                      selection_time,voluntary,in_draw,display_order,description)
+           VALUES(?,?,1,?,1,?,0,1,?,?);",
+          list(job$job, category_ids[i], job$wage, job$timing, i, job$description))
+      }
+      DBI::dbExecute(demo_con,
+        "INSERT INTO job_posts(round_id,job_name,category_id,slots,wage_override,active,
+                               display_order,selection_time,voluntary,in_draw,description)
+         VALUES(?,?,?,1,?,1,?,?,0,1,?);",
+        list(round_id, job$job, category_ids[i], job$wage, i,
+             job$timing, job$description))
+    }
+
+    for (setting in list(
+      c("demo_fake_job_market_v1", "1"),
+      c("bid_lock_enabled", "0"),
+      c("active_course", "DEMO 101"),
+      c("active_section", "S01")
+    )) {
+      DBI::dbExecute(demo_con,
+        "INSERT INTO labor_settings(key,value) VALUES(?,?)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
+        as.list(setting))
+    }
+  })
+  invisible(TRUE)
+}
+
 # ── Demo DB bootstrapper ──────────────────────────────────────────────────────
 # Called the first time a demo session connects. Copies the full schema from
 # the production DB so every table/index exists, then seeds test users.
@@ -179,6 +345,30 @@ demo_db_bootstrap <- function(demo_con, prod_path) {
       "SELECT sql FROM sqlite_master WHERE type IN ('table','index') AND sql IS NOT NULL;")
     for (sql in schema$sql)
       try(DBI::dbExecute(demo_con, sql), silent = TRUE)
+
+    reconcile_demo_job_schema(demo_con)
+
+    # CREATE TABLE IF NOT EXISTS does not upgrade an older sandbox schema.
+    # Reconcile the login columns explicitly before resetting canonical users;
+    # otherwise both the upsert and subsequent login SELECT fail and look like
+    # a bad password.
+    demo_user_columns <- c(
+      "display_name TEXT",
+      "pw_hash TEXT",
+      "is_admin INTEGER DEFAULT 0",
+      "course TEXT",
+      "section TEXT",
+      "active INTEGER DEFAULT 1",
+      "is_demo INTEGER DEFAULT 0"
+    )
+    existing_user_columns <- DBI::dbGetQuery(demo_con, "PRAGMA table_info(users);")$name
+    for (column_def in demo_user_columns) {
+      column_name <- strsplit(column_def, "\\s+")[[1]][1]
+      if (!column_name %in% existing_user_columns) {
+        DBI::dbExecute(demo_con, sprintf("ALTER TABLE users ADD COLUMN %s;", column_def))
+        existing_user_columns <- c(existing_user_columns, column_name)
+      }
+    }
 
     # Copy app config / settings so the app starts with sane defaults
     for (tbl in c("labor_settings", "arcade_config")) {
@@ -203,37 +393,38 @@ demo_db_bootstrap <- function(demo_con, prod_path) {
           "INSERT OR IGNORE INTO arcade_state(id, active_game, assignments_revealed) VALUES(1,NULL,0);")
     }, error = function(e) NULL)
 
-    copy_table <- function(tbl) {
-      rows <- tryCatch(DBI::dbGetQuery(prod_con, sprintf("SELECT * FROM %s;", tbl)),
-                       error = function(e) data.frame())
-      if (!length(names(rows))) return(invisible(FALSE))
-      try(DBI::dbExecute(demo_con, sprintf("DELETE FROM %s;", tbl)), silent = TRUE)
-      if (nrow(rows))
-        try(DBI::dbWriteTable(demo_con, tbl, rows, append = TRUE, row.names = FALSE), silent = TRUE)
-      invisible(TRUE)
-    }
+    # Add a synthetic bidding round once. Unlike the previous live-catalog
+    # mirror, this does not expose real course setup or reset bids when another
+    # browser joins the same rehearsal.
+    seed_demo_job_market(demo_con)
 
-    # Mirror the live course job market into sandbox on each demo startup.
-    # Demo users and scoring remain separate; jobs/round setup match production.
-    for (tbl in c("job_categories", "job_templates", "weekly_rounds", "job_posts"))
-      copy_table(tbl)
-
-    # Seed test users (INSERT OR IGNORE so re-runs are safe)
+    # Restore canonical sandbox users on every startup. The demo database is
+    # disposable, and preserving an old/corrupt password hash can permanently
+    # lock both quick-login buttons.
     hash_pw <- if (requireNamespace("bcrypt", quietly = TRUE)) bcrypt::hashpw
                else function(p) p
     test_users <- list(
-      list(id = "instructor", name = "Dr. Instructor", admin = 1L, pw = "admin123", sec = NA_character_),
-      list(id = "alice",      name = "Alice",           admin = 0L, pw = "test123",  sec = "S01"),
-      list(id = "bob",        name = "Bob",             admin = 0L, pw = "test123",  sec = "S01"),
-      list(id = "carol",      name = "Carol",           admin = 0L, pw = "test123",  sec = "S01"),
-      list(id = "dan",        name = "Dan",             admin = 0L, pw = "test123",  sec = "S02"),
-      list(id = "eve",        name = "Eve",             admin = 0L, pw = "test123",  sec = "S02")
+      list(id = "instructor", name = "Dr. Instructor", admin = 1L, pw = "admin123", course = "DEMO 101", sec = "S01"),
+      list(id = "alice",      name = "Alice",           admin = 0L, pw = "test123",  course = "DEMO 101", sec = "S01"),
+      list(id = "bob",        name = "Bob",             admin = 0L, pw = "test123",  course = "DEMO 101", sec = "S01"),
+      list(id = "carol",      name = "Carol",           admin = 0L, pw = "test123",  course = "DEMO 101", sec = "S01"),
+      list(id = "dan",        name = "Dan",             admin = 0L, pw = "test123",  course = "DEMO 101", sec = "S02"),
+      list(id = "eve",        name = "Eve",             admin = 0L, pw = "test123",  course = "DEMO 101", sec = "S02")
     )
-    for (u in test_users)
-      try(DBI::dbExecute(demo_con,
-        "INSERT OR IGNORE INTO users(user_id,display_name,is_admin,pw_hash,section,active,is_demo)
-         VALUES(?,?,?,?,?,1,0);",
-        list(u$id, u$name, u$admin, hash_pw(u$pw), u$sec)), silent = TRUE)
+    for (u in test_users) {
+      DBI::dbExecute(demo_con,
+        "INSERT INTO users(user_id,display_name,is_admin,pw_hash,course,section,active,is_demo)
+         VALUES(?,?,?,?,?,?,1,0)
+         ON CONFLICT(user_id) DO UPDATE SET
+           display_name=excluded.display_name,
+           is_admin=excluded.is_admin,
+           pw_hash=excluded.pw_hash,
+           course=excluded.course,
+           section=excluded.section,
+           active=1,
+           is_demo=0;",
+        list(u$id, u$name, u$admin, hash_pw(u$pw), u$course, u$sec))
+    }
 
   }, error = function(e) message("demo_db_bootstrap: ", e$message))
   invisible(demo_con)

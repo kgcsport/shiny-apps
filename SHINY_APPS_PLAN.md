@@ -82,8 +82,10 @@ Sandbox mode is for testing the live class experience without touching student r
 
 ## Near-Term Build Priorities
 
+- [x] Add a reusable persistent live-word-cloud question manager for slide-embedded classroom polling. *(2026-09-13: questions are created and edited in the instructor screen, routed by stable URL key, and require no app-code or slide-source change after embedding.)*
 - [x] Stabilize the class-job-market hub around live teaching workflows. *(2026-08-26: round setup, template auto-copy, and settings-panel reactivity fixed; see Work Log.)*
 - [x] Make job setup easier to maintain: fewer defaults, clearer timing, clean in-draw/voluntary controls, and sensible demo mirroring. *(2026-08-26: simplified 4-category / 11-template catalog with one-time migration; template-level timing/voluntary/in-draw/auto-copy controls.)*
+- [x] Add interactive policy-project rubrics with private drafts, team release, student Account feedback, and optional gradebook write-back. *(2026-10-07: presentation, progress/revision, and written-brief forms use five point anchors with Missing separated from Incomplete.)*
 - [ ] Add write-back contracts for one-off games so participation and outcomes can feed the semester economy.
 - [ ] Improve admin observability: what changed, who committed it, and what is still pending.
 - [ ] Keep deployment predictable through GitHub/GHCR and Reclaim Docker Compose.
@@ -114,38 +116,40 @@ Timing codes on posts/templates: `any` / `start` / `during` / `end` / `volunteer
 
 A one-time migration (guarded by the `job_catalog_v2_migrated` key in `labor_settings`) runs at app startup: old seeded per-job categories are merged into the new four (posts, templates, and bids move with them, then the old categories are deleted), and old seeded job names are deactivated. Instructor-created categories are untouched. After the marker is set, restarts only insert missing rows and never overwrite instructor edits.
 
-### Rounds
+### Date-based class sessions
 
-A **round = one class session**. Settings → Round Setup:
+Rounds are no longer an instructor-facing workflow. Settings → Job Market Controls uses a **Class date** plus direct toggles for assignment mode, multiple jobs, auction pricing, bidding state, tickets, tie-break, and token reveal. Choosing a date immediately switches Today, Job Market, Live Tracker, and Jobs. A new date carries the prior date's job posts and standing wage/ticket bids forward; existing assignments and score events remain attached to their original date. Internal `round_id` columns remain only as compatibility keys.
 
-- Create/edit/delete rounds (label, assignment mode, bid window dates, tickets, tie-break, delayed token reveal).
-- **Create next round**: increments the label, carries the previous round's mode/tie-break/tickets/token settings, and copies every Auto-copy template as a job post with its timing/wage/slots/voluntary/in-draw flags.
-- Assignment modes: `random` (first ~2 weeks), `application_bidding` (point/ticket bids), `wage_bidding` (lowest-wage bids).
+Assignment modes are `random`, `application_bidding` (point/ticket bids), and `wage_bidding` (lowest-wage bids).
 
-### Bid lock schedule
+### Bid lock schedule and manual override
 
-Bidding is continuous but locks around class sessions (Settings → Round Setup → Bid Lock Schedule; stored in `labor_settings`):
+Bidding is continuous between classes. Settings → Job Market Controls → Bid Lock Schedule stores the recurring class schedule in `labor_settings`:
 
 - Defaults: class days Mon/Wed, class starts 12:00, lock 60 minutes before (11:00 AM), reopen 5:00 PM, timezone America/New_York, enabled.
-- Enforced server-side on both wage-bid and ticket-bid submission; students see a lock banner (and the schedule when open) in the Job Market tab. Admins are exempt.
+- The first main-job or cold-call draw freezes every active post's wage in `class_wage_snapshots` and closes bidding. With the recurring schedule enabled, bids reopen at the configured time; with it disabled, they remain closed until manually reopened.
+- **Open now** is an explicit instructor override of both scheduled and draw-triggered locks.
+- Both wage and ticket submission handlers enforce the effective lock server-side; students see the lock status in Job Market.
 
 ### Draws and cold calls
 
 Live Tracker → Job Assignments:
 
 - Draw filter: All timings / Start of class / During class (cold call) / End-post class.
-- The **All timings** draw clears and redraws the full round but **excludes `during` posts** — cold calls are drawn live in class with the During filter, which draws incrementally among students who do not yet have a job this round (one job per student per round is enforced by the DB).
-- In `wage_bidding` mode, draws take the cheapest bids per category and pay each drawn student their bid. Tie-breaks per the round's method.
+- The **All timings** draw clears and redraws the full assigned-job round but **excludes `during` posts**. Each lecture can allow multiple distinct regular jobs per student or limit each student to one, in which case the editable job clearing order determines which post gets first claim. Live cold calls and voluntary contributions are independent, repeatable score events and may stack with assigned jobs or each other.
+- In `wage_bidding` mode, draws take the cheapest bids per category. Each class date can pay winners their own bids or use uniform reverse-second-price pricing, where every winner on a post receives the next losing bid (with the posted wage as the no-loser fallback).
+- In `random` and `application_bidding` modes, every assignment snapshots the post's configured default wage when selected. A completed job pays that fixed amount, a genuine try pays 1 token, and a miss pays 0. Clearing wages never leak into these modes.
+- **Add Assignment Back** is a repair for an accidental removal: it restores a normal assignment on the selected class date, snapshots the post wage, appears in that date's assignment and Today job-pool counts, and ages into the overdue table normally.
 
 ### Volunteer clearing wage
 
-In `wage_bidding` rounds, every volunteer in a category is paid the **same equilibrium wage** derived from that round's bids — never their own bid, and nobody is rationed out. Rule selected in Settings → Jobs → Volunteer Clearing Wage (`volunteer_clearing_rule`):
+With wage bidding, every volunteer in a category is paid the **same equilibrium wage** derived from the selected class date's bids — never their own bid, and nobody is rationed out. The first draw snapshots this wage, so later bid edits cannot change volunteer or cold-call pay during class. Rule selected in Settings → Jobs → Volunteer Clearing Wage (`volunteer_clearing_rule`):
 
 1. **Lowest bid** (default): the cheapest bid in the category (k = 1).
 2. **Demand-based**: the k-th lowest bid, k = the volunteer post's slots (standing demand).
-3. **Posted demand**: the k-th lowest bid, k = expected demand posted per round in the Live Tracker's Voluntary Participation panel (e.g. at the start of class); falls back to post slots until posted. Stored in `volunteer_demand(round_id, category_id)`.
+3. **Posted demand**: the k-th lowest bid, k = expected demand posted for the class date in Live Tracker; it falls back to post slots until posted. Stored in `volunteer_demand(round_id, category_id)`.
 
-k is capped at the number of bids; with no bids the post's default wage is used. Students see "Volunteer Wages This Round" on the Job Market tab in wage-bidding rounds. Because bids lock before class, the clearing wage is fixed for the session. In `random`/`application_bidding` rounds, volunteers earn the post's default wage.
+k is capped at the number of bids; with no bids the post's default wage is used. Students see "Volunteer Wages For This Class" on Job Market. In random or application-bidding mode, volunteers earn the snapshotted post default.
 
 ### Fixed bugs (context for why things looked broken before)
 
@@ -159,12 +163,587 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-10-16** — Treat an unrevealed assessment as absent from the student-facing grade calculation, rather than suppressing the whole Gradebook. The student continues to see a coherent current grade based on revealed work; revealing the assessment adds its linked item and recalculates that visible grade.
+
+- **2026-10-16** — Let instructors repair or change an assessment’s linked gradebook item after import. This association is display metadata only: it tells the student-facing reveal gate which weighted grade effect to withhold, without reuploading data or rewriting score rows.
+
+- **2026-10-16** — Assessment-display choices remain editable after import. Instructors can switch a scoped assessment between immediate display and explicit student reveal without reuploading or rewriting grades; turning the gate on clears past acknowledgements so it takes effect uniformly.
+
+- **2026-10-16** — Make assessment-grade disclosure an import-level instructor choice. When enabled, students must explicitly reveal the assessment; its score/details and any linked weighted-gradebook impact remain hidden until then. Persist that reveal per student and import so it is a one-time acknowledgement rather than a per-session hurdle.
+
+- **2026-10-16** — Require an explicit assessment-summary target for weighted-gradebook write-back: match the assessment name, choose an existing item, skip gradebook write-back, or deliberately add a new item to a selected manual category. This prevents an uploaded assessment label from silently overwriting a weighted course-grade component while keeping the intended Midterm workflow one step.
+
+- **2026-10-16** — Treat a mapped `overall_exam_note` as a per-student text field, distinct from the assessment-wide and cap-adjustment notes. It appears in the student’s assessment overview and is not coerced to a score or buried in the numeric subpart table.
+
+- **2026-10-16** — Store uploaded exam/assessment summaries separately from the weighted course-grade rows. A summary import is scoped to the active class and selected sections, maps a stable student identifier plus instructor-chosen columns, and retains the source labels so students can see a concise final-grade overview and opt into subpart detail. Assessment-wide notes and cap-adjustment notes are entered outside the spreadsheet and persist with the import.
+
+- **2026-10-14** — Treat slide-embedded class-job controls as a top-level OAuth entry point. Google OAuth cannot run inside the Reveal iframe; preserve only the validated class-job-market return path and optional `view=cold-call-slide` state through the login callback.
+
+- **2026-10-07** — Grade policy-project criteria with five editable point anchors
+  rather than wide score bands: Excellent = full credit, Proficient = 85%,
+  Developing = 70%, Incomplete = 50%, and Missing = 0. Zero is a separate
+  missing-work state, not part of the Incomplete band.
+- **2026-10-07** — Keep one private draft and one released snapshot per
+  course/team/component. Saving a draft does not change student-visible
+  feedback; releasing publishes the shared rubric to all team members and may
+  write its score to an existing gradebook item.
+
+- **2026-10-05** - Represent the ECON 342 midterm bank as twelve candidates in three four-question pools. Pool A contributes 3 questions (75% each), Pool B contributes 2 (50% each), and Pool C contributes 1 (25% each); every pool spans the same four topic strands.
+
+- **2026-10-02** - Treat one course plus one explicitly selected section set as the operational scope. One section is the default; choosing several intentionally pools their roster, job-market round and controls, tracker eligibility, and Flex funding, while choosing all sections must be explicit. Question-bank text may be course-wide, but prices, contributions, and unlocks are scope-specific.
+
+- **2026-10-02** — Make exam-candidate questions a class-wide provision-point
+  public good, separate from the exam bonus pot. Students contribute any whole
+  number of tokens to the next locked question; reaching its threshold reveals
+  it to everyone. Thresholds may be entered as an explicit list or as a formula
+  using zero-indexed public-question count q and active class size N; the active
+  threshold is snapshotted when its first contribution arrives.
+
+- **2026-10-01** — Keep the class-job-market app authoritative for extension
+  purchases and the Cloudflare assignment service authoritative for assignment
+  timing. Sync purchases server-to-server with the existing admin bearer token,
+  persistent student ids, and purchase ids for idempotency. A submission
+  extension shifts the due date, solution release, and self-grading close;
+  a corrections extension shifts only the self-grading close.
+
+- **2026-09-29** — Make regular-job multiplicity and wage-auction pricing
+  lecture-level controls. When multiple jobs are disabled, posts clear in the
+  editable clearing order and each winner leaves the remaining regular-job
+  pool; cold calls stay independently eligible. Wage bidding can use either
+  pay-as-bid or a uniform reverse-second-price rule: the lowest bidders win and
+  receive the next losing bid, falling back to the posted wage when every bid
+  wins.
+
+- **2026-09-29** — Allow a student to hold multiple distinct class jobs in one
+  lecture. Jobs clear independently in an instructor-controlled order; the same
+  student/job pair remains unique. The default order is Last class recap,
+  Materials summary, Note taker, Critic/skeptic, Policy/example scout, then
+  instructor-added jobs.
+
+- **2026-09-29** — Treat cold calls as repeatable participation events, not
+  exclusive class-job assignments. Students remain eligible for cold calls even
+  when they hold a materials summary or another regular job; only absences and
+  duplicate selection within the same cold-call batch constrain eligibility.
+
+- **2026-09-29** — Store an explicit active lecture ID instead of treating
+  the newest database row as current. Switching lectures preserves posts,
+  assignments, bids, and history; all live operational views follow the selected
+  lecture, while creating a new lecture makes it active automatically.
+
+
+- **2026-10-02** — Treat every revealed, unfinished, non-volunteer assignment whose indexed class date is before today as overdue. Today shows the full reveal-aware backlog in **Last Class Jobs Still Pending**, sorted by and labeled with its original class date; it is no longer limited to one preceding session.
+
+- **2026-09-28** — Store wage bids per individual active job post, including
+  regular class roles, volunteer jobs, and cold-call jobs. Retain old
+  category-level bids only as a read-compatible migration fallback; draws and
+  clearing wages use post-specific bids whenever they exist.
+
+- **2026-09-28** — Reconcile every job-market column required by the current
+  sandbox before seeding fake jobs. Copying `CREATE TABLE IF NOT EXISTS` from
+  production is insufficient for older demo tables and must not be treated as
+  a schema migration.
+
+- **2026-09-28** — Seed the demo database once with a synthetic DEMO 101 point-
+  bidding round instead of repeatedly mirroring the live job catalog. Later
+  demo sessions preserve rehearsal bids and edits; resetting the disposable
+  demo database recreates the fake market.
+
+- **2026-09-28** — Give each round three explicit bidding states: **Open now**,
+  **Open on schedule**, and **Closed**. Open now is an instructor override and
+  must bypass both stored hours and the recurring class-time lock. Scheduled
+  mode enforces both; auto-created next rounds begin closed.
+
+- **2026-09-28** — Keep one global class announcement in App Settings and show
+  it near the top of Today for every signed-in student. Saving a blank message
+  hides the card; open sessions poll for changes so no restart is required.
+
+- **2026-09-25** — Point/ticket bids are accepted only for the active point-bidding
+  round and open bid window, must be non-negative whole numbers within budget,
+  and apply only to categories with a non-during drawable post. Allocation reads
+  bids only from the instructor's selected course/section roster.
+
+- **2026-09-24** — Route server-funded Demo Kit generations to GPT-6 Luna
+  and user-funded OpenAI generations and exports to GPT-6 Sol. Use the
+  Responses API for direct OpenAI traffic, retain Chat Completions for
+  OpenRouter, and keep GPT-6 Astra configurable as an escalation model.
+
+- **2026-09-24** — Treat each student-assignment grade as current state, not
+  attempt history. Reimports and manual corrections overwrite the prior value;
+  legacy duplicates collapse to the newest record.
+
+- **2026-09-23** — Grade-upload templates use the same long-form schema as
+  the importer: one row per student and assignment, keyed by persistent
+  `user_id`. Display names and sections are reference-only; grading may use
+  either `score` plus `max_score` or a 0–100 `grade_pct`.
+
+- **2026-09-23** — Keep the Live Tracker's chosen class and section stable
+  across polling re-renders. Reveal/Hide always targets the selected timing
+  group; when no section is active, Reveal opens a non-demo section picker and
+  applies the reveal immediately.
+
+- **2026-09-23** — Put student job status first on Account, keep grade details
+  below the account/profile content, and reserve Today for start/end jobs.
+  During-class cold calls remain in their dedicated live workflow.
+
+- **2026-09-23** — Preserve assigned jobs as student-visible history across
+  later class draws. Derive display state from committed and pending outcomes:
+  unscored is Outstanding, complete is Completed, tried is Tried, missed is Not
+  completed, and absent redraws remain explicit rather than disappearing.
+
+- **2026-09-21** — Never split short control labels character by character.
+  Wrap buttons only between words, keep native file-picker buttons on one line,
+  and allocate grid width according to the control rather than leaving unused
+  columns. Compact repeated scoring actions may use keyed single-letter labels.
+
+
+- **2026-09-21** — Allow class-job-market browser clients to reconnect to a new
+  Shiny session after a network interruption or mobile background suspension.
+  Authentication already survives through the persistent session cookie, and
+  live scores are database-backed, so automatic reconnection is safer and less
+  disruptive than requiring an instructor to reload during class.
+
+- **2026-09-21** — Let enlarged controls reflow instead of shrinking their text.
+  Widen the desktop class-job-market canvas to 1100px, minimize phone edge
+  gutters, wrap button groups and modal actions, and stack dense launch cards
+  on phones. Use shorter labels where the surrounding panel already supplies
+  the context, while retaining explanatory tooltips for ambiguous controls.
+
+- **2026-09-21** — Use a 110% readable default and persistent 90–140% text
+  control for the class-job-market app. Keep primary controls at least 44px
+  tall, increase phone targets to 48px where space permits, and expose the text
+  control on mobile instead of hiding it. Projector-specific layouts remain
+  separately sized.
+
+- **2026-09-21** — Price assignment extensions with one instructor-configured
+  convex power curve instead of discrete duration products. Students choose
+  hours directly within configured limits; the recorded purchase retains the
+  exact hours and charged token cost. Treat extension targets as editable
+  assignments with CSV upsert support.
+
+- **2026-09-21** — Treat sandbox credentials as canonical disposable test
+  state. Reapply demo usernames, password hashes, roles, sections, and active
+  flags on every sandbox bootstrap instead of preserving stale user rows.
+  Reconcile older sandbox user schemas before credential reset so live-only
+  columns cannot make authentication fail as an apparent bad password.
+
+- **2026-09-21** — Treat Today as an unfinished-work view. An assignment rolls
+  off as soon as an outcome enters Audit, and manual Add Back records are
+  hidden from Today by default unless explicitly marked visible for their
+  scheduled date.
+
+- **2026-09-17** — Provide contextual, collapsible tutorial notes rather than
+  a blocking guided tour. A single header switch controls all help notes and
+  remembers the browser's preference locally.
+
+- **2026-09-14** — Draw cold calls uniformly with replacement from the active
+  course/section roster. Track absence per round and exclude marked-absent
+  students immediately; prior call counts do not change draw eligibility.
+
+- **2026-09-14** — Store concise instructions on individual job posts and
+  templates, copy template instructions into each new round, and expose them
+  through collapsed details so job lists remain compact.
+
+- **2026-09-14** — Use one section-scoped reveal toggle with Start, End, and
+  All scopes. The timing rows are authoritative; retire the legacy global
+  override that could reveal assignments outside the selected group.
+
+- **2026-09-14** — Treat assignment timing as a reveal/workflow distinction,
+  not a lecture-index shift. End-of-class jobs such as note taking belong to
+  the lecture that just ended; creating the next lecture remains an explicit
+  Round Setup action.
+
+- **2026-09-13** — Use static JavaScript for deterministic browser-only
+  visualizers and Cloudflare Durable Objects for anonymous shared classroom
+  rooms. Keep Reclaim as the authoritative home for the roster, token ledger,
+  longitudinal student records, and Google integrations; do not add
+  bidirectional synchronization merely to reduce Shiny memory.
+
+- **2026-09-13** — Audited all 17 apps in
+  `CLOUDFLARE_MIGRATION_AUDIT.md` and built `live-wordcloud` as the first
+  Worker/Durable Object pilot. The old Shiny route remains available until the
+  replacement survives a two-phone classroom test.
+
+- **2026-09-13** — Treat every explicit Submit click as a visible word-cloud
+  response. Use a browser/session/click submission key only for idempotence;
+  do not silently replace an earlier response from the same browser.
+
+- **2026-09-13** — Refresh only cloud results on the three-second poll timer;
+  keep question metadata and the response form stable so active typing is never
+  replaced. Put response clearing on the poll page behind password confirmation.
+
+- **2026-09-13** — Separate live-poll participation from projection: stable
+  poll URLs show the response form on student phones, while `display=1` iframe
+  URLs show only the continuously refreshed word cloud and response count.
+
+- **2026-09-13** — Store live-poll questions as SQLite data and address each
+  one through a stable poll URL key. Instructors create, edit, open, close,
+  and clear questions in the password-protected app screen; slide sources only
+  need the generated embed URL.
+
+- **2026-09-09** — Enforce one assigned job per student per round, but allow
+  unlimited cold-call and voluntary score events. Each repeatable event has its
+  own audit row, ledger source ID, commit state, and delayed-credit state.
+
+- **2026-09-09** — Treat an assignment wage as live until its audit event is
+  committed. Pending displays and Complete outcomes use the job post's current
+  effective wage; commit snapshots that wage into `job_assignments` and the
+  ledger permanently.
+
+- **2026-09-09** — Use a fixed outcome scale for all jobs: Complete earns the
+  job wage, Tried earns exactly 1 token, and Missed earns 0. Do not round a
+  fractional wage for Tried.
+
+- **2026-09-09** — Store Live Tracker assignments under `user_id`. Bulk input
+  may identify a student by exact display name or user ID for convenience;
+  `user_id` wins when both CSV columns are populated, and unmatched or
+  ambiguous names must be reported rather than guessed.
+
+- **2026-09-09** — Use one round-trip CSV as the Live Tracker outage
+  fallback: download the scoped roster and job reference before class, record
+  jobs and optional outcomes offline, then bulk-import it into the normal
+  Pending and Audit lifecycle when service returns.
+
+- **2026-09-08** — Store final ECON 342 policy-team assignments in the app's
+  SQLite database and update them through an instructor-only CSV import or
+  per-student manual editor. Raw preferences and blackout dates remain outside
+  the Shiny app.
+
+- **2026-09-08** — Treat Live Tracker rows as an exclusive lifecycle: an
+  assignment is pending until an outcome moves it to audit, audit can return it
+  to pending, and committing removes it from the live workflow. Start- and
+  end-of-class reveal states are independent per section.
+
+- **2026-09-02** — Record slide-panel cold calls as standalone live-score
+  events against the existing Cold Call category, with `answer` or `board` as
+  the outcome; never create per-round job posts from the cold-call control.
+
 - **2026-08-26** — Job catalog simplified to 4 categories / 11 templates matching the actual class routine. Categories represent contribution types (the bidding level); cold-call vs volunteer is a post-level mechanism flag, so "Cold call: answer" and "Volunteer: answer" share one category and one bid.
 - **2026-08-26** — Volunteer pay in wage-bidding rounds is a uniform clearing wage (no per-student pay, no rationing — anyone may volunteer at the going wage). Three switchable rules (lowest bid / k = post slots / k = posted per-class demand) so Kyle can experiment during the semester; students always bid their reservation wage regardless of rule.
 - **2026-08-26** — Bid lock is a recurring schedule (lock before class, reopen that evening) layered on top of optional per-round bid open/close dates, matching the Mon/Wed 12pm teaching schedule.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-19** (Codex, `feature/lightweight-js-apps`) - Implemented the
+  first isolated lightweight static pilots: browser-only Tax Incidence and
+  Airplane Production tools, a minimal Cloudflare Worker asset scaffold and
+  health route, pure-logic/state/CSV/page tests, and a local Worker smoke
+  check. The preview has no production hostname or Cloudflare deployment, and
+  does not access the Shiny database or course records.
+
+- **2026-10-19** (Codex, `feature/lightweight-js-apps`) - Created an isolated
+  lightweight-apps planning branch and added `LIGHTWEIGHT_APPS_PLAN.md`. The
+  plan follows the existing Cloudflare audit: plain JavaScript/TypeScript for
+  deterministic browser tools, Durable Objects for anonymous temporary rooms,
+  and no migration or synchronization of the authoritative Shiny course
+  database until separately decided.
+
+- **2026-10-16** (Codex) - Changed assessment reveal behavior so student Gradebook remains visible: unrevealed linked items are excluded from the displayed calculation until revealed. Also made Account → Pending assignments exclude active problem sets once the student has a recorded grade for the matching gradebook item. App parsing and diff checks pass.
+- **2026-10-16** (Codex) - Added a per-import post-upload gradebook-item selector and Save link control in Assessment display settings. It repairs legacy imports that lack a stored link, enabling the reveal gate to withhold the appropriate overall-grade effect without touching grades. App parsing and diff checks pass.
+- **2026-10-16** (Codex) - Added post-import Assessment display settings in the Gradebook panel. Each import in the active class/section scope can now toggle between immediate display and required reveal without altering summary values or gradebook rows; enabling the gate resets prior reveals. App parsing and diff checks pass.
+- **2026-10-16** (Codex) - Added the per-assessment “students must click Reveal grade” import option. A locked assessment shows only a Reveal button; its linked course-grade breakdown is also withheld until the student reveals it. Reveals persist per student and assessment. R parsing and a disposable SQLite reveal-flow check pass.
+- **2026-10-16** (Codex) - Put each student’s final assessment grade behind a closed “Reveal grade” control; score-detail expansion remains a separate action.
+- **2026-10-16** (Codex) - Restyled the student assessment-detail disclosure as a bordered “Show score details” control so its clickability is obvious.
+- **2026-10-16** (Codex) - Added assessment-summary final-grade write-back controls: an explicit item dropdown, exact-name matching, and a deliberate new-item path. The importer now writes mapped final scores, maximums, and percentages to the selected gradebook item and protects them as manual imports.
+- **2026-10-16** (Codex) - Made `overall_exam_note` a first-class text mapping in the assessment-summary importer. It auto-selects the matching column in a midterm summary and appears as individual feedback on the corresponding student Account card.
+- **2026-10-16** (Codex) - Added an optional assessment-wide note field to the mapped summary importer. It is independent of the cap-adjustment note and appears to students before the collapsed score-detail table.
+- **2026-10-16** (Codex) - Added a section-scoped mapped assessment-summary importer to Class Job Market. It accepts CSV/XLSX, auto-suggests midterm-summary columns, supports arbitrary additional subpart columns, safely skips unmatched roster rows, persists an optional cap-adjustment note, and shows each student’s final grade at a glance with details collapsed in Account. App parsing and diff checks pass; existing smoke/startup suites retain unrelated pre-existing failures.
+- **2026-10-14** (Codex) - Repaired the slide-embedded cold-call login after the Google OAuth migration: the sign-in button now leaves the iframe, nginx forwards the requested return path, the relay stores a validated return path and restores the compact `view=cold-call-slide` panel after authentication, and roster matching is case-insensitive.
+- **2026-10-14** (Codex) - Removed username interpolation from class-job-market tiebreak SQL: all user-id lists now use bound SQLite placeholders. Added Shiny proxy request-size and browser-response protections that preserve normal Shiny WebSockets and slide embeds. The app parses cleanly; the existing smoke test still stops at its volunteer-clearing-wage assertion.
+- **2026-10-07** (Codex) - Fixed the first-load Policy Rubrics panel crash:
+  an ungraded team now supplies an explicit empty score data frame before the
+  criterion cards render. Expanded the server test to render the real Settings
+  panel before exercising draft, release, and gradebook write-back.
+
+- **2026-10-07** (Codex) - Added interactive instructor grading for the policy
+  presentation, progress/revision report, and written brief. Rubrics support
+  editable five-level anchors, criterion and overall feedback, private drafts,
+  released team snapshots, student Account delivery, and optional gradebook
+  write-back. Added startup/scoring assertions, a server-level
+  draft/release/write-back test, and a manual QA script. The container run
+  passed all new coverage; two unrelated pre-existing startup expectations
+  remain failing.
+
+- **2026-10-05** (Codex) - Added topic and draw-probability metadata to Flex Questions, exposed 75/50/25 percent chances to students and admins, and extended private CSV import validation and startup schema tests. The question text remains in the private PubEcon repository rather than the public app repository.
+
+- **2026-10-02** (Codex) - Added persistent course/section scopes with one-, many-, and explicit-all selection; per-scope active job rounds; scoped tracker/draw/redraw/audit rosters; scoped roster, token, gradebook, public-good, coordination-game tracker, and export defaults; course-specific Flex banks; and scope-specific Flex formulas, contributions, thresholds, and reveals. Legacy blank scope settings now select the first actual course and section instead of silently including everyone.
+
+- **2026-10-02** (Codex) - Rebuilt Flex Questions as the Candidate Question
+  Fund: added shared contribution and unlock state, class-wide progress/reveals,
+  token-ledger debits, instructor contribution exports, and immediate refreshes.
+  Settings now accepts either comma-separated thresholds or formulas in q and N,
+  with an eight-question live preview. Added schema and pricing regression
+  assertions; base-R checks confirmed the convex example produces 20, 25, 40,
+  and 65 tokens at N=20.
+
+- **2026-10-02** (Codex) - Made assignment-time wages authoritative in random and point-allocation modes, keeping clearing prices exclusive to wage bidding. Changed Add Assignment Back into a normal selected-date repair that always refreshes Today and job-pool counts. Expanded Last Class Jobs Still Pending from one prior session to every revealed overdue assignment and added its indexed class date to the table.
+
+- **2026-10-01** (Codex) - Connected extension purchases to the generic
+  Cloudflare assignment API. Added per-problem-set Cloudflare assignment and
+  extension-target mapping, persisted sync status/errors, automatic sync after
+  purchase, an admin purchases table with student/user ids and retry controls,
+  CSV round-tripping for the new fields, server-only credential handling, and
+  focused unit/startup coverage. Failed or unconfigured syncs do not reverse or
+  duplicate the token purchase and remain visible for safe retry.
+
+- **2026-09-30** (Codex) - Replaced instructor-facing rounds with date-based Job Market Controls. Selecting a new class date carries job posts and standing bids forward while preserving dated history. Added immutable draw-time wage snapshots for every active post, including volunteer and cold-call wages; both main-job and cold-call Draw close bidding until the configured reopen time (or manual reopen), while Open now remains an explicit override.
+
+- **2026-09-30** (Codex) - Scoped Job Market bid polling to the logged-in student so one student saving wage bids cannot rebuild classmates' dynamic forms and replace their unsaved entries with defaults or zeroes.
+
+- **2026-09-30** (Codex) - Made the Active Lecture selector switch immediately instead of requiring a separate, easily missed button. Random assignment now forces bidding closed on create, update, and startup reconciliation while preserving existing bids for a later switch back. Fixed Live Tracker cache invalidation so changes to a lecture's assignment mode immediately replace its prior wage- or point-bidding display and drive the next draw. Reconciled browser-restored lecture selections on initialization so the selector and active lecture details cannot point at different lecture IDs.
+
+- **2026-09-29** (Codex) - Added per-lecture controls for allowing multiple
+  regular jobs and choosing pay-as-bid or uniform reverse-second-price wage
+  allocation. Applied the multiplicity rule across wage, point, and random
+  draws; kept cold calls independent; made auction-assigned wages authoritative
+  through scoring; and carried both settings into newly created lectures.
+
+- **2026-09-29** (Codex) - Migrated assignment uniqueness from one row
+  per student/lecture to one row per student/job/lecture, updated random, wage,
+  and point allocators plus imports/redraws/student views for multiple jobs, and
+  added editable clearing order to current posts and reusable templates.
+
+- **2026-09-29** (Codex) - Removed existing regular-job assignees from the
+  timed-draw exclusion only for during-class cold calls, kept start/end job
+  exclusivity, and added regression coverage for the timing-specific rule.
+
+- **2026-09-29** (Codex) - Added an Active Lecture selector to Round Setup,
+  routed Today, Job Market, Live Tracker, Jobs, draws, scoring, imports, and
+  reveal actions through the selected lecture, and blocked switches while a
+  draw preview or uncommitted live scores exist.
+
+
+- **2026-09-28** (Codex) - Added a reveal-aware Last Class Jobs section
+  to Today for unfinished non-volunteer assignments from the immediately prior
+  round. Today now distinguishes the newest round from carryover work, while
+  Live Tracker retains access to the pending assignment round.
+
+- **2026-09-28** (Codex) - Fixed wage bidding to render and save one minimum-
+  wage submission for every active job post, calculate draws and clearing wages
+  from those post-specific bids, preserve legacy category bids as a fallback,
+  and added fresh/legacy schema plus same-category per-job regression coverage.
+
+- **2026-09-28** (Codex) - Replaced the misleading bid-open checkbox with
+  Open now / Open on schedule / Closed states. Open now now bypasses expired or
+  future hours and the recurring class lock in both rendered forms and
+  server-side wage/point submission handlers; existing value `1` rounds map
+  directly to the manual override.
+
+- **2026-09-28** (Codex) - Repaired the deployed sandbox upgrade regression:
+  legacy job tables now gain the current category, round, post, template, bid,
+  and assignment columns before fake-job seeding. Added an old-schema
+  reproduction that verifies fake jobs plus the actual Add Job Type and Add Job
+  Post writes, without deleting existing sandbox records.
+
+- **2026-09-28** (Codex) - Added a non-destructive, one-time demo job-market
+  seed with four fake bidding categories/posts, an open ten-ticket practice
+  round, DEMO 101 rosters, and regressions proving later sessions neither
+  duplicate the round nor erase a submitted rehearsal bid.
+
+- **2026-09-28** (Codex) - Added per-round manual bidding enable/pause controls
+  and exact opening/closing hours, made wage and point saves enforce them,
+  refreshed open student sessions after round edits, preserved legacy date-only
+  windows, and added schema/time-window regressions.
+
+- **2026-09-28** (Codex) - Added a persistent class-announcement editor to App
+  Settings and a student-facing announcement card on Today, including blank-to-
+  clear behavior, live polling, a length guard, and startup/source regressions.
+
+- **2026-09-25** (Codex) - Launch-hardened point bidding: fixed cross-section
+  assignments, removed volunteer/during-only categories from the point form,
+  enforced mode/date/budget rules server-side, prevented failed draws from
+  clearing prior assignments, repaired a missing catalog-seed SQL parameter,
+  and made shared helpers testable in isolated app environments. Expanded the
+  scratch-DB regression test; all 210 unit assertions and the market smoke test
+  pass.
+
+- **2026-09-24** (Codex) - Migrated Demo Kit direct OpenAI traffic to the
+  Responses API with GPT-6 Luna/Sol workload routing, typed streaming and
+  output parsing, environment overrides, updated UI copy, and Node contract
+  tests. Migrated the secondary R generator to GPT-6 and retained OpenRouter
+  on its existing Chat Completions contract.
+
+- **2026-09-24** (Codex) - Added a case-insensitive unique grade key, startup
+  cleanup that keeps the newest duplicate, CSV upserts, and a manual grade
+  editor that loads and replaces an existing student-assignment grade.
+
+- **2026-09-23** (Codex) - Replaced the incompatible wide blank gradebook
+  download with an upload-ready long-form CSV containing prefilled user IDs,
+  assignment names, and maximum scores. Added an on-screen column rubric and
+  made imports ignore untouched rows, validate percentages, and honor the
+  upload-panel week tag when a row leaves week_tag blank.
+
+- **2026-09-23** (Codex) - Stabilized Live Tracker class/section selection,
+  filtered demo identities from its pickers, restored a persistent
+  start/end/all Reveal/Hide toggle, and added a section-selection prompt when
+  Reveal is clicked without an active section.
+
+- **2026-09-23** (Codex) - Moved Your Jobs to a prominent Account panel above
+  balances and profile content, moved Grade Breakdown to the bottom, added the
+  explicit "No assigned job." Today state, and removed during-class cold-call
+  assignments from Today's job boxes.
+
+- **2026-09-23** (Codex) - Expanded Account → Job History to 20 assignments
+  with round/date context, status badges, pending-review states, and earned or
+  potential token values. Connected Account to the assignment poll so new draws
+  and scores appear automatically, and added status-model regression coverage.
+
+- **2026-09-21** (Codex) - Removed arbitrary mid-word button wrapping, gave the
+  Live Tracker Clear/Release slot the unused width beside Reveal/Hide, replaced
+  repeated volunteer outcomes with large S/T/M buttons and a visible key,
+  standardized file inputs on a nonbreaking Browse label, and restored spacing
+  between checkbox controls and their labels. Updated responsive assertions.
+
+
+- **2026-09-21** (Codex) - Enabled Shiny's supported automatic new-session
+  reconnection for class-job-market. Phones can now recover after their browser
+  suspends the WebSocket without a manual page reload; the existing login cookie
+  restores the instructor account and persisted live-score records remain
+  available. Added a startup regression assertion for reconnect enablement.
+
+- **2026-09-21** (Codex) - Reflowed the enlarged class-job-market controls on a
+  wider desktop canvas with tighter phone gutters, wrapping button groups and
+  modal actions, stacked phone launch cards, and flexible bid inputs. Shortened
+  crowded action labels while preserving context and tooltips, and added static
+  regression assertions for the responsive width and wrapping rules.
+
+- **2026-09-21** (Codex) - Increased the class-job-market default text scale,
+  repaired and exposed the persistent text-size slider on phones, enlarged
+  buttons and form fields to accessible touch targets, and increased dense
+  mobile table text. Preserved compact projector styling and added static
+  regression assertions for the accessibility rules.
+
+- **2026-09-21** (Codex) - Added a prefilled manual policy-group editor to
+  Settings → Students. Instructors can select one student and update the team,
+  presentation date, course unit, interests, assigned rank, and allocation
+  seed; the student Account profile refreshes immediately. Manual edits and CSV
+  imports now share one tested upsert path.
+
+- **2026-09-21** (Codex) - Replaced fixed extension options with a validated
+  convex pricing formula, student hours slider, configurable shortcut buttons,
+  and live balance preview. Added assignment edit controls, active-state and
+  deadline/solutions-date maintenance, unlimited assignment visibility, and a
+  downloadable CSV bulk upsert workflow with row-level validation. Added
+  startup coverage for settings defaults and representative convex prices.
+
+- **2026-09-21** (Codex) - Fixed locked demo logins by changing sandbox user
+  seeding from insert-only to an idempotent credential reset, then repaired a
+  deployed-only failure where an older sandbox `users` table lacked columns
+  selected by the current login path. Bootstrap now migrates those columns
+  before resetting and verifies Alice and instructor credentials.
+
+- **2026-09-21** (Codex) - Made Today and job-pool fill counts show only
+  unfinished assignments and refresh immediately when an outcome is queued.
+  Added a work date and opt-in Today visibility to Add Assignment Back so
+  historical corrections do not clutter the current class view.
+
+- **2026-09-17** (Codex) - Added a persistent Show help / Hide help switch and
+  concise tutorial sequences for Today, Job Market, Live Tracker, and Settings.
+  Help visibility is stored in browser local storage and remains responsive on
+  phone-sized instructor screens.
+
+- **2026-09-14** (Codex) - Replaced least-called-first cold-call selection
+  with uniform random draws with replacement. Added round-specific absence
+  tracking plus Absent & Redraw controls in both tracker and slide views, and
+  connected assignment-redraw absences to the same exclusion list.
+
+- **2026-09-14** (Codex) - Added optional quick descriptions to job posts and
+  templates, including add/edit forms and round-to-round copying. Student
+  assignment, revealed-job, and job-pool views now show those instructions on
+  click without expanding every card by default.
+
+- **2026-09-14** (Codex) - Consolidated assignment visibility into a stable
+  Start/End/All selector and one reveal/hide toggle. Preserved the selection
+  across tracker refreshes, made All update both timing groups, and removed the
+  legacy global override that revealed every section and timing at once.
+
+- **2026-09-14** (Codex) - Fixed end-of-class draws so note-taking and other
+  end-timed jobs remain indexed to the lecture just completed instead of
+  silently creating and attaching themselves to the next round. Added a smoke
+  regression check and clarified the draw confirmation.
+
+- **2026-09-13** (Codex) - Reproduced production persistence with a submit,
+  full reload, and separate display session. Removed the misleading one-row-
+  per-browser behavior so successive submissions now append and remain visible
+  instead of silently replacing the browser's previous answer.
+
+- **2026-09-13** (Codex) - Fixed the live poll erasing in-progress answers by
+  separating metadata/form invalidation from result polling. Added a compact
+  Clear responses control with modal password confirmation, and passed a real
+  browser test covering five seconds of typing, submission, and clearing.
+  Also propagated `SHINY_PASSWORD` and `LIVE_POLL_BASE_URL` into Shiny worker
+  environments; Shiny Server's login worker otherwise discarded both variables.
+
+- **2026-09-13** (Codex) - Added a scrollbar-free `display=1` projection mode
+  for the live word cloud and changed generated Quarto iframe snippets to use
+  it. The exact container passed its smoke test and a 720-by-420 browser check
+  with content height equal to viewport height.
+
+- **2026-09-13** (Codex) - Generalized the slide word cloud into a reusable
+  poll manager. Added persistent question definitions, URL routing, instructor
+  create/edit/open/close controls, per-question clearing, generated embed URLs,
+  and multi-poll isolation tests.
+
+- **2026-09-13** (Codex) - Added apps/live-wordcloud, a slide-sized
+  dependency-light response form and collision-free flex word cloud. Added
+  response normalization, idempotent submission keys, SQLite persistence, live
+  three-second refresh, password-protected clearing, and a smoke test covering
+  validation, aggregation, and response replacement.
+
+- **2026-09-09** (Codex) - Fixed the bulk importer to classify cold-call and
+  voluntary job posts as repeatable score events. Multiple completed CSV rows
+  for one student now enter Audit independently; only regular assigned jobs
+  trigger already-committed and duplicate-assignment checks.
+
+- **2026-09-09** (Codex) - Removed cross-type student exclusion guards from
+  cold calls and voluntary participation, stopped voluntary commits from
+  overwriting assigned jobs, and added per-event delayed-credit tracking so
+  repeated events commit and release independently.
+
+- **2026-09-09** (Codex) - Verified that Token Admin individual adjustments
+  remain available after job commit for signed balance corrections, preserve
+  the locked job record, and create a separate audited ledger entry; clarified
+  this workflow in the UI.
+
+- **2026-09-09** (Codex) - Changed job wages from draw-time snapshots to
+  commit-time snapshots: Today, Pending, and Audit reflect current post wages,
+  while audit commit locks the final wage and award. Fixed committed-state
+  checks to use the outcome rather than mistaking a token amount for a Boolean,
+  so both two-token completions and zero-token misses lock correctly.
+
+- **2026-09-09** (Codex) - Replaced half-wage rounding with the fixed
+  Complete=wage, Tried=1, Missed=0 rule across live grading, bulk imports,
+  voluntary jobs, and outcome previews; removed the obsolete multiplier UI.
+
+- **2026-09-09** (Codex) - Added all currently revealed start/end job
+  assignments to Today, scoped to the student's section or the instructor's
+  active class/section, so the instructor can project Today instead of Live
+  Tracker.
+
+- **2026-09-09** (Codex) - Moved bulk/offline recovery into a collapsed panel
+  beneath Live Score Audit and clarified that known outcomes should be imported
+  as `complete`, `tried`, or `missed`; only pending work stays blank.
+
+- **2026-09-09** (Codex) - Tightened offline and bulk job recovery so imports
+  persist `user_id`; then added pasted CSV support and exact name-or-ID input
+  with explicit unmatched and ambiguous-student reporting.
+
+- **2026-09-09** (Codex) - Added pasted-list and fallback-CSV bulk job
+  imports, a scoped downloadable offline sheet, exact student and job
+  validation, outcome normalization, and protection for Audit and committed
+  assignments.
+
+- **2026-09-08** (Codex) - Added a policy-group assignment table, instructor
+  CSV importer, and student Account-profile card showing team, presentation
+  date, course unit, and group members.
+
+- **2026-09-08** (Codex) - Rebuilt the Live Tracker flow around disjoint
+  pending, volunteer-eligible, and audit panels; moved audit to the bottom,
+  added explicit audit-to-pending returns and duplicate guards, and separated
+  start and end assignment reveals.
+
+- **2026-09-02** (Codex) - Removed cold-call job-post creation from the
+  embedded slide workflow. Draws now queue a standalone `cold_call` score with
+  an `answer` or `board` outcome and use the existing Cold Call category wage.
 
 - **2026-08-31** (Codex) - Added an authenticated `?view=cold-call-slide`
   mode to `class-job-market` that exposes a compact cold-call draw/record
@@ -175,12 +754,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Sandbox rehearsal before the next class: enter Demo Mode, create a round, run start/end draws, toggle a cold-call template on, draw with the During filter, post volunteer demand, and log volunteers from a phone.
-2. When switching to bidding mid-semester, set the round's assignment mode (wage or application bidding) and verify the bid lock engages at 11:00 AM on a class day; confirm students see volunteer wages.
-3. Design the write-back contract for one-off games (participation/tokens into the semester economy) — the next unchecked build priority.
+1. Deploy the class-job-market build and verify one live assessment-summary import from the Fall 2026 midterm export in its intended class/section scope.
+2. Deploy the cold-call OAuth repair and verify a top-level Google login returns to the compact panel from a published lecture slide.
+3. Complete one end-to-end extension purchase after mapping the active assignment id and target.
 
 ## Questions for Kyle
 
-- In `application_bidding` (point-bid) rounds, volunteers currently earn the post's default wage — clearing wages only apply under wage bidding. Intended until wage bidding starts, or should point bids also price volunteering somehow?
 - Should students see the posted demand k itself, or only the implied wage (current behavior)?
-- One job per student per round is enforced, so cold-call draws only select students without a job that round. Keep, or should cold calls be stackable on top of assigned jobs?

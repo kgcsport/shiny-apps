@@ -41,3 +41,21 @@ Volunteer jobs should remain separate from selection-time jobs. They are useful
 unsolicited contributions, often posted to a forum, such as typo reports,
 recommended slide/material changes, alternative explanations, source checks, or
 relevant policy examples.
+
+
+## Optimal Income Tax: Taxable-Income Response Extension
+
+Extend the existing wage-bidding/token setup; do not build a separate labor-supply game.
+
+- After wages are set, let students choose how to report or receive part of pay:
+  wages, contractor/business income, deferred payment, deduction/avoidance, or
+  unreported cash with an audit lottery and penalty.
+- Vary a marginal rate, a threshold (kink versus notch), the available tax base,
+  and enforcement. Record earnings, taxable income, revenue, and each chosen margin.
+- Teaching payoff: the different behaviors all change taxable income $z$ and
+  therefore the elasticity $e$ used in optimal-income-tax formulas, while their
+  welfare and enforcement implications differ.
+- Optional later module: compare a kink with a notch and visualize bunching.
+
+Keep it modular so it can be switched on only after the core wage-bidding game
+has run cleanly.

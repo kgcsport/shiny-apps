@@ -15,17 +15,28 @@ export SHINY_SIMPLE_SCHEDULER SHINY_APP_IDLE_TIMEOUT APP_SESSION_TIMEOUT_LINE
 RENDERED_CONF="${SHINY_SERVER_CONF:-/tmp/shiny-server.conf}"
 
 mkdir -p /srv/shiny-server/appdata/data /var/log/shiny-server
+# Shiny Server starts the first application worker after this script has
+# finished. Pre-create shared SQLite files so the initial schema pass cannot
+# create them as root before the worker drops to the `shiny` user.
+touch /srv/shiny-server/appdata/data/class-job-market.sqlite
+touch /srv/shiny-server/appdata/data/class-job-market-demo.sqlite
 chown -R shiny:shiny /srv/shiny-server/appdata /var/log/shiny-server 2>/dev/null || true
 
 # Shiny apps run as the 'shiny' user and don't inherit container env vars.
 # Write the vars apps need to R's site-level environment file so all R
 # processes pick them up regardless of which user spawned them.
 R_RENVIRON_SITE="$(Rscript --no-save --no-restore -e 'cat(file.path(R.home("etc"), "Renviron.site"))')"
+# Replace managed values instead of appending duplicates across restarts.
+sed -i "/^GOOGLE_CLIENT_ID=/d; /^GOOGLE_CLIENT_SECRET=/d; /^SHINY_APP_URL=/d; /^ADMIN_EMAILS=/d; /^SHINY_PASSWORD=/d; /^LIVE_POLL_BASE_URL=/d; /^ASSIGNMENT_API_ORIGIN=/d; /^ASSIGNMENT_ADMIN_TOKEN=/d" "$R_RENVIRON_SITE"
 {
   [ -n "${GOOGLE_CLIENT_ID:-}"     ] && printf 'GOOGLE_CLIENT_ID=%s\n'     "$GOOGLE_CLIENT_ID"
   [ -n "${GOOGLE_CLIENT_SECRET:-}" ] && printf 'GOOGLE_CLIENT_SECRET=%s\n' "$GOOGLE_CLIENT_SECRET"
   [ -n "${SHINY_APP_URL:-}"        ] && printf 'SHINY_APP_URL=%s\n'        "$SHINY_APP_URL"
   [ -n "${ADMIN_EMAILS:-}"         ] && printf 'ADMIN_EMAILS=%s\n'         "$ADMIN_EMAILS"
+  [ -n "${SHINY_PASSWORD:-}"       ] && printf 'SHINY_PASSWORD=%s\n'       "$SHINY_PASSWORD"
+  [ -n "${LIVE_POLL_BASE_URL:-}"   ] && printf 'LIVE_POLL_BASE_URL=%s\n'   "$LIVE_POLL_BASE_URL"
+  [ -n "${ASSIGNMENT_API_ORIGIN:-}" ] && printf 'ASSIGNMENT_API_ORIGIN=%s\n' "$ASSIGNMENT_API_ORIGIN"
+  [ -n "${ASSIGNMENT_ADMIN_TOKEN:-}" ] && printf 'ASSIGNMENT_ADMIN_TOKEN=%s\n' "$ASSIGNMENT_ADMIN_TOKEN"
 } >> "$R_RENVIRON_SITE"
 
 awk '
