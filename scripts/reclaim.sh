@@ -7,6 +7,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 COMPOSE=(docker compose)
 PUBLIC_URL="${PUBLIC_URL:-https://shiny.kylecoombs.com/class-job-market/}"
+AUTH_URL="${AUTH_URL:-https://shiny.kylecoombs.com/auth/login}"
 
 usage() {
   cat <<'EOF'
@@ -40,7 +41,7 @@ case "$command" in
   demo-kit)
     git pull --ff-only
     "${COMPOSE[@]}" pull demo-kit
-    "${COMPOSE[@]}" up -d demo-kit
+    "${COMPOSE[@]}" up -d demo-kit nginx
     ;;
   nginx)
     git pull --ff-only
@@ -52,6 +53,9 @@ case "$command" in
   health)
     command -v curl >/dev/null || { echo "curl is required for health checks" >&2; exit 1; }
     curl --fail --silent --show-error --max-time 20 -o /dev/null -w 'HTTP %{http_code} %{url_effective}\n' "$PUBLIC_URL"
+    # A working OAuth relay redirects to Google; a 502/503 indicates the
+    # otherwise-independent demo-kit service is unavailable.
+    curl --fail --silent --show-error --max-time 20 -o /dev/null -w 'HTTP %{http_code} %{url_effective}\n' "$AUTH_URL"
     ;;
   sync)
     "${COMPOSE[@]}" exec -T shiny Rscript /srv/shiny-server/scripts/sync-cloudflare-gradebook.R

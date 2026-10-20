@@ -10,6 +10,8 @@ services:
     depends_on:
       shiny:
         condition: service_healthy
+      demo-kit:
+        condition: service_healthy
 
   shiny:
     image: ${SHINY_IMAGE:-ghcr.io/kgcsport/shiny-apps:latest}
@@ -80,7 +82,9 @@ services:
   # Optional:           DEMO_KIT_DAILY_LIMIT (default 25), DEMO_KIT_EDU_ONLY (default true)
   # Note: Anthropic API key is entered by each user in the UI — not stored on server.
   demo-kit:
-    image: ghcr.io/kgcsport/demo-kit:latest
+    # Set DEMO_KIT_IMAGE to an immutable published tag in the production .env.
+    image: ${DEMO_KIT_IMAGE:-ghcr.io/kgcsport/demo-kit:latest}
+    build: ./apps/demo-kit-site
     restart: always
     ports:
       - "${DEMO_KIT_PORT:-3000}:3000"
@@ -107,3 +111,9 @@ services:
       OPENAI_ESCALATION_MODEL: ${OPENAI_ESCALATION_MODEL:-gpt-6-astra}
       SHINY_BASE_URL: ${SHINY_BASE_URL:-}
       SHINY_DB_PATH: /app/data/class-job-market.sqlite
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.statusCode < 500 ? 0 : 1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s

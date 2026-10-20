@@ -10,6 +10,10 @@ FROM node:22-alpine
 WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
 COPY server.js ./
+# The Shiny OAuth relay imports helpers from this directory at startup.
+# Omitting it causes the container to crash-loop and turns course login
+# requests into 502 responses at the reverse proxy.
+COPY lib/ ./lib/
 COPY public/ ./public/
 COPY templates/ ./templates/
 RUN mkdir -p /app/data
