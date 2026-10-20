@@ -58,7 +58,7 @@ export function startAirplanesExperiment(documentRef = document, storage = local
       const workers = documentRef.createElement("td");
       const output = documentRef.createElement("td");
       const remove = documentRef.createElement("td");
-      firm.append(field("text", row.firm, `Firm ${index + 1}`, value => updateRow(index, { firm: value })));
+      firm.append(field("text", row.firm, `Team ${index + 1}`, value => updateRow(index, { firm: value })));
       workers.append(field("number", row.workers, `Workers ${index + 1}`, value => updateRow(index, { workers: value })));
       const outputField = field("number", row.output, `Planes ${index + 1}`, value => updateRow(index, { output: value }));
       outputField.placeholder = "Enter output";
@@ -129,7 +129,7 @@ export function startAirplanesExperiment(documentRef = document, storage = local
       ...state.history.flatMap(snapshot => snapshot.rows.map(row => ({ ...row, round: snapshot.round }))),
       ...state.rows.map(row => ({ ...row, round: state.round }))
     ];
-    const csv = ["Round,Firm,Workers,Planes_produced", ...rows.map(row => `${row.round},${airplanesCsv([row]).trim().split("\n")[1]}`)].join("\n") + "\n";
+    const csv = ["Round,Team,Workers,Planes_produced", ...rows.map(row => `${row.round},${airplanesCsv([row]).trim().split("\n")[1]}`)].join("\n") + "\n";
     const anchor = documentRef.createElement("a");
     anchor.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
     anchor.download = "airplane-production-all-rounds.csv";
@@ -139,7 +139,7 @@ export function startAirplanesExperiment(documentRef = document, storage = local
   }
 
   $("add").addEventListener("click", () => {
-    state.rows.push(normalizeRows([{ firm: String.fromCharCode(65 + state.rows.length % 26), workers: 1, output: "" }])[0]);
+    state.rows.push(normalizeRows([{ firm: `Team ${String.fromCharCode(65 + state.rows.length % 26)}`, workers: 1, output: "" }])[0]);
     render("Added a row.");
   });
   $("advance").addEventListener("click", () => {

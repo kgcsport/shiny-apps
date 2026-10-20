@@ -16,7 +16,7 @@ test("legacy row-only local saves gain empty round histories safely", () => {
 });
 
 test("airplane CSV quotes data safely", () => {
-  assert.equal(airplanesCsv([{ firm: "A, team", workers: 2, output: 9 }]), "Firm,Workers,Planes_produced\n\"A, team\",2,9\n");
+  assert.equal(airplanesCsv([{ firm: "A, team", workers: 2, output: 9 }]), "Team,Workers,Planes_produced\n\"A, team\",2,9\n");
 });
 
 test("advance round archives completed work and retains each firm's workers", () => {

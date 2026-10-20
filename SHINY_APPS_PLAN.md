@@ -423,6 +423,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-20** (Codex, `feature/lightweight-js-apps`) - Renamed the
+  Airplane Production interface, defaults, and CSV headers from firms to
+  teams. Existing browser-local records stay compatible while new rows use
+  Team A/B/C-style names.
+
 - **2026-10-20** (Codex, `feature/lightweight-js-apps`) - Added guarded
   **Back one round** control to Airplane Production. It restores the saved
   prior round without discarding the active round: that draft is preserved for

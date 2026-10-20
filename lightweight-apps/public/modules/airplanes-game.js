@@ -1,7 +1,7 @@
 export const INITIAL_ROWS = Object.freeze([
-  { firm: "A", workers: 1, output: "" },
-  { firm: "B", workers: 1, output: "" },
-  { firm: "C", workers: 1, output: "" }
+  { firm: "Team A", workers: 1, output: "" },
+  { firm: "Team B", workers: 1, output: "" },
+  { firm: "Team C", workers: 1, output: "" }
 ]);
 
 export function normalizeRows(rows) {
@@ -76,5 +76,5 @@ function escapeCsv(value) {
 }
 
 export function airplanesCsv(rows) {
-  return ["Firm,Workers,Planes_produced", ...normalizeRows(rows).map(row => [row.firm, row.workers, row.output].map(escapeCsv).join(","))].join("\n") + "\n";
+  return ["Team,Workers,Planes_produced", ...normalizeRows(rows).map(row => [row.firm, row.workers, row.output].map(escapeCsv).join(","))].join("\n") + "\n";
 }
