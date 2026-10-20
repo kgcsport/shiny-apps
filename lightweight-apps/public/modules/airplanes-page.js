@@ -5,6 +5,7 @@ import {
   forwardRound,
   normalizeExperimentState,
   normalizeRows,
+  renameTeamAcrossRounds,
   rewindRound,
   roundChartPoints
 } from "/modules/airplanes-game.js";
@@ -34,6 +35,9 @@ export function startAirplanesExperiment(documentRef = document, storage = local
 
   function updateRow(index, patch) {
     state.rows[index] = normalizeRows([{ ...state.rows[index], ...patch }])[0];
+    if (Object.hasOwn(patch, "firm")) {
+      state = renameTeamAcrossRounds(state, state.rows[index].id, state.rows[index].firm);
+    }
     // Do not rebuild the table while someone is typing: replacing the input
     // element would drop its focus after every character.
     renderChart();

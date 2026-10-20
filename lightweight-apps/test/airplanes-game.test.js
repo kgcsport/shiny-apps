@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { advanceRound, airplanesCsv, chartPoints, forwardRound, normalizeExperimentState, normalizeRows, rewindRound, roundChartPoints } from "../public/modules/airplanes-game.js";
+import { advanceRound, airplanesCsv, chartPoints, forwardRound, normalizeExperimentState, normalizeRows, renameTeamAcrossRounds, rewindRound, roundChartPoints } from "../public/modules/airplanes-game.js";
 
 test("airplane rows preserve blank outputs but chart only uses completed observations", () => {
   const rows = normalizeRows([{ firm: "A", workers: 1, output: "" }, { firm: "B", workers: 2, output: 9 }]);
@@ -75,4 +75,15 @@ test("round history and cumulative plot have no three-round limit", () => {
   assert.equal(state.history.length, 8);
   assert.equal(roundChartPoints(state).length, 8);
   assert.deepEqual(roundChartPoints(state).map(point => point.round), [1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
+test("renaming a team updates completed, active, and saved-forward rounds", () => {
+  const state = {
+    round: 2,
+    rows: [{ id: "team-a", firm: "Team A", workers: 2, output: 8 }],
+    history: [{ round: 1, rows: [{ id: "team-a", firm: "Team A", workers: 1, output: 3 }] }],
+    future: [{ round: 3, rows: [{ id: "team-a", firm: "Team A", workers: 4, output: 15 }] }]
+  };
+  const renamed = renameTeamAcrossRounds(state, "team-a", "Blue Jays");
+  assert.deepEqual([renamed.history[0].rows[0].firm, renamed.rows[0].firm, renamed.future[0].rows[0].firm], ["Blue Jays", "Blue Jays", "Blue Jays"]);
 });

@@ -70,6 +70,17 @@ export function forwardRound(state, completedAt = new Date().toISOString()) {
   };
 }
 
+export function renameTeamAcrossRounds(state, teamId, teamName) {
+  const name = String(teamName ?? "").trim();
+  const rename = rows => rows.map(row => row.id === teamId ? { ...row, firm: name } : row);
+  return {
+    ...state,
+    rows: rename(state.rows || []),
+    history: (state.history || []).map(snapshot => ({ ...snapshot, rows: rename(snapshot.rows || []) })),
+    future: (state.future || []).map(snapshot => ({ ...snapshot, rows: rename(snapshot.rows || []) }))
+  };
+}
+
 function escapeCsv(value) {
   const string = String(value ?? "");
   return /[",\n]/.test(string) ? `"${string.replaceAll('"', '""')}"` : string;

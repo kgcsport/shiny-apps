@@ -423,6 +423,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-20** (Codex, `feature/lightweight-js-apps`) - Made Airplane
+  Production team-name edits apply to the same stable team across completed,
+  current, and saved-forward rounds, so cumulative chart labels and exports
+  stay consistent.
+
 - **2026-10-20** (Codex, `feature/lightweight-js-apps`) - Fixed Airplane
   Production live entry focus loss: editing a team row now updates only the
   chart and local state, rather than rebuilding the table and forcing a click
