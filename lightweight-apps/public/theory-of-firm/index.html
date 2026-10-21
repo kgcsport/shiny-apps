@@ -38,6 +38,7 @@
           </div>
           <label class="checkbox"><input id="atc" type="checkbox" checked> Show ATC and AVC</label>
         </fieldset>
+        <div id="summary" class="summary panel firm-outcome" aria-live="polite"></div>
         <button class="button" id="download">Download solution (CSV)</button>
         <p id="status" class="status error"></p>
       </aside>
@@ -50,7 +51,6 @@
           <h2>Total revenue, total cost, and profit by quantity</h2>
           <svg id="boxes" class="chart consumer-chart" viewBox="0 0 720 360" role="img" aria-label="Total revenue, total cost, and profit curves across quantities, with profit at optimal output highlighted"></svg>
         </section>
-        <div id="summary" class="summary panel" aria-live="polite"></div>
       </section>
     </section>
   </main>

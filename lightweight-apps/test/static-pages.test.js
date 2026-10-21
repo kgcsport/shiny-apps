@@ -32,6 +32,7 @@ test("static pilots reference their local calculation modules and accessible cha
   assert.match(firmModule, /Equilibrium quantity/);
   assert.match(firmModule, /Equilibrium price/);
   assert.match(firmModule, /const dollars/);
+  assert.ok(firm.indexOf('id="summary"') < firm.indexOf('id="download"'), "firm outcome should appear above the download button");
 });
 
 test("inline page modules remain valid JavaScript", async () => {
