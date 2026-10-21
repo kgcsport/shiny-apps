@@ -18,3 +18,12 @@ test("demand schedules follow the selected good and preference model", () => {
   assert.deepEqual(demandSchedule({ ...base, type: UTILITY_TYPES.PERFECT_COMPLEMENTS, demandFor: "x" }).map(row => row.quantity), [20, 100 / 7, 100 / 9]);
   assert.deepEqual(demandSchedule({ ...base, type: UTILITY_TYPES.QUASILINEAR, demandFor: "y" }).map(row => row.quantity), [.5, 1 / 6, .1]);
 });
+
+test("quadratic quasilinear utility generates a straight interior X demand", () => {
+  const input = { type: UTILITY_TYPES.QUADRATIC_QUASILINEAR, income: 100, px: 2, py: 4, alpha: 4, curvature: .2 };
+  const optimum = calculateOptimum(input);
+  assert.equal(optimum.x, 17.5);
+  assert.equal(optimum.y, 16.25);
+  const schedule = demandSchedule({ ...input, demandFor: "x", priceMin: 2, priceMax: 6, nPoints: 3 });
+  assert.deepEqual(schedule.map(row => row.quantity), [17.5, 15, 12.5]);
+});

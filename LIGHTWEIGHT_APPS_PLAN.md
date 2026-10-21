@@ -155,3 +155,8 @@ Shiny default it must meet all of these:
   original Cobb–Douglas, perfect-substitutes, perfect-complements, and
   quasilinear equations. Formula fixtures and JavaScript syntax checks pass;
   local visual review remains before acceptance.
+- **2026-10-21** — Corrected the consumer-choice pilot so fixed preference
+  parameters produce a fixed indifference map: price and income changes move
+  the budget constraint rather than re-centering curves or auto-rescaling the
+  axes. The original logarithmic quasilinear model is now named accurately;
+  an explicit quadratic-quasilinear option supplies straight interior X demand.
