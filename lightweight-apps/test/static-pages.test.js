@@ -27,6 +27,8 @@ test("static pilots reference their local calculation modules and accessible cha
   assert.match(firm, /Show ATC and AVC/);
   assert.match(firm, /P max/);
   assert.match(firm, /Total revenue, total cost, and profit by quantity/);
+  const firmModule = await readFile(new URL("../public/modules/theory-of-firm-page.js", import.meta.url), "utf8");
+  assert.match(firmModule, /const maxQ = input\.qMax/);
 });
 
 test("inline page modules remain valid JavaScript", async () => {

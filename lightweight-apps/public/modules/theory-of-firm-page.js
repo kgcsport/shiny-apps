@@ -95,7 +95,8 @@ function drawMarginalChart(model, input) {
 function drawTotalsChart(model, input) {
   const svg = $("boxes");
   const width = 720, height = 360, left = 64, right = 20, top = 20, bottom = 58;
-  const maxQ = Math.min(input.qMax, input.A / input.B);
+  // Keep the same quantity scale as the upper diagram so vertical positions align.
+  const maxQ = input.qMax;
   const samples = Array.from({ length: 241 }, (_, i) => maxQ * i / 240);
   const revenue = q => model.tr(q);
   const cost = q => model.tc(q);
