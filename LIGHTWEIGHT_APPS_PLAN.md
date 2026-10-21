@@ -163,3 +163,6 @@ Shiny default it must meet all of these:
 - **2026-10-21** — Stack the consumer-choice chart above demand and center the
   displayed indifference levels on the current optimum. This guarantees the
   choice curve through the bundle is visible while retaining fixed graph axes.
+- **2026-10-21** — Clip consumer-choice graph layers to their labeled plotting
+  rectangles. The quadratic-quasilinear formula now appears above its controls
+  with parameter labels tied to demand intercept and diminishing marginal utility.

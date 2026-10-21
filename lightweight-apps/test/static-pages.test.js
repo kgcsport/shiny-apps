@@ -21,6 +21,7 @@ test("static pilots reference their local calculation modules and accessible cha
   assert.match(airplanes, /Download all rounds/);
   assert.match(consumer, /\/modules\/indifference-page\.js/);
   assert.match(consumer, /role="img"/);
+  assert.match(consumer, /U = Y \+ aX − \(b\/2\)X²/);
 });
 
 test("inline page modules remain valid JavaScript", async () => {
@@ -40,6 +41,8 @@ test("inline page modules remain valid JavaScript", async () => {
   const consumerModule = fileURLToPath(new URL("../public/modules/indifference-page.js", import.meta.url));
   const consumerCheck = spawnSync(process.execPath, ["--check", consumerModule], { encoding: "utf8" });
   assert.equal(consumerCheck.status, 0, consumerCheck.stderr);
+  const consumerSource = await readFile(consumerModule, "utf8");
+  assert.match(consumerSource, /clip-path/);
 });
 
 test("airplane live entry does not rebuild the focused table on every keystroke", async () => {
