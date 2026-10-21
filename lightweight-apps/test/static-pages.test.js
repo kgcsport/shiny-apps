@@ -21,7 +21,7 @@ test("static pilots reference their local calculation modules and accessible cha
   assert.match(airplanes, /Download all rounds/);
   assert.match(consumer, /\/modules\/indifference-page\.js/);
   assert.match(consumer, /role="img"/);
-  assert.match(consumer, /U = Y \+ aX − \(b\/2\)X²/);
+  assert.match(consumer, /id="formula-explainer"/);
 });
 
 test("inline page modules remain valid JavaScript", async () => {
