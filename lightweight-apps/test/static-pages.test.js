@@ -25,6 +25,7 @@ test("static pilots reference their local calculation modules and accessible cha
   assert.match(consumer, /id="formula-explainer"/);
   assert.match(firm, /\/modules\/theory-of-firm-page\.js/);
   assert.match(firm, /Show ATC and AVC/);
+  assert.match(firm, /P max/);
   assert.match(firm, /Total revenue, total cost, and profit by quantity/);
 });
 

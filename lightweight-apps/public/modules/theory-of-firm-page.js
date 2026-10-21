@@ -46,6 +46,13 @@ function axes(svg, { x, y, qMax, yMin = 0, yMax, width, height, left, bottom }) 
   add(svg, "text", { x: (left + width - 20) / 2, y: height - 12, class: "label", "text-anchor": "middle" }, "Quantity (Q)");
 }
 
+function clippedLayer(svg, id, left, top, width, height, right, bottom) {
+  const defs = add(svg, "defs");
+  const clip = add(defs, "clipPath", { id });
+  add(clip, "rect", { x: left, y: top, width: width - left - right, height: height - top - bottom });
+  return add(svg, "g", { "clip-path": `url(#${id})` });
+}
+
 function directLabel(svg, curve, maxQ, yMin, yMax, x, y) {
   for (let i = 0; i < 100; i += 1) {
     const q = maxQ * (0.88 - i * 0.0075);
@@ -60,12 +67,13 @@ function directLabel(svg, curve, maxQ, yMin, yMax, x, y) {
 function drawMarginalChart(model, input) {
   const svg = $("chart");
   const width = 720, height = 440, left = 64, right = 20, top = 20, bottom = 58;
-  const yMax = +$("yMax").value;
+  const yMax = +$("pMax").value;
   const x = q => left + q / input.qMax * (width - left - right);
   const y = value => top + (1 - value / yMax) * (height - top - bottom);
   svg.replaceChildren();
   axes(svg, { x, y, qMax: input.qMax, yMax, width, height, left, bottom });
   add(svg, "text", { x: left, y: 14, class: "label" }, "Price, revenue, and cost per unit");
+  const plot = clippedLayer(svg, "marginal-plot-clip", left, top, width, height, right, bottom);
   const curves = [
     { name: "Demand", fn: model.demand, color: "#1769aa", width: 3 },
     { name: "MR", fn: model.mrCurve, color: "#7c3aed", width: 3 },
@@ -76,11 +84,11 @@ function drawMarginalChart(model, input) {
     { name: "AVC", fn: q => q > 0.1 ? model.avc(q) : NaN, color: "#0f766e", width: 2, dash: "3 3", labelOffset: 10 }
   );
   curves.forEach(curve => {
-    add(svg, "path", { d: linePath(curve.fn, input.qMax, x, y), fill: "none", stroke: curve.color, "stroke-width": curve.width, "stroke-dasharray": curve.dash || "" });
+    add(plot, "path", { d: linePath(curve.fn, input.qMax, x, y), fill: "none", stroke: curve.color, "stroke-width": curve.width, "stroke-dasharray": curve.dash || "" });
     directLabel(svg, curve, input.qMax, 0, yMax, x, y);
   });
-  add(svg, "line", { x1: x(model.q), y1: y(0), x2: x(model.q), y2: y(model.price), class: "reference" });
-  add(svg, "circle", { cx: x(model.q), cy: y(model.mcAtQ), r: 5, class: "optimum" });
+  add(plot, "line", { x1: x(model.q), y1: y(0), x2: x(model.q), y2: y(model.price), class: "reference" });
+  add(plot, "circle", { cx: x(model.q), cy: y(model.mcAtQ), r: 5, class: "optimum" });
   add(svg, "text", { x: x(model.q) + 7, y: y(model.mcAtQ) + 18, class: "value-label" }, `Q* = ${format(model.q)}`);
 }
 
@@ -103,7 +111,8 @@ function drawTotalsChart(model, input) {
   svg.replaceChildren();
   axes(svg, { x, y, qMax: maxQ, yMin: scaledMin, yMax: scaledMax, width, height, left, bottom });
   add(svg, "text", { x: left, y: 14, class: "label" }, "Total dollars");
-  add(svg, "line", { x1: x(0), y1: y(0), x2: x(maxQ), y2: y(0), stroke: "#64748b", "stroke-width": 1.5, "stroke-dasharray": "4 4" });
+  const plot = clippedLayer(svg, "totals-plot-clip", left, top, width, height, right, bottom);
+  add(plot, "line", { x1: x(0), y1: y(0), x2: x(maxQ), y2: y(0), stroke: "#64748b", "stroke-width": 1.5, "stroke-dasharray": "4 4" });
   add(svg, "text", { x: x(maxQ) - 4, y: y(0) - 5, class: "value-label", "text-anchor": "end" }, "zero profit");
   const profitColor = model.profit < 0 ? "#a21c34" : "#19723b";
   const curves = [
@@ -112,12 +121,12 @@ function drawTotalsChart(model, input) {
     { name: "Profit", fn: profit, color: profitColor, width: 3, dash: "7 3" }
   ];
   curves.forEach(curve => {
-    add(svg, "path", { d: linePath(curve.fn, maxQ, x, y), fill: "none", stroke: curve.color, "stroke-width": curve.width, "stroke-dasharray": curve.dash || "" });
+    add(plot, "path", { d: linePath(curve.fn, maxQ, x, y), fill: "none", stroke: curve.color, "stroke-width": curve.width, "stroke-dasharray": curve.dash || "" });
     directLabel(svg, curve, maxQ, scaledMin, scaledMax, x, y);
   });
-  add(svg, "line", { x1: x(model.q), y1: y(model.totalRevenue), x2: x(model.q), y2: y(model.totalCost), stroke: model.profit >= 0 ? "#19723b" : "#a21c34", "stroke-width": 7, opacity: ".72" });
-  add(svg, "circle", { cx: x(model.q), cy: y(model.totalRevenue), r: 4, fill: "#1769aa" });
-  add(svg, "circle", { cx: x(model.q), cy: y(model.totalCost), r: 4, fill: "#c2410c" });
+  add(plot, "line", { x1: x(model.q), y1: y(model.totalRevenue), x2: x(model.q), y2: y(model.totalCost), stroke: model.profit >= 0 ? "#19723b" : "#a21c34", "stroke-width": 7, opacity: ".72" });
+  add(plot, "circle", { cx: x(model.q), cy: y(model.totalRevenue), r: 4, fill: "#1769aa" });
+  add(plot, "circle", { cx: x(model.q), cy: y(model.totalCost), r: 4, fill: "#c2410c" });
   add(svg, "text", { x: x(model.q) + 8, y: (y(model.totalRevenue) + y(model.totalCost)) / 2 - 6, class: "value-label" }, `${model.profit >= 0 ? "Profit" : "Loss"} at Q*`);
 }
 
