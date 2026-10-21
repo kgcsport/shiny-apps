@@ -103,10 +103,13 @@ function drawTotalsChart(model, input) {
   svg.replaceChildren();
   axes(svg, { x, y, qMax: maxQ, yMin: scaledMin, yMax: scaledMax, width, height, left, bottom });
   add(svg, "text", { x: left, y: 14, class: "label" }, "Total dollars");
+  add(svg, "line", { x1: x(0), y1: y(0), x2: x(maxQ), y2: y(0), stroke: "#64748b", "stroke-width": 1.5, "stroke-dasharray": "4 4" });
+  add(svg, "text", { x: x(maxQ) - 4, y: y(0) - 5, class: "value-label", "text-anchor": "end" }, "zero profit");
+  const profitColor = model.profit < 0 ? "#a21c34" : "#19723b";
   const curves = [
     { name: "Total revenue", fn: revenue, color: "#1769aa", width: 3 },
     { name: "Total cost", fn: cost, color: "#c2410c", width: 3 },
-    { name: "Profit", fn: profit, color: "#19723b", width: 3, dash: "7 3" }
+    { name: "Profit", fn: profit, color: profitColor, width: 3, dash: "7 3" }
   ];
   curves.forEach(curve => {
     add(svg, "path", { d: linePath(curve.fn, maxQ, x, y), fill: "none", stroke: curve.color, "stroke-width": curve.width, "stroke-dasharray": curve.dash || "" });
