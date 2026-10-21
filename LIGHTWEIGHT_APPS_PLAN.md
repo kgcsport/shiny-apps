@@ -166,3 +166,5 @@ Shiny default it must meet all of these:
 - **2026-10-21** — Clip consumer-choice graph layers to their labeled plotting
   rectangles. The quadratic-quasilinear formula now appears above its controls
   with parameter labels tied to demand intercept and diminishing marginal utility.
+- **2026-10-21** — Show a bold formula and italic parameter interpretation for
+  every consumer-preference type, not solely the quasilinear alternatives.

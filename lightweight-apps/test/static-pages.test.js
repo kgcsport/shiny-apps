@@ -43,6 +43,7 @@ test("inline page modules remain valid JavaScript", async () => {
   assert.equal(consumerCheck.status, 0, consumerCheck.stderr);
   const consumerSource = await readFile(consumerModule, "utf8");
   assert.match(consumerSource, /clip-path/);
+  for (const formula of ["X<sup>α</sup>Y<sup>1−α</sup>", "αX + (1−α)Y", "min(X, Y)", "X + α ln(Y)", "Y + aX − (b\/2)X²"]) assert.match(consumerSource, new RegExp(formula.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
 test("airplane live entry does not rebuild the focused table on every keystroke", async () => {
