@@ -77,6 +77,10 @@ R/Shiny version and JavaScript port can be compared with fixture tests.
 - [x] Port `indifference-to-demand`: four utility models, SVG choice and demand
   diagrams, responsive controls, and optional equilibrium table. *(2026-10-20:
   pure-formula fixtures pass; awaiting local visual review.)*
+- [x] Port `theory-of-firm`: labeled demand, marginal-revenue, marginal-cost,
+  ATC, and AVC curves, plus dynamic total-revenue, total-cost, and profit
+  diagrams. *(2026-10-21: formula and static-page checks pass; awaiting local
+  visual review.)*
 - [ ] Compare fixed input fixtures with the R output and manually test Chrome,
   Safari/iOS, and a projected 16:9 display.
 - [ ] Publish preview-only URLs and use them in one live class while retaining
@@ -168,3 +172,8 @@ Shiny default it must meet all of these:
   with parameter labels tied to demand intercept and diminishing marginal utility.
 - **2026-10-21** — Show a bold formula and italic parameter interpretation for
   every consumer-preference type, not solely the quasilinear alternatives.
+- **2026-10-21** — Add the theory-of-firm static pilot. Its lower diagram now
+  shows total revenue, total cost, and profit over the full quantity range,
+  rather than fixed rectangles only at Q*. Direct curve labels and both ATC
+  and AVC are available in the marginal diagram. The CSV now exports numeric
+  marginal cost at Q*.

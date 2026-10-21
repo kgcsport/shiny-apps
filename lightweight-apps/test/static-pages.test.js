@@ -8,10 +8,11 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 test("static pilots reference their local calculation modules and accessible charts", async () => {
-  const [tax, airplanes, consumer] = await Promise.all([
+  const [tax, airplanes, consumer, firm] = await Promise.all([
     readFile(new URL("../public/tax-incidence/index.html", import.meta.url), "utf8"),
     readFile(new URL("../public/airplanes-game/index.html", import.meta.url), "utf8"),
-    readFile(new URL("../public/indifference-to-demand/index.html", import.meta.url), "utf8")
+    readFile(new URL("../public/indifference-to-demand/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/theory-of-firm/index.html", import.meta.url), "utf8")
   ]);
   assert.match(tax, /type="module"/);
   assert.match(tax, /\/modules\/tax-incidence\.js/);
@@ -22,6 +23,9 @@ test("static pilots reference their local calculation modules and accessible cha
   assert.match(consumer, /\/modules\/indifference-page\.js/);
   assert.match(consumer, /role="img"/);
   assert.match(consumer, /id="formula-explainer"/);
+  assert.match(firm, /\/modules\/theory-of-firm-page\.js/);
+  assert.match(firm, /Show ATC and AVC/);
+  assert.match(firm, /Total revenue, total cost, and profit by quantity/);
 });
 
 test("inline page modules remain valid JavaScript", async () => {

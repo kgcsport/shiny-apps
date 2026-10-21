@@ -5,6 +5,7 @@ export function evaluateFirm({ A=80, B=2, F=0, a=40, b=-2, c=.02, d=.0005, qMax=
   const limit=Math.min(qMax,A/B), steps=2400; let q=0, profit=-F;
   for(let i=1;i<=steps;i++){const candidate=limit*i/steps, value=demand(candidate)*candidate-tc(candidate);if(value>profit){q=candidate;profit=value;}}
   const price=demand(q), totalRevenue=price*q, totalCost=tc(q), atc=q>0?totalCost/q:NaN;
-  return { q, price, mr:mr(q), mcAtQ:mc(q), totalRevenue, totalCost, atc, profit:totalRevenue-totalCost, demand, mrCurve:mr, mc, tc };
+  const avc=q=>q>0?(tc(q)-F)/q:NaN;
+  return { q, price, mr:mr(q), mcAtQ:mc(q), totalRevenue, totalCost, atc, profit:totalRevenue-totalCost, demand, mrCurve:mr, mc, tc, avc, tr:q=>demand(q)*q };
 }
-export function firmCsv(parameters) { const e=evaluateFirm(parameters); return "quantity,price,marginal_revenue,marginal_cost,total_revenue,total_cost,average_total_cost,profit\n"+[e.q,e.price,e.mr,e.mc,e.totalRevenue,e.totalCost,e.atc,e.profit].join(",")+"\n"; }
+export function firmCsv(parameters) { const e=evaluateFirm(parameters); return "quantity,price,marginal_revenue,marginal_cost,total_revenue,total_cost,average_total_cost,profit\n"+[e.q,e.price,e.mr,e.mcAtQ,e.totalRevenue,e.totalCost,e.atc,e.profit].join(",")+"\n"; }
