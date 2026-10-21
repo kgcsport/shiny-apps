@@ -160,3 +160,6 @@ Shiny default it must meet all of these:
   the budget constraint rather than re-centering curves or auto-rescaling the
   axes. The original logarithmic quasilinear model is now named accurately;
   an explicit quadratic-quasilinear option supplies straight interior X demand.
+- **2026-10-21** — Stack the consumer-choice chart above demand and center the
+  displayed indifference levels on the current optimum. This guarantees the
+  choice curve through the bundle is visible while retaining fixed graph axes.

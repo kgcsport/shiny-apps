@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateOptimum, demandSchedule, UTILITY_TYPES } from "../public/modules/indifference-to-demand.js";
+import { calculateOptimum, demandSchedule, indifferenceCurves, UTILITY_TYPES } from "../public/modules/indifference-to-demand.js";
 
 test("consumer-choice optima match the Shiny reference models", () => {
   const input = { income: 100, px: 2, py: 4, alpha: .5 };
@@ -26,4 +26,10 @@ test("quadratic quasilinear utility generates a straight interior X demand", () 
   assert.equal(optimum.y, 16.25);
   const schedule = demandSchedule({ ...input, demandFor: "x", priceMin: 2, priceMax: 6, nPoints: 3 });
   assert.deepEqual(schedule.map(row => row.quantity), [17.5, 15, 12.5]);
+});
+
+test("displayed utility levels can be centered on the current optimum", () => {
+  const optimum = calculateOptimum({ type: UTILITY_TYPES.COBB_DOUGLAS, income: 100, px: 2, py: 4, alpha: .5 });
+  const curves = indifferenceCurves({ type: UTILITY_TYPES.COBB_DOUGLAS, utilityReference: optimum.utility, alpha: .5, xMax: 60, yMax: 30, count: 3, increment: 10 });
+  assert.equal(curves[1].level, optimum.utility);
 });
