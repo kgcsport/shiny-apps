@@ -3,6 +3,7 @@ import { evaluateFirm, firmCsv } from "/modules/theory-of-firm.js";
 const $ = id => document.getElementById(id);
 const SVG = "http://www.w3.org/2000/svg";
 const format = value => Number.isFinite(value) ? value.toFixed(2) : "—";
+const dollars = value => `$${format(value)}`;
 
 function add(parent, name, attributes = {}, text = "") {
   const element = document.createElementNS(SVG, name);
@@ -128,7 +129,7 @@ function drawTotalsChart(model, input) {
   add(plot, "line", { x1: x(model.q), y1: y(model.totalRevenue), x2: x(model.q), y2: y(model.totalCost), stroke: model.profit >= 0 ? "#19723b" : "#a21c34", "stroke-width": 7, opacity: ".72" });
   add(plot, "circle", { cx: x(model.q), cy: y(model.totalRevenue), r: 4, fill: "#1769aa" });
   add(plot, "circle", { cx: x(model.q), cy: y(model.totalCost), r: 4, fill: "#c2410c" });
-  add(svg, "text", { x: x(model.q) + 8, y: (y(model.totalRevenue) + y(model.totalCost)) / 2 - 6, class: "value-label" }, `${model.profit >= 0 ? "Profit" : "Loss"} at Q*`);
+  add(svg, "text", { x: x(model.q) + 8, y: (y(model.totalRevenue) + y(model.totalCost)) / 2 - 6, class: "value-label" }, `${model.profit >= 0 ? "Profit" : "Loss"} at Q*: ${dollars(Math.abs(model.profit))}`);
 }
 
 function draw() {
@@ -139,7 +140,7 @@ function draw() {
     drawTotalsChart(model, input);
     $("A-v").value = format(input.A);
     $("B-v").value = format(input.B);
-    $("summary").innerHTML = `<strong>Profit-maximizing outcome</strong><span>Q*: <b>${format(model.q)}</b></span><span>P*: <b>${format(model.price)}</b></span><span>TR: <b>${format(model.totalRevenue)}</b></span><span>TC: <b>${format(model.totalCost)}</b></span><span>${model.profit >= 0 ? "Profit" : "Loss"}: <b>${format(Math.abs(model.profit))}</b></span>`;
+    $("summary").innerHTML = `<strong>Profit-maximizing outcome</strong><span>Equilibrium quantity: <b>${format(model.q)} units</b></span><span>Equilibrium price: <b>${dollars(model.price)} per unit</b></span><span>Total revenue: <b>${dollars(model.totalRevenue)}</b></span><span>Total cost: <b>${dollars(model.totalCost)}</b></span><span>${model.profit >= 0 ? "Profit" : "Loss"}: <b>${dollars(Math.abs(model.profit))}</b></span>`;
     $("status").textContent = "";
   } catch (error) {
     $("status").textContent = error.message;
