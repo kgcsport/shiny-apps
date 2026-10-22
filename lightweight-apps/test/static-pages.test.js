@@ -8,12 +8,13 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 test("static pilots reference their local calculation modules and accessible charts", async () => {
-  const [tax, airplanes, consumer, firm, restricted] = await Promise.all([
+  const [tax, airplanes, consumer, firm, restricted, wordcloud] = await Promise.all([
     readFile(new URL("../public/tax-incidence/index.html", import.meta.url), "utf8"),
     readFile(new URL("../public/airplanes-game/index.html", import.meta.url), "utf8"),
     readFile(new URL("../public/indifference-to-demand/index.html", import.meta.url), "utf8"),
     readFile(new URL("../public/theory-of-firm/index.html", import.meta.url), "utf8"),
-    readFile(new URL("../public/restricted-seller-game/index.html", import.meta.url), "utf8")
+    readFile(new URL("../public/restricted-seller-game/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/live-wordcloud/index.html", import.meta.url), "utf8")
   ]);
   assert.match(tax, /type="module"/);
   assert.match(tax, /\/modules\/tax-incidence\.js/);
@@ -40,6 +41,9 @@ test("static pilots reference their local calculation modules and accessible cha
   const restrictedModule = await readFile(new URL("../public/modules/restricted-seller-page.js", import.meta.url), "utf8");
   assert.match(restrictedModule, /const view = \{ setup, r1: r1Trading/);
   assert.match(restrictedModule, /Game could not render/);
+  assert.match(wordcloud, /Create a live poll/);
+  assert.match(wordcloud, /\/modules\/live-wordcloud-page\.js/);
+  assert.match(wordcloud, /Instructor code/);
 });
 
 test("inline page modules remain valid JavaScript", async () => {
@@ -62,6 +66,9 @@ test("inline page modules remain valid JavaScript", async () => {
   const consumerSource = await readFile(consumerModule, "utf8");
   assert.match(consumerSource, /clip-path/);
   for (const formula of ["X<sup>α</sup>Y<sup>1−α</sup>", "αX + (1−α)Y", "min(X, Y)", "X + α ln(Y)", "Y + aX − (b\/2)X²"]) assert.match(consumerSource, new RegExp(formula.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  const wordcloudModule = fileURLToPath(new URL("../public/modules/live-wordcloud-page.js", import.meta.url));
+  const wordcloudCheck = spawnSync(process.execPath, ["--check", wordcloudModule], { encoding: "utf8" });
+  assert.equal(wordcloudCheck.status, 0, wordcloudCheck.stderr);
 });
 
 test("airplane live entry does not rebuild the focused table on every keystroke", async () => {

@@ -95,8 +95,13 @@ R/Shiny version and JavaScript port can be compared with fixture tests.
 - [ ] Implement `live-wordcloud` as one Durable Object per stable poll ID,
   preserving current semantics: questions, open/closed state, repeated visible
   submissions, instructor-password clear, phone entry URL, and display iframe.
+  *(2026-10-22: initial local implementation is ready for two-device and visual
+  review; each poll has its own instructor code rather than the Shiny global
+  password.)*
 - [ ] Use WebSocket push (with hibernation) instead of the current three-second
-  poll. Keep a simple HTTP fallback/reconnect path.
+  poll. Keep a simple HTTP fallback/reconnect path. *(2026-10-22: initial
+  Durable Object client uses WebSocket state broadcasts plus HTTP state reload
+  and reconnect.)*
 - [ ] Test two simultaneous phones, reset/export, page reconnect, and iframe
   embedding before a classroom trial.
 
@@ -144,10 +149,11 @@ Shiny default it must meet all of these:
 
 ## Immediate next actions
 
-1. Locally review `indifference-to-demand` alongside its Shiny counterpart,
-   including all four utility models and a phone-width layout.
-2. Compare fixed-input outputs across the three completed static pilots and
-   manually test Chrome, Safari/iOS, and a projected 16:9 display.
+1. Test the live wordcloud with two simultaneous phone/browser sessions,
+   including close/reopen, instructor clear, export, reconnection, and iframe
+   display mode.
+2. Review the wordcloud's instructor-code policy and decide whether a later
+   preview deployment should instead use a configured global secret.
 3. Confirm the Cloudflare account/project and preview hostname before any
    preview-only deployment; keep the branch unmerged and unpublished until then.
 
@@ -185,3 +191,7 @@ Shiny default it must meet all of these:
   the original game’s session-only setup, recorded competitive trades,
   monopoly commitment, accepted-buyer cap, surplus accounting, and comparison;
   it deliberately adds no cross-browser synchronization or durable storage.
+- **2026-10-22** — Add the first shared-room pilot: Live Word Cloud stores one
+  stable poll in one Durable Object, broadcasts updates over WebSockets, and
+  reconnects with an HTTP state reload. The instructor creates a per-poll code
+  for editing, clearing, and export; no Shiny/SQLite data is synchronized.
