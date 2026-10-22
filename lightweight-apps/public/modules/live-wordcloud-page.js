@@ -1,5 +1,7 @@
 const $ = selector => document.querySelector(selector);
 const params = new URLSearchParams(location.search);
+const studentRoute = location.pathname.startsWith("/live-wordcloud/student/");
+const displayRoute = location.pathname.startsWith("/live-wordcloud/display/");
 const clientKey = "lightweight-live-wordcloud-client";
 const pollKey = "lightweight-live-wordcloud-admin-code";
 let clientId = localStorage.getItem(clientKey);
@@ -13,14 +15,14 @@ function status(message, bad = false) { const el = $("#poll-status"); el.textCon
 async function request(action, options = {}) { const response = await fetch(api(action), { headers: { "content-type": "application/json" }, ...options }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "The room could not be updated."); return data; }
 function render(next) {
   state = next; $("#landing").hidden = true; $("#poll-view").hidden = false;
-  const displayMode = params.get("display") === "1";
-  const studentEntryMode = params.get("student") === "1" && !displayMode;
+  const displayMode = displayRoute || params.get("display") === "1";
+  const studentEntryMode = (studentRoute || params.get("student") === "1") && !displayMode;
   $("#poll-title").textContent = state.prompt; $("#poll-instructions").textContent = state.instructions;
   const cloud = $("#cloud"); cloud.replaceChildren();
   if (!state.counts.length) cloud.innerHTML = '<span class="cloud-empty">Responses will appear here.</span>';
   else state.counts.forEach((term, index) => { const span = document.createElement("span"); span.className = "cloud-term"; span.title = `${term.n} ${term.n === 1 ? "response" : "responses"}`; span.textContent = term.label; span.style.cssText = `font-size:${Math.min(3.8, 1.1 + .9 * Math.log2(term.n + 1)).toFixed(2)}rem;color:${["#7A1731","#0072B2","#D55E00","#009E73","#6A3D9A","#8C510A"][index % 6]};opacity:${(.72 + .28 * Math.sqrt(term.n / state.counts[0].n)).toFixed(2)}`; cloud.append(span); });
   $("#response-count").textContent = state.responseCount ? `${state.responseCount} ${state.responseCount === 1 ? "response" : "responses"}` : "No responses yet";
-  const studentMode = params.get("student") === "1";
+  const studentMode = studentRoute || params.get("student") === "1";
   const canAdmin = !studentMode && (Boolean(instructorCode()) || params.get("admin") === "1");
   $("#instructor-area").hidden = !canAdmin;
   $("#cloud-shell").hidden = studentEntryMode;
@@ -28,8 +30,8 @@ function render(next) {
   $("#response-form").hidden = !studentEntryMode || !state.isOpen;
   if (!state.isOpen && studentEntryMode) status("Submissions are closed.");
   if (canAdmin) { const form = $("#configure-form"); form.prompt.value = state.prompt; form.instructions.value = state.instructions; form.maxWords.value = state.maxWords; form.isOpen.checked = state.isOpen; form.adminCode.value = instructorCode(); }
-  const studentUrl = `${location.origin}/live-wordcloud/?poll=${encodeURIComponent(pollId)}&student=1`;
-  const displayUrl = `${studentUrl}&display=1`;
+  const studentUrl = `${location.origin}/live-wordcloud/student/?poll=${encodeURIComponent(pollId)}`;
+  const displayUrl = `${location.origin}/live-wordcloud/display/?poll=${encodeURIComponent(pollId)}`;
   $("#student-url").textContent = studentUrl;
   $("#embed-code").textContent = `<iframe src="${displayUrl}" title="Live class poll results" style="width:100%;height:420px;border:0"></iframe>`;
 }
@@ -52,4 +54,4 @@ $("#response-form").addEventListener("submit", async event => { event.preventDef
 $("#configure-form").addEventListener("submit", async event => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); data.isOpen = $("#configure-form [name=isOpen]").checked; try { const next = await request("configure", { method: "POST", body: JSON.stringify(data) }); localStorage.setItem(`${pollKey}:${pollId}`, data.adminCode); render(next); status("Question saved."); } catch (error) { status(error.message, true); } });
 $("#clear-button").addEventListener("click", async () => { if (!confirm("Clear every response to this poll?")) return; try { const next = await request("clear", { method: "POST", body: JSON.stringify({ adminCode: instructorCode() || $("#configure-form [name=adminCode]").value }) }); render(next); status("Responses cleared."); } catch (error) { status(error.message, true); } });
 $("#export-button").addEventListener("click", async () => { try { const data = await request(`export?code=${encodeURIComponent(instructorCode() || $("#configure-form [name=adminCode]").value)}`, { method: "GET", headers: {} }); const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); link.download = `${pollId}-responses.json`; link.click(); URL.revokeObjectURL(link.href); } catch (error) { status(error.message, true); } });
-if (params.get("display") === "1") document.documentElement.classList.add("display-mode"); if (pollId) load();
+if (displayRoute || params.get("display") === "1") document.documentElement.classList.add("display-mode"); if (pollId) load();
