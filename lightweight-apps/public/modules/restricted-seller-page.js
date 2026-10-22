@@ -27,10 +27,16 @@ function comparison() { const one = roundOneSummary(state.trades, state.mc), two
 
 function render() {
   const stage = $("stage");
-  stage.innerHTML = ({ setup: setup(), r1: r1Trading(), r1results: r1Results(), r2setup: r2Setup(), r2: r2Trading(), r2results: r2Results(), compare: comparison() })[state.phase];
-  if (state.phase === "r1results") drawMarket($("market-chart"), { trades: state.trades });
-  if (state.phase === "r2results") drawMarket($("market-chart"), { monopoly: true });
-  if (state.phase === "compare") { drawMarket($("competition-chart"), { trades: state.trades }); drawMarket($("monopoly-chart"), { monopoly: true }); }
+  try {
+    const view = { setup, r1: r1Trading, r1results: r1Results, r2setup: r2Setup, r2: r2Trading, r2results: r2Results, compare: comparison }[state.phase];
+    stage.innerHTML = view();
+    if (state.phase === "r1results") drawMarket($("market-chart"), { trades: state.trades });
+    if (state.phase === "r2results") drawMarket($("market-chart"), { monopoly: true });
+    if (state.phase === "compare") { drawMarket($("competition-chart"), { trades: state.trades }); drawMarket($("monopoly-chart"), { monopoly: true }); }
+  } catch (error) {
+    stage.innerHTML = `<section class="panel"><h2>Game could not render</h2><p>${error.message}</p></section>`;
+    $("status").textContent = error.message;
+  }
 }
 
 function drawMarket(svg, options) {
