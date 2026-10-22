@@ -26,7 +26,18 @@ function render(next) {
   const studentUrl = `${location.origin}/live-wordcloud/?poll=${encodeURIComponent(pollId)}`; $("#student-url").textContent = studentUrl; $("#embed-code").textContent = `<iframe src="${studentUrl}&display=1" title="Live class poll" style="width:100%;height:420px;border:0"></iframe>`;
 }
 function connect() { socket?.close(); const protocol = location.protocol === "https:" ? "wss:" : "ws:"; socket = new WebSocket(`${protocol}//${location.host}${api("connect")}`); socket.onmessage = event => { const data = JSON.parse(event.data); if (data.type === "state") render(data.state); }; socket.onclose = () => setTimeout(() => pollId && connect(), 1500); }
-async function load() { try { render(await request("state", { method: "GET", headers: {} })); connect(); } catch (error) { status(error.message, true); } }
+async function load() {
+  try { render(await request("state", { method: "GET", headers: {} })); connect(); }
+  catch (error) {
+    $("#landing").hidden = false;
+    $("#poll-view").hidden = true;
+    $("#poll-title").textContent = "Poll not found";
+    $("#poll-instructions").textContent = `“${pollId}” has not been created yet. Create it below, or enter a different URL key.`;
+    $("#create-form [name=pollId]").value = pollId;
+    $("#join-form [name=pollId]").value = pollId;
+    const message = $("#create-form .status"); message.textContent = error.message; message.classList.add("error");
+  }
+}
 $("#create-form").addEventListener("submit", async event => { event.preventDefault(); const form = new FormData(event.currentTarget); pollId = normalize(form.get("pollId")); try { const next = await request("create", { method: "POST", body: JSON.stringify(Object.fromEntries(form)) }); localStorage.setItem(`${pollKey}:${pollId}`, form.get("adminCode")); history.replaceState(null, "", `?poll=${encodeURIComponent(pollId)}&admin=1`); render(next); connect(); } catch (error) { const el = $("#create-form .status"); el.textContent = error.message; el.classList.add("error"); } });
 $("#join-form").addEventListener("submit", event => { event.preventDefault(); const id = normalize(new FormData(event.currentTarget).get("pollId")); if (id) location.search = `?poll=${encodeURIComponent(id)}`; });
 $("#response-form").addEventListener("submit", async event => { event.preventDefault(); const input = $("#response"); try { await request("submit", { method: "POST", body: JSON.stringify({ response: input.value, clientId }) }); input.value = ""; status("Response added."); } catch (error) { status(error.message, true); } });
