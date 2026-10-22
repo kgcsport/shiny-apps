@@ -81,6 +81,10 @@ R/Shiny version and JavaScript port can be compared with fixture tests.
   ATC, and AVC curves, plus dynamic total-revenue, total-cost, and profit
   diagrams. *(2026-10-21: formula and static-page checks pass; awaiting local
   visual review.)*
+- [ ] Port `restricted-seller-game`: session-only competition-to-monopoly
+  classroom flow with SVG surplus and deadweight-loss diagrams. *(2026-10-22:
+  initial browser-local implementation and formula fixtures added; awaiting
+  local visual review.)*
 - [ ] Compare fixed input fixtures with the R output and manually test Chrome,
   Safari/iOS, and a projected 16:9 display.
 - [ ] Publish preview-only URLs and use them in one live class while retaining
@@ -177,3 +181,7 @@ Shiny default it must meet all of these:
   rather than fixed rectangles only at Q*. Direct curve labels and both ATC
   and AVC are available in the marginal diagram. The CSV now exports numeric
   marginal cost at Q*.
+- **2026-10-22** — Start a browser-local Restricted Seller pilot. It preserves
+  the original game’s session-only setup, recorded competitive trades,
+  monopoly commitment, accepted-buyer cap, surplus accounting, and comparison;
+  it deliberately adds no cross-browser synchronization or durable storage.

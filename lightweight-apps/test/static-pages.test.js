@@ -8,11 +8,12 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 test("static pilots reference their local calculation modules and accessible charts", async () => {
-  const [tax, airplanes, consumer, firm] = await Promise.all([
+  const [tax, airplanes, consumer, firm, restricted] = await Promise.all([
     readFile(new URL("../public/tax-incidence/index.html", import.meta.url), "utf8"),
     readFile(new URL("../public/airplanes-game/index.html", import.meta.url), "utf8"),
     readFile(new URL("../public/indifference-to-demand/index.html", import.meta.url), "utf8"),
-    readFile(new URL("../public/theory-of-firm/index.html", import.meta.url), "utf8")
+    readFile(new URL("../public/theory-of-firm/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/restricted-seller-game/index.html", import.meta.url), "utf8")
   ]);
   assert.match(tax, /type="module"/);
   assert.match(tax, /\/modules\/tax-incidence\.js/);
@@ -33,6 +34,8 @@ test("static pilots reference their local calculation modules and accessible cha
   assert.match(firmModule, /Equilibrium price/);
   assert.match(firmModule, /const dollars/);
   assert.ok(firm.indexOf('id="summary"') < firm.indexOf('id="download"'), "firm outcome should appear above the download button");
+  assert.match(restricted, /\/modules\/restricted-seller-page\.js/);
+  assert.match(restricted, /The Restricted Seller/);
 });
 
 test("inline page modules remain valid JavaScript", async () => {
