@@ -18,12 +18,13 @@ function render(next) {
   if (!state.counts.length) cloud.innerHTML = '<span class="cloud-empty">Responses will appear here.</span>';
   else state.counts.forEach((term, index) => { const span = document.createElement("span"); span.className = "cloud-term"; span.title = `${term.n} ${term.n === 1 ? "response" : "responses"}`; span.textContent = term.label; span.style.cssText = `font-size:${Math.min(3.8, 1.1 + .9 * Math.log2(term.n + 1)).toFixed(2)}rem;color:${["#7A1731","#0072B2","#D55E00","#009E73","#6A3D9A","#8C510A"][index % 6]};opacity:${(.72 + .28 * Math.sqrt(term.n / state.counts[0].n)).toFixed(2)}`; cloud.append(span); });
   $("#response-count").textContent = state.responseCount ? `${state.responseCount} ${state.responseCount === 1 ? "response" : "responses"}` : "No responses yet";
-  const canAdmin = Boolean(instructorCode()) || params.get("admin") === "1";
+  const studentMode = params.get("student") === "1";
+  const canAdmin = !studentMode && (Boolean(instructorCode()) || params.get("admin") === "1");
   $("#instructor-area").hidden = !canAdmin;
   $("#response-form").hidden = !state.isOpen || params.get("display") === "1";
   if (!state.isOpen && params.get("display") !== "1") status("Submissions are closed; results remain visible.");
   if (canAdmin) { const form = $("#configure-form"); form.prompt.value = state.prompt; form.instructions.value = state.instructions; form.maxWords.value = state.maxWords; form.isOpen.checked = state.isOpen; form.adminCode.value = instructorCode(); }
-  const studentUrl = `${location.origin}/live-wordcloud/?poll=${encodeURIComponent(pollId)}`; $("#student-url").textContent = studentUrl; $("#embed-code").textContent = `<iframe src="${studentUrl}&display=1" title="Live class poll" style="width:100%;height:420px;border:0"></iframe>`;
+  const studentUrl = `${location.origin}/live-wordcloud/?poll=${encodeURIComponent(pollId)}&student=1`; $("#student-url").textContent = studentUrl; $("#embed-code").textContent = `<iframe src="${studentUrl}&display=1" title="Live class poll" style="width:100%;height:420px;border:0"></iframe>`;
 }
 function connect() { socket?.close(); const protocol = location.protocol === "https:" ? "wss:" : "ws:"; socket = new WebSocket(`${protocol}//${location.host}${api("connect")}`); socket.onmessage = event => { const data = JSON.parse(event.data); if (data.type === "state") render(data.state); }; socket.onclose = () => setTimeout(() => pollId && connect(), 1500); }
 async function load() {
