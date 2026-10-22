@@ -13,6 +13,8 @@ function status(message, bad = false) { const el = $("#poll-status"); el.textCon
 async function request(action, options = {}) { const response = await fetch(api(action), { headers: { "content-type": "application/json" }, ...options }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "The room could not be updated."); return data; }
 function render(next) {
   state = next; $("#landing").hidden = true; $("#poll-view").hidden = false;
+  const displayMode = params.get("display") === "1";
+  const studentEntryMode = params.get("student") === "1" && !displayMode;
   $("#poll-title").textContent = state.prompt; $("#poll-instructions").textContent = state.instructions;
   const cloud = $("#cloud"); cloud.replaceChildren();
   if (!state.counts.length) cloud.innerHTML = '<span class="cloud-empty">Responses will appear here.</span>';
@@ -21,10 +23,15 @@ function render(next) {
   const studentMode = params.get("student") === "1";
   const canAdmin = !studentMode && (Boolean(instructorCode()) || params.get("admin") === "1");
   $("#instructor-area").hidden = !canAdmin;
-  $("#response-form").hidden = !state.isOpen || params.get("display") === "1";
-  if (!state.isOpen && params.get("display") !== "1") status("Submissions are closed; results remain visible.");
+  $("#cloud-shell").hidden = studentEntryMode;
+  $("#response-count").hidden = studentEntryMode;
+  $("#response-form").hidden = !studentEntryMode || !state.isOpen;
+  if (!state.isOpen && studentEntryMode) status("Submissions are closed.");
   if (canAdmin) { const form = $("#configure-form"); form.prompt.value = state.prompt; form.instructions.value = state.instructions; form.maxWords.value = state.maxWords; form.isOpen.checked = state.isOpen; form.adminCode.value = instructorCode(); }
-  const studentUrl = `${location.origin}/live-wordcloud/?poll=${encodeURIComponent(pollId)}&student=1`; $("#student-url").textContent = studentUrl; $("#embed-code").textContent = `<iframe src="${studentUrl}&display=1" title="Live class poll" style="width:100%;height:420px;border:0"></iframe>`;
+  const studentUrl = `${location.origin}/live-wordcloud/?poll=${encodeURIComponent(pollId)}&student=1`;
+  const displayUrl = `${studentUrl}&display=1`;
+  $("#student-url").textContent = studentUrl;
+  $("#embed-code").textContent = `<iframe src="${displayUrl}" title="Live class poll results" style="width:100%;height:420px;border:0"></iframe>`;
 }
 function connect() { socket?.close(); const protocol = location.protocol === "https:" ? "wss:" : "ws:"; socket = new WebSocket(`${protocol}//${location.host}${api("connect")}`); socket.onmessage = event => { const data = JSON.parse(event.data); if (data.type === "state") render(data.state); }; socket.onclose = () => setTimeout(() => pollId && connect(), 1500); }
 async function load() {

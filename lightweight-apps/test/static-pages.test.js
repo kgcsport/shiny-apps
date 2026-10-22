@@ -47,6 +47,7 @@ test("static pilots reference their local calculation modules and accessible cha
   const wordcloudSource = await readFile(new URL("../public/modules/live-wordcloud-page.js", import.meta.url), "utf8");
   assert.match(wordcloudSource, /Poll not found/);
   assert.match(wordcloudSource, /params\.get\("student"\) === "1"/);
+  assert.match(wordcloudSource, /studentEntryMode/);
 });
 
 test("inline page modules remain valid JavaScript", async () => {
