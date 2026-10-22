@@ -36,6 +36,7 @@ test("static pilots reference their local calculation modules and accessible cha
   assert.ok(firm.indexOf('id="summary"') < firm.indexOf('id="download"'), "firm outcome should appear above the download button");
   assert.match(restricted, /\/modules\/restricted-seller-page\.js/);
   assert.match(restricted, /The Restricted Seller/);
+  assert.match(restricted, /Loading game/);
   const restrictedModule = await readFile(new URL("../public/modules/restricted-seller-page.js", import.meta.url), "utf8");
   assert.match(restrictedModule, /const view = \{ setup, r1: r1Trading/);
   assert.match(restrictedModule, /Game could not render/);
