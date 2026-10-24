@@ -163,7 +163,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
-- **2026-10-23** — Treat Class Job Market as the single authentication authority for Review Quiz. Review Quiz validates the existing shared `arcade_token` session and otherwise directs the user to Class Job Market; it does not issue or maintain a second credential/session flow.
+- **2026-10-23** — Treat Class Job Market as the single authentication authority for Review Quiz. Review Quiz validates the existing shared `arcade_token` session when available; if deployment routing prevents that cookie from arriving, its fallback checks the same shared Class Job Market account rather than trapping students in a redirect loop. Review Quiz does not issue or maintain a second persistent session.
 
 - **2026-10-23** — Make Review Quiz token awards an explicit instructor release for each quiz session: the instructor chooses the earned-tokens-per-correct rate, previews every student award, and commits it once to the shared ledger as an `earning=1` event. This preserves the distinction between gross grade-relevant token earnings and later spending or policy charges.
 
@@ -764,7 +764,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Deploy the Review Quiz build and verify a student logged into Class Job Market opens Review Quiz without a second prompt, then run one sandbox Review Sprint release through to the wallet view.
+1. Deploy the Review Quiz build and verify a student logged into Class Job Market opens Review Quiz without a second prompt; if the deployed route omits the cookie, verify the shared-credential fallback reaches the quiz without a redirect loop.
 2. Import the ECON 342 externalities-review question bank and choose the earned-token rate before the activity.
 3. Use the selected-student award once for a monitored Taboo crew before class, if a rehearsal is desired.
 

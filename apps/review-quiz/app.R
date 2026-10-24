@@ -287,8 +287,9 @@ parse_question_csv <- function(path) {
 get_state <- function()
   db_query("SELECT current_q, revealed, self_paced, session_key FROM quiz_state WHERE id=1;")
 
-# Class Job Market owns authentication. Review Quiz only validates the existing
-# shared session token; it never issues, rotates, or clears it.
+# Class Job Market owns the shared account and session record. Review Quiz
+# validates that session when the browser presents it; its credential fallback
+# checks the same shared users table so an unavailable cookie never blocks class.
 lookup_shared_session <- function(token, query = db_query) {
   if (!nzchar(token %||% "")) return(data.frame())
   tryCatch(
@@ -437,10 +438,19 @@ login_ui <- function(msg = NULL) {
     tags$head(tags$style(quiz_css)),
     titlePanel("Midterm 2 Review Quiz"),
     if (!is.null(msg)) div(style = "color:#b00020; font-weight:bold; margin-bottom:10px;", msg),
-    div(style = "max-width:520px;",
-      tags$p("Review Quiz uses your Class Job Market session."),
-      tags$a("Open Class Job Market to sign in", href = "../class-job-market/", class = "btn btn-primary"),
-      tags$p(style = "margin-top:10px;", tags$small("Return here after signing in; no separate quiz account is needed.")),
+    div(style = "max-width:360px;",
+      tags$p("If you are already signed into Class Job Market, this page should open automatically."),
+      tags$details(
+        tags$summary("Automatic sign-in did not arrive?"),
+        tags$div(style = "margin-top:10px;",
+          textInput("login_user", "Class Job Market username"),
+          passwordInput("login_pw", "Class Job Market password"),
+          actionButton("login_btn", "Continue", class = "btn-primary"),
+          tags$p(style = "margin-top:8px;", tags$small("This checks the same Class Job Market account; it does not create a quiz account."))
+        )
+      ),
+      tags$p(style = "margin-top:12px;",
+             tags$a("Open Class Job Market", href = "../class-job-market/", class = "btn btn-default btn-sm")),
       demo_login_ui
     )
   )
@@ -485,7 +495,7 @@ server <- function(input, output, session) {
       tabs))
   })
 
-  finish_shared_login <- function(row) {
+  finish_login <- function(row, source = "shared session") {
     rv$authed   <- TRUE
     rv$user_id  <- row$user_id[1]
     rv$name     <- row$display_name[1] %||% row$user_id[1]
@@ -493,15 +503,36 @@ server <- function(input, output, session) {
     rv$my_q     <- 1L
     al <- db_query("SELECT alias FROM quiz_aliases WHERE user_id=?;", list(row$user_id[1]))
     rv$alias <- if (nrow(al)) al$alias[1] else NULL
-    logf("SHARED LOGIN:", row$user_id[1])
+    logf("LOGIN (", source, "):", row$user_id[1])
   }
 
   observeEvent(input$auth_cookie, {
     if (rv$authed || .is_demo) return()
     row <- lookup_shared_session(input$auth_cookie %||% "", query = db_query)
     if (!nrow(row) || isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) return()
-    finish_shared_login(row)
+    finish_login(row)
   }, ignoreInit = FALSE)
+
+  observeEvent(input$login_btn, {
+    user_id <- trimws(input$login_user %||% "")
+    password <- input$login_pw %||% ""
+    if (!nzchar(user_id) || !nzchar(password)) {
+      showNotification("Enter your Class Job Market username and password.", type = "error")
+      return()
+    }
+    row <- db_query(
+      "SELECT user_id, display_name, is_admin, pw_hash, active
+       FROM users WHERE LOWER(user_id)=LOWER(?);", list(user_id))
+    if (!nrow(row) || !tryCatch(bcrypt::checkpw(password, row$pw_hash[1]), error = function(e) FALSE)) {
+      showNotification("Incorrect Class Job Market username or password.", type = "error")
+      return()
+    }
+    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
+      showNotification("This account has been archived. Contact your instructor.", type = "error")
+      return()
+    }
+    finish_login(row, source = "shared credentials fallback")
+  })
 
   # ── Reactive polls ───────────────────────────────────────────────────────────
   # Poll every 2000ms: quiz state changes when instructor reveals/advances.
