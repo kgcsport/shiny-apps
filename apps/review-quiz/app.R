@@ -416,7 +416,7 @@ quiz_css <- HTML("
   .big-count  { font-size:3em; font-weight:700; color:#951829; line-height:1; }
 ")
 
-shared_auth_js <- HTML("
+shared_auth_js <- tags$script(HTML("
 (function() {
   function getCookie(name) {
     var parts = document.cookie ? document.cookie.split('; ') : [];
@@ -426,11 +426,13 @@ shared_auth_js <- HTML("
     }
     return '';
   }
-  $(document).on('shiny:sessioninitialized', function() {
+  function sendAuthCookie() {
     Shiny.setInputValue('auth_cookie', getCookie('arcade_token'), {priority: 'event'});
-  });
+  }
+  $(document).on('shiny:sessioninitialized', sendAuthCookie);
+  $(sendAuthCookie);
 })();
-")
+"))
 
 # ── Login UI ──────────────────────────────────────────────────────────────────
 login_ui <- function(msg = NULL) {
