@@ -145,11 +145,12 @@ db_exec  <- function(sql, params = NULL) DBI::dbExecute(get_con(), sql, params =
 db_query <- function(sql, params = NULL) DBI::dbGetQuery(get_con(), sql, params = params)
 
 ensure_state <- function() {
-  db_exec("INSERT OR REPLACE INTO quiz_state(id, current_q, revealed, self_paced)
+  db_exec("INSERT OR REPLACE INTO quiz_state(id, current_q, revealed, self_paced, session_key)
     SELECT 1,
       COALESCE((SELECT current_q  FROM quiz_state WHERE id=1), 1),
       COALESCE((SELECT revealed   FROM quiz_state WHERE id=1), 0),
-      COALESCE((SELECT self_paced FROM quiz_state WHERE id=1), 0);")
+      COALESCE((SELECT self_paced FROM quiz_state WHERE id=1), 0),
+      COALESCE((SELECT session_key FROM quiz_state WHERE id=1), 1);")
 }
 
 init_db <- function() {
@@ -162,13 +163,50 @@ init_db <- function() {
     current_q  INTEGER DEFAULT 1,
     revealed   INTEGER DEFAULT 0,
     self_paced INTEGER DEFAULT 0,
+    session_key INTEGER DEFAULT 1,
     updated_at TEXT    DEFAULT (CURRENT_TIMESTAMP)
   );")
   tryCatch(
     db_exec("ALTER TABLE quiz_state ADD COLUMN self_paced INTEGER DEFAULT 0;"),
     error = function(e) NULL
   )
+  tryCatch(
+    db_exec("ALTER TABLE quiz_state ADD COLUMN session_key INTEGER DEFAULT 1;"),
+    error = function(e) NULL
+  )
   ensure_state()
+
+  # Review Quiz is an optional front end to the course wallet. Create the shared
+  # ledger defensively so the quiz can start before the class-job-market app.
+  db_exec("CREATE TABLE IF NOT EXISTS token_ledger(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    display_name TEXT,
+    source_type TEXT,
+    source_id INTEGER,
+    amount REAL NOT NULL,
+    earning INTEGER DEFAULT 1,
+    note TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );")
+
+  # A session can be released only once. This prevents a refresh or double click
+  # from paying the same quiz score twice.
+  db_exec("CREATE TABLE IF NOT EXISTS quiz_token_sessions (
+    session_key INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    tokens_per_correct REAL NOT NULL,
+    released_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );")
+  db_exec("CREATE TABLE IF NOT EXISTS quiz_token_payouts (
+    session_key INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    correct_count INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    ledger_id INTEGER,
+    awarded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(session_key, user_id)
+  );")
 
   db_exec("CREATE TABLE IF NOT EXISTS quiz_responses (
     response_id  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -247,7 +285,23 @@ parse_question_csv <- function(path) {
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 get_state <- function()
-  db_query("SELECT current_q, revealed, self_paced FROM quiz_state WHERE id=1;")
+  db_query("SELECT current_q, revealed, self_paced, session_key FROM quiz_state WHERE id=1;")
+
+# Class Job Market owns authentication. Review Quiz only validates the existing
+# shared session token; it never issues, rotates, or clears it.
+lookup_shared_session <- function(token, query = db_query) {
+  if (!nzchar(token %||% "")) return(data.frame())
+  tryCatch(
+    query(
+      "SELECT u.user_id, u.display_name, u.is_admin, u.active
+       FROM arcade_sessions s
+       JOIN users u ON u.user_id=s.user_id
+       WHERE s.token=? AND s.expires_at > CURRENT_TIMESTAMP;",
+      list(token)
+    ),
+    error = function(e) data.frame()
+  )
+}
 
 get_scores <- function(questions = load_questions()) {
   resps <- db_query("
@@ -266,6 +320,77 @@ get_scores <- function(questions = load_questions()) {
     dplyr::group_by(user_id, display_name) |>
     dplyr::summarise(score = sum(is_correct, na.rm = TRUE), .groups = "drop") |>
     dplyr::arrange(dplyr::desc(score))
+}
+
+# The leaderboard may use a student-chosen alias. Token records use the roster
+# display name instead, so the course wallet remains auditable.
+get_payout_scores <- function(questions = load_questions(), query = db_query) {
+  resps <- query("
+    SELECT qr.user_id, u.display_name, qr.q_num, qr.answer
+    FROM quiz_responses qr
+    JOIN users u ON qr.user_id = u.user_id
+    WHERE COALESCE(u.is_admin,0)=0;")
+  if (!nrow(resps)) {
+    return(data.frame(user_id=character(), display_name=character(), correct_count=integer()))
+  }
+  answer_key <- setNames(
+    vapply(questions, `[[`, character(1), "correct"),
+    vapply(questions, `[[`, integer(1), "num")
+  )
+  resps$is_correct <- answer_key[as.character(resps$q_num)] == resps$answer
+  resps |>
+    dplyr::group_by(user_id, display_name) |>
+    dplyr::summarise(correct_count = sum(is_correct, na.rm = TRUE), .groups = "drop") |>
+    dplyr::arrange(dplyr::desc(correct_count), display_name)
+}
+
+get_review_sprint_release <- function(session_key, query = db_query) {
+  query("SELECT session_key, label, tokens_per_correct, released_at
+            FROM quiz_token_sessions WHERE session_key=?;", list(as.integer(session_key)))
+}
+
+with_quiz_transaction <- function(fun) {
+  con <- get_con()
+  DBI::dbWithTransaction(con, fun(con))
+}
+
+release_review_sprint <- function(session_key, label, tokens_per_correct,
+                                  questions = load_questions(), query = db_query,
+                                  transaction = with_quiz_transaction) {
+  session_key <- as.integer(session_key)
+  rate <- as.numeric(tokens_per_correct)
+  scores <- get_payout_scores(questions, query = query)
+  if (!nrow(scores)) stop("No student answers are available to award.")
+  if (is.na(rate) || rate < 0 || !nzchar(trimws(label %||% ""))) {
+    stop("A non-negative token rate and ledger label are required.")
+  }
+  transaction(function(con) {
+    if (nrow(DBI::dbGetQuery(con,
+      "SELECT 1 FROM quiz_token_sessions WHERE session_key=?;", params = list(session_key)))) {
+      stop("This quiz session has already been released.")
+    }
+    DBI::dbExecute(con,
+      "INSERT INTO quiz_token_sessions(session_key,label,tokens_per_correct) VALUES(?,?,?);",
+      params = list(session_key, trimws(label), rate))
+    for (i in seq_len(nrow(scores))) {
+      amount <- round(scores$correct_count[i] * rate, 2)
+      ledger_id <- NA_integer_
+      if (amount > 0) {
+        DBI::dbExecute(con,
+          "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
+           VALUES(?,?,?,?,?,1,?);",
+          params = list(scores$user_id[i], scores$display_name[i], "review_quiz", session_key,
+                        amount, sprintf("%s: %d correct × %s", trimws(label),
+                                        scores$correct_count[i], format(rate, trim = TRUE))))
+        ledger_id <- DBI::dbGetQuery(con, "SELECT last_insert_rowid() AS id;")$id[1]
+      }
+      DBI::dbExecute(con,
+        "INSERT INTO quiz_token_payouts(session_key,user_id,correct_count,amount,ledger_id)
+         VALUES(?,?,?,?,?);",
+        params = list(session_key, scores$user_id[i], scores$correct_count[i], amount, ledger_id))
+    }
+  })
+  list(scores = scores, total = sum(round(scores$correct_count * rate, 2)))
 }
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -290,17 +415,32 @@ quiz_css <- HTML("
   .big-count  { font-size:3em; font-weight:700; color:#951829; line-height:1; }
 ")
 
+shared_auth_js <- HTML("
+(function() {
+  function getCookie(name) {
+    var parts = document.cookie ? document.cookie.split('; ') : [];
+    for (var i = 0; i < parts.length; i++) {
+      var pair = parts[i].split('=');
+      if (pair[0] === name) return decodeURIComponent(pair.slice(1).join('='));
+    }
+    return '';
+  }
+  $(document).on('shiny:sessioninitialized', function() {
+    Shiny.setInputValue('auth_cookie', getCookie('arcade_token'), {priority: 'event'});
+  });
+})();
+")
+
 # ── Login UI ──────────────────────────────────────────────────────────────────
 login_ui <- function(msg = NULL) {
   fluidPage(
     tags$head(tags$style(quiz_css)),
     titlePanel("Midterm 2 Review Quiz"),
     if (!is.null(msg)) div(style = "color:#b00020; font-weight:bold; margin-bottom:10px;", msg),
-    div(style = "max-width:320px;",
-      textInput("login_user", "Username"),
-      passwordInput("login_pw", "Password"),
-      actionButton("login_btn", "Sign in", class = "btn-primary"),
-      tags$p(tags$small("Same login as the Price Index app.")),
+    div(style = "max-width:520px;",
+      tags$p("Review Quiz uses your Class Job Market session."),
+      tags$a("Open Class Job Market to sign in", href = "../class-job-market/", class = "btn btn-primary"),
+      tags$p(style = "margin-top:10px;", tags$small("Return here after signing in; no separate quiz account is needed.")),
       demo_login_ui
     )
   )
@@ -308,7 +448,7 @@ login_ui <- function(msg = NULL) {
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 ui <- fluidPage(
-  tags$head(tags$style(quiz_css)),
+  tags$head(tags$style(quiz_css), shared_auth_js),
   uiOutput("demo_banner"),
   uiOutput("app_ui")
 )
@@ -320,7 +460,8 @@ server <- function(input, output, session) {
   db_query <- dm$db_query
   .is_demo <- dm$is_demo
 
-  rv <- reactiveValues(authed = FALSE, user_id = NULL, name = NULL, alias = NULL, is_admin = FALSE, my_q = 1L)
+  rv <- reactiveValues(authed = FALSE, user_id = NULL, name = NULL, alias = NULL,
+                       is_admin = FALSE, my_q = 1L, payout_version = 0L)
 
   output$demo_banner <- renderUI(demo_banner_ui(.is_demo, rv$is_admin))
 
@@ -339,37 +480,28 @@ server <- function(input, output, session) {
       list(title = "Review Quiz",
            header = div(style = "float:right; margin-top:4px;",
              uiOutput("score_chip", inline = TRUE),
-             actionButton("logout_btn", "Sign out", class = "btn-sm btn-default"))),
+             tags$span(style = "font-size:.82em;color:#666;margin-left:8px;",
+                       "Signed in through Class Job Market"))),
       tabs))
   })
 
-  observeEvent(input$login_btn, {
-    u <- trimws(input$login_user %||% "")
-    p <- input$login_pw %||% ""
-    if (!nzchar(u) || !nzchar(p)) {
-      showNotification("Enter username and password.", type = "error"); return()
-    }
-    row <- db_query(
-      "SELECT user_id, display_name, is_admin, pw_hash, active FROM users WHERE user_id=?;", list(u))
-    if (!nrow(row)) { showNotification("User not found.", type = "error"); return() }
-    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
-      showNotification("This account has been archived. Contact your instructor.", type = "error"); return()
-    }
-    ok <- tryCatch(bcrypt::checkpw(p, row$pw_hash[1]), error = function(e) FALSE)
-    if (!ok) { showNotification("Incorrect password.", type = "error"); return() }
+  finish_shared_login <- function(row) {
     rv$authed   <- TRUE
     rv$user_id  <- row$user_id[1]
-    rv$name     <- row$display_name[1]
+    rv$name     <- row$display_name[1] %||% row$user_id[1]
     rv$is_admin <- as.logical(row$is_admin[1])
     rv$my_q     <- 1L
     al <- db_query("SELECT alias FROM quiz_aliases WHERE user_id=?;", list(row$user_id[1]))
     rv$alias <- if (nrow(al)) al$alias[1] else NULL
-    logf("LOGIN:", row$user_id[1])
-  })
+    logf("SHARED LOGIN:", row$user_id[1])
+  }
 
-  observeEvent(input$logout_btn, {
-    rv$authed <- FALSE; rv$user_id <- NULL; rv$name <- NULL; rv$alias <- NULL; rv$is_admin <- FALSE
-  })
+  observeEvent(input$auth_cookie, {
+    if (rv$authed || .is_demo) return()
+    row <- lookup_shared_session(input$auth_cookie %||% "", query = db_query)
+    if (!nrow(row) || isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) return()
+    finish_shared_login(row)
+  }, ignoreInit = FALSE)
 
   # ── Reactive polls ───────────────────────────────────────────────────────────
   # Poll every 2000ms: quiz state changes when instructor reveals/advances.
@@ -711,10 +843,14 @@ server <- function(input, output, session) {
   # ── Admin panel ───────────────────────────────────────────────────────────────
   output$admin_panel <- renderUI({
     req(rv$is_admin)
+    rv$payout_version
     qs   <- state_r()
     qnum <- max(1L, min(as.integer(qs$current_q[1] %||% 1L), length(questions_r())))
     rev  <- as.logical(qs$revealed[1])
     q    <- questions_r()[[qnum]]
+    session_key <- as.integer(qs$session_key[1] %||% 1L)
+    payout_release <- get_review_sprint_release(session_key, query = db_query)
+    payout_scores <- get_payout_scores(questions_r(), query = db_query)
 
     tagList(
       tags$h4("Quiz Controls"),
@@ -769,6 +905,38 @@ server <- function(input, output, session) {
           )
         )
       ),
+      wellPanel(
+        tags$h5("Review Sprint token payout"),
+        tags$p(style = "font-size:.9em;color:#555;",
+               "Release one earned-token payout for this quiz session. The release is permanent and cannot be run twice for the same session."),
+        if (nrow(payout_release)) {
+          div(class = "status-box status-correct",
+              sprintf("Released %s at %s: %s earned token%s per correct answer.",
+                      payout_release$released_at[1], payout_release$label[1],
+                      format(payout_release$tokens_per_correct[1], trim = TRUE),
+                      if (payout_release$tokens_per_correct[1] == 1) "" else "s"))
+        } else {
+          tagList(
+            fluidRow(
+              column(4,
+                numericInput("sprint_token_rate", "Earned tokens per correct answer",
+                             value = 0.25, min = 0, step = 0.05, width = "100%")),
+              column(5,
+                textInput("sprint_payout_label", "Ledger label",
+                          value = "Review Sprint", width = "100%")),
+              column(3,
+                tags$br(),
+                actionButton("preview_sprint_payout_btn", "Preview & release",
+                             class = "btn-success", width = "100%")
+              )
+            ),
+            tags$p(style = "font-size:.82em;color:#888;margin:0;",
+                   sprintf("Current session: %d student%s with answers; %d correct responses in total. Token earnings count toward students' gross earned-token total.",
+                           nrow(payout_scores), if (nrow(payout_scores) == 1) "" else "s",
+                           sum(payout_scores$correct_count %||% 0)))
+          )
+        }
+      ),
       tags$details(
         tags$summary(
           style = "cursor:pointer; padding:6px 0; list-style:none; user-select:none;",
@@ -820,6 +988,80 @@ server <- function(input, output, session) {
     db_exec(sprintf(
       "UPDATE quiz_state SET %s=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;", col),
       list(val))
+
+  start_new_quiz_session <- function() {
+    db_exec("DELETE FROM quiz_responses;")
+    db_exec("UPDATE quiz_state
+             SET current_q=1, revealed=0,
+                 session_key=COALESCE(session_key,0)+1,
+                 updated_at=CURRENT_TIMESTAMP
+             WHERE id=1;")
+    rv$payout_version <- rv$payout_version + 1L
+  }
+
+  observeEvent(input$preview_sprint_payout_btn, {
+    req(rv$is_admin)
+    rate <- suppressWarnings(as.numeric(input$sprint_token_rate %||% NA_real_))
+    label <- trimws(input$sprint_payout_label %||% "")
+    if (is.na(rate) || rate < 0 || !nzchar(label)) {
+      showNotification("Enter a non-negative rate and a ledger label.", type = "error")
+      return()
+    }
+    qs <- isolate(state_r())
+    session_key <- as.integer(qs$session_key[1] %||% 1L)
+    if (nrow(get_review_sprint_release(session_key, query = db_query))) {
+      showNotification("This quiz session has already been released.", type = "warning")
+      return()
+    }
+    scores <- get_payout_scores(isolate(questions_r()), query = db_query)
+    if (!nrow(scores)) {
+      showNotification("No student answers are available to award.", type = "warning")
+      return()
+    }
+    total <- sum(round(scores$correct_count * rate, 2))
+    showModal(modalDialog(
+      title = "Release Review Sprint tokens?",
+      tags$p(sprintf("%d student%s will receive a total of %s earned token%s for %s.",
+                     nrow(scores), if (nrow(scores) == 1) "" else "s",
+                     format(total, nsmall = 2, trim = TRUE), if (total == 1) "" else "s", label)),
+      tags$p(sprintf("Rate: %s token%s per correct answer. This is a one-time, grade-counting ledger release for quiz session %d.",
+                     format(rate, trim = TRUE), if (rate == 1) "" else "s", session_key)),
+      DT::DTOutput("sprint_payout_preview"),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirm_sprint_payout_btn", "Release earned tokens", class = "btn-success")
+      ),
+      easyClose = FALSE
+    ))
+    output$sprint_payout_preview <- DT::renderDT({
+      preview <- scores |>
+        dplyr::mutate(`Earned tokens` = round(correct_count * rate, 2)) |>
+        dplyr::select(Student = display_name, Correct = correct_count, `Earned tokens`)
+      DT::datatable(preview, rownames = FALSE, options = list(dom = "t", pageLength = 20))
+    })
+  })
+
+  observeEvent(input$confirm_sprint_payout_btn, {
+    req(rv$is_admin)
+    rate <- suppressWarnings(as.numeric(input$sprint_token_rate %||% NA_real_))
+    label <- trimws(input$sprint_payout_label %||% "")
+    if (is.na(rate) || rate < 0 || !nzchar(label)) return()
+    qs <- isolate(state_r())
+    session_key <- as.integer(qs$session_key[1] %||% 1L)
+    result <- tryCatch(
+      release_review_sprint(session_key, label, rate, isolate(questions_r()),
+                            query = db_query, transaction = dm$db_transaction),
+      error = function(e) e
+    )
+    if (inherits(result, "error")) {
+      showNotification(paste("No tokens released:", conditionMessage(result)), type = "error", duration = 8)
+      return()
+    }
+    removeModal()
+    rv$payout_version <- rv$payout_version + 1L
+    showNotification(sprintf("Released Review Sprint tokens to %d student%s.",
+                             nrow(result$scores), if (nrow(result$scores) == 1) "" else "s"), type = "message")
+  })
 
   observeEvent(input$reveal_btn, {
     req(rv$is_admin)
@@ -899,9 +1141,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$confirm_start_quiz, {
     req(rv$is_admin)
-    db_exec("DELETE FROM quiz_responses;")
-    db_exec("UPDATE quiz_state SET current_q=1, revealed=0,
-             updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    start_new_quiz_session()
     removeModal()
     showNotification("Quiz started — all scores reset to zero.", type = "message")
   })
@@ -920,9 +1160,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$confirm_reset, {
     req(rv$is_admin)
-    db_exec("DELETE FROM quiz_responses;")
-    db_exec("UPDATE quiz_state SET current_q=1, revealed=0,
-             updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    start_new_quiz_session()
     removeModal()
     showNotification("Responses cleared, reset to Q1.", type = "message")
   })
@@ -962,9 +1200,7 @@ server <- function(input, output, session) {
     on.exit(DBI::dbDisconnect(con))
     DBI::dbExecute(con, "DELETE FROM quiz_questions;")
     DBI::dbAppendTable(con, "quiz_questions", questions)
-    db_exec("DELETE FROM quiz_responses;")
-    db_exec("UPDATE quiz_state SET current_q=1, revealed=0,
-             updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    start_new_quiz_session()
     showNotification(sprintf("%d questions loaded. Quiz reset to Q1.", nrow(questions)),
                      type = "message")
   })
@@ -1034,9 +1270,7 @@ server <- function(input, output, session) {
   observeEvent(input$clear_questions_btn, {
     req(rv$is_admin)
     db_exec("DELETE FROM quiz_questions;")
-    db_exec("DELETE FROM quiz_responses;")
-    db_exec("UPDATE quiz_state SET current_q=1, revealed=0,
-             updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    start_new_quiz_session()
     showNotification("Restored default questions. Quiz reset to Q1.", type = "message")
   })
 

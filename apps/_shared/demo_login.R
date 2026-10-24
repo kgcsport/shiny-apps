@@ -473,6 +473,10 @@ demo_server_init <- function(session, prod_db_path, auction_prod = NULL) {
                error = function(e) { message("demo db_exec: ", e$message); -1L }),
     db_query = function(sql, params = NULL)
       tryCatch(DBI::dbGetQuery(get_lcon(), sql, params = params),
-               error = function(e) { message("demo db_query: ", e$message); data.frame() })
+               error = function(e) { message("demo db_query: ", e$message); data.frame() }),
+    db_transaction = function(fun) {
+      con <- get_lcon()
+      DBI::dbWithTransaction(con, fun(con))
+    }
   )
 }

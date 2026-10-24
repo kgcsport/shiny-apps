@@ -163,6 +163,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-10-23** — Treat Class Job Market as the single authentication authority for Review Quiz. Review Quiz validates the existing shared `arcade_token` session and otherwise directs the user to Class Job Market; it does not issue or maintain a second credential/session flow.
+
+- **2026-10-23** — Make Review Quiz token awards an explicit instructor release for each quiz session: the instructor chooses the earned-tokens-per-correct rate, previews every student award, and commits it once to the shared ledger as an `earning=1` event. This preserves the distinction between gross grade-relevant token earnings and later spending or policy charges.
+
 - **2026-10-16** — Treat an unrevealed assessment as absent from the student-facing grade calculation, rather than suppressing the whole Gradebook. The student continues to see a coherent current grade based on revealed work; revealing the assessment adds its linked item and recalculates that visible grade.
 
 - **2026-10-16** — Let instructors repair or change an assessment’s linked gradebook item after import. This association is display metadata only: it tells the student-facing reveal gate which weighted grade effect to withhold, without reuploading data or rewriting score rows.
@@ -423,6 +427,12 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-23** (Codex) - Replaced the Review Quiz credential form with Class Job Market single sign-on: a valid existing shared session logs the student into the quiz automatically, while an unauthenticated student is sent to Class Job Market to sign in. Added an isolated lookup regression to the Review Sprint payout smoke test.
+
+- **2026-10-23** (Codex) - Made Token Admin individual adjustments accept quarter-token increments and display fractional awards accurately. Added a selected-student earned-token award, so a verified three-person Learning Under Noise Taboo crew can be credited in one action rather than three.
+
+- **2026-10-23** (Codex) - Added the Review Sprint payout bridge to `apps/review-quiz`: persistent quiz-session keys, a preview-and-confirm instructor release, auditable payout rows, and shared-wallet credits for correct responses. A session cannot be paid twice, and reset/new-bank actions advance to a fresh session. Added an isolated SQLite smoke test covering score calculation, ledger write-back, zero-score audit rows, and duplicate-release prevention; made the release transaction use the sandbox database in demo mode.
+
 - **2026-10-19** (Codex, `feature/lightweight-js-apps`) - Implemented the
   first isolated lightweight static pilots: browser-only Tax Incidence and
   Airplane Production tools, a minimal Cloudflare Worker asset scaffold and
@@ -754,9 +764,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Deploy the class-job-market build and verify one live assessment-summary import from the Fall 2026 midterm export in its intended class/section scope.
-2. Deploy the cold-call OAuth repair and verify a top-level Google login returns to the compact panel from a published lecture slide.
-3. Complete one end-to-end extension purchase after mapping the active assignment id and target.
+1. Deploy the Review Quiz build and verify a student logged into Class Job Market opens Review Quiz without a second prompt, then run one sandbox Review Sprint release through to the wallet view.
+2. Import the ECON 342 externalities-review question bank and choose the earned-token rate before the activity.
+3. Use the selected-student award once for a monitored Taboo crew before class, if a rehearsal is desired.
 
 ## Questions for Kyle
 

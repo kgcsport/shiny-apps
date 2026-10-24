@@ -9108,6 +9108,27 @@ server <- function(input, output, session) {
           ),
           tags$p(style = "color:#777;font-size:.8rem;margin-bottom:0;",
             "Allowed outcomes: complete, tried, or missed. Blank means Pending. Keep the downloaded sheet locally or print it before class; if the app goes down, fill it in and import it later.")
+        ),
+        tags$hr(),
+        tags$h6(style = "font-weight:700;color:#951829;", "Selected-Student Award"),
+        tags$p(style = "color:#555;font-size:.88rem;",
+               "Award the same positive earned-token amount to a selected crew or group. Use this for one verified Taboo crew at a time."),
+        div(class = "spend-form-box",
+          if (!nrow(students)) {
+            tags$p(style = "color:#999;", "No students found.")
+          } else {
+            fluidRow(
+              column(5, selectizeInput("crew_award_uids", "Students:",
+                                        choices = setNames(students$user_id, stu_lbl),
+                                        multiple = TRUE)),
+              column(2, numericInput("crew_award_amount", "Amount each:",
+                                     value = 0.25, min = 0.01, step = 0.25)),
+              column(3, textInput("crew_award_note", "Note:",
+                                  value = "Learning Under Noise — Taboo crew")),
+              column(2, tags$br(),
+                     actionButton("crew_award_btn", "Award crew", class = "btn btn-warning btn-sm"))
+            )
+          }
         )
       )
 
@@ -11047,10 +11068,31 @@ server <- function(input, output, session) {
             fluidRow(
               column(4, selectInput("indiv_uid", "Student:",
                                     choices = setNames(students$user_id, stu_lbl))),
-              column(2, numericInput("indiv_amount", "Amount (+/-):", value = 1, step = 1)),
+              column(2, numericInput("indiv_amount", "Amount (+/-):", value = 1, step = 0.25)),
               column(4, textInput("indiv_note", "Correction note:", placeholder = "e.g. correct committed job wage")),
               column(2, tags$br(),
                      actionButton("indiv_award_btn", "Apply", class = "btn btn-warning btn-sm"))
+            )
+          }
+        ),
+        tags$hr(),
+        tags$h6(style = "font-weight:700;color:#951829;", "Selected-Student Award"),
+        tags$p(style = "color:#555;font-size:.88rem;",
+               "Award the same positive earned-token amount to a selected crew or group. Use this for one verified Taboo crew at a time."),
+        div(class = "spend-form-box",
+          if (!nrow(students)) {
+            tags$p(style = "color:#999;", "No students found.")
+          } else {
+            fluidRow(
+              column(5, selectizeInput("crew_award_uids", "Students:",
+                                        choices = setNames(students$user_id, stu_lbl),
+                                        multiple = TRUE)),
+              column(2, numericInput("crew_award_amount", "Amount each:",
+                                     value = 0.25, min = 0.01, step = 0.25)),
+              column(3, textInput("crew_award_note", "Note:",
+                                  value = "Learning Under Noise — Taboo crew")),
+              column(2, tags$br(),
+                     actionButton("crew_award_btn", "Award crew", class = "btn btn-warning btn-sm"))
             )
           }
         )
@@ -12787,10 +12829,37 @@ server <- function(input, output, session) {
     } else {
       token_credit(uid, dname, amount, 1L, "individual_adj", note = lbl)
       showNotification(
-        sprintf("Awarded %d token%s to %s.",
-                as.integer(amount), if (amount == 1) "" else "s", dname),
+        sprintf("Awarded %s token%s to %s.",
+                format(amount, trim = TRUE, scientific = FALSE),
+                if (amount == 1) "" else "s", dname),
         type = "message")
     }
+  })
+
+  observeEvent(input$crew_award_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    uids <- unique(as.character(input$crew_award_uids %||% character()))
+    amount <- suppressWarnings(as.numeric(input$crew_award_amount %||% NA_real_))
+    note <- trimws(input$crew_award_note %||% "")
+    if (!length(uids) || is.na(amount) || amount <= 0) {
+      showNotification("Select at least one student and enter a positive amount.", type = "error")
+      return()
+    }
+    lbl <- if (nzchar(note)) note else "selected-student award"
+    awarded <- 0L
+    for (uid in uids) {
+      u_row <- db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid))
+      if (!nrow(u_row)) next
+      dname <- u_row$display_name[1] %||% uid
+      token_credit(uid, dname, amount, 1L, "selected_award", note = lbl)
+      awarded <- awarded + 1L
+    }
+    showNotification(
+      sprintf("Awarded %s token%s to %d selected student%s.",
+              format(amount, trim = TRUE, scientific = FALSE),
+              if (amount == 1) "" else "s", awarded,
+              if (awarded == 1) "" else "s"),
+      type = "message")
   })
 
   # ── Participation and volunteer settings ─────────────────────────────────────
