@@ -10,8 +10,12 @@ services:
     volumes:
       - ./staging-appdata:/srv/shiny-server/appdata
       - ./staging-shiny-logs:/var/log/shiny-server
+    # A staging run needs no production credentials. When a deployment .env
+    # is present Compose will load it; a developer workbench can start the
+    # isolated SQLite-backed service without one.
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       DEMO_MODE: "0"
       CONNECT_CONTENT_DIR: /srv/shiny-server/appdata

@@ -163,6 +163,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-10-25** — Keep local staging independent of the deployment `.env`: the staging overlay treats that file as optional and uses its own mounted SQLite data. Production compose continues to require the deployment environment file, so a workbench test cannot silently become a production configuration.
+
 - **2026-10-23** — Treat Class Job Market as the single authentication authority for Review Quiz. Review Quiz validates the existing shared `arcade_token` session when available; if deployment routing prevents that cookie from arriving, its fallback checks the same shared Class Job Market account rather than trapping students in a redirect loop. Review Quiz does not issue or maintain a second persistent session.
 
 - **2026-10-23** — Make Review Quiz token awards an explicit instructor release for each quiz session: the instructor chooses the earned-tokens-per-correct rate, previews every student award, and commits it once to the shared ledger as an `earning=1` event. This preserves the distinction between gross grade-relevant token earnings and later spending or policy charges.
@@ -427,6 +429,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-25** (Codex) - Started the immutable `661d153` image on the isolated staging port, seeded its separate database, confirmed HTTP health and app parsing, confirmed the Review Quiz auth handoff is served as executable JavaScript, and ran the payout/session regression against the staged database.
+
 - **2026-10-23** (Codex) - Replaced the Review Quiz credential form with Class Job Market single sign-on: a valid existing shared session logs the student into the quiz automatically, while an unauthenticated student is sent to Class Job Market to sign in. Added an isolated lookup regression to the Review Sprint payout smoke test.
 
 - **2026-10-23** (Codex) - Made Token Admin individual adjustments accept quarter-token increments and display fractional awards accurately. Added a selected-student earned-token award, so a verified three-person Learning Under Noise Taboo crew can be credited in one action rather than three.
@@ -764,7 +768,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Deploy the Review Quiz build and verify a student logged into Class Job Market opens Review Quiz without a second prompt; if the deployed route omits the cookie, verify the shared-credential fallback reaches the quiz without a redirect loop.
+1. On the deployment host, open Review Quiz after a Class Job Market login and verify the existing `arcade_token` logs the student in without a prompt; if the cookie cannot arrive, verify the shared-credential fallback reaches the quiz without a redirect loop.
 2. Import the ECON 342 externalities-review question bank and choose the earned-token rate before the activity.
 3. Use the selected-student award once for a monitored Taboo crew before class, if a rehearsal is desired.
 
