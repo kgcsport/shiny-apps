@@ -2478,6 +2478,20 @@ body.tutorial-off .tab-howto, body.tutorial-off .tutorial-note { display:none !i
 # ── UI ────────────────────────────────────────────────────────────────────────
 COOKIE_JS <- HTML("
 (function() {
+  function safeCourseReturnPath(value) {
+    if (!value || value.length > 300) return '/class-job-market/';
+    try {
+      var target = new URL(value, window.location.origin);
+      if (target.origin !== window.location.origin) return '/class-job-market/';
+      var targetPath = target.pathname.endsWith('/') ? target.pathname.slice(0, -1) : target.pathname;
+      if (targetPath === '/review-quiz') return '/review-quiz/';
+      if (targetPath === '/class-job-market' &&
+          target.searchParams.get('view') === 'cold-call-slide') {
+        return '/class-job-market/?view=cold-call-slide';
+      }
+    } catch (e) {}
+    return '/class-job-market/';
+  }
   function getCookie(name) {
     var m = document.cookie.match('(?:^|; )' + name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '=([^;]*)');
     return m ? decodeURIComponent(m[1]) : '';
@@ -2496,6 +2510,9 @@ COOKIE_JS <- HTML("
   });
   Shiny.addCustomMessageHandler('oauth_redirect', function(msg) {
     window.location.href = msg.url;
+  });
+  Shiny.addCustomMessageHandler('course_auth_return', function(msg) {
+    window.location.replace(safeCourseReturnPath(msg && msg.url));
   });
   Shiny.addCustomMessageHandler('clean_url', function(msg) {
     if (window.history && window.history.replaceState)
@@ -2848,6 +2865,29 @@ server <- function(input, output, session) {
     grepl("(^|[?&])view=cold-call-slide(&|$)", session$clientData$url_search %||% "")
   })
 
+  # Class Job Market is the only sign-in gateway. Keep the return targets
+  # deliberately small and local so a login cannot become an open redirect.
+  requested_course_return <- reactive({
+    search <- session$clientData$url_search %||% ""
+    params <- tryCatch(shiny::parseQueryString(sub("^\\?", "", search)),
+                       error = function(e) list())
+    target <- as.character(params$return_to %||% "")
+    if (length(target) != 1L || nchar(target) > 300L) return("/class-job-market/")
+    if (target %in% c("/review-quiz", "/review-quiz/")) return("/review-quiz/")
+    if (target %in% c("/class-job-market/?view=cold-call-slide",
+                       "/class-job-market?view=cold-call-slide")) {
+      return("/class-job-market/?view=cold-call-slide")
+    }
+    "/class-job-market/"
+  })
+
+  return_after_login <- function() {
+    target <- requested_course_return()
+    if (!identical(target, "/class-job-market/")) {
+      session$sendCustomMessage("course_auth_return", list(url = target))
+    }
+  }
+
   # ── Root UI ──────────────────────────────────────────────────────────────────
   output$root_ui <- renderUI({
     if (!rv$authed) {
@@ -2858,9 +2898,10 @@ server <- function(input, output, session) {
           div(class = "login-tagline",
               if (GOOGLE_AUTH_ENABLED) "Sign in with your school Google account."
               else "Log in with credentials from your instructor."),
-          if (GOOGLE_AUTH_ENABLED)
+          if (GOOGLE_AUTH_ENABLED) {
+            login_return <- requested_course_return()
             tags$a(
-              href = if (is_cold_call_slide_view()) "/auth/login?return_to=%2Fclass-job-market%2F%3Fview%3Dcold-call-slide" else "/auth/login",
+              href = paste0("/auth/login?return_to=", utils::URLencode(login_return, reserved = TRUE)),
               target = if (is_cold_call_slide_view()) "_top" else NULL,
               class = "btn-google",
               tags$svg(xmlns = "http://www.w3.org/2000/svg", viewBox = "0 0 24 24",
@@ -2871,7 +2912,8 @@ server <- function(input, output, session) {
                 tags$path(fill = "#EA4335", d = "M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z")
               ),
               "Sign in with Google"
-            ),
+            )
+          },
           if (GOOGLE_AUTH_ENABLED)
             tags$details(class = "admin-login-toggle",
               tags$summary("Sign in with password"),
@@ -3022,6 +3064,7 @@ server <- function(input, output, session) {
     if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) return()
     rv$token <- tok
     do_login(row)
+    return_after_login()
   }, ignoreInit = FALSE)
 
   # ── Manual login ──────────────────────────────────────────────────────────────
@@ -3045,6 +3088,7 @@ server <- function(input, output, session) {
     do_login(row)
     if (!isTRUE(as.integer(row$is_demo[1] %||% 0L) == 1L) && !.sandbox)
       issue_cookie(row$user_id[1])
+    return_after_login()
   })
 
   # ── Demo auto-login ───────────────────────────────────────────────────────────

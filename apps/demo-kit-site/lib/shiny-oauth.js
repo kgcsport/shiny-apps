@@ -1,7 +1,9 @@
 export const SHINY_APP_PATH = '/class-job-market/';
+export const REVIEW_QUIZ_PATH = '/review-quiz/';
 
-// OAuth may return only to the course app, optionally restoring its compact
-// slide panel. Never reflect arbitrary URLs through the callback.
+// OAuth may return only to an explicitly enrolled course app. Never reflect
+// arbitrary URLs through the callback: this is both the Class Job Market login
+// gateway and the shared session entry point for course games.
 export function safeShinyReturnPath(value, shinyBaseUrl) {
   if (typeof value !== 'string' || value.length > 300 || !shinyBaseUrl) return SHINY_APP_PATH;
   try {
@@ -9,7 +11,9 @@ export function safeShinyReturnPath(value, shinyBaseUrl) {
     const requested = new URL(value, shinyBaseUrl);
     const appPath = SHINY_APP_PATH.replace(/\/$/, '');
     const requestedPath = requested.pathname.replace(/\/$/, '');
-    if (requested.origin !== appUrl.origin || requestedPath !== appPath) return SHINY_APP_PATH;
+    if (requested.origin !== appUrl.origin) return SHINY_APP_PATH;
+    if (requestedPath === REVIEW_QUIZ_PATH.replace(/\/$/, '')) return REVIEW_QUIZ_PATH;
+    if (requestedPath !== appPath) return SHINY_APP_PATH;
     return requested.searchParams.get('view') === 'cold-call-slide'
       ? `${SHINY_APP_PATH}?view=cold-call-slide`
       : SHINY_APP_PATH;

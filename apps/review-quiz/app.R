@@ -418,6 +418,7 @@ quiz_css <- HTML("
 
 shared_auth_js <- tags$script(HTML("
 (function() {
+  var jobMarketLogin = '../class-job-market/?return_to=%2Freview-quiz%2F';
   function getCookie(name) {
     var parts = document.cookie ? document.cookie.split('; ') : [];
     for (var i = 0; i < parts.length; i++) {
@@ -431,6 +432,9 @@ shared_auth_js <- tags$script(HTML("
   }
   $(document).on('shiny:sessioninitialized', sendAuthCookie);
   $(sendAuthCookie);
+  Shiny.addCustomMessageHandler('redirect_to_job_market', function(msg) {
+    window.location.replace((msg && msg.url) || jobMarketLogin);
+  });
 })();
 "))
 
@@ -440,19 +444,9 @@ login_ui <- function(msg = NULL) {
     tags$head(tags$style(quiz_css)),
     titlePanel("Midterm 2 Review Quiz"),
     if (!is.null(msg)) div(style = "color:#b00020; font-weight:bold; margin-bottom:10px;", msg),
-    div(style = "max-width:360px;",
-      tags$p("If you are already signed into Class Job Market, this page should open automatically."),
-      tags$details(
-        tags$summary("Automatic sign-in did not arrive?"),
-        tags$div(style = "margin-top:10px;",
-          textInput("login_user", "Class Job Market username"),
-          passwordInput("login_pw", "Class Job Market password"),
-          actionButton("login_btn", "Continue", class = "btn-primary"),
-          tags$p(style = "margin-top:8px;", tags$small("This checks the same Class Job Market account; it does not create a quiz account."))
-        )
-      ),
-      tags$p(style = "margin-top:12px;",
-             tags$a("Open Class Job Market", href = "../class-job-market/", class = "btn btn-default btn-sm")),
+    div(style = "max-width:420px;",
+      tags$p("Checking your Class Job Market sign-in…"),
+      tags$p(tags$small("If you are not signed in, you will be sent there and returned here after sign-in.")),
       demo_login_ui
     )
   )
@@ -473,7 +467,8 @@ server <- function(input, output, session) {
   .is_demo <- dm$is_demo
 
   rv <- reactiveValues(authed = FALSE, user_id = NULL, name = NULL, alias = NULL,
-                       is_admin = FALSE, my_q = 1L, payout_version = 0L)
+                       is_admin = FALSE, my_q = 1L, payout_version = 0L,
+                       auth_redirected = FALSE)
 
   output$demo_banner <- renderUI(demo_banner_ui(.is_demo, rv$is_admin))
 
@@ -511,30 +506,17 @@ server <- function(input, output, session) {
   observeEvent(input$auth_cookie, {
     if (rv$authed || .is_demo) return()
     row <- lookup_shared_session(input$auth_cookie %||% "", query = db_query)
-    if (!nrow(row) || isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) return()
+    if (!nrow(row) || isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
+      if (!rv$auth_redirected) {
+        rv$auth_redirected <- TRUE
+        session$sendCustomMessage("redirect_to_job_market", list(
+          url = "../class-job-market/?return_to=%2Freview-quiz%2F"
+        ))
+      }
+      return()
+    }
     finish_login(row)
   }, ignoreInit = FALSE)
-
-  observeEvent(input$login_btn, {
-    user_id <- trimws(input$login_user %||% "")
-    password <- input$login_pw %||% ""
-    if (!nzchar(user_id) || !nzchar(password)) {
-      showNotification("Enter your Class Job Market username and password.", type = "error")
-      return()
-    }
-    row <- db_query(
-      "SELECT user_id, display_name, is_admin, pw_hash, active
-       FROM users WHERE LOWER(user_id)=LOWER(?);", list(user_id))
-    if (!nrow(row) || !tryCatch(bcrypt::checkpw(password, row$pw_hash[1]), error = function(e) FALSE)) {
-      showNotification("Incorrect Class Job Market username or password.", type = "error")
-      return()
-    }
-    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
-      showNotification("This account has been archived. Contact your instructor.", type = "error")
-      return()
-    }
-    finish_login(row, source = "shared credentials fallback")
-  })
 
   # ── Reactive polls ───────────────────────────────────────────────────────────
   # Poll every 2000ms: quiz state changes when instructor reveals/advances.

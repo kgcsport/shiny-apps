@@ -163,6 +163,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-10-25** — Use Class Job Market as the universal authentication gateway for protected course apps. A protected app validates the existing shared `arcade_token`; otherwise it sends the browser to Class Job Market with an allowlisted local return path. The OAuth relay retains that path through Google sign-in, and password/cookie sign-in in Class Job Market returns to it as well. New protected games join this pipeline by adding an explicit return-path allowlist entry rather than creating an app-specific login.
+
 - **2026-10-25** — Keep local staging independent of the deployment `.env`: the staging overlay treats that file as optional and uses its own mounted SQLite data. Production compose continues to require the deployment environment file, so a workbench test cannot silently become a production configuration.
 
 - **2026-10-23** — Treat Class Job Market as the single authentication authority for Review Quiz. Review Quiz validates the existing shared `arcade_token` session when available; if deployment routing prevents that cookie from arriving, its fallback checks the same shared Class Job Market account rather than trapping students in a redirect loop. Review Quiz does not issue or maintain a second persistent session.
@@ -429,6 +431,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-25** (Codex) - Made Review Quiz use the Class Job Market gateway rather than a second credential screen. Expanded the OAuth relay’s strict return-path allowlist to include Review Quiz, while retaining the existing cold-call route and rejection of external/unrecognized paths. Added return handling for Google, password, and shared-cookie Job Market sign-in, and covered the allowlist with the demo-kit test suite.
+
 - **2026-10-25** (Codex) - Started the immutable `661d153` image on the isolated staging port, seeded its separate database, confirmed HTTP health and app parsing, confirmed the Review Quiz auth handoff is served as executable JavaScript, and ran the payout/session regression against the staged database.
 
 - **2026-10-23** (Codex) - Replaced the Review Quiz credential form with Class Job Market single sign-on: a valid existing shared session logs the student into the quiz automatically, while an unauthenticated student is sent to Class Job Market to sign in. Added an isolated lookup regression to the Review Sprint payout smoke test.
@@ -768,7 +772,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. On the deployment host, open Review Quiz after a Class Job Market login and verify the existing `arcade_token` logs the student in without a prompt; if the cookie cannot arrive, verify the shared-credential fallback reaches the quiz without a redirect loop.
+1. Deploy the paired Shiny and demo-kit images, then browser-test both flows: Class Job Market → Review Quiz without a prompt, and a direct Review Quiz visit → Class Job Market/Google → Review Quiz.
 2. Import the ECON 342 externalities-review question bank and choose the earned-token rate before the activity.
 3. Use the selected-student award once for a monitored Taboo crew before class, if a rehearsal is desired.
 
