@@ -431,6 +431,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+- **2026-10-25** (Codex) - Repaired the Review Quiz Admin empty-session state: before any student submits an answer, the Review Sprint payout summary now displays zero correct responses instead of attempting to total an empty vector and failing the Admin render.
+
 - **2026-10-25** (Codex) - Made Review Quiz use the Class Job Market gateway rather than a second credential screen. Expanded the OAuth relay’s strict return-path allowlist to include Review Quiz, while retaining the existing cold-call route and rejection of external/unrecognized paths. Added return handling for Google, password, and shared-cookie Job Market sign-in, and covered the allowlist with the demo-kit test suite.
 
 - **2026-10-25** (Codex) - Started the immutable `661d153` image on the isolated staging port, seeded its separate database, confirmed HTTP health and app parsing, confirmed the Review Quiz auth handoff is served as executable JavaScript, and ran the payout/session regression against the staged database.

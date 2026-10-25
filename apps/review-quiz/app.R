@@ -866,6 +866,7 @@ server <- function(input, output, session) {
     session_key <- as.integer(qs$session_key[1] %||% 1L)
     payout_release <- get_review_sprint_release(session_key, query = db_query)
     payout_scores <- get_payout_scores(questions_r(), query = db_query)
+    payout_correct_total <- if (nrow(payout_scores)) sum(payout_scores$correct_count) else 0L
 
     tagList(
       tags$h4("Quiz Controls"),
@@ -948,7 +949,7 @@ server <- function(input, output, session) {
             tags$p(style = "font-size:.82em;color:#888;margin:0;",
                    sprintf("Current session: %d student%s with answers; %d correct responses in total. Token earnings count toward students' gross earned-token total.",
                            nrow(payout_scores), if (nrow(payout_scores) == 1) "" else "s",
-                           sum(payout_scores$correct_count %||% 0)))
+                           payout_correct_total))
           )
         }
       ),
