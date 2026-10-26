@@ -3409,15 +3409,17 @@ server <- function(input, output, session) {
           "SELECT lse.id, lse.round_id, lse.user_id, u.display_name, u.course, u.section,
                   lse.job_assignment_id, lse.job_post_id, lse.event_kind,
                   lse.outcome, lse.tokens, lse.created_at,
+                  COALESCE(CASE WHEN ja.scheduled_date IS NOT NULL AND length(ja.scheduled_date)>0 THEN ja.scheduled_date END, CASE WHEN wr_assignment.class_date IS NOT NULL AND length(wr_assignment.class_date)>0 THEN wr_assignment.class_date END, CASE WHEN wr_event.class_date IS NOT NULL AND length(wr_event.class_date)>0 THEN wr_event.class_date END, substr(lse.created_at,1,10)) AS job_date,
                   COALESCE(jp.job_name, ap.job_name, '') AS job_name
            FROM live_score_events lse
            JOIN users u ON u.user_id=lse.user_id
-           LEFT JOIN weekly_rounds wr ON wr.id=lse.round_id
+           LEFT JOIN weekly_rounds wr_event ON wr_event.id=lse.round_id
            LEFT JOIN job_posts jp ON jp.id=lse.job_post_id
            LEFT JOIN job_assignments ja ON ja.id=lse.job_assignment_id
+           LEFT JOIN weekly_rounds wr_assignment ON wr_assignment.id=ja.round_id
            LEFT JOIN job_posts ap ON ap.id=ja.job_post_id
-           WHERE lse.round_id=? AND lse.committed_at IS NULL
-           ORDER BY u.course, u.section, u.display_name, lse.created_at;", list(rid)),
+           WHERE lse.committed_at IS NULL
+           ORDER BY job_date DESC, u.course, u.section, u.display_name, lse.created_at;", list()),
           error = function(e) data.frame())
       }
       list(students=students, subs=subs, assignments=assignments,

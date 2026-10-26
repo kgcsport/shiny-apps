@@ -324,6 +324,7 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_match(app_source, "close_bidding_after_draw(rid)", fixed = TRUE)
     expect_match(app_source, "active_round_id", fixed = TRUE)
     expect_match(app_source, "COALESCE(jp.voluntary,COALESCE(jc.voluntary,0),0)=0", fixed = TRUE)
+    expect_match(app_source, "WHERE lse.committed_at IS NULL", fixed = TRUE)
     expect_match(app$ARCADE_CSS, ".today-announcement", fixed = TRUE)
     expect_match(app$ARCADE_CSS, ".arc-font-ctrl { display:flex; flex:1; }", fixed=TRUE)
     expect_match(as.character(app$COOKIE_JS), "classJobFontScale", fixed=TRUE)
