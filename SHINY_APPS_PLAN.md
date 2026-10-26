@@ -163,6 +163,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-10-26** — Adopt a non-regression protocol for Class Job Market changes: identify preserved and new behavior before coding; add a workflow-level regression fixture for every production bug; test historical dates and selected course/section scope where relevant; stage the immutable image; and report the exact verification evidence before calling a change resolved. Pending assignments and pending Live Score Audit events must remain visible and actionable until committed, returned, or deleted.
+
+
 - **2026-10-26** — Use each Flex Question’s existing Exam tag as a persistent batch control. Instructors may activate/deactivate one question or every question under an exam tag; inactive questions stay visible for administration and retain their funding history, but are excluded from the active student funding sequence.
 
 - **2026-10-25** — Use Class Job Market as the universal authentication gateway for protected course apps. A protected app validates the existing shared `arcade_token`; otherwise it sends the browser to Class Job Market with an allowlisted local return path. The OAuth relay retains that path through Google sign-in, and password/cookie sign-in in Class Job Market returns to it as well. New protected games join this pipeline by adding an explicit return-path allowlist entry rather than creating an app-specific login.
@@ -433,6 +436,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-10-26** — Diagnosed Live Score Audit visibility across dates. The audit query had removed its round placeholder but still passed an empty parameter list, which the DB helper swallowed as an empty result. Restored a no-parameter query and aligned Commit all/Clear pending with the displayed cross-date, selected-scope queue. Added a source-level regression assertion; broader fixture coverage is now required by the non-regression protocol.
+
 - **2026-10-26** (Codex) - Added individual Activate/Deactivate controls and Exam-tag batch Activate all/Deactivate all controls to Flex Questions. The admin table now includes inactive questions for restoration and editing, while student funding continues to use only active candidates. R parsing, diff checks, and a disposable SQLite activation test pass.
 - **2026-10-25** (Codex) - Repaired the Review Quiz Admin empty-session state: before any student submits an answer, the Review Sprint payout summary now displays zero correct responses instead of attempting to total an empty vector and failing the Admin render.
 
@@ -777,10 +783,25 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Deploy the Shiny image and verify Flex Questions in the intended course scope: deactivate one question, restore it, then toggle an Exam-tag batch and confirm students see only the active candidates.
-2. Browser-test both Review Quiz sign-in flows: Class Job Market → Review Quiz without a prompt, and a direct Review Quiz visit → Class Job Market/Google → Review Quiz.
-3. Import the ECON 342 externalities-review question bank and choose the earned-token rate before the activity.
+1. Stage and verify commit `4264c05`: confirm old-date Pending assignment outcomes appear in Live Score Audit, then approve one and confirm its record moves out of Pending.
+2. Repair the existing failing unit/smoke baseline and add a focused SQLite fixture that covers multiple class dates, sections, pending assignment outcomes, and audit commit/return behavior; make it a required image-build gate.
+3. Browser-test both Review Quiz sign-in flows: Class Job Market → Review Quiz without a prompt, and a direct Review Quiz visit → Class Job Market/Google → Review Quiz.
 
 ## Questions for Kyle
 
 - Should students see the posted demand k itself, or only the implied wage (current behavior)?
+
+
+## Non-regression protocol for Class Job Market
+
+For any change to apps/class-job-market, treat current instructor and student workflows as a compatibility contract. Before implementation, record: (1) behavior that must remain unchanged, (2) requested new behavior, and (3) concrete verification cases.
+
+Required verification:
+
+1. Add or update a regression test for every production defect. Use a realistic SQLite fixture when state spans dates, sections, bidding modes, or historical records.
+2. Test the exact workflow path, not only helper functions or startup. A swallowed database error must be surfaced by the test.
+3. Run the focused regression test plus relevant smoke tests before deployment.
+4. Stage the immutable image and manually verify the affected instructor and student workflow before production promotion.
+5. Do not call a change resolved until the tested behavior, test command, staging image, and deployment commit are stated.
+
+Critical invariants: unresolved assignments and pending scores remain visible and actionable across class dates; course or section scope may filter records but must not strand them; data migrations preserve historical records; and destructive actions require confirmation plus a recovery path.
