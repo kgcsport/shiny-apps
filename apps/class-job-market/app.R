@@ -9188,12 +9188,12 @@ server <- function(input, output, session) {
         tags$p(style = "color:#555;font-size:.88rem;",
                "Award the same positive earned-token amount to a selected crew or group. Use this for one verified Taboo crew at a time."),
         div(class = "spend-form-box",
-          if (!nrow(students)) {
+          if (!nrow(students_sec)) {
             tags$p(style = "color:#999;", "No students found.")
           } else {
             fluidRow(
               column(5, selectizeInput("crew_award_uids", "Students:",
-                                        choices = setNames(students$user_id, stu_lbl),
+                                        choices = setNames(students_sec$user_id, stu_lbl),
                                         multiple = TRUE)),
               column(2, numericInput("crew_award_amount", "Amount each:",
                                      value = 0.25, min = 0.01, step = 0.25)),
