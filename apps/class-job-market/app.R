@@ -3415,7 +3415,6 @@ server <- function(input, output, session) {
            LEFT JOIN weekly_rounds wr ON wr.id=lse.round_id
            LEFT JOIN job_posts jp ON jp.id=lse.job_post_id
            LEFT JOIN job_assignments ja ON ja.id=lse.job_assignment_id
-           LEFT JOIN weekly_rounds wr ON wr.id=ja.round_id
            LEFT JOIN job_posts ap ON ap.id=ja.job_post_id
            WHERE lse.round_id=? AND lse.committed_at IS NULL
            ORDER BY u.course, u.section, u.display_name, lse.created_at;", list(rid)),
