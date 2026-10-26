@@ -437,6 +437,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-10-26** — Added `tests/critical-live-score-audit.R`, a SQLite fixture with unresolved Oct. 7 and Oct. 12 assignment scores in a selected section, plus a committed control event and an out-of-scope record. The Dockerfile now runs it during image build, so a bad cross-date audit query blocks GHCR publication.
+
 - **2026-10-26** — Diagnosed Live Score Audit visibility across dates. The audit query had removed its round placeholder but still passed an empty parameter list, which the DB helper swallowed as an empty result. Restored a no-parameter query and aligned Commit all/Clear pending with the displayed cross-date, selected-scope queue. Added a source-level regression assertion; broader fixture coverage is now required by the non-regression protocol.
 
 - **2026-10-26** (Codex) - Added individual Activate/Deactivate controls and Exam-tag batch Activate all/Deactivate all controls to Flex Questions. The admin table now includes inactive questions for restoration and editing, while student funding continues to use only active candidates. R parsing, diff checks, and a disposable SQLite activation test pass.
@@ -783,8 +785,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Stage and verify commit `4264c05`: confirm old-date Pending assignment outcomes appear in Live Score Audit, then approve one and confirm its record moves out of Pending.
-2. Repair the existing failing unit/smoke baseline and add a focused SQLite fixture that covers multiple class dates, sections, pending assignment outcomes, and audit commit/return behavior; make it a required image-build gate.
+1. Stage and verify the image containing `4264c05` plus the Live Score Audit build gate: confirm old-date Pending assignment outcomes appear in Live Score Audit, then approve one and confirm it leaves Pending.
+2. Repair the existing broad unit/smoke baseline, then promote the cross-date fixture from a Docker build gate to the full required workflow suite.
 3. Browser-test both Review Quiz sign-in flows: Class Job Market → Review Quiz without a prompt, and a direct Review Quiz visit → Class Job Market/Google → Review Quiz.
 
 ## Questions for Kyle

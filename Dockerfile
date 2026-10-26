@@ -14,5 +14,6 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # Fail the image build before publication if the main Shiny app cannot even
 # be parsed. Runtime startup is exercised separately by the staging smoke test.
 RUN Rscript --vanilla -e "parse(file='/srv/shiny-server/class-job-market/app.R'); cat('class-job-market parse OK\n')"
+RUN Rscript --vanilla /srv/shiny-server/tests/critical-live-score-audit.R
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
