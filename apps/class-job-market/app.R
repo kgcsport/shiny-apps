@@ -3419,7 +3419,7 @@ server <- function(input, output, session) {
            LEFT JOIN weekly_rounds wr_assignment ON wr_assignment.id=ja.round_id
            LEFT JOIN job_posts ap ON ap.id=ja.job_post_id
            WHERE lse.committed_at IS NULL
-           ORDER BY job_date DESC, u.course, u.section, u.display_name, lse.created_at;", list()),
+           ORDER BY job_date DESC, u.course, u.section, u.display_name, lse.created_at;"),
           error = function(e) data.frame())
       }
       list(students=students, subs=subs, assignments=assignments,
@@ -7144,12 +7144,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$clear_live_scores_btn, {
     req(rv$is_admin, !rv$impersonating)
-    rid_row <- tryCatch(active_round_row(),
-                        error=function(e) data.frame())
-    if (!nrow(rid_row)) return()
     pending <- tryCatch(db_query(
       "SELECT lse.id,u.course,u.section FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
-       WHERE lse.round_id=? AND lse.committed_at IS NULL;", list(rid_row$id[1])),
+       WHERE lse.committed_at IS NULL;"),
       error=function(e)data.frame())
     pending <- scope_filter_rows(pending)
     if (nrow(pending)) for (eid in pending$id)
@@ -7159,14 +7156,10 @@ server <- function(input, output, session) {
 
   observeEvent(input$commit_live_scores_btn, {
     req(rv$is_admin, !rv$impersonating)
-    rid_row <- tryCatch(active_round_row(),
-                        error=function(e) data.frame())
-    if (!nrow(rid_row)) { showNotification("No selected class date.", type = "error"); return() }
     pending <- tryCatch(db_query(
       "SELECT lse.*,u.display_name,u.course,u.section
        FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
-       WHERE lse.round_id=? AND lse.committed_at IS NULL ORDER BY lse.id;",
-      list(rid_row$id[1])), error=function(e)data.frame())
+       WHERE lse.committed_at IS NULL ORDER BY lse.id;"), error=function(e)data.frame())
     pending <- scope_filter_rows(pending)
     if (!nrow(pending)) { showNotification("No pending live scores.", type = "message"); return() }
     applied <- 0L
