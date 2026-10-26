@@ -8285,22 +8285,53 @@ server <- function(input, output, session) {
     showNotification("Question added.", type = "message")
   })
 
-  observeEvent(input$delete_flex_question_btn, {
-    req(rv$is_admin)
-    qid <- suppressWarnings(as.integer(input$delete_flex_question_btn %||% 0))
-    if (is.na(qid) || qid <= 0) return()
-    db_exec("UPDATE flex_questions SET active=0 WHERE id=?;", list(qid))
+  set_flex_exam_batch_active <- function(active) {
+    tag <- trimws(input$flex_exam_batch_tag %||% "")
+    if (!nzchar(tag)) { showNotification("Choose an exam batch first.", type = "error"); return() }
+    db_exec(
+      "UPDATE flex_questions SET active=?
+       WHERE LOWER(TRIM(COALESCE(exam_tag,'')))=LOWER(?)
+         AND (?='' OR trim(COALESCE(course,''))='' OR LOWER(course)=LOWER(?));",
+      list(as.integer(active), tag, scoped_course(), scoped_course()))
     rv$flex_ver <- rv$flex_ver + 1L
-    showNotification("Question removed.", type = "message")
+    showNotification(if (isTRUE(active)) paste0("Activated all questions tagged ", tag, ".")
+                     else paste0("Deactivated all questions tagged ", tag, "."), type = "message")
+  }
+
+  observeEvent(input$activate_flex_exam_batch_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    set_flex_exam_batch_active(TRUE)
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$deactivate_flex_exam_batch_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    set_flex_exam_batch_active(FALSE)
+  }, ignoreNULL = TRUE)
+
+  observeEvent(input$toggle_flex_question_active_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    qid <- suppressWarnings(as.integer(input$toggle_flex_question_active_btn %||% NA))
+    if (is.na(qid) || qid <= 0) return()
+    row <- tryCatch(db_query(
+      "SELECT id, COALESCE(active,1) AS active FROM flex_questions
+       WHERE id=? AND (?='' OR trim(COALESCE(course,''))='' OR LOWER(course)=LOWER(?)) LIMIT 1;",
+      list(qid, scoped_course(), scoped_course())), error = function(e) data.frame())
+    if (!nrow(row)) { showNotification("That question is not in the current course bank.", type = "error"); return() }
+    next_state <- 1L - as.integer(row$active[1] %||% 1L)
+    db_exec("UPDATE flex_questions SET active=? WHERE id=?;", list(next_state, qid))
+    rv$flex_ver <- rv$flex_ver + 1L
+    showNotification(if (next_state == 1L) "Question activated." else "Question deactivated.", type = "message")
   }, ignoreNULL = TRUE)
 
   observeEvent(input$edit_flex_question_btn, {
     req(rv$is_admin)
     qid <- suppressWarnings(as.integer(input$edit_flex_question_btn %||% 0))
     if (is.na(qid) || qid <= 0) return()
-    row <- tryCatch(db_query("SELECT * FROM flex_questions WHERE id=? AND COALESCE(active,1)=1 LIMIT 1;", list(qid)),
-                    error=function(e)data.frame())
-    if (!nrow(row)) { showNotification("That question is no longer active.", type="warning"); return() }
+    row <- tryCatch(db_query(
+      "SELECT * FROM flex_questions
+       WHERE id=? AND (?='' OR trim(COALESCE(course,''))='' OR LOWER(course)=LOWER(?)) LIMIT 1;",
+      list(qid, scoped_course(), scoped_course())), error=function(e)data.frame())
+    if (!nrow(row)) { showNotification("That question is not in the current course bank.", type="warning"); return() }
     showModal(modalDialog(
       title = sprintf("Edit flex question #%d", qid),
       textAreaInput("edit_fq_text", "Question text:", value=row$question_text[1] %||% "", rows=4, width="100%"),
@@ -8330,7 +8361,7 @@ server <- function(input, output, session) {
       return()
     }
     db_exec(
-      "UPDATE flex_questions SET question_text=?,exam_tag=?,topic=?,draw_group=?,draw_count=?,pool_size=? WHERE id=? AND COALESCE(active,1)=1;",
+      "UPDATE flex_questions SET question_text=?,exam_tag=?,topic=?,draw_group=?,draw_count=?,pool_size=? WHERE id=?;",
       list(txt, trimws(input$edit_fq_exam %||% "") %||% NA_character_,
            trimws(input$edit_fq_topic %||% "") %||% NA_character_,
            trimws(input$edit_fq_draw_group %||% "") %||% NA_character_,
@@ -10108,7 +10139,7 @@ server <- function(input, output, session) {
       scope_key <- current_scope_key()
       scope_course <- scoped_course()
       fqs <- tryCatch(db_query(
-        "SELECT fq.id, fq.question_text, fq.order_index, fq.active, fq.exam_tag, fq.course,
+        "SELECT fq.id, fq.question_text, fq.order_index, COALESCE(fq.active,1) AS active, fq.exam_tag, fq.course,
                 fq.topic,fq.draw_group,fq.draw_count,fq.pool_size,
                 fqs.unlock_cost, fqs.unlocked_at, COALESCE(SUM(fqc.amount),0) AS funded
          FROM flex_questions fq
@@ -10116,8 +10147,7 @@ server <- function(input, output, session) {
            ON fqs.question_id=fq.id AND fqs.scope_key=?
          LEFT JOIN flex_question_contributions fqc
            ON fqc.question_id=fq.id AND fqc.scope_key=?
-         WHERE COALESCE(fq.active,1)=1
-           AND (?='' OR trim(COALESCE(fq.course,''))='' OR LOWER(fq.course)=LOWER(?))
+         WHERE (?='' OR trim(COALESCE(fq.course,''))='' OR LOWER(fq.course)=LOWER(?))
          GROUP BY fq.id
          ORDER BY fq.order_index ASC, fq.id ASC;",
         list(scope_key,scope_key,scope_course,scope_course)),
@@ -10165,13 +10195,40 @@ server <- function(input, output, session) {
         },
         tags$hr(),
 
+        # Exam-tag batches use the same tag stored with each question.
+        {
+          exam_tags <- sort(unique(trimws(as.character(fqs$exam_tag %||% character(0)))))
+          exam_tags <- exam_tags[!is.na(exam_tags) & nzchar(exam_tags)]
+          if (length(exam_tags)) {
+            batch_status <- vapply(exam_tags, function(tag) {
+              rows <- fqs[tolower(trimws(as.character(fqs$exam_tag))) == tolower(tag), , drop = FALSE]
+              sprintf("%s — %d/%d active", tag,
+                      sum(as.integer(rows$active %||% 1L) == 1L, na.rm = TRUE), nrow(rows))
+            }, character(1))
+            tagList(
+              tags$h6(style = "font-weight:700;margin-top:.75rem;", "Exam batches"),
+              tags$p(style = "color:#555;font-size:.82rem;margin:.25rem 0 .4rem;",
+                     "Use the Exam tag to activate or deactivate every candidate in one exam batch. This changes what students can fund, not the stored questions or their contribution history."),
+              fluidRow(
+                column(7, selectInput("flex_exam_batch_tag", "Exam batch:",
+                                      choices = stats::setNames(exam_tags, batch_status), width = "100%")),
+                column(5, tags$br(),
+                       actionButton("activate_flex_exam_batch_btn", "Activate all", class = "btn btn-sm btn-outline-primary"),
+                       " ",
+                       actionButton("deactivate_flex_exam_batch_btn", "Deactivate all", class = "btn btn-sm btn-outline-secondary"))
+              )
+            )
+          }
+        },
+        tags$hr(),
+
         # Question table
         tags$h6(style = "font-weight:700;", "Questions"),
         if (nrow(fqs)) {
           tags$table(class = "table table-sm",
             tags$thead(tags$tr(
               tags$th("#"),tags$th("Question"),tags$th("Topic"),tags$th("Draw chance"),
-              tags$th("Exam"),tags$th("Funding"),tags$th("Active"),tags$th("Edit / remove")
+              tags$th("Exam"),tags$th("Funding"),tags$th("Status"),tags$th("Edit / activation")
             )),
             tags$tbody(lapply(seq_len(nrow(fqs)), function(i) {
               r <- fqs[i, ]
@@ -10196,7 +10253,7 @@ server <- function(input, output, session) {
                         else if (as.numeric(r$funded %||% 0) > 0)
                           sprintf("%g / %g", as.numeric(r$funded), as.numeric(r$unlock_cost %||% 0))
                         else "Locked"),
-                tags$td(if (is_active) "✓" else ""),
+                tags$td(if (is_active) "Active" else "Inactive"),
                 tags$td(
                   tags$button(
                     class = "btn btn-xs btn-outline-primary",
@@ -10206,12 +10263,12 @@ server <- function(input, output, session) {
                       as.integer(r$id)),
                     "Edit"),
                   tags$button(
-                    class = "btn btn-xs btn-outline-danger",
+                    class = if (is_active) "btn btn-xs btn-outline-secondary" else "btn btn-xs btn-outline-success",
                     style = "padding:.1rem .35rem;font-size:.72rem;",
                     onclick = sprintf(
-                      "if(confirm('Remove this question from the active pool?')) Shiny.setInputValue('delete_flex_question_btn',%d,{priority:'event'});",
+                      "Shiny.setInputValue('toggle_flex_question_active_btn',%d,{priority:'event'});",
                       as.integer(r$id)),
-                    "Remove"))
+                    if (is_active) "Deactivate" else "Activate"))
               )
             }))
           )
