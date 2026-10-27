@@ -4582,6 +4582,10 @@ server <- function(input, output, session) {
   # ── Embedded: Bonus Pot ───────────────────────────────────────────────────────
   output$embedded_bonus_pot <- renderUI({
     req(rv$authed)
+    if (isTRUE(rv$is_admin)) {
+      return(div(class = "alert alert-info",
+                 "Administrators manage this game but are not players by default."))
+    }
     op     <- olig_poll()
     s      <- op$settings
     if (!nrow(s)) return(div(class = "no-game", "Bonus Pot not configured yet."))
@@ -4638,6 +4642,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$bp_submit, {
     req(rv$authed, rv$user_id)
+    if (isTRUE(rv$is_admin)) {
+      showNotification("Administrators are not eligible to submit to student games.", type = "warning"); return()
+    }
     if (rv$is_demo) {
       showNotification("Demo mode — submission not saved.", type = "warning"); return()
     }
@@ -4671,6 +4678,10 @@ server <- function(input, output, session) {
   # ── Embedded: Prisoner's Dilemma + Price War ──────────────────────────────────
   output$embedded_pd <- renderUI({
     req(rv$authed)
+    if (isTRUE(rv$is_admin)) {
+      return(div(class = "alert alert-info",
+                 "Administrators manage this game but are not players by default."))
+    }
     op     <- olig_poll()
     s      <- op$settings
     if (!nrow(s)) return(div(class = "no-game", "Game not configured."))
@@ -4730,6 +4741,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$pd_submit, {
     req(rv$authed, rv$user_id)
+    if (isTRUE(rv$is_admin)) {
+      showNotification("Administrators are not eligible to submit to student games.", type = "warning"); return()
+    }
     if (rv$is_demo) {
       showNotification("Demo mode — submission not saved.", type = "warning"); return()
     }

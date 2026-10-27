@@ -165,6 +165,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 - **2026-10-26** — Adopt a non-regression protocol for Class Job Market changes: identify preserved and new behavior before coding; add a workflow-level regression fixture for every production bug; test historical dates and selected course/section scope where relevant; stage the immutable image; and report the exact verification evidence before calling a change resolved. Pending assignments and pending Live Score Audit events must remain visible and actionable until committed, returned, or deleted.
 
+- **2026-10-27** — Administrator status means management access, not automatic student-game eligibility. Across Class Job Market, default student rosters, class-size denominators, draws, and collective-action games exclude `is_admin=1`; a future instructor control may explicitly include administrators for the rare intentional case.
+
 
 - **2026-10-26** — Use each Flex Question’s existing Exam tag as a persistent batch control. Instructors may activate/deactivate one question or every question under an exam tag; inactive questions stay visible for administration and retain their funding history, but are excluded from the active student funding sequence.
 
@@ -436,6 +438,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-10-27** — Confirmed that existing student rosters, draws, game denominators, Flex funding, and bulk awards already filter `is_admin=0`. Closed the legacy embedded-game loophole: admins now see a management message and server-side submission handlers reject their Bonus Pot, Prisoner’s Dilemma, and Price War choices. The new Collective Action engine freezes a course/section roster from the same active/non-demo/non-admin predicate by default; its focused SQLite fixture verifies that an instructor and an outside-course student are excluded.
 
 - **2026-10-27** — Added a Collective Action prototype engine beside the legacy Bonus Pot. It creates course/section-scoped sessions and rounds, freezes a round roster, supports linear and threshold mechanisms, uses one UPSERT-backed choice per student, and settles immutable outcomes and roster-wide payouts. `tests/collective-action-prototype.R` covers revised choices, a linear payout, a threshold unlock, and post-lock rejection. The prototype has no student/instructor UI or deployment approval yet.
 
@@ -788,7 +792,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Build the Collective Action student and instructor UI around the tested prototype engine, including explicit section versus course scope selection.
+1. Build the Collective Action student and instructor UI around the tested prototype engine, including explicit section versus course scope selection and an off-by-default “include administrators” control.
 2. Add a multi-process SQLite contention test and bounded write-retry policy before enabling a live classroom round.
 3. Stage the prototype with a synthetic roster; verify sealed submissions, lock/reveal, and course isolation.
 
@@ -800,6 +804,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 ## Questions for Kyle
 
 - Should students see the posted demand k itself, or only the implied wage (current behavior)?
+- For ECON 160, what should the uploaded course and section labels be (for example, `ECON 160 Fall 2026` / `Religion module`)?
 
 
 ## Non-regression protocol for Class Job Market
