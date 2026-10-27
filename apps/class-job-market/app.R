@@ -3018,6 +3018,8 @@ server <- function(input, output, session) {
     get_setting(paste0(key,"::",current_scope_key()),get_setting(key,default))
   set_scoped_setting <- function(key,value)
     set_setting(paste0(key,"::",current_scope_key()),value)
+  spending_enabled_for_scope <- function() identical(as.character(get_scoped_setting("spending_enabled", "1")), "1")
+  spending_disabled_message <- "Spending options are not active for this class environment."
   active_round_id <- function(query_fn = db_query) {
     key <- current_scope_key()
     mapped <- tryCatch(query_fn(
@@ -4309,7 +4311,7 @@ server <- function(input, output, session) {
       },
 
       # Shared candidate-question funding progress
-      {
+      if (spending_enabled_for_scope()) {
         fq <- flex_poll()
         if (as.integer(fq$total %||% 0L) > 0) {
           status <- if (!nrow(fq$next_question)) {
@@ -4478,6 +4480,7 @@ server <- function(input, output, session) {
     updateTabsetPanel(session, "arc_tabs", selected = "Games & Demos")
   })
   observeEvent(input$go_to_spend_fq, {
+    if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
     rv$spend_mode <- "flex_question"
     updateTabsetPanel(session, "arc_tabs", selected = "Spend")
   })
@@ -5083,69 +5086,37 @@ server <- function(input, output, session) {
   # ── Spend tab ─────────────────────────────────────────────────────────────────
   output$spend_tab <- renderUI({
     req(rv$authed)
-    bal <- token_bal()
-
-    if (is.null(rv$spend_mode)) {
-      # Card picker view
-      fq <- flex_poll()
-      fq_status <- if (fq$total == 0) "No candidate questions loaded yet" else
-        if (!nrow(fq$next_question)) sprintf("All %d unlocked", as.integer(fq$total)) else
-          sprintf("%d / %d public · %d tokens still needed",
-                  as.integer(fq$unlocked_n), as.integer(fq$total),
-                  as.integer(fq$remaining))
-
-      tagList(
-        div(class = "tab-howto",
-            sprintf("Spend your tokens on academic benefits. Spendable balance: %d tokens.", as.integer(bal)),
-            tags$p(style = "margin:.4rem 0 0;font-size:.85rem;color:#555;",
-              tags$b("Note:"),
-              " Spending tokens does not reduce your participation grade.",
-              " Your participation grade is based on total tokens earned during the semester, not your current balance.")),
-        div(class = "spend-cards",
-          div(class = "spend-card",
-            div(class = "spend-card-icon", "\U0001f4c5"),
-            div(class = "spend-card-label", "Assignment Extension"),
-            div(class = "spend-card-desc", "Purchase extra time on a problem set before the deadline."),
-            div(class = "spend-card-meta", "Cost varies by length"),
-            div(class = "spend-card-foot",
-                actionButton("open_extension", "Select →", class = "btn btn-sm btn-outline-primary"))
-          ),
-          div(class = "spend-card",
-            div(class = "spend-card-icon", "⚖️"),
-            div(class = "spend-card-label", "Grade Reweight"),
-            div(class = "spend-card-desc", "Shift grade weight from one category to another."),
-            div(class = "spend-card-meta", "Instructor reviews all requests"),
-            div(class = "spend-card-foot",
-                actionButton("open_reweight", "Select →", class = "btn btn-sm btn-outline-primary"))
-          ),
-          div(class = "spend-card",
-            div(class = "spend-card-icon", "\U0001f4da"),
-            div(class = "spend-card-label", "Candidate Question Fund"),
-            div(class = "spend-card-desc",
-                "Contribute tokens toward a pooled-section reveal. Unlocked questions are public within that scope."),
-            div(class = "spend-card-meta", fq_status),
-            div(class = "spend-card-foot",
-                actionButton("open_flex_question", "Select →", class = "btn btn-sm btn-outline-primary"))
-          )
-        ),
+    if (!spending_enabled_for_scope()) {
+      return(tagList(
+        div(class = "tab-howto", tags$strong("Spending is not active."), " Your instructor has not enabled token purchases for this class environment."),
         div(class = "sec-label", "Spending History"),
         uiOutput("spend_history")
+      ))
+    }
+    bal <- token_bal()
+    if (is.null(rv$spend_mode)) {
+      fq <- flex_poll()
+      fq_status <- if (fq$total == 0) "No candidate questions loaded yet" else if (!nrow(fq$next_question)) sprintf("All %d unlocked", as.integer(fq$total)) else sprintf("%d / %d public · %d tokens still needed", as.integer(fq$unlocked_n), as.integer(fq$total), as.integer(fq$remaining))
+      tagList(
+        div(class = "tab-howto", sprintf("Spend your tokens on academic benefits. Spendable balance: %d tokens.", as.integer(bal)), tags$p(style = "margin:.4rem 0 0;font-size:.85rem;color:#555;", tags$b("Note:"), " Spending tokens does not reduce your participation grade.", " Your participation grade is based on total tokens earned during the semester, not your current balance.")),
+        div(class = "spend-cards",
+          div(class = "spend-card", div(class = "spend-card-icon", "📅"), div(class = "spend-card-label", "Assignment Extension"), div(class = "spend-card-desc", "Purchase extra time on a problem set before the deadline."), div(class = "spend-card-meta", "Cost varies by length"), div(class = "spend-card-foot", actionButton("open_extension", "Select →", class = "btn btn-sm btn-outline-primary"))),
+          div(class = "spend-card", div(class = "spend-card-icon", "⚖️"), div(class = "spend-card-label", "Grade Reweight"), div(class = "spend-card-desc", "Shift grade weight from one category to another."), div(class = "spend-card-meta", "Instructor reviews all requests"), div(class = "spend-card-foot", actionButton("open_reweight", "Select →", class = "btn btn-sm btn-outline-primary"))),
+          div(class = "spend-card", div(class = "spend-card-icon", "📚"), div(class = "spend-card-label", "Candidate Question Fund"), div(class = "spend-card-desc", "Contribute tokens toward a pooled-section reveal. Unlocked questions are public within that scope."), div(class = "spend-card-meta", fq_status), div(class = "spend-card-foot", actionButton("open_flex_question", "Select →", class = "btn btn-sm btn-outline-primary")))
+        ),
+        div(class = "sec-label", "Spending History"), uiOutput("spend_history")
       )
     } else {
-      tagList(
-        actionButton("spend_back", "← Back to options",
-                     class = "btn btn-sm btn-link",
-                     style = "padding:0;margin-bottom:.75rem;"),
-        uiOutput("spend_form"),
-        div(class = "sec-label", "Spending History"),
-        uiOutput("spend_history")
-      )
+      tagList(actionButton("spend_back", "← Back to options", class = "btn btn-sm btn-link", style = "padding:0;margin-bottom:.75rem;"), uiOutput("spend_form"), div(class = "sec-label", "Spending History"), uiOutput("spend_history"))
     }
   })
-
-  observeEvent(input$open_extension,     { rv$spend_mode <- "extension"     })
-  observeEvent(input$open_reweight,      { rv$spend_mode <- "reweight"      })
-  observeEvent(input$open_flex_question, { rv$spend_mode <- "flex_question" })
+  open_spending_mode <- function(mode) {
+    if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
+    rv$spend_mode <- mode
+  }
+  observeEvent(input$open_extension,     { open_spending_mode("extension") })
+  observeEvent(input$open_reweight,      { open_spending_mode("reweight") })
+  observeEvent(input$open_flex_question, { open_spending_mode("flex_question") })
   observeEvent(input$spend_back,         { rv$spend_mode <- NULL            })
 
   output$spend_form <- renderUI({
@@ -5751,6 +5722,7 @@ server <- function(input, output, session) {
   observeEvent(input$submit_extension, {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
+    if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
     pricing <- extension_pricing_settings()
     hrs <- suppressWarnings(as.numeric(input$ext_hours %||% NA_real_))
     if (!is.finite(hrs) || hrs <= 0 || hrs > pricing$max_hours) {
@@ -5801,6 +5773,7 @@ server <- function(input, output, session) {
   observeEvent(input$submit_reweight, {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
+    if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
     from  <- input$rw_from %||% ""
     to    <- input$rw_to   %||% ""
     level <- input$rw_level %||% "category"
@@ -5837,6 +5810,7 @@ server <- function(input, output, session) {
       showNotification("Demo mode — contributions are not saved.", type = "warning"); return()
     }
     requested <- suppressWarnings(as.integer(input$flex_contribution %||% 0L))
+    if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
     if (!is.finite(requested) || requested < 1L) {
       showNotification("Enter a positive whole number of tokens.", type = "error"); return()
     }
@@ -9587,73 +9561,39 @@ server <- function(input, output, session) {
   output$settings_tab <- renderUI({
     req(rv$is_admin)
     tagList(
-      wellPanel(
-        tags$strong("Active scope: "),
-        paste(c(scoped_course(),scoped_sections()),collapse=" / "),
-        tags$p(style="color:#666;font-size:.82rem;margin:.25rem 0 .4rem;",
-               "Roster, jobs, market controls, tracker choices, exports, and Flex funding use this scope."),
-        actionButton("open_scope_picker_btn","Change course / sections",class="btn btn-sm btn-outline-primary")
-      ),
-      tutorial_note("How to configure the app", c(
-        "Jobs: edit reusable templates, instructions, wages, timing, and posts for the selected class date.",
-        "Job Market Controls: choose the class date and adjust allocation or bidding at any time.",
-        "Students: add, archive, restore, or impersonate roster members.",
-        "Token Admin and Grades: make audited corrections and import course records.",
-        "App Settings and Demo / Testing: change shared behavior or rehearse without affecting students."
-      )),
-      wellPanel(
-        selectInput("config_action", "Settings section:", width = "100%", choices = c(
-          "Jobs"                  = "jobs",
-          "Job Market Controls"    = "round_setup",
-          "Students"              = "students",
-          "Token Admin"           = "token_admin",
-          "Policy Rubrics"        = "policy_rubrics",
-          "Grades & Gradebook"    = "gradebook",
-          "Exports"               = "exports",
-          "Extensions"            = "extensions",
-          "Flex Questions"        = "flex_questions",
-          "Game Controls"         = "game_controls",
-          "App Settings"          = "app_settings",
-          "Demo / Testing"        = "sandbox_demo"
-        ), selected = "jobs"),
-        uiOutput("config_panel")
-      )
+      wellPanel(tags$strong("Active scope: "), paste(c(scoped_course(), scoped_sections()), collapse=" / "), tags$p(style="color:#666;font-size:.82rem;margin:.25rem 0 .4rem;", "Roster, jobs, market controls, tracker choices, exports, Flex funding, and spending options use this scope."), actionButton("open_scope_picker_btn", "Change course / sections", class="btn btn-sm btn-outline-primary")),
+      tutorial_note("How to configure the app", c("Jobs: edit reusable templates, instructions, wages, timing, and posts for the selected class date.", "Job Market Controls: choose the class date and adjust allocation or bidding at any time.", "Spending Options: enable or disable token purchases for the active class / section environment.", "Students: add, archive, restore, or impersonate roster members.", "Token Admin and Grades: make audited corrections and import course records.")),
+      wellPanel(selectInput("config_action", "Settings section:", width = "100%", choices = c(
+        "Jobs"="jobs", "Job Market Controls"="round_setup", "Students"="students", "Token Admin"="token_admin", "Spending Options"="spending", "Policy Rubrics"="policy_rubrics", "Grades & Gradebook"="gradebook", "Exports"="exports", "Extensions"="extensions", "Flex Questions"="flex_questions", "Game Controls"="game_controls", "App Settings"="app_settings", "Demo / Testing"="sandbox_demo"), selected="jobs"), uiOutput("config_panel"))
     )
   })
 
-  observeEvent(input$open_scope_picker_btn,{ updateTabsetPanel(session,"arc_tabs",selected="Live Tracker") })
+  observeEvent(input$open_scope_picker_btn, { updateTabsetPanel(session, "arc_tabs", selected="Live Tracker") })
+  observeEvent(input$save_spending_options_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    enabled <- isTRUE(input$spending_enabled_input)
+    set_scoped_setting("spending_enabled", if (enabled) "1" else "0")
+    rv$spend_mode <- NULL
+    showNotification(if (enabled) "Spending options enabled for this environment." else "Spending options disabled for this environment.", type="message")
+  }, ignoreNULL=TRUE)
 
   output$olig_status_display <- renderUI({
     req(rv$is_admin)
     s <- olig_poll()$settings
-    if (!nrow(s))
-      return(tags$p(style = "color:#999;margin-bottom:.5rem;",
-                    "Bonus Pot settings are unavailable. Refresh Class Job Market before opening the module."))
-    tags$p(style = "margin-bottom:.5rem;",
-      tags$strong("Game: "), toupper(s$current_game[1] %||% "—"), "   ",
-      tags$strong("Class date: "), s$current_round[1], "   ",
-      tags$strong("Status: "),
-      span(style = if (s$round_status[1] == "open") "color:#1a6e3c;font-weight:600;"
-                   else "color:#b00020;font-weight:600;",
-           toupper(s$round_status[1]))
-    )
+    if (!nrow(s)) return(tags$p(style="color:#999;margin-bottom:.5rem;", "Bonus Pot settings are unavailable. Refresh Class Job Market before opening the module."))
+    tags$p(style="margin-bottom:.5rem;", tags$strong("Game: "), toupper(s$current_game[1] %||% "—"), "   ", tags$strong("Class date: "), s$current_round[1], "   ", tags$strong("Status: "), span(style=if (s$round_status[1] == "open") "color:#1a6e3c;font-weight:600;" else "color:#b00020;font-weight:600;", toupper(s$round_status[1])))
   })
 
-  observe({
-    req(rv$is_admin)
-    active <- arcade_poll()$active_game[1] %||% ""
-    updateSelectInput(session, "admin_game_sel", selected = active)
-  })
+  observe({ req(rv$is_admin); active <- arcade_poll()$active_game[1] %||% ""; updateSelectInput(session, "admin_game_sel", selected=active) })
 
   output$config_panel <- renderUI({
     req(rv$is_admin)
-    rv$jobs_ver  # invalidate when any job/category/template/round mutation fires
-    rv$extensions_ver
-    rv$flex_ver   # refresh the Flex Questions schedule and preview after saving
-    rv$students_ver # keep N-based previews current when the roster changes
+    rv$jobs_ver; rv$extensions_ver; rv$flex_ver; rv$students_ver
     act <- input$config_action %||% "jobs"
-
-    if (act == "jobs") {
+    if (act == "spending") {
+      enabled <- spending_enabled_for_scope()
+      tagList(tags$h5("Spending options"), tags$p(style="color:#555;font-size:.88rem;", "This setting applies only to the active class / section environment. Existing purchases and token history are preserved."), checkboxInput("spending_enabled_input", "Allow students to purchase extensions, grade reweights, and candidate-question funding", value=enabled), actionButton("save_spending_options_btn", "Save spending options", class="btn btn-primary"), if (!enabled) div(class="alert alert-warning", style="margin-top:.75rem;", "Student spending is currently disabled for this environment."))
+    } else if (act == "jobs") {
       rid_row <- tryCatch(active_round_row(),
                           error = function(e) data.frame())
       rid <- if (nrow(rid_row)) rid_row$id[1] else NA_integer_
