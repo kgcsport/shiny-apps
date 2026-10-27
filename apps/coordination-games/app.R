@@ -463,13 +463,22 @@ shared_auth_js <- tags$script(HTML("
   // leaving a visitor stranded on the checking-sign-in screen.
   setTimeout(sendAuthCookie, 300);
   Shiny.addCustomMessageHandler('redirect_to_job_market', function(msg) { window.location.replace(msg.url); });
+  function applyFontScale(scale) { localStorage.setItem('bonusPotFontScale', scale); document.documentElement.style.setProperty('--bp-font-scale', scale); }
+  document.addEventListener('click', function(e) {
+    var button = e.target.closest('#bp-font-down, #bp-font-reset, #bp-font-up');
+    if (!button) return;
+    var current = parseFloat(localStorage.getItem('bonusPotFontScale') || '1');
+    applyFontScale(button.id === 'bp-font-up' ? Math.min(1.35, current + .1) : button.id === 'bp-font-down' ? Math.max(.85, current - .1) : 1);
+  });
+  applyFontScale(parseFloat(localStorage.getItem('bonusPotFontScale') || '1'));
 })();
 "))
 
-ui <- fluidPage(
+ui <- fluidPage(class = "bp-app",
   tags$head(shared_auth_js, tags$style(HTML("
     /* --- Base font --- */
-    body { font-size: 16px; }
+    :root { --bp-font-scale: 1; }
+    body { font-size: calc(16px * var(--bp-font-scale)); background: #f7f7f5; color: #222; }
 
     /* --- Vassar palette overrides for Bootstrap elements --- */
     .btn-primary  { background-color: #951829; border-color: #7a1221; }
@@ -497,11 +506,43 @@ ui <- fluidPage(
     .shiny-notification-message { background: #2d6a4f; }
     .shiny-notification-warning { background: #92400e; }
     .shiny-notification-error   { background: #951829; }
+    /* --- Bonus Pot player surface --- */
+    .bp-app { max-width: 980px; margin: 0 auto; padding-bottom: 2rem; }
+    .bp-topbar { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin:1rem 0 .5rem; }
+    .bp-topbar h2 { margin:0; color:#67111e; font-weight:700; }
+    .bp-topbar p { margin:.2rem 0 0; color:#5e5e5e; }
+    .bp-tools { display:flex; align-items:center; gap:.35rem; white-space:nowrap; }
+    .bp-tools button { min-width:2.5rem; min-height:2.5rem; border-radius:6px; border:1px solid #bbb; background:#fff; font-weight:700; }
+    .bp-tools button:hover { border-color:#951829; color:#951829; }
+    .bp-app .nav-tabs { border-bottom:2px solid #ded8d8; margin-bottom:1.25rem; }
+    .bp-app .nav-tabs > li > a { font-weight:650; font-size:1.05em; padding:.75rem 1rem; }
+    .bp-app .nav-tabs > li.active > a { color:#751222; border-color:#ded8d8 #ded8d8 transparent; }
+    .bp-card { background:#fff; border:1px solid #e3dddd; border-radius:10px; padding:1.25rem; margin-bottom:1rem; box-shadow:0 1px 4px rgba(45,20,20,.06); }
+    .bp-card h3, .bp-card h4 { margin-top:0; color:#67111e; }
+    .bp-meta { display:flex; flex-wrap:wrap; gap:.55rem; margin:.75rem 0 1rem; }
+    .bp-pill { display:inline-block; background:#f3eeee; border-radius:999px; padding:.4rem .7rem; font-weight:600; }
+    .bp-status-open { background:#dcefe2; color:#175c32; }
+    .bp-status-closed, .bp-status-revealed { background:#f5e5e7; color:#761423; }
+    .bp-submit { width:100%; min-height:3.1rem; font-size:1.1em; font-weight:700; border-radius:7px; margin-top:.5rem; }
+    .bp-app .irs { margin:1rem .45rem 1.4rem; }
+    .bp-app .radio-inline { min-height:3rem; padding:.65rem 1rem .65rem 2.1rem; margin:.35rem .6rem .35rem 0; border:1px solid #ddd; border-radius:7px; font-size:1.05em; }
+    .bp-app .radio-inline:has(input:checked) { border-color:#951829; background:#fbf4f5; }
+    .bp-note { color:#565656; line-height:1.45; }
+    .bp-result { border-left:4px solid #951829; padding:.85rem 1rem; background:#fbf7f7; border-radius:0 7px 7px 0; }
+    .bp-projector { font-size:1.15em; }
+    @media (max-width: 640px) { .bp-topbar { align-items:flex-start; flex-direction:column; } .bp-tools { align-self:flex-end; } .bp-card { padding:1rem; } }
     .shiny-notification-close   { color: rgba(255,255,255,0.8); font-size: 1.2rem; }
   "))),
   uiOutput("demo_banner"),
   uiOutput("auth_gate"),
   conditionalPanel("output.authed",
+    div(class = "bp-topbar",
+      div(h2("Bonus Pot"), p("Make a contribution, follow the round, and see the shared outcome.")),
+      div(class = "bp-tools", tags$span("Text size"),
+        tags$button(type="button", id="bp-font-down", "A−"),
+        tags$button(type="button", id="bp-font-reset", "A"),
+        tags$button(type="button", id="bp-font-up", "A+"))
+    ),
     tabsetPanel(
       tabPanel("Student",   uiOutput("student_ui")),
       tabPanel("Projector", uiOutput("projector_ui")),
@@ -593,42 +634,42 @@ server <- function(input, output, session) {
     game   <- as.character(o$current_game[1])
     status <- as.character(o$round_status[1])
 
-    game_lbl <- if (game == "pd") "Price War (High vs Low)" else "Bonus Pot (Contribute participation tokens)"
+    game_lbl <- if (game == "pd") "Price War" else "Bonus Pot"
+    status_class <- paste0("bp-pill bp-status-", status)
+    use_sec <- isTRUE(as.integer(o$use_section_size[1] %||% 1) == 1)
+    cs <- if (use_sec) section_class_size(sec) else NA_integer_
+    cs_note <- if (!is.na(cs)) sprintf("The pot is shared with all %d enrolled students in this section.", cs) else "The pot is shared among students who submit."
+    cap <- as.numeric(o$contrib_cap[1] %||% 0)
+    eff_max <- if (is.finite(cap) && cap > 0) min(bal, cap) else bal
+
     tagList(
-      h4(sprintf("Logged in as: %s (%s)", rv$user, rv$name)),
-      if (isTRUE(rv$impersonate)) div(
-        style = "background:#92400e; color:#fff; padding:6px 12px; border-radius:6px; margin-bottom:8px;",
-        strong(sprintf("IMPERSONATING: %s (%s) — submissions recorded under this student", rv$impersonate_name, rv$impersonate_uid))
+      div(class = "bp-card",
+        h3(game_lbl),
+        div(class = "bp-meta",
+          span(class = "bp-pill", sprintf("Round %d", as.integer(o$current_round[1]))),
+          span(class = "bp-pill", sprintf("Section %s", sec)),
+          span(class = "bp-pill", sprintf("%.1f participation tokens available", bal)),
+          span(class = status_class, toupper(status))
+        ),
+        if (isTRUE(rv$impersonate)) div(class = "alert alert-warning", strong(sprintf("IMPERSONATING: %s — submissions are recorded for this student.", rv$impersonate_name)))
       ),
-      p(sprintf("Section: %s | Flex passes available: %.2f", sec, bal)),
-      p(sprintf("Round %d | Game: %s | Status: %s",
-                as.integer(o$current_round[1]), game_lbl, status)),
-      tags$hr(),
-      if (game == "pd") {
-        tagList(
-          radioButtons("pd_action", "Your choice", choices = c("High", "Low"), inline = TRUE),
-          actionButton("submit_pd", "Submit", class = "btn-primary")
-        )
-      } else {
-        use_sec <- isTRUE(as.integer(o$use_section_size[1] %||% 1) == 1)
-        cs      <- if (use_sec) section_class_size(olig_section(o)) else NA_integer_
-        cs_note <- if (!is.na(cs))
-          sprintf("Pot divided among all %d enrolled students in this section.", cs)
-        else
-          "Pot divided among students who submit."
-        tagList(
-          {
-            cap <- as.numeric(o$contrib_cap[1] %||% 0)
-            eff_max <- if (is.finite(cap) && cap > 0) min(bal, cap) else bal
-            sliderInput("bonus_c", "Contribute participation tokens",
-                        min = 0, max = max(0, floor(eff_max * 2) / 2), value = 0, step = 0.5)
-          },
-          actionButton("submit_bonus", "Save contribution", class = "btn-primary"),
-          tags$small(sprintf("Multiplier m = %.2f. %s Contributions are debited when the round closes.", as.numeric(o$bonus_multiplier[1]), cs_note))
-        )
-      },
-      tags$hr(),
-      uiOutput("student_result")
+      div(class = "bp-card",
+        h4(if (status == "open") "Make or update your choice" else "This round is not accepting submissions"),
+        if (status != "open") div(class = "bp-note", "Wait for the instructor to open the next round. Results appear here after the round is revealed."),
+        if (game == "pd") {
+          tagList(
+            radioButtons("pd_action", "Choose a price", choiceNames = c("High price", "Low price"), choiceValues = c("High", "Low"), inline = TRUE),
+            if (status == "open") actionButton("submit_pd", "Save my choice", class = "btn-primary bp-submit")
+          )
+        } else {
+          tagList(
+            sliderInput("bonus_c", "Contribution (participation tokens)", min = 0, max = max(0, floor(eff_max * 2) / 2), value = 0, step = 0.5),
+            if (status == "open") actionButton("submit_bonus", "Save my contribution", class = "btn-primary bp-submit"),
+            p(class = "bp-note", sprintf("Multiplier: %.2f×. %s Contributions are debited only when the round closes.", as.numeric(o$bonus_multiplier[1]), cs_note))
+          )
+        }
+      ),
+      div(class = "bp-card bp-result", uiOutput("student_result"))
     )
   })
 
@@ -776,41 +817,34 @@ server <- function(input, output, session) {
     n        <- nrow(subs %>% filter(round == r, game == cur_game))
 
     tagList(
-      h3(sprintf("Round %d -- %s  |  Section: %s", r, game_lbl, sec)),
-      p(sprintf("Status: %s | Submissions (this section): %d", status, n)),
-      if (cur_game == "pd") {
-        tagList(
-          p(sprintf("High: %d | Low: %d",
-                    sum(subs$action == "High", na.rm = TRUE),
-                    sum(subs$action == "Low",  na.rm = TRUE))),
-          if (status == "revealed")
-            tagList(h4("Pair Outcome Counts"), tableOutput("proj_pd_counts"))
-        )
-      } else {
-        use_sec  <- isTRUE(as.integer(o$use_section_size[1] %||% 1) == 1)
-        cs       <- if (use_sec) section_class_size(olig_section(o)) else NA_integer_
-        cs_note  <- if (!is.na(cs))
-          sprintf("Section class size: %d enrolled", cs)
-        else
-          sprintf("Submitter count: %d", n)
-        tagList(
-          p(sprintf("Total contributed: %.2f | Multiplier m: %.2f | %s",
-                    sum(as.numeric(subs$contribute), na.rm = TRUE),
-                    as.numeric(o$bonus_multiplier[1]), cs_note)),
-          plotOutput("proj_bonus_plot", height = "350px"),
-          if (status == "revealed") {
-            shares <- bonus_shares(o, subs %>% filter(game == "bonus"))
-            if (nrow(shares) > 0) {
-              tagList(
-                h4("Results"),
-                p(sprintf("Pot total: %.2f | %s | Each student receives: %.2f participation tokens",
-                          shares$pot_total[1], shares$denom_source[1],
-                          round_to_half(shares$share_each[1])))
-              )
+      div(class = "bp-card bp-projector",
+        h3(sprintf("Round %d · %s", r, game_lbl)),
+        div(class = "bp-meta",
+          span(class = "bp-pill", sprintf("Section %s", sec)),
+          span(class = paste0("bp-pill bp-status-", status), toupper(status)),
+          span(class = "bp-pill", sprintf("%d submission%s", n, if (n == 1) "" else "s"))
+        ),
+        if (cur_game == "pd") {
+          tagList(
+            h4("Class choices"),
+            p(sprintf("High price: %d · Low price: %d", sum(subs$action == "High", na.rm = TRUE), sum(subs$action == "Low", na.rm = TRUE))),
+            if (status == "revealed") tagList(h4("Pair outcomes"), tableOutput("proj_pd_counts"))
+          )
+        } else {
+          use_sec <- isTRUE(as.integer(o$use_section_size[1] %||% 1) == 1)
+          cs <- if (use_sec) section_class_size(olig_section(o)) else NA_integer_
+          cs_note <- if (!is.na(cs)) sprintf("Shared with %d enrolled students", cs) else sprintf("Shared among %d submitters", n)
+          tagList(
+            h4("Class contribution"),
+            p(sprintf("Total: %.2f participation tokens · Multiplier: %.2f× · %s", sum(as.numeric(subs$contribute), na.rm = TRUE), as.numeric(o$bonus_multiplier[1]), cs_note)),
+            plotOutput("proj_bonus_plot", height = "350px"),
+            if (status == "revealed") {
+              shares <- bonus_shares(o, subs %>% filter(game == "bonus"))
+              if (nrow(shares) > 0) div(class = "bp-result", h4("Round result"), p(sprintf("Pot total: %.2f · Each student receives: %.2f participation tokens", shares$pot_total[1], round_to_half(shares$share_each[1]))))
             }
-          }
-        )
-      }
+          )
+        }
+      )
     )
   })
 
@@ -840,7 +874,7 @@ server <- function(input, output, session) {
     ggplot(df, aes(x = contribute)) +
       geom_histogram(fill = "#0073C2FF", color = "white", binwidth = 0.5, boundary = 0) +
       labs(title = "Distribution of Contributions",
-           x = "Flex Passes Contributed",
+           x = "Participation Tokens Contributed",
            y = "Number of Students") +
       scale_x_continuous(breaks = seq(0, max(df$contribute, na.rm = TRUE) + 0.5, by = 0.5)) +
       theme_minimal(base_size = 16)
