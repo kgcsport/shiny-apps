@@ -11,14 +11,15 @@ dbExecute(con, "INSERT INTO users(user_id,display_name,is_admin,course,section) 
 dbDisconnect(con)
 
 Sys.setenv(CONNECT_CONTENT_DIR = test_root, ADMIN_EMAILS = "")
-source("apps/class-job-market/app.R")
+app_path <- if (file.exists("apps/class-job-market/app.R")) "apps/class-job-market/app.R" else "/srv/shiny-server/class-job-market/app.R"
+source(app_path)
 
 env_seed <- db_query("SELECT course,section FROM user_environments WHERE user_id=?;", list("student@vassar.edu"))
 stopifnot(nrow(env_seed) == 1L, env_seed$course[1] == "ECON 160", env_seed$section[1] == "A")
 db_exec("INSERT INTO user_environments(user_id,course,section) VALUES(?,?,?);", list("student@vassar.edu", "ECON 342", "B"))
 envs <- db_query("SELECT course,section FROM user_environments WHERE user_id=? ORDER BY course,section;", list("student@vassar.edu"))
 stopifnot(nrow(envs) == 2L, any(envs$course == "ECON 160"), any(envs$course == "ECON 342"))
-app_text <- paste(readLines("apps/class-job-market/app.R", warn=FALSE), collapse="\n")
+app_text <- paste(readLines(app_path, warn=FALSE), collapse="\n")
 for (needle in c("user_environments", "session_environment_rows <- function()", "pin_session_environment()", "input$environment_sel")) stopifnot(grepl(needle, app_text, fixed=TRUE))
 
 legacy <- admin_assignments_for("legacy@vassar.edu")
