@@ -2218,6 +2218,20 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7;
 }
 .arc-title  { font-size: 1.3rem; font-weight: 700; flex: 1; letter-spacing: .02em; }
 .arc-name   { font-size: .88rem; opacity: .85; }
+.arc-env-picker { position:relative; font-size:.82rem; }
+.arc-env-picker summary { list-style:none; cursor:pointer; white-space:nowrap;
+                          padding:.35rem .55rem; border:1px solid rgba(255,255,255,.45);
+                          border-radius:6px; background:rgba(255,255,255,.12); }
+.arc-env-picker summary::-webkit-details-marker { display:none; }
+.arc-env-picker summary::after { content:\" ▾\"; }
+.arc-env-picker[open] summary::after { content:\" ▴\"; }
+.arc-env-menu { position:absolute; right:0; top:calc(100% + .35rem); z-index:1050;
+                min-width:320px; display:flex; gap:.45rem; padding:.55rem;
+                border-radius:7px; background:#fff; color:#222; box-shadow:0 4px 16px rgba(0,0,0,.28); }
+.arc-env-field { flex:1; min-width:0; }
+.arc-env-field > span { display:block; font-size:.72rem; font-weight:700; margin-bottom:.15rem; color:#555; }
+.arc-env-field .form-group { margin:0; }
+.arc-env-field select { width:100%; height:32px; color:#222; font-size:.82rem; }
 .arc-bal    { font-size: .88rem; background: rgba(255,255,255,.18);
               padding: .2rem .65rem; border-radius: 999px; font-weight: 600; }
 .arc-signout { background: rgba(255,255,255,.15); color: #fff;
@@ -3247,13 +3261,28 @@ server <- function(input, output, session) {
     req(rv$authed)
     bal <- token_bal()
     env <- session_environment_rows()
-    current <- which(norm_key(env$course) == norm_key(scoped_course()) & norm_key(env$section) %in% norm_key(scoped_sections()))
-    selected <- if (length(current)) as.character(current[1]) else "1"
-    labels <- if (nrow(env)) ifelse(nzchar(env$section), paste(env$course, "—", env$section), env$course) else character(0)
+    courses <- unique_ci(env$course %||% character(0))
+    active_course <- scoped_course()
+    if (!active_course %in% courses && length(courses)) active_course <- courses[1]
+    section_rows <- env[norm_key(env$course) == norm_key(active_course), , drop=FALSE]
+    sections <- unique_ci(section_rows$section %||% character(0))
+    active_section <- normalize_scope_sections(scoped_sections())[1] %||% ""
+    if (!active_section %in% sections && length(sections)) active_section <- sections[1]
     tagList(
       span(class = "arc-name", rv$name),
-      if (nrow(env) > 1L) selectInput("environment_sel", "Active class / section", choices=setNames(as.character(seq_len(nrow(env))), labels), selected=selected, width="220px"),
-      span(class = "arc-bal",  sprintf("%d tokens", as.integer(bal)))
+      if (nrow(env) > 1L)
+        tags$details(class="arc-env-picker",
+          tags$summary("Class / section"),
+          div(class="arc-env-menu",
+            div(class="arc-env-field", tags$span("Class"),
+              selectInput("environment_course_sel", NULL, choices=setNames(courses, courses),
+                          selected=active_course, width="100%")),
+            div(class="arc-env-field", tags$span("Section"),
+              selectInput("environment_section_sel", NULL, choices=setNames(sections, sections),
+                          selected=active_section, width="100%"))
+          )
+        ),
+      span(class = "arc-bal", sprintf("%d tokens", as.integer(bal)))
     )
   })
 
@@ -3288,11 +3317,11 @@ server <- function(input, output, session) {
     session$sendCustomMessage("set_arcade_cookie", list(token = ""))
   }
 
-  observeEvent(input$environment_sel, {
-    req(rv$authed)
+  switch_session_environment <- function(course, section) {
     env <- session_environment_rows()
-    idx <- suppressWarnings(as.integer(input$environment_sel %||% NA_integer_))
-    if (is.na(idx) || idx < 1L || idx > nrow(env)) return()
+    hit <- which(norm_key(env$course) == norm_key(course) & norm_key(env$section) == norm_key(section))
+    if (!length(hit)) return(FALSE)
+    idx <- hit[1]
     rv$active_course <- env$course[idx]
     rv$active_section <- env$section[idx]
     rv$active_sections <- env$section[idx]
@@ -3300,6 +3329,22 @@ server <- function(input, output, session) {
     rv$jobs_ver <- rv$jobs_ver + 1L
     rv$students_ver <- rv$students_ver + 1L
     rv$flex_ver <- rv$flex_ver + 1L
+    TRUE
+  }
+  observeEvent(input$environment_course_sel, {
+    req(rv$authed)
+    course <- as.character(input$environment_course_sel %||% "")
+    env <- session_environment_rows()
+    rows <- env[norm_key(env$course) == norm_key(course), , drop=FALSE]
+    if (!nrow(rows)) return()
+    current_section <- rv$active_section %||% ""
+    section <- if (norm_key(current_section) %in% norm_key(rows$section)) current_section else rows$section[1]
+    switch_session_environment(course, section)
+  }, ignoreInit=TRUE)
+  observeEvent(input$environment_section_sel, {
+    req(rv$authed)
+    switch_session_environment(input$environment_course_sel %||% scoped_course(),
+                               input$environment_section_sel %||% "")
   }, ignoreInit=TRUE)
 
   # ── Cookie auto-login ─────────────────────────────────────────────────────────
