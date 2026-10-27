@@ -234,6 +234,25 @@ ensure_column("users", "course TEXT")
 ensure_column("users", "section TEXT")
 ensure_column("users", "active INTEGER DEFAULT 1")
 ensure_column("users", "is_demo INTEGER DEFAULT 0")
+ensure_column("users", "admin_role TEXT DEFAULT 'student'")
+db_exec("CREATE TABLE IF NOT EXISTS admin_assignments(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('super_admin','course_admin','section_admin')),
+  course TEXT NOT NULL DEFAULT '',
+  section TEXT NOT NULL DEFAULT '',
+  assigned_by TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id,role,course,section)
+);")
+db_exec("CREATE INDEX IF NOT EXISTS idx_admin_assignments_user ON admin_assignments(user_id);")
+# Preserve every legacy administrator as a super-admin before role-aware writes begin.
+db_exec("INSERT OR IGNORE INTO admin_assignments(user_id,role,course,section,assigned_by)
+         SELECT user_id,'super_admin','','','legacy migration' FROM users
+         WHERE COALESCE(is_admin,0)=1 AND COALESCE(is_demo,0)=0;")
+db_exec("UPDATE users SET admin_role='super_admin'
+         WHERE user_id IN (SELECT user_id FROM admin_assignments WHERE role='super_admin');")
 
 # Demo account
 DEMO_HASH <- bcrypt::hashpw("freetour")
@@ -1243,6 +1262,57 @@ SESSION_DAYS <- 14L
 make_token <- function() {
   paste(sample(c(letters, LETTERS, 0:9), 48L, replace = TRUE), collapse = "")
 }
+
+admin_assignments_for <- function(user_id) {
+  if (!nzchar(trimws(user_id %||% ""))) return(data.frame())
+  db_query(
+    "SELECT user_id,role,course,section,assigned_by,created_at,updated_at
+     FROM admin_assignments WHERE LOWER(user_id)=LOWER(?)
+     ORDER BY CASE role WHEN ? THEN 3 WHEN ? THEN 2 ELSE 1 END DESC, course, section;",
+    list(user_id, "super_admin", "course_admin"))
+}
+effective_admin_role <- function(user_id) {
+  rows <- admin_assignments_for(user_id)
+  if (!nrow(rows)) return("student")
+  as.character(rows$role[1])
+}
+sync_admin_user <- function(user_id) {
+  role <- effective_admin_role(user_id)
+  db_exec("UPDATE users SET is_admin=?, admin_role=? WHERE LOWER(user_id)=LOWER(?)",
+          list(as.integer(role != "student"), role, user_id))
+  invisible(role)
+}
+grant_admin_assignment <- function(user_id, role, course="", section="", assigned_by="") {
+  user_id <- norm_username(user_id)
+  role <- trimws(tolower(role %||% "student"))
+  course <- trimws(course %||% "")
+  section <- trimws(section %||% "")
+  if (!role %in% c("super_admin", "course_admin", "section_admin")) stop("Choose a valid administrator role")
+  if (identical(role, "super_admin")) { course <- ""; section <- "" }
+  if (identical(role, "course_admin") && !nzchar(course)) stop("Course administrators need a course")
+  if (identical(role, "course_admin")) section <- ""
+  if (identical(role, "section_admin") && (!nzchar(course) || !nzchar(section))) stop("Section administrators need a course and section")
+  db_exec(
+    "INSERT INTO admin_assignments(user_id,role,course,section,assigned_by,updated_at)
+     VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+     ON CONFLICT(user_id,role,course,section)
+     DO UPDATE SET assigned_by=excluded.assigned_by,updated_at=CURRENT_TIMESTAMP;",
+    list(user_id, role, course, section, assigned_by))
+  sync_admin_user(user_id)
+  invisible(TRUE)
+}
+revoke_admin_assignment <- function(id) {
+  row <- db_query("SELECT id,user_id,role FROM admin_assignments WHERE id=?", list(as.integer(id)))
+  if (!nrow(row)) return(FALSE)
+  if (identical(row$role[1], "super_admin")) {
+    n_super <- db_query("SELECT COUNT(*) n FROM admin_assignments WHERE role=?", list("super_admin"))$n[1]
+    if (as.integer(n_super %||% 0L) <= 1L) stop("Keep at least one super-admin")
+  }
+  db_exec("DELETE FROM admin_assignments WHERE id=?", list(as.integer(id)))
+  sync_admin_user(row$user_id[1])
+  TRUE
+}
+
 bootstrap_admin_emails <- function() {
   emails <- trimws(strsplit(Sys.getenv("ADMIN_EMAILS", ""), ",", fixed = TRUE)[[1]])
   emails <- gsub("^[\"']|[\"']$", "", emails)
@@ -1257,6 +1327,7 @@ bootstrap_admin_emails <- function() {
          is_demo=0,
          display_name=COALESCE(NULLIF(display_name,''), excluded.display_name);",
       list(email, email, bcrypt::hashpw(make_token())))
+    grant_admin_assignment(email, "super_admin", assigned_by="ADMIN_EMAILS")
   }
 }
 bootstrap_admin_emails()
@@ -2655,6 +2726,8 @@ server <- function(input, output, session) {
     course         = NULL,
     section        = NULL,
     is_admin       = FALSE,
+    admin_role     = "student",
+    admin_assignments = data.frame(),
     is_demo        = FALSE,
     token          = NULL,
     game_detail_id = NULL,
@@ -2761,6 +2834,40 @@ server <- function(input, output, session) {
       return(normalize_scope_sections(rows$section %||% character(0)))
     }
     setdiff(selected, "__all__")
+  }
+  is_super_admin <- function() isTRUE(rv$is_admin) && identical(rv$admin_role, "super_admin")
+  admin_allowed_courses <- function() {
+    if (!isTRUE(rv$is_admin)) return(character(0))
+    if (is_super_admin()) return(unique_ci(tryCatch(db_query("SELECT DISTINCT course FROM users WHERE COALESCE(is_demo,0)=0 AND trim(COALESCE(course,\"\"))<>\"\";")$course, error=function(e) character(0))))
+    unique_ci(rv$admin_assignments$course[nzchar(rv$admin_assignments$course %||% "")])
+  }
+  admin_allowed_sections <- function(course) {
+    course <- trimws(course %||% "")
+    rows <- rv$admin_assignments
+    if (!isTRUE(rv$is_admin) || !nzchar(course)) return(character(0))
+    has_course <- is_super_admin() || any(rows$role == "course_admin" & norm_key(rows$course) == norm_key(course))
+    if (has_course) return(unique_ci(tryCatch(db_query("SELECT DISTINCT section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0 AND LOWER(COALESCE(course,\"\"))=LOWER(?) AND trim(COALESCE(section,\"\"))<>\"\" ORDER BY section;", list(course))$section, error=function(e) character(0))))
+    unique_ci(rows$section[rows$role == "section_admin" & norm_key(rows$course) == norm_key(course)])
+  }
+  scoped_course <- function() {
+    if (!isTRUE(rv$is_admin)) return(trimws(rv$course %||% ""))
+    allowed <- admin_allowed_courses()
+    selected <- trimws(rv$active_course %||% "")
+    if (!length(allowed)) return("")
+    if (!norm_key(selected) %in% norm_key(allowed)) selected <- allowed[1]
+    selected
+  }
+  scoped_sections <- function(expand_all = TRUE) {
+    if (!isTRUE(rv$is_admin)) {
+      own <- normalize_scope_sections(rv$section %||% "")
+      mapped <- if(length(own)) tryCatch(db_query("SELECT sar.sections FROM section_scope_memberships sm LEFT JOIN scope_active_rounds sar ON sar.scope_key=sm.scope_key WHERE sm.course_key=? AND sm.section_key=? LIMIT 1;", list(norm_key(rv$course %||% ""),norm_key(own[1]))),error=function(e)data.frame()) else data.frame()
+      shared <- if(nrow(mapped)) parse_scope_sections(mapped$sections[1] %||% "") else character(0)
+      return(if(length(shared)) shared else own)
+    }
+    allowed <- admin_allowed_sections(scoped_course())
+    selected <- normalize_scope_sections(rv$active_sections %||% rv$active_section %||% "")
+    if (isTRUE(expand_all) && "__all__" %in% selected) return(allowed)
+    intersect(setdiff(selected, "__all__"), allowed)
   }
   current_scope_key <- function() {
     course <- scoped_course()
@@ -3034,7 +3141,9 @@ server <- function(input, output, session) {
     rv$name     <- coalesce_str(row$display_name[1] %||% "", row$user_id[1])
     rv$course   <- row$course[1] %||% ""
     rv$section  <- row$section[1] %||% ""
-    rv$is_admin <- isTRUE(as.integer(row$is_admin[1] %||% 0L) == 1L)
+    rv$admin_assignments <- admin_assignments_for(rv$user_id)
+    rv$admin_role <- if (nrow(rv$admin_assignments)) as.character(rv$admin_assignments$role[1]) else "student"
+    rv$is_admin <- !identical(rv$admin_role, "student")
     rv$is_demo  <- isTRUE(as.integer(row$is_demo[1]  %||% 0L) == 1L)
     if (isTRUE(rv$is_admin)) ensure_scope_round()
   }
@@ -3111,7 +3220,7 @@ server <- function(input, output, session) {
   observeEvent(input$logout_btn, {
     clear_cookie()
     rv$authed  <- FALSE; rv$user_id  <- NULL; rv$name    <- NULL
-    rv$course <- NULL; rv$section <- NULL;  rv$is_admin <- FALSE; rv$is_demo <- FALSE
+    rv$course <- NULL; rv$section <- NULL; rv$is_admin <- FALSE; rv$admin_role <- "student"; rv$admin_assignments <- data.frame(); rv$is_demo <- FALSE
     rv$game_detail_id <- NULL
   })
 
@@ -6460,6 +6569,9 @@ server <- function(input, output, session) {
     if (!nzchar(uid)) {
       showNotification("Username/email is required.", type = "error"); return()
     }
+    if (!is_super_admin() && (!identical(norm_key(course), norm_key(scoped_course())) || !norm_key(sec) %in% norm_key(scoped_sections()))) {
+      showNotification("You can only add students within your assigned course and section scope.", type = "error"); return()
+    }
     if (nzchar(pw) && nchar(pw) < 4) {
       showNotification("Password must be at least 4 characters.", type = "error"); return()
     }
@@ -6530,6 +6642,13 @@ server <- function(input, output, session) {
         column(2, selectInput("student_csv_pw_col", "Password:",
                               choices = optional_choices,
                               selected = guess_col(c("password","pw","pass"))))
+      ),
+      if (is_super_admin()) fluidRow(
+        column(4, selectInput("student_csv_role_col", "Administrator role:",
+          choices = optional_choices,
+          selected = guess_col(c("admin_role", "admin", "role")))),
+        column(8, tags$p(style="color:#777;font-size:.8rem;margin-top:1.8rem;",
+          "Optional. Use super_admin, course_admin, section_admin, or student. Role changes apply only when updating existing students; existing super-admin accounts are protected."))
       )
     )
   })
@@ -6555,6 +6674,7 @@ server <- function(input, output, session) {
     course_col <- input$student_csv_course_col %||% guess_col(c("class","course","course_id","courseid"))
     sec_col  <- input$student_csv_section_col %||% guess_col(c("section","group"))
     pw_col   <- input$student_csv_pw_col %||% guess_col(c("password","pw","pass"))
+    role_col <- if (is_super_admin()) input$student_csv_role_col %||% guess_col(c("admin_role","admin","role")) else ""
     if (!valid_col(uid_col)) {
       showNotification("Choose the CSV column containing each student's username/email.", type = "error")
       return()
@@ -6563,16 +6683,21 @@ server <- function(input, output, session) {
     if (!valid_col(course_col)) course_col <- ""
     if (!valid_col(sec_col))  sec_col  <- ""
     if (!valid_col(pw_col))   pw_col   <- ""
+    if (!valid_col(role_col)) role_col <- ""
     locked_pw_hash <- bcrypt::hashpw(make_token())
-    n_created <- 0L; n_updated <- 0L; n_skipped <- 0L; n_bad_pw <- 0L
+    n_created <- 0L; n_updated <- 0L; n_skipped <- 0L; n_bad_pw <- 0L; n_role_grants <- 0L; n_protected <- 0L
     for (i in seq_len(nrow(df))) {
       uid  <- norm_username(df[[uid_col]][i] %||% "")
       nm   <- if (nzchar(name_col)) trimws(df[[name_col]][i] %||% "") else ""
       course <- if (nzchar(course_col)) trimws(df[[course_col]][i] %||% "") else ""
       sec  <- if (nzchar(sec_col))  trimws(df[[sec_col]][i]  %||% "") else ""
       pw   <- if (nzchar(pw_col))   trimws(df[[pw_col]][i]   %||% "") else ""
+      requested_role <- if (nzchar(role_col)) trimws(tolower(df[[role_col]][i] %||% "")) else ""
+      if (nzchar(requested_role) && !requested_role %in% c("student","super_admin","course_admin","section_admin")) requested_role <- ""
       if (!nzchar(uid)) next
       exists <- nrow(db_query("SELECT user_id FROM users WHERE LOWER(user_id)=LOWER(?);", list(uid))) > 0
+      if (exists && any(admin_assignments_for(uid)$role == "super_admin")) { n_protected <- n_protected + 1L; next }
+      if (!is_super_admin() && ((nzchar(course) && !identical(norm_key(course), norm_key(scoped_course()))) || (nzchar(sec) && !norm_key(sec) %in% norm_key(scoped_sections())))) { n_skipped <- n_skipped + 1L; next }
       if (!exists) {
         if (nzchar(pw) && nchar(pw) < 4) { n_bad_pw <- n_bad_pw + 1L; next }
         db_exec(
@@ -6597,15 +6722,35 @@ server <- function(input, output, session) {
       } else {
         n_skipped <- n_skipped + 1L
       }
+      if (requested_role %in% c("super_admin","course_admin","section_admin") && (!exists || do_update)) {
+        granted <- tryCatch({ grant_admin_assignment(uid, requested_role, course, sec, rv$user_id %||% "CSV import"); TRUE }, error=function(e) { showNotification(conditionMessage(e), type="warning"); FALSE })
+        if (granted) n_role_grants <- n_role_grants + 1L
+      }
     }
     parts <- character(0)
     if (n_created > 0) parts <- c(parts, sprintf("%d created",  n_created))
     if (n_updated > 0) parts <- c(parts, sprintf("%d updated",  n_updated))
     if (n_skipped > 0) parts <- c(parts, sprintf("%d skipped (already exist)", n_skipped))
     if (n_bad_pw  > 0) parts <- c(parts, sprintf("%d skipped (password shorter than 4 chars)", n_bad_pw))
+    if (n_role_grants > 0) parts <- c(parts, sprintf("%d administrator role assignment(s)", n_role_grants))
+    if (n_protected > 0) parts <- c(parts, sprintf("%d protected super-admin account(s) skipped", n_protected))
     rv$students_ver <- rv$students_ver + 1L
     showNotification(paste("Upload complete:", paste(parts, collapse = ", ")), type = "message",
                      duration = 8)
+  })
+
+  observeEvent(input$save_admin_role_btn, {
+    req(rv$is_admin, is_super_admin())
+    uid <- norm_username(input$admin_role_user %||% "")
+    role <- input$admin_role_value %||% ""
+    course <- trimws(input$admin_role_course %||% "")
+    section <- trimws(input$admin_role_section %||% "")
+    if (!nzchar(uid)) { showNotification("Choose a user first.", type="error"); return() }
+    ok <- tryCatch({ grant_admin_assignment(uid, role, course, section, rv$user_id); TRUE }, error=function(e) { showNotification(conditionMessage(e), type="error"); FALSE })
+    if (ok) {
+      rv$students_ver <- rv$students_ver + 1L
+      showNotification(sprintf("Granted %s to %s.", role, uid), type="message")
+    }
   })
 
   output$manual_policy_group_editor <- renderUI({
@@ -8455,6 +8600,7 @@ server <- function(input, output, session) {
   # quick_award_btn removed — use Settings → Token Admin for awards
 
   live_course_values <- function() {
+    if (isTRUE(rv$is_admin)) return(sort(admin_allowed_courses()))
     tryCatch(sort(unique_ci(db_query(
       "SELECT DISTINCT course FROM users
        WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0
@@ -8463,6 +8609,7 @@ server <- function(input, output, session) {
   }
 
   live_section_values <- function(course = "") {
+    if (isTRUE(rv$is_admin)) return(sort(admin_allowed_sections(course)))
     tryCatch(sort(unique_ci(
       if (nzchar(course)) {
         db_query(
@@ -9853,6 +10000,8 @@ server <- function(input, output, session) {
          ", if (hide_archived) "AND COALESCE(active,1)=1 " else "",
          "ORDER BY course, section, display_name;")),
         error = function(e) data.frame())
+      # Settings → Students
+      if (!is_super_admin()) students <- scope_filter_rows(students)
       # Settings → Students is the master roster editor. Show every real
       # student here so changing the active course/section cannot hide the
       # records needed to repair their course or section assignments.
@@ -9927,6 +10076,18 @@ server <- function(input, output, session) {
             })))
           )
         } else div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;", "No students."),
+        if (is_super_admin()) tagList(
+          tags$hr(),
+          tags$h6(style="font-weight:700;color:#951829;", "Administrator Access"),
+          tags$p(style="color:#555;font-size:.85rem;", "Grant a scoped role. Super-admins manage every course; course administrators manage all sections of one course; section administrators manage one section. Existing super-admin accounts cannot be changed by CSV uploads."),
+          fluidRow(
+            column(4, selectizeInput("admin_role_user", "User:", choices=setNames(students$user_id, paste0(students$display_name, " (", students$user_id, ")")))),
+            column(3, selectInput("admin_role_value", "Role:", choices=c("Super admin"="super_admin", "Course admin"="course_admin", "Section admin"="section_admin"))),
+            column(3, textInput("admin_role_course", "Course (blank for super-admin):")),
+            column(2, textInput("admin_role_section", "Section (section admin only):"))
+          ),
+          actionButton("save_admin_role_btn", "Grant role", class="btn btn-sm btn-warning")
+        ),
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Add Student"),
         tags$p(style = "color:#555;font-size:.85rem;",
@@ -11349,6 +11510,7 @@ server <- function(input, output, session) {
         class        = c("ECON 101", "ECON 101"),
         section      = c("101", "102"),
         password     = c("", ""),
+        admin_role   = c("student", "student"),
         stringsAsFactors = FALSE),
       file, row.names = FALSE)
   )

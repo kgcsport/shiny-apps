@@ -167,6 +167,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 - **2026-10-27** — Administrator status means management access, not automatic student-game eligibility. Across Class Job Market, default student rosters, class-size denominators, draws, and collective-action games exclude `is_admin=1`; a future instructor control may explicitly include administrators for the rare intentional case.
 
+- **2026-10-27** — Replace the global boolean-admin assumption with auditable role assignments: `super_admin` may manage every course, `course_admin` may manage all sections of one course, and `section_admin` may manage explicitly assigned sections. The legacy `is_admin` field remains synchronized as a compatibility flag, while new authorization derives from `admin_assignments`. Existing admins and `ADMIN_EMAILS` bootstrap identities become `super_admin`s; roster imports may only grant roles when performed by a super-admin and never overwrite an existing super-admin account.
+
 
 - **2026-10-26** — Use each Flex Question’s existing Exam tag as a persistent batch control. Instructors may activate/deactivate one question or every question under an exam tag; inactive questions stay visible for administration and retain their funding history, but are excluded from the active student funding sequence.
 
@@ -438,6 +440,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-10-27** — Replaced boolean-only administrator state in Class Job Market with durable role assignments. Legacy and `ADMIN_EMAILS` administrators migrate to `super_admin`; `course_admin` and `section_admin` assignments limit the signed-in administrator’s course/section picker and roster workflows. Super-admins can grant roles in Settings → Students or import `admin_role` in a CSV; imports never overwrite an existing super-admin account. Added `tests/admin-roles.R`, which verifies legacy migration, scoped grants, compatibility synchronization, multiple roles, and protection of the final super-admin. That fixture, app parsing, and the collective-action fixture pass. The broader Job Market smoke fixture currently has a pre-existing mismatch at its volunteer-clearing-wage assertion: the current implementation deliberately returns the frozen cold-call wage/default instead of the older category-bid rule; this role-only diff does not touch that code path.
 
 - **2026-10-27** — Confirmed that existing student rosters, draws, game denominators, Flex funding, and bulk awards already filter `is_admin=0`. Closed the legacy embedded-game loophole: admins now see a management message and server-side submission handlers reject their Bonus Pot, Prisoner’s Dilemma, and Price War choices. The new Collective Action engine freezes a course/section roster from the same active/non-demo/non-admin predicate by default; its focused SQLite fixture verifies that an instructor and an outside-course student are excluded.
 
