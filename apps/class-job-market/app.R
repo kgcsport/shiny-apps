@@ -176,6 +176,9 @@ ensure_column <- function(table, column_def) {
   }
 }
 
+source(file.path(this_dir, "collective_action.R"), local = TRUE)
+ca_init(get_con())
+
 # ── Table init ────────────────────────────────────────────────────────────────
 db_exec("CREATE TABLE IF NOT EXISTS users(
   user_id      TEXT PRIMARY KEY,

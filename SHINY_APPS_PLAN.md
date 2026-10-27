@@ -437,6 +437,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-10-27** — Added a Collective Action prototype engine beside the legacy Bonus Pot. It creates course/section-scoped sessions and rounds, freezes a round roster, supports linear and threshold mechanisms, uses one UPSERT-backed choice per student, and settles immutable outcomes and roster-wide payouts. `tests/collective-action-prototype.R` covers revised choices, a linear payout, a threshold unlock, and post-lock rejection. The prototype has no student/instructor UI or deployment approval yet.
+
+
 - **2026-10-26** — Added `tests/critical-live-score-audit.R`, a SQLite fixture with unresolved Oct. 7 and Oct. 12 assignment scores in a selected section, plus a committed control event and an out-of-scope record. The Dockerfile now runs it during image build, so a bad cross-date audit query blocks GHCR publication.
 
 - **2026-10-26** — Diagnosed Live Score Audit visibility across dates. The audit query had removed its round placeholder but still passed an empty parameter list, which the DB helper swallowed as an empty result. Restored a no-parameter query and aligned Commit all/Clear pending with the displayed cross-date, selected-scope queue. Added a source-level regression assertion; broader fixture coverage is now required by the non-regression protocol.
@@ -784,6 +787,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** (Claude Code, branch `claude/class-job-market-simplify-szx2ai`) — Fixed settings-panel reactivity, student-poll invalidation keys, and fresh-DB migration ordering in class-job-market. Replaced the seeded job catalog with the simplified 4-category/11-template model plus a one-time data migration. Added template-level timing/voluntary/in-draw/auto-copy (carried into rounds by "Create next round"), a `during` timing with a cold-call draw filter, the recurring bid-lock schedule, the volunteer clearing-wage engine with three rules and a per-class posted-demand editor, student-facing volunteer wages, and a scratch-DB smoke test.
 
 ## Next actions
+
+1. Build the Collective Action student and instructor UI around the tested prototype engine, including explicit section versus course scope selection.
+2. Add a multi-process SQLite contention test and bounded write-retry policy before enabling a live classroom round.
+3. Stage the prototype with a synthetic roster; verify sealed submissions, lock/reveal, and course isolation.
+
 
 1. Stage and verify the image containing `4264c05` plus the Live Score Audit build gate: confirm old-date Pending assignment outcomes appear in Live Score Audit, then approve one and confirm it leaves Pending.
 2. Repair the existing broad unit/smoke baseline, then promote the cross-date fixture from a Docker build gate to the full required workflow suite.
