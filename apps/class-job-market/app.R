@@ -235,6 +235,22 @@ ensure_column("users", "section TEXT")
 ensure_column("users", "active INTEGER DEFAULT 1")
 ensure_column("users", "is_demo INTEGER DEFAULT 0")
 ensure_column("users", "admin_role TEXT DEFAULT 'student'")
+# A user can belong to more than one class environment. `users.course` and
+# `users.section` remain the primary/home environment for compatibility with
+# the other classroom apps; this table is the access list used by this app.
+db_exec("CREATE TABLE IF NOT EXISTS user_environments(
+  user_id TEXT NOT NULL,
+  course TEXT NOT NULL,
+  section TEXT NOT NULL DEFAULT '',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(user_id,course,section)
+);")
+db_exec("CREATE INDEX IF NOT EXISTS idx_user_environments_user ON user_environments(user_id);")
+db_exec("INSERT OR IGNORE INTO user_environments(user_id,course,section)
+         SELECT user_id,TRIM(COALESCE(course,'')),TRIM(COALESCE(section,''))
+         FROM users
+         WHERE COALESCE(is_demo,0)=0 AND TRIM(COALESCE(course,''))<>'';")
 db_exec("CREATE TABLE IF NOT EXISTS admin_assignments(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT NOT NULL,
@@ -2806,7 +2822,6 @@ server <- function(input, output, session) {
         error=function(e)data.frame())
       if(nrow(first_course)) {
         rv$active_course <- first_course$course[1]
-        set_setting("active_course",rv$active_course)
       }
     }
     if (!length(normalize_scope_sections(rv$active_sections))) {
@@ -2818,8 +2833,6 @@ server <- function(input, output, session) {
       if(nrow(first_section)) {
         rv$active_sections <- first_section$section[1]
         rv$active_section <- first_section$section[1]
-        set_setting("active_sections",serialize_scope_sections(rv$active_sections))
-        set_setting("active_section",rv$active_section)
       }
     }
   })
@@ -2904,6 +2917,53 @@ server <- function(input, output, session) {
     rv$active_sections <- normalize_scope_sections(sections)
     rv$active_section <- if (length(rv$active_sections) == 1L) rv$active_sections[1] else ""
     invisible(TRUE)
+  }
+
+  # Session environments are access-controlled and do not use the global instructor selection.
+  session_environment_rows <- function() {
+    if (!isTRUE(rv$authed)) return(data.frame(course=character(0), section=character(0)))
+    if (isTRUE(rv$is_admin)) {
+      courses <- admin_allowed_courses()
+      out <- do.call(rbind, lapply(courses, function(course) {
+        sections <- admin_allowed_sections(course)
+        data.frame(course=rep(course, length(sections)), section=sections, stringsAsFactors=FALSE)
+      }))
+      if (is.null(out)) return(data.frame(course=character(0), section=character(0)))
+      return(out[!duplicated(paste(norm_key(out$course), norm_key(out$section))),,drop=FALSE])
+    }
+    out <- tryCatch(db_query("SELECT ue.course,ue.section FROM user_environments ue JOIN users u ON LOWER(u.user_id)=LOWER(ue.user_id) WHERE LOWER(ue.user_id)=LOWER(?) AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0 ORDER BY ue.course,ue.section;", list(rv$user_id)), error=function(e)data.frame())
+    if (!nrow(out) && nzchar(trimws(rv$course %||% ""))) out <- data.frame(course=rv$course, section=rv$section %||% "", stringsAsFactors=FALSE)
+    out
+  }
+  session_allowed_courses <- function() unique_ci(session_environment_rows()$course %||% character(0))
+  session_allowed_sections <- function(course) {
+    env <- session_environment_rows()
+    unique_ci(env$section[norm_key(env$course) == norm_key(course)] %||% character(0))
+  }
+  pin_session_environment <- function() {
+    env <- session_environment_rows()
+    if (!nrow(env)) { rv$active_course <- ""; rv$active_section <- ""; rv$active_sections <- character(0); return(invisible(FALSE)) }
+    home <- which(norm_key(env$course) == norm_key(rv$course %||% "") & norm_key(env$section) == norm_key(rv$section %||% ""))
+    pick <- if (length(home)) home[1] else 1L
+    rv$active_course <- env$course[pick]
+    rv$active_section <- env$section[pick]
+    rv$active_sections <- env$section[pick]
+    invisible(TRUE)
+  }
+  # Redefine the session scope after the legacy helpers above. Students use their
+  # selected authorised environment; administrators use their role assignments.
+  scoped_course <- function() {
+    allowed <- if (isTRUE(rv$is_admin)) admin_allowed_courses() else session_allowed_courses()
+    selected <- trimws(rv$active_course %||% "")
+    if (!length(allowed)) return("")
+    if (!norm_key(selected) %in% norm_key(allowed)) selected <- allowed[1]
+    selected
+  }
+  scoped_sections <- function(expand_all = TRUE) {
+    allowed <- if (isTRUE(rv$is_admin)) admin_allowed_sections(scoped_course()) else session_allowed_sections(scoped_course())
+    selected <- normalize_scope_sections(rv$active_sections %||% rv$active_section %||% "")
+    if (isTRUE(rv$is_admin) && isTRUE(expand_all) && "__all__" %in% selected) return(allowed)
+    intersect(setdiff(selected, "__all__"), allowed)
   }
 
   current_scope_key <- function() {
@@ -3164,8 +3224,13 @@ server <- function(input, output, session) {
   output$header_widgets <- renderUI({
     req(rv$authed)
     bal <- token_bal()
+    env <- session_environment_rows()
+    current <- which(norm_key(env$course) == norm_key(scoped_course()) & norm_key(env$section) %in% norm_key(scoped_sections()))
+    selected <- if (length(current)) as.character(current[1]) else "1"
+    labels <- if (nrow(env)) ifelse(nzchar(env$section), paste(env$course, "—", env$section), env$course) else character(0)
     tagList(
       span(class = "arc-name", rv$name),
+      if (nrow(env) > 1L) selectInput("environment_sel", "Class environment", choices=setNames(as.character(seq_len(nrow(env))), labels), selected=selected, width="220px"),
       span(class = "arc-bal",  sprintf("%d tokens", as.integer(bal)))
     )
   })
@@ -3183,10 +3248,8 @@ server <- function(input, output, session) {
     rv$admin_role <- if (nrow(rv$admin_assignments)) as.character(rv$admin_assignments$role[1]) else "student"
     rv$is_admin <- !identical(rv$admin_role, "student")
     rv$is_demo  <- isTRUE(as.integer(row$is_demo[1]  %||% 0L) == 1L)
-    if (isTRUE(rv$is_admin)) {
-      pin_admin_session_scope()
-      ensure_scope_round()
-    }
+    pin_session_environment()
+    if (isTRUE(rv$is_admin)) ensure_scope_round()
   }
 
   issue_cookie <- function(user_id) {
@@ -3202,6 +3265,20 @@ server <- function(input, output, session) {
     rv$token <- NULL
     session$sendCustomMessage("set_arcade_cookie", list(token = ""))
   }
+
+  observeEvent(input$environment_sel, {
+    req(rv$authed)
+    env <- session_environment_rows()
+    idx <- suppressWarnings(as.integer(input$environment_sel %||% NA_integer_))
+    if (is.na(idx) || idx < 1L || idx > nrow(env)) return()
+    rv$active_course <- env$course[idx]
+    rv$active_section <- env$section[idx]
+    rv$active_sections <- env$section[idx]
+    if (isTRUE(rv$is_admin)) ensure_scope_round()
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    rv$students_ver <- rv$students_ver + 1L
+    rv$flex_ver <- rv$flex_ver + 1L
+  }, ignoreInit=TRUE)
 
   # ── Cookie auto-login ─────────────────────────────────────────────────────────
   # Skipped in sandbox mode: the global lookup_token uses the production DB, so a
@@ -4001,7 +4078,7 @@ server <- function(input, output, session) {
         timing_key %in% c("end", "post", "post class", "after class", "end of class or after class"),
         "end", "start")
       sr <- if (!is.null(jp$section_reveals)) jp$section_reveals else data.frame()
-      sec <- trimws(rv$section %||% "")
+      sec <- as.character(scoped_sections()[1] %||% "")
       visible <- vapply(seq_len(nrow(today_my_assign)), function(i) {
         if (isTRUE(rv$is_admin)) return(TRUE)
         if (!nrow(sr) || !nzchar(sec)) return(FALSE)
@@ -4906,7 +4983,7 @@ server <- function(input, output, session) {
        VALUES(?,?,?,?)
        ON CONFLICT(round, user_id) DO UPDATE
          SET choice=excluded.choice, section=excluded.section;",
-      list(as.integer(s$current_round[1]), rv$user_id, rv$section %||% "", ch))
+      list(as.integer(s$current_round[1]), rv$user_id, as.character(scoped_sections()[1] %||% ""), ch))
     db_exec("UPDATE olig_settings SET updated_at=CURRENT_TIMESTAMP WHERE id=1;")
     showNotification("Choice submitted.", type = "message")
   })
@@ -6372,10 +6449,10 @@ server <- function(input, output, session) {
                    "The name your instructor and classmates see."),
             tags$hr(style = "margin:.75rem 0;"),
             tags$p(tags$strong("Username: "), rv$user_id),
-            if (nzchar(rv$course %||% ""))
-              tags$p(tags$strong("Class: "), rv$course),
-            if (nzchar(rv$section %||% ""))
-              tags$p(tags$strong("Section: "), rv$section),
+            if (nzchar(scoped_course()))
+              tags$p(tags$strong("Class: "), scoped_course()),
+            if (length(scoped_sections()))
+              tags$p(tags$strong("Section: "), paste(scoped_sections(), collapse=", ")),
           )
         )
       ),
@@ -6455,10 +6532,6 @@ server <- function(input, output, session) {
     rv$active_sections <- selected
     expanded <- if ("__all__" %in% selected) available else selected
     rv$active_section <- if (length(expanded) == 1L) expanded[1] else ""
-    if (is_super_admin()) {
-      set_setting("active_sections", serialize_scope_sections(selected))
-      set_setting("active_section", rv$active_section)
-    }
     ensure_scope_round()
     rv$jobs_ver <- rv$jobs_ver + 1L
     rv$students_ver <- rv$students_ver + 1L
@@ -6475,11 +6548,6 @@ server <- function(input, output, session) {
     sections <- live_section_values(course)
     rv$active_sections <- if (length(sections)) sections[1] else character(0)
     rv$active_section <- if (length(sections)) sections[1] else ""
-    if (is_super_admin()) {
-      set_setting("active_course", course)
-      set_setting("active_sections", serialize_scope_sections(rv$active_sections))
-      set_setting("active_section", rv$active_section)
-    }
     ensure_scope_round()
     rv$jobs_ver <- rv$jobs_ver + 1L
     rv$students_ver <- rv$students_ver + 1L
@@ -6518,7 +6586,7 @@ server <- function(input, output, session) {
     "public_good_contributions", "flex_purchases", "flex_question_contributions", "token_ledger",
     "olig_submissions", "olig_payouts", "pledges", "participation_events",
     "live_score_events", "student_grades", "assessment_grade_values", "assessment_grade_reveals", "job_assignments", "round_absences",
-    "wage_bids", "job_wage_bids", "application_bids"
+    "wage_bids", "job_wage_bids", "application_bids", "user_environments"
   )
 
   update_user_references <- function(old_uid, new_uid, display_name) {
@@ -6590,6 +6658,7 @@ server <- function(input, output, session) {
        WHERE user_id=? AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0;",
       list(new_uid, display_name, course, sec, as.integer(isTRUE(input$edit_student_active)), old_uid))
     update_user_references(old_uid, new_uid, display_name)
+    if (nzchar(course)) db_exec("INSERT OR IGNORE INTO user_environments(user_id,course,section) VALUES(?,?,?);", list(new_uid, course, sec))
     if (nzchar(pw)) {
       db_exec("UPDATE users SET pw_hash=? WHERE user_id=?;",
               list(bcrypt::hashpw(pw), new_uid))
@@ -6623,6 +6692,7 @@ server <- function(input, output, session) {
       list(uid, if (nzchar(nm)) nm else uid,
            if (nzchar(pw)) bcrypt::hashpw(pw) else bcrypt::hashpw(make_token()),
            course, sec))
+    if (nzchar(course)) db_exec("INSERT OR IGNORE INTO user_environments(user_id,course,section) VALUES(?,?,?);", list(uid, course, sec))
     rv$students_ver <- rv$students_ver + 1L
     showNotification(sprintf("Created student %s.", uid), type = "message")
   })
@@ -6762,6 +6832,7 @@ server <- function(input, output, session) {
       } else {
         n_skipped <- n_skipped + 1L
       }
+      if (nzchar(course)) db_exec("INSERT OR IGNORE INTO user_environments(user_id,course,section) VALUES(?,?,?);", list(uid, course, sec))
       if (requested_role %in% c("super_admin","course_admin","section_admin") && (!exists || do_update)) {
         granted <- tryCatch({ grant_admin_assignment(uid, requested_role, course, sec, rv$user_id %||% "CSV import"); TRUE }, error=function(e) { showNotification(conditionMessage(e), type="warning"); FALSE })
         if (granted) n_role_grants <- n_role_grants + 1L

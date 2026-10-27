@@ -29,7 +29,7 @@ if (length(settings_parts) != 2L || !grepl("uiOutput(\"bonus_pot_admin_controls\
 }
 scope_required <- c(
   "pin_admin_session_scope <- function()",
-  "pin_admin_session_scope()",
+  "pin_session_environment()",
   "Game activation and setup are managed by the course instructor.",
   "req(rv$is_admin, is_super_admin(), !rv$impersonating)"
 )

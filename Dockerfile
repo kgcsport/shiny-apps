@@ -17,5 +17,7 @@ RUN Rscript --vanilla -e "parse(file='/srv/shiny-server/class-job-market/app.R')
 RUN Rscript --vanilla -e "parse(file='/srv/shiny-server/coordination-games/app.R'); cat('coordination-games parse OK\n')"
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-live-score-audit.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-bonus-pot-unification.R
+RUN Rscript --vanilla /srv/shiny-server/tests/admin-roles.R
+RUN Rscript --vanilla /srv/shiny-server/tests/bonus-pot-public-good.R
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
