@@ -202,6 +202,14 @@ ensure_column("arcade_state", "assignments_revealed INTEGER DEFAULT 0")
 if (!db_query("SELECT COUNT(*) n FROM arcade_state WHERE id=1;")$n[1])
   db_exec("INSERT INTO arcade_state(id, active_game, assignments_revealed) VALUES(1, NULL, 0);")
 
+# Active-game selection is scoped to the current class environment.  The
+# legacy singleton remains only for shared assignment-reveal state.
+db_exec("CREATE TABLE IF NOT EXISTS scope_arcade_state(
+  scope_key   TEXT PRIMARY KEY,
+  active_game TEXT,
+  updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
+);")
+
 db_exec("
   CREATE TABLE IF NOT EXISTS arcade_sessions (
     token      TEXT PRIMARY KEY,
@@ -2977,6 +2985,20 @@ server <- function(input, output, session) {
     }
     section_scope_key(course, sections)
   }
+  active_game_state_for_scope <- function(query_fn = db_query) {
+    state <- tryCatch(query_fn(
+      "SELECT active_game,updated_at FROM scope_arcade_state WHERE scope_key=? LIMIT 1;",
+      list(current_scope_key())), error = function(e) data.frame())
+    if (!nrow(state)) return(data.frame(active_game="", updated_at="", stringsAsFactors=FALSE))
+    state
+  }
+  set_active_game_for_scope <- function(game = "") {
+    game <- trimws(as.character(game %||% ""))
+    db_exec(
+      "INSERT INTO scope_arcade_state(scope_key,active_game,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
+       ON CONFLICT(scope_key) DO UPDATE SET active_game=excluded.active_game,updated_at=CURRENT_TIMESTAMP;",
+      list(current_scope_key(), if (nzchar(game)) game else NA_character_))
+  }
   get_scoped_setting <- function(key,default=NULL)
     get_setting(paste0(key,"::",current_scope_key()),get_setting(key,default))
   set_scoped_setting <- function(key,value)
@@ -3230,7 +3252,7 @@ server <- function(input, output, session) {
     labels <- if (nrow(env)) ifelse(nzchar(env$section), paste(env$course, "—", env$section), env$course) else character(0)
     tagList(
       span(class = "arc-name", rv$name),
-      if (nrow(env) > 1L) selectInput("environment_sel", "Class environment", choices=setNames(as.character(seq_len(nrow(env))), labels), selected=selected, width="220px"),
+      if (nrow(env) > 1L) selectInput("environment_sel", "Active class / section", choices=setNames(as.character(seq_len(nrow(env))), labels), selected=selected, width="220px"),
       span(class = "arc-bal",  sprintf("%d tokens", as.integer(bal)))
     )
   })
@@ -3353,11 +3375,11 @@ server <- function(input, output, session) {
   # ── Polls ─────────────────────────────────────────────────────────────────────
   arcade_poll <- reactivePoll(3000, session,
     checkFunc = function() {
-      if (!tab_is_active("Today", "Games & Demos")) return("")
-      db_query("SELECT updated_at FROM arcade_state WHERE id=1;")$updated_at[1] %||% ""
+      if (!tab_is_active("Today", "Games & Demos", "Settings")) return("")
+      state <- active_game_state_for_scope()
+      paste(current_scope_key(), state$updated_at[1] %||% "", sep="|")
     },
-    valueFunc = function()
-      db_query("SELECT * FROM arcade_state WHERE id=1;")
+    valueFunc = active_game_state_for_scope
   )
 
   olig_poll <- reactivePoll(3000, session,
@@ -3434,16 +3456,20 @@ server <- function(input, output, session) {
       list(scoped_course(), section))$n[1], error=function(e) NA_integer_) else NA_integer_
     denom <- if (!is.na(enrolled) && as.integer(enrolled) > 0L) as.integer(enrolled) else nrow(subs)
     share <- round((as.numeric(s$bonus_multiplier[1] %||% 1.5) * total / max(1L, denom)) * 2) / 2
+    recipients <- if (!is.na(enrolled) && as.integer(enrolled) > 0L) tryCatch(db_query(
+      "SELECT user_id FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0 AND LOWER(COALESCE(course,''))=LOWER(?) AND LOWER(COALESCE(section,''))=LOWER(?);",
+      list(scoped_course(), section)), error=function(e) data.frame()) else data.frame(user_id=as.character(subs$user_id))
+    if (!nrow(recipients)) recipients <- data.frame(user_id=as.character(subs$user_id))
     meta <- sprintf("round=%d section=%s denominator=%s", round_id, section,
                     if (!is.na(enrolled) && as.integer(enrolled)>0L) paste0("enrolled-", enrolled) else paste0("submitters-", nrow(subs)))
-    for (uid in as.character(subs$user_id)) {
+    for (uid in as.character(recipients$user_id)) {
       db_exec("INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note) SELECT user_id,display_name,'coordination_grant',?,?,1,? FROM users WHERE user_id=?;",
               list(round_id, share, paste("Bonus Pot payout", meta), uid))
       db_exec("INSERT INTO olig_payouts(round,user_id,game,payout,meta,section) VALUES(?,?, 'bonus',?,?,?);",
               list(round_id, uid, share, meta, section))
     }
     db_exec("UPDATE olig_settings SET updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-    list(ok=TRUE, message=sprintf("Applied a %.1f-token Bonus Pot payout to %d contributor%s.", share, nrow(subs), if(nrow(subs)==1) "" else "s"))
+    list(ok=TRUE, message=sprintf("Applied a %.1f-token Bonus Pot payout to %d student%s.", share, nrow(recipients), if(nrow(recipients)==1) "" else "s"))
   }
 
   output$bonus_pot_admin_controls <- renderUI({
@@ -3662,7 +3688,7 @@ server <- function(input, output, session) {
         }
       }
       active <- tryCatch(
-        db_query("SELECT active_game FROM arcade_state WHERE id=1;")$active_game[1] %||% "",
+        active_game_state_for_scope()$active_game[1] %||% "",
         error = function(e) "")
       revealed <- tryCatch(
         isTRUE(as.integer(db_query("SELECT COALESCE(assignments_revealed,0) v FROM arcade_state WHERE id=1;")$v[1]) == 1L),
@@ -4804,7 +4830,10 @@ server <- function(input, output, session) {
       # Active slot
       if (nzchar(active)) {
         div(class = "slot-card",
-          div(class = "slot-header", "▶ Active Now", span(class = "badge-live", "LIVE")),
+          div(class = "slot-header", "▶ Active Now", span(class = "badge-live", "LIVE"),
+              if (isTRUE(rv$is_admin) && is_super_admin() && !isTRUE(rv$impersonating))
+                actionButton("clear_active_game_btn", "Turn off game", class="btn btn-xs btn-outline-secondary",
+                  onclick="return confirm('Turn off the active game for everyone? ');")),
           uiOutput("active_slot_inner")
         )
       } else {
@@ -4886,13 +4915,17 @@ server <- function(input, output, session) {
         div(class = "no-game", "Embedded UI coming soon.")
       )
     } else {
-      div(class = "launch-card",
-          div(class = "launch-info",
-            div(class = "launch-title", ginfo$label),
-            div(class = "launch-desc",  ginfo$desc)
-          ),
-          tags$a(class = "btn-launch", href = ginfo$url, target = "_blank", "Open game →")
-        )
+      tagList(
+        div(class = "launch-card",
+            div(class = "launch-info",
+              div(class = "launch-title", ginfo$label),
+              div(class = "launch-desc",  ginfo$desc)
+            ),
+            tags$a(class = "btn-launch", href = ginfo$url, target = "_blank", "Open game →")
+        ),
+        if (isTRUE(rv$is_admin) && is_super_admin() && !isTRUE(rv$impersonating) && identical(active, "bonus_pot"))
+          div(class="admin-game-controls", tags$h5("Instructor controls"), uiOutput("bonus_pot_admin_controls"))
+      )
     }
   })
 
@@ -6536,7 +6569,7 @@ server <- function(input, output, session) {
     rv$jobs_ver <- rv$jobs_ver + 1L
     rv$students_ver <- rv$students_ver + 1L
     rv$flex_ver <- rv$flex_ver + 1L
-  }, ignoreNULL = FALSE)
+  }, ignoreNULL = TRUE)
 
   observeEvent(input$active_course_sel, {
     req(rv$is_admin)
@@ -6552,7 +6585,7 @@ server <- function(input, output, session) {
     rv$jobs_ver <- rv$jobs_ver + 1L
     rv$students_ver <- rv$students_ver + 1L
     rv$flex_ver <- rv$flex_ver + 1L
-  }, ignoreNULL = FALSE)
+  }, ignoreNULL = TRUE)
 
   observeEvent(input$hide_archived_students_chk, {
     req(rv$is_admin)
@@ -8740,24 +8773,11 @@ server <- function(input, output, session) {
   output$live_tracker_tab <- renderUI({
     req(rv$authed, rv$is_admin || rv$is_demo)
     td        <- tracker_poll()
-    revealed  <- td$revealed
-    round     <- td$round
-    mode      <- if (nrow(round)) round$assignment_mode[1] %||% "random" else "random"
-    wage_mode <- identical(mode, "wage_bidding")
-    rid       <- if (nrow(round)) round$id[1] else NA_integer_
-
-    # Class/section picker data
-    all_courses <- live_course_values()
-    course_choices <- setNames(all_courses,all_courses)
-    cur_course <- rv$active_course %||% ""
-    if (!cur_course %in% all_courses && length(all_courses)) cur_course <- all_courses[1]
-    all_sections <- live_section_values(cur_course)
-    sec_choices <- c("All sections (explicit)" = "__all__", setNames(all_sections, all_sections))
-    cur_sections <- normalize_scope_sections(rv$active_sections %||% rv$active_section %||% "")
-    if (!length(cur_sections) && length(all_sections)) cur_sections <- all_sections[1]
-    expanded_sections <- if ("__all__" %in% cur_sections) all_sections else cur_sections
-    cur_sec <- if (length(expanded_sections) == 1L) expanded_sections[1] else ""
-    section_scope_label <- paste(expanded_sections,collapse=", ")
+    # The banner owns the active course/section. Live Tracker reads that
+    # session scope and never provides a competing picker.
+    cur_course <- scoped_course()
+    expanded_sections <- scoped_sections()
+    section_scope_label <- paste(expanded_sections, collapse=", ")
 
     # Filter every live-tracker roster and event through the same explicit scope.
     assignments_show <- scope_filter_rows(td$assignments)
@@ -8865,24 +8885,17 @@ server <- function(input, output, session) {
       div(class = "tab-howto",
           "Manage job assignments and log participation during class. Updates every 5 seconds."),
       tutorial_note("Live class workflow", c(
-        "Choose the active class and section before drawing or scoring anything.",
+        "Choose the active class and section in the banner before drawing or scoring anything.",
         "Draw start-, end-, or all-timing jobs; use Preview Draw when you want to inspect first.",
         "Use Reveal group to show Start, End, or All assignments independently.",
         "For cold calls, record Answer or Board; use Absent & Redraw to exclude an absent student for this lecture.",
         "Mark job outcomes, review them in Live Score Audit, then commit when they are correct."
       )),
 
-      # Section selector
       fluidRow(
-        column(3,
-          selectInput("active_course_sel", "Active class:",
-                      choices = course_choices, selected = cur_course, width = "100%")),
-        column(3,
-          selectizeInput("active_section_sel", "Active section(s):",
-                      choices = sec_choices, selected = cur_sections, multiple = TRUE,
-                      options = list(plugins = list("remove_button"),
-                                     placeholder = "Choose one or more sections"),
-                      width = "100%")),
+        column(6, div(class="alert alert-info", style="margin-bottom:.4rem;",
+          tags$strong("Active environment: "),
+          paste(c(cur_course, section_scope_label)[nzchar(c(cur_course, section_scope_label))], collapse=" / "))),
         column(3,
           selectInput("draw_timing_filter", "Draw jobs:",
                       choices = c("All timings" = "all", "Start of class" = "start",
@@ -11308,7 +11321,7 @@ server <- function(input, output, session) {
         uiOutput("olig_status_display"),
         if (nrow(s)) {
           if (identical(active, "bonus_pot")) {
-            uiOutput("bonus_pot_admin_controls")
+            tags$p(style="font-size:.85em;color:#666;", "Bonus Pot lifecycle controls are available in Games & Demos → Active Now.")
           } else {
             fluidRow(
               column(4, actionButton("adm_open",   "Open",   class = "btn btn-success btn-sm btn-block")),
@@ -11916,34 +11929,23 @@ server <- function(input, output, session) {
   # Admin action observers
   observeEvent(input$clear_active_game_btn, {
     req(rv$is_admin, is_super_admin(), !rv$impersonating)
-    db_exec("UPDATE arcade_state SET active_game=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    set_active_game_for_scope("")
     showNotification("Active game cleared.", type = "message")
   })
   observeEvent(input$set_active_btn, {
     req(rv$is_admin, is_super_admin())
     g <- input$admin_game_sel %||% ""
     if (nzchar(g)) {
-      db_exec("UPDATE arcade_state SET active_game=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;", list(g))
+      set_active_game_for_scope(g)
       if (identical(g, "bonus_pot")) {
         db_exec("UPDATE olig_settings SET current_game='bonus', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
       } else if (g %in% c("prisoners_dilemma", "price_war")) {
         db_exec("UPDATE olig_settings SET current_game='pd', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
       }
     } else {
-      db_exec("UPDATE arcade_state SET active_game=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+      set_active_game_for_scope("")
     }
     showNotification(paste("Active game:", if (nzchar(g)) g else "cleared"), type = "message")
-  })
-  # The Class Job Market active-game slot is authoritative. This also repairs
-  # state created before the unified controls existed.
-  observe({
-    req(rv$authed, rv$is_admin, is_super_admin())
-    active <- arcade_poll()$active_game[1] %||% ""
-    target <- if (identical(active, "bonus_pot")) "bonus" else if (active %in% c("prisoners_dilemma", "price_war")) "pd" else ""
-    if (!nzchar(target)) return()
-    current <- tryCatch(db_query("SELECT current_game FROM olig_settings WHERE id=1;")$current_game[1] %||% "", error=function(e) "")
-    if (!identical(as.character(current), target))
-      db_exec("UPDATE olig_settings SET current_game=?,updated_at=CURRENT_TIMESTAMP WHERE id=1;", list(target))
   })
 
   save_bonus_pot_setup <- function(status_override = NULL) {
@@ -13683,9 +13685,8 @@ server <- function(input, output, session) {
     scope <- input$section_reveal_timing %||% "start"
     timings <- reveal_timings_for_scope(scope)
     rv$active_section <- sec
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('active_section',?);",
-            list(sec))
-    updateSelectInput(session, "active_section_sel", selected = sec)
+    rv$active_sections <- sec
+    # Scope selection is session-local; do not persist this reveal choice globally.
     for (timing in timings) {
       db_exec(
         "INSERT INTO assignment_timing_reveals(round_id, section, revealed, timing, updated_at)

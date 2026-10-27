@@ -351,8 +351,13 @@ apply_payouts <- function(round, game) {
 
   if (game == "bonus") {
     shares       <- bonus_shares(olig, subs)
-    payouts      <- shares %>% mutate(payout = round_to_half(share_each)) %>% select(user_id, payout)
     denom_source <- if (nrow(shares) > 0) shares$denom_source[1] else sprintf("submitter count (%d)", nrow(subs))
+    use_sec      <- isTRUE(as.integer(olig$use_section_size[1] %||% 1L) == 1L)
+    recipients   <- if (use_sec && !is.na(section_class_size(sec))) db_query(
+      "SELECT user_id FROM users WHERE section=? AND COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0;", list(sec)
+    ) else tibble(user_id=unique(as.character(subs$user_id)))
+    if (!nrow(recipients)) recipients <- tibble(user_id=unique(as.character(subs$user_id)))
+    payouts <- recipients %>% mutate(payout=round_to_half(shares$share_each[1]))
     for (i in seq_len(nrow(payouts))) {
       uid <- payouts$user_id[i]
       pay <- payouts$payout[i]
@@ -453,7 +458,10 @@ login_ui <- function(msg = NULL) {
 shared_auth_js <- tags$script(HTML("
 (function() {
   function sendAuthCookie() { Shiny.setInputValue('auth_cookie', (document.cookie.match(/(?:^|; )arcade_token=([^;]*)/) || ['', ''])[1], {priority: 'event'}); }
-  document.addEventListener('shiny:sessioninitialized', sendAuthCookie);
+  $(document).on('shiny:sessioninitialized', sendAuthCookie);
+  // Shiny emits this as a jQuery event; the native listener above never fired,
+  // leaving a visitor stranded on the checking-sign-in screen.
+  setTimeout(sendAuthCookie, 300);
   Shiny.addCustomMessageHandler('redirect_to_job_market', function(msg) { window.location.replace(msg.url); });
 })();
 "))

@@ -19,13 +19,16 @@ active_marker <- "output$active_slot_inner <- renderUI({"
 active_parts <- strsplit(source_text, active_marker, fixed=TRUE)[[1]]
 if (length(active_parts) != 2L) stop("Could not isolate Games & Demos active slot.")
 active_fragment <- strsplit(active_parts[2], "# ── Embedded: Prisoner", fixed=TRUE)[[1]][1]
-if (grepl("bonus_pot_admin_controls", active_fragment, fixed=TRUE)) {
-  stop("Games & Demos must not render Bonus Pot setup controls.")
+for (needle in c("bonus_pot_admin_controls", "Instructor controls")) {
+  if (!grepl(needle, active_fragment, fixed=TRUE)) stop("Active Now must expose Bonus Pot instructor controls.")
+}
+if (!grepl("actionButton(\"clear_active_game_btn\", \"Turn off game\"", source_text, fixed=TRUE)) {
+  stop("Super-admins need an explicit Turn off game control.")
 }
 settings_marker <- "} else if (act == \"game_controls\") {"
 settings_parts <- strsplit(source_text, settings_marker, fixed=TRUE)[[1]]
-if (length(settings_parts) != 2L || !grepl("uiOutput(\"bonus_pot_admin_controls\")", settings_parts[2], fixed=TRUE)) {
-  stop("Settings must render the Bonus Pot setup controls.")
+if (length(settings_parts) != 2L || !grepl("Bonus Pot lifecycle controls are available in Games & Demos", settings_parts[2], fixed=TRUE)) {
+  stop("Settings must direct Bonus Pot lifecycle actions to Active Now.")
 }
 scope_required <- c(
   "pin_admin_session_scope <- function()",
@@ -36,14 +39,30 @@ scope_required <- c(
 scope_missing <- scope_required[!vapply(scope_required, grepl, logical(1), x=source_text, fixed=TRUE)]
 if (length(scope_missing)) stop("Scoped-admin isolation contract missing: ", paste(scope_missing, collapse=" | "))
 
+active_scope_required <- c(
+  "CREATE TABLE IF NOT EXISTS scope_arcade_state",
+  "active_game_state_for_scope <- function",
+  "set_active_game_for_scope <- function",
+  "INSERT INTO scope_arcade_state",
+  "tab_is_active(\"Today\", \"Games & Demos\", \"Settings\")"
+)
+active_scope_missing <- active_scope_required[!vapply(active_scope_required, grepl, logical(1), x=source_text, fixed=TRUE)]
+if (length(active_scope_missing)) stop("Environment-scoped active-game contract missing: ", paste(active_scope_missing, collapse=" | "))
+if (grepl("UPDATE arcade_state SET active_game", source_text, fixed=TRUE)) stop("Active-game writes must not use global arcade_state.")
+
 module_path <- if (file.exists("apps/coordination-games/app.R")) "apps/coordination-games/app.R" else "/srv/shiny-server/coordination-games/app.R"
 module_text <- paste(readLines(module_path, warn=FALSE), collapse="\n")
-module_required <- c("lookup_shared_session", "redirect_to_job_market", "Bonus Pot is controlled from Class Job Market", "ALLOW_LEGACY_COORDINATION_ADMIN")
+module_required <- c("lookup_shared_session", "redirect_to_job_market", "Bonus Pot is controlled from Class Job Market", "ALLOW_LEGACY_COORDINATION_ADMIN", "$(document).on('shiny:sessioninitialized', sendAuthCookie);", "setTimeout(sendAuthCookie, 300);")
 module_missing <- module_required[!vapply(module_required, grepl, logical(1), x=module_text, fixed=TRUE)]
 if (length(module_missing)) stop("Bonus Pot module boundary missing: ", paste(module_missing, collapse=" | "))
 
 suppressPackageStartupMessages({ library(DBI); library(RSQLite) })
 con <- dbConnect(SQLite(), ":memory:")
+dbExecute(con, "CREATE TABLE scope_arcade_state(scope_key TEXT PRIMARY KEY, active_game TEXT, updated_at TEXT)")
+dbExecute(con, "INSERT INTO scope_arcade_state(scope_key,active_game) VALUES('econ-342::01','bonus_pot'),('econ-342::02','price_war')")
+first_scope <- dbGetQuery(con, "SELECT active_game FROM scope_arcade_state WHERE scope_key='econ-342::01'")$active_game[1]
+second_scope <- dbGetQuery(con, "SELECT active_game FROM scope_arcade_state WHERE scope_key='econ-342::02'")$active_game[1]
+if (!identical(as.character(first_scope), "bonus_pot") || !identical(as.character(second_scope), "price_war")) stop("Active games must remain independent by environment scope.")
 on.exit(dbDisconnect(con), add=TRUE)
 dbExecute(con, "CREATE TABLE olig_submissions(round INTEGER,user_id TEXT,section TEXT,choice TEXT,contribute REAL,PRIMARY KEY(round,user_id))")
 dbExecute(con, "ALTER TABLE olig_submissions ADD COLUMN game TEXT DEFAULT 'bonus'")
