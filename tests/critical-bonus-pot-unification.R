@@ -15,6 +15,7 @@ required <- c(
 )
 missing <- required[!vapply(required, grepl, logical(1), x=source_text, fixed=TRUE)]
 if (length(missing)) stop("Bonus Pot command-center contract missing: ", paste(missing, collapse=" | "))
+if (!grepl("if (targetPath === '/coordination-games') return '/coordination-games/';", source_text, fixed=TRUE)) stop("Class Job Market must preserve Coordination Games as a safe post-login return target.")
 active_marker <- "output$active_slot_inner <- renderUI({"
 active_parts <- strsplit(source_text, active_marker, fixed=TRUE)[[1]]
 if (length(active_parts) != 2L) stop("Could not isolate Games & Demos active slot.")
@@ -56,7 +57,7 @@ if (grepl("UPDATE arcade_state SET active_game", source_text, fixed=TRUE)) stop(
 
 module_path <- if (file.exists("apps/coordination-games/app.R")) "apps/coordination-games/app.R" else "/srv/shiny-server/coordination-games/app.R"
 module_text <- paste(readLines(module_path, warn=FALSE), collapse="\n")
-module_required <- c("lookup_shared_session", "redirect_to_job_market", "Bonus Pot is controlled from Class Job Market", "ALLOW_LEGACY_COORDINATION_ADMIN", "$(document).on('shiny:sessioninitialized', sendAuthCookie);", "setTimeout(sendAuthCookie, 300);", "bp-font-up", "Participation Tokens Contributed", "Save my contribution")
+module_required <- c("lookup_shared_session", "redirect_to_job_market", "return_to=%2Fcoordination-games%2F", 'href="../class-job-market/"', "Bonus Pot is controlled from Class Job Market", "ALLOW_LEGACY_COORDINATION_ADMIN", "$(document).on('shiny:sessioninitialized', sendAuthCookie);", "setTimeout(sendAuthCookie, 300);", "bp-font-up", "Participation Tokens Contributed", "Save my contribution")
 module_missing <- module_required[!vapply(module_required, grepl, logical(1), x=module_text, fixed=TRUE)]
 if (grepl("Flex Passes Contributed", module_text, fixed=TRUE) || grepl("Flex passes available", module_text, fixed=TRUE)) stop("Standalone Bonus Pot must use current participation-token terminology.")
 if (length(module_missing)) stop("Bonus Pot module boundary missing: ", paste(module_missing, collapse=" | "))

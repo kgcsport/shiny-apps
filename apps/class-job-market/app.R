@@ -2618,6 +2618,7 @@ COOKIE_JS <- HTML("
       if (target.origin !== window.location.origin) return '/class-job-market/';
       var targetPath = target.pathname.endsWith('/') ? target.pathname.slice(0, -1) : target.pathname;
       if (targetPath === '/review-quiz') return '/review-quiz/';
+      if (targetPath === '/coordination-games') return '/coordination-games/';
       if (targetPath === '/class-job-market' &&
           target.searchParams.get('view') === 'cold-call-slide') {
         return '/class-job-market/?view=cold-call-slide';

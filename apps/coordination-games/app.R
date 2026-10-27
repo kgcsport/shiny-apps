@@ -538,7 +538,7 @@ ui <- fluidPage(class = "bp-app",
   conditionalPanel("output.authed",
     div(class = "bp-topbar",
       div(h2("Bonus Pot"), p("Make a contribution, follow the round, and see the shared outcome.")),
-      div(class = "bp-tools", tags$span("Text size"),
+      div(class = "bp-tools", tags$a(href="../class-job-market/", class="btn btn-default", "Class Job Market"), tags$span("Text size"),
         tags$button(type="button", id="bp-font-down", "A−"),
         tags$button(type="button", id="bp-font-reset", "A"),
         tags$button(type="button", id="bp-font-up", "A+"))
