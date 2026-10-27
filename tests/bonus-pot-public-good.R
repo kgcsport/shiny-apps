@@ -22,7 +22,8 @@ db_exec <- function(sql, params=NULL) {
   invisible(1L)
 }
 
-app <- parse("apps/coordination-games/app.R")
+app_root <- if (file.exists("apps/coordination-games/app.R")) "apps" else "/srv/shiny-server"
+app <- parse(file.path(app_root, "coordination-games", "app.R"))
 for (ex in app) {
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "bonus_shares") eval(ex, envir=globalenv())
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "apply_payouts") eval(ex, envir=globalenv())
@@ -31,6 +32,6 @@ result <- apply_payouts(1L, "bonus")
 stopifnot(result$ok, length(ledger) == 3L)
 stopifnot(identical(sort(vapply(ledger, `[[`, character(1), "user_id")), sort(roster$user_id)))
 stopifnot(all(vapply(ledger, `[[`, numeric(1), "amount") == 1))
-cjm <- paste(readLines("apps/class-job-market/app.R", warn=FALSE), collapse="\n")
+cjm <- paste(readLines(file.path(app_root, "class-job-market", "app.R"), warn=FALSE), collapse="\n")
 stopifnot(grepl("for (uid in as.character(recipients$user_id))", cjm, fixed=TRUE))
 cat("Bonus Pot public-good payout: OK\n")
