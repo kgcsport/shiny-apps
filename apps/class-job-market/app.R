@@ -8818,6 +8818,11 @@ server <- function(input, output, session) {
   output$live_tracker_tab <- renderUI({
     req(rv$authed, rv$is_admin || rv$is_demo)
     td        <- tracker_poll()
+    revealed  <- td$revealed
+    round     <- td$round
+    mode      <- if (nrow(round)) round$assignment_mode[1] %||% "random" else "random"
+    wage_mode <- identical(mode, "wage_bidding")
+    rid       <- if (nrow(round)) round$id[1] else NA_integer_
     # The banner owns the active course/section. Live Tracker reads that
     # session scope and never provides a competing picker.
     cur_course <- scoped_course()

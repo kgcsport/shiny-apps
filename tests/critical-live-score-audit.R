@@ -13,6 +13,22 @@ app_path <- if (file.exists("apps/class-job-market/app.R")) {
   "/srv/shiny-server/class-job-market/app.R"
 }
 app_source <- paste(readLines(app_path, warn = FALSE), collapse = "\n")
+tracker_start <- regexpr("output$live_tracker_tab <- renderUI({", app_source, fixed=TRUE)
+if (tracker_start[[1]] < 1L) stop("Could not locate the Live Tracker render function.")
+tracker_source <- substr(app_source, tracker_start[[1]], tracker_start[[1]] + 12000L)
+tracker_required <- c(
+  "revealed  <- td$revealed",
+  "round     <- td$round",
+  "mode      <- if (nrow(round))",
+  "wage_mode <- identical(mode, \"wage_bidding\")",
+  "rid       <- if (nrow(round))",
+  "cur_course <- scoped_course()",
+  "expanded_sections <- scoped_sections()"
+)
+tracker_positions <- vapply(tracker_required, function(x) regexpr(x, tracker_source, fixed=TRUE)[1], integer(1))
+if (any(tracker_positions < 1L)) stop("Live Tracker required state is missing: ", paste(tracker_required[tracker_positions < 1L], collapse=" | "))
+if (max(tracker_positions[1:5]) > regexpr("current_assignments", tracker_source, fixed=TRUE)[1]) stop("Live Tracker state must be initialized before it is used.")
+
 audit_start <- regexpr("pending_scores <- \\{", app_source, perl = TRUE)
 if (audit_start[[1]] < 1L) stop("Could not locate the Live Score Audit query.")
 audit_source <- substr(app_source, audit_start[[1]], audit_start[[1]] + 5000L)
