@@ -826,3 +826,5 @@ Required verification:
 Critical invariants: unresolved assignments and pending scores remain visible and actionable across class dates; course or section scope may filter records but must not strand them; data migrations preserve historical records; and destructive actions require confirmation plus a recovery path.
 
 - **2026-10-27** — Class Job Market is the command center for modular games: it owns which game is active and every instructor lifecycle action that changes persistent state. A standalone module owns only player UI and game mechanics against that shared state. Bonus Pot follows this boundary; its module uses the Class Job Market session cookie and has no reachable instructor setup, settlement, or backup controls.
+
+- **2026-10-27** — Games & Demos is player-facing only: configuration is in Settings. Scoped admins are pinned to `admin_assignments` for their session and cannot inherit or persist the instructor’s global course/section or change global game state.

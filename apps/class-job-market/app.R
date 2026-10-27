@@ -2890,6 +2890,22 @@ server <- function(input, output, session) {
     if (isTRUE(expand_all) && "__all__" %in% selected) return(allowed)
     intersect(setdiff(selected, "__all__"), allowed)
   }
+  # The global active course/section belongs to the instructor. Scoped
+  # administrators receive a session-local scope from their role assignments.
+  pin_admin_session_scope <- function() {
+    if (!isTRUE(rv$is_admin) || is_super_admin()) return(invisible(FALSE))
+    courses <- admin_allowed_courses()
+    if (!length(courses)) {
+      rv$active_course <- ""; rv$active_section <- ""; rv$active_sections <- character(0)
+      return(invisible(TRUE))
+    }
+    rv$active_course <- courses[1]
+    sections <- admin_allowed_sections(rv$active_course)
+    rv$active_sections <- normalize_scope_sections(sections)
+    rv$active_section <- if (length(rv$active_sections) == 1L) rv$active_sections[1] else ""
+    invisible(TRUE)
+  }
+
   current_scope_key <- function() {
     course <- scoped_course()
     sections <- scoped_sections()
@@ -3167,7 +3183,10 @@ server <- function(input, output, session) {
     rv$admin_role <- if (nrow(rv$admin_assignments)) as.character(rv$admin_assignments$role[1]) else "student"
     rv$is_admin <- !identical(rv$admin_role, "student")
     rv$is_demo  <- isTRUE(as.integer(row$is_demo[1]  %||% 0L) == 1L)
-    if (isTRUE(rv$is_admin)) ensure_scope_round()
+    if (isTRUE(rv$is_admin)) {
+      pin_admin_session_scope()
+      ensure_scope_round()
+    }
   }
 
   issue_cookie <- function(user_id) {
@@ -3351,7 +3370,7 @@ server <- function(input, output, session) {
   }
 
   output$bonus_pot_admin_controls <- renderUI({
-    req(rv$authed, rv$is_admin)
+    req(rv$authed, rv$is_admin, is_super_admin())
     s <- olig_poll()$settings
     if (!nrow(s)) return(div(class="alert alert-danger", "Bonus Pot settings are unavailable."))
     sections <- bonus_pot_sections()
@@ -4708,15 +4727,7 @@ server <- function(input, output, session) {
       # Active slot
       if (nzchar(active)) {
         div(class = "slot-card",
-          div(class = "slot-header",
-            "▶ Active Now", span(class = "badge-live", "LIVE"),
-            if (isTRUE(rv$is_admin) && !isTRUE(rv$impersonating))
-              tags$button(
-                style = "float:right;font-size:.75rem;padding:.1rem .45rem;",
-                class = "btn btn-xs btn-outline-secondary",
-                onclick = "if(confirm('Clear the active game?')) Shiny.setInputValue('clear_active_game_btn',+new Date(),{priority:'event'});",
-                "Clear game")
-          ),
+          div(class = "slot-header", "▶ Active Now", span(class = "badge-live", "LIVE")),
           uiOutput("active_slot_inner")
         )
       } else {
@@ -4798,16 +4809,13 @@ server <- function(input, output, session) {
         div(class = "no-game", "Embedded UI coming soon.")
       )
     } else {
-      tagList(
-        if (isTRUE(rv$is_admin) && identical(active, "bonus_pot")) uiOutput("bonus_pot_admin_controls"),
-        div(class = "launch-card",
+      div(class = "launch-card",
           div(class = "launch-info",
             div(class = "launch-title", ginfo$label),
             div(class = "launch-desc",  ginfo$desc)
           ),
           tags$a(class = "btn-launch", href = ginfo$url, target = "_blank", "Open game →")
         )
-      )
     }
   })
 
@@ -6447,8 +6455,10 @@ server <- function(input, output, session) {
     rv$active_sections <- selected
     expanded <- if ("__all__" %in% selected) available else selected
     rv$active_section <- if (length(expanded) == 1L) expanded[1] else ""
-    set_setting("active_sections", serialize_scope_sections(selected))
-    set_setting("active_section", rv$active_section)
+    if (is_super_admin()) {
+      set_setting("active_sections", serialize_scope_sections(selected))
+      set_setting("active_section", rv$active_section)
+    }
     ensure_scope_round()
     rv$jobs_ver <- rv$jobs_ver + 1L
     rv$students_ver <- rv$students_ver + 1L
@@ -6465,9 +6475,11 @@ server <- function(input, output, session) {
     sections <- live_section_values(course)
     rv$active_sections <- if (length(sections)) sections[1] else character(0)
     rv$active_section <- if (length(sections)) sections[1] else ""
-    set_setting("active_course", course)
-    set_setting("active_sections", serialize_scope_sections(rv$active_sections))
-    set_setting("active_section", rv$active_section)
+    if (is_super_admin()) {
+      set_setting("active_course", course)
+      set_setting("active_sections", serialize_scope_sections(rv$active_sections))
+      set_setting("active_section", rv$active_section)
+    }
     ensure_scope_round()
     rv$jobs_ver <- rv$jobs_ver + 1L
     rv$students_ver <- rv$students_ver + 1L
@@ -11201,6 +11213,7 @@ server <- function(input, output, session) {
     } else if (act == "game_controls") {
       active <- arcade_poll()$active_game[1] %||% ""
       s      <- isolate(olig_poll())$settings
+      if (!is_super_admin()) return(div(class="alert alert-info", "Game activation and setup are managed by the course instructor."))
       make_group <- function(type_id, heading) {
         gs <- Filter(function(g) g$type == type_id, GAMES)
         if (!length(gs)) return(NULL)
@@ -11224,8 +11237,7 @@ server <- function(input, output, session) {
         uiOutput("olig_status_display"),
         if (nrow(s)) {
           if (identical(active, "bonus_pot")) {
-            tags$p(style = "font-size:.8em;color:#666;margin-top:.5rem;margin-bottom:0;",
-              "Bonus Pot is controlled from Games & Demos → Active Now. The player module opens from that card.")
+            uiOutput("bonus_pot_admin_controls")
           } else {
             fluidRow(
               column(4, actionButton("adm_open",   "Open",   class = "btn btn-success btn-sm btn-block")),
@@ -11832,12 +11844,12 @@ server <- function(input, output, session) {
 
   # Admin action observers
   observeEvent(input$clear_active_game_btn, {
-    req(rv$is_admin, !rv$impersonating)
+    req(rv$is_admin, is_super_admin(), !rv$impersonating)
     db_exec("UPDATE arcade_state SET active_game=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
     showNotification("Active game cleared.", type = "message")
   })
   observeEvent(input$set_active_btn, {
-    req(rv$is_admin)
+    req(rv$is_admin, is_super_admin())
     g <- input$admin_game_sel %||% ""
     if (nzchar(g)) {
       db_exec("UPDATE arcade_state SET active_game=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;", list(g))
@@ -11854,7 +11866,7 @@ server <- function(input, output, session) {
   # The Class Job Market active-game slot is authoritative. This also repairs
   # state created before the unified controls existed.
   observe({
-    req(rv$authed, rv$is_admin)
+    req(rv$authed, rv$is_admin, is_super_admin())
     active <- arcade_poll()$active_game[1] %||% ""
     target <- if (identical(active, "bonus_pot")) "bonus" else if (active %in% c("prisoners_dilemma", "price_war")) "pd" else ""
     if (!nzchar(target)) return()
@@ -11864,7 +11876,7 @@ server <- function(input, output, session) {
   })
 
   save_bonus_pot_setup <- function(status_override = NULL) {
-    req(rv$is_admin, !rv$impersonating)
+    req(rv$is_admin, is_super_admin(), !rv$impersonating)
     round_id <- suppressWarnings(as.integer(input$bp_admin_round %||% NA_integer_))
     section <- trimws(as.character(input$bp_admin_section %||% ""))
     multiplier <- suppressWarnings(as.numeric(input$bp_admin_multiplier %||% NA_real_))
@@ -11902,23 +11914,23 @@ server <- function(input, output, session) {
     save_bonus_pot_setup("revealed")
   }, ignoreNULL=TRUE)
   observeEvent(input$bp_admin_payout, {
-    req(rv$is_admin, !rv$impersonating)
+    req(rv$is_admin, is_super_admin(), !rv$impersonating)
     result <- bonus_pot_apply_payouts()
     showNotification(result$message, type=if(isTRUE(result$ok)) "message" else "error", duration=10)
   }, ignoreNULL=TRUE)
 
   observeEvent(input$adm_open, {
-    req(rv$is_admin)
+    req(rv$is_admin, is_super_admin())
     db_exec("UPDATE olig_settings SET round_status='open', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
     showNotification("Round opened.", type = "message")
   })
   observeEvent(input$adm_close, {
-    req(rv$is_admin)
+    req(rv$is_admin, is_super_admin())
     db_exec("UPDATE olig_settings SET round_status='closed', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
     showNotification("Round closed. Reveal and apply payouts from the active Bonus Pot card.", type = "warning", duration = 6)
   })
   observeEvent(input$adm_reveal, {
-    req(rv$is_admin)
+    req(rv$is_admin, is_super_admin())
     db_exec("UPDATE olig_settings SET round_status='revealed', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
     showNotification("Status set to revealed.", type = "warning", duration = 6)
   })

@@ -5,7 +5,6 @@ app_path <- if (file.exists("apps/class-job-market/app.R")) "apps/class-job-mark
 source_text <- paste(readLines(app_path, warn=FALSE), collapse="\n")
 required <- c(
   'label = "Bonus Pot",     embedded = FALSE, url = "/coordination-games/"',
-  'if (isTRUE(rv$is_admin) && identical(active, "bonus_pot")) uiOutput("bonus_pot_admin_controls")',
   'actionButton("bp_admin_open", "Open"',
   'actionButton("bp_admin_close", "Close & debit contributions"',
   'actionButton("bp_admin_reveal", "Reveal"',
@@ -16,6 +15,27 @@ required <- c(
 )
 missing <- required[!vapply(required, grepl, logical(1), x=source_text, fixed=TRUE)]
 if (length(missing)) stop("Bonus Pot command-center contract missing: ", paste(missing, collapse=" | "))
+active_marker <- "output$active_slot_inner <- renderUI({"
+active_parts <- strsplit(source_text, active_marker, fixed=TRUE)[[1]]
+if (length(active_parts) != 2L) stop("Could not isolate Games & Demos active slot.")
+active_fragment <- strsplit(active_parts[2], "# ── Embedded: Prisoner", fixed=TRUE)[[1]][1]
+if (grepl("bonus_pot_admin_controls", active_fragment, fixed=TRUE)) {
+  stop("Games & Demos must not render Bonus Pot setup controls.")
+}
+settings_marker <- "} else if (act == \"game_controls\") {"
+settings_parts <- strsplit(source_text, settings_marker, fixed=TRUE)[[1]]
+if (length(settings_parts) != 2L || !grepl("uiOutput(\"bonus_pot_admin_controls\")", settings_parts[2], fixed=TRUE)) {
+  stop("Settings must render the Bonus Pot setup controls.")
+}
+scope_required <- c(
+  "pin_admin_session_scope <- function()",
+  "pin_admin_session_scope()",
+  "Game activation and setup are managed by the course instructor.",
+  "req(rv$is_admin, is_super_admin(), !rv$impersonating)"
+)
+scope_missing <- scope_required[!vapply(scope_required, grepl, logical(1), x=source_text, fixed=TRUE)]
+if (length(scope_missing)) stop("Scoped-admin isolation contract missing: ", paste(scope_missing, collapse=" | "))
+
 module_path <- if (file.exists("apps/coordination-games/app.R")) "apps/coordination-games/app.R" else "/srv/shiny-server/coordination-games/app.R"
 module_text <- paste(readLines(module_path, warn=FALSE), collapse="\n")
 module_required <- c("lookup_shared_session", "redirect_to_job_market", "Bonus Pot is controlled from Class Job Market", "ALLOW_LEGACY_COORDINATION_ADMIN")
