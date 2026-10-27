@@ -2162,7 +2162,7 @@ APP_NAME <- get_config("app_name", "Classroom Economy")
 # Semester tools (price-index, flex-pass-app) have moved to the TOOLS list.
 GAMES <- list(
   list(id = "bonus_pot",        type = "either",
-       label = "Bonus Pot",     embedded = FALSE, url = "/coordination-games/",
+       label = "Bonus Pot",     embedded = TRUE, url = "/coordination-games/",
        desc = "Contribute tokens to a shared pot. The group earns back more when participation is high — but individual incentives push the other way."),
   list(id = "prisoners_dilemma", type = "either",
        label = "Prisoner's Dilemma", embedded = TRUE,
@@ -3429,7 +3429,7 @@ server <- function(input, output, session) {
 
   olig_poll <- reactivePoll(3000, session,
     checkFunc = function() {
-      if (!tab_is_active("Games & Demos")) return("")
+      if (!tab_is_active("Games & Demos", "Settings")) return("")
       db_query("SELECT updated_at FROM olig_settings WHERE id=1;")$updated_at[1] %||% ""
     },
     valueFunc = function() {
@@ -4875,10 +4875,7 @@ server <- function(input, output, session) {
       # Active slot
       if (nzchar(active)) {
         div(class = "slot-card",
-          div(class = "slot-header", "▶ Active Now", span(class = "badge-live", "LIVE"),
-              if (isTRUE(rv$is_admin) && is_super_admin() && !isTRUE(rv$impersonating))
-                actionButton("clear_active_game_btn", "Turn off game", class="btn btn-xs btn-outline-secondary",
-                  onclick="return confirm('Turn off the active game for everyone? ');")),
+          div(class = "slot-header", "▶ Active Now", span(class = "badge-live", "LIVE")),
           uiOutput("active_slot_inner")
         )
       } else {
@@ -4960,20 +4957,15 @@ server <- function(input, output, session) {
         div(class = "no-game", "Embedded UI coming soon.")
       )
     } else {
-      tagList(
-        div(class = "launch-card",
-            div(class = "launch-info",
-              div(class = "launch-title", ginfo$label),
-              div(class = "launch-desc",  ginfo$desc)
-            ),
-            tags$a(class = "btn-launch", href = ginfo$url, target = "_blank", "Open game →")
-        ),
-        if (isTRUE(rv$is_admin) && is_super_admin() && !isTRUE(rv$impersonating) && identical(active, "bonus_pot"))
-          div(class="admin-game-controls", tags$h5("Instructor controls"), uiOutput("bonus_pot_admin_controls"))
-      )
+      div(class = "no-game", "This game is not available in the active slot.")
     }
   })
 
+  output$embedded_bonus_pot <- renderUI({
+    req(rv$authed)
+    tags$iframe(src="/coordination-games/", title="Bonus Pot",
+      style="width:100%;height:720px;border:0;border-radius:6px;background:#fff;")
+  })
 
   # ── Embedded: Prisoner's Dilemma + Price War ──────────────────────────────────
   output$embedded_pd <- renderUI({
@@ -11365,19 +11357,18 @@ server <- function(input, output, session) {
                     choices = all_game_choices, selected = active, width = "100%"),
         actionButton("set_active_btn", "Set active game", class = "btn btn-warning btn-sm"),
         tags$p(style = "font-size:.82em;color:#888;margin-top:.5rem;",
-               "Students see this immediately on their Games tab."),
+               "Students see this immediately on their Games tab. Choose (none) and save to turn the game off."),
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Coordination Game Controls"),
         uiOutput("olig_status_display"),
         if (nrow(s)) {
           if (identical(active, "bonus_pot")) {
-            tags$p(style="font-size:.85em;color:#666;", "Bonus Pot lifecycle controls are available in Games & Demos → Active Now.")
+            uiOutput("bonus_pot_admin_controls")
           } else {
             fluidRow(
-              column(4, actionButton("adm_open",   "Open",   class = "btn btn-success btn-sm btn-block")),
-              column(4, actionButton("adm_close",  "Close",  class = "btn btn-warning btn-sm btn-block")),
-              column(4, actionButton("adm_reveal", "Reveal", class = "btn btn-danger btn-sm btn-block",
-                                     onclick = "if(!confirm('Reveal round results? This cannot be undone.')) return false;"))
+              column(4, actionButton("adm_open", "Open", class = "btn btn-success btn-sm btn-block")),
+              column(4, actionButton("adm_close", "Close", class = "btn btn-warning btn-sm btn-block")),
+              column(4, actionButton("adm_reveal", "Reveal", class = "btn btn-danger btn-sm btn-block"))
             )
           }
         }

@@ -4,7 +4,7 @@
 app_path <- if (file.exists("apps/class-job-market/app.R")) "apps/class-job-market/app.R" else "/srv/shiny-server/class-job-market/app.R"
 source_text <- paste(readLines(app_path, warn=FALSE), collapse="\n")
 required <- c(
-  'label = "Bonus Pot",     embedded = FALSE, url = "/coordination-games/"',
+  'label = "Bonus Pot",     embedded = TRUE, url = "/coordination-games/"',
   'actionButton("bp_admin_open", "Open"',
   'actionButton("bp_admin_close", "Close & debit contributions"',
   'actionButton("bp_admin_reveal", "Reveal"',
@@ -19,16 +19,20 @@ active_marker <- "output$active_slot_inner <- renderUI({"
 active_parts <- strsplit(source_text, active_marker, fixed=TRUE)[[1]]
 if (length(active_parts) != 2L) stop("Could not isolate Games & Demos active slot.")
 active_fragment <- strsplit(active_parts[2], "# ── Embedded: Prisoner", fixed=TRUE)[[1]][1]
-for (needle in c("bonus_pot_admin_controls", "Instructor controls")) {
-  if (!grepl(needle, active_fragment, fixed=TRUE)) stop("Active Now must expose Bonus Pot instructor controls.")
+if (!grepl("bonus_pot         = uiOutput(\"embedded_bonus_pot\")", active_fragment, fixed=TRUE)) {
+  stop("Active Now must render the embedded Bonus Pot player surface.")
 }
-if (!grepl("actionButton(\"clear_active_game_btn\", \"Turn off game\"", source_text, fixed=TRUE)) {
-  stop("Super-admins need an explicit Turn off game control.")
+if (grepl("bonus_pot_admin_controls", active_fragment, fixed=TRUE) ||
+    grepl("Instructor controls", active_fragment, fixed=TRUE)) {
+  stop("Active Now must not expose Bonus Pot lifecycle controls.")
 }
 settings_marker <- "} else if (act == \"game_controls\") {"
 settings_parts <- strsplit(source_text, settings_marker, fixed=TRUE)[[1]]
-if (length(settings_parts) != 2L || !grepl("Bonus Pot lifecycle controls are available in Games & Demos", settings_parts[2], fixed=TRUE)) {
-  stop("Settings must direct Bonus Pot lifecycle actions to Active Now.")
+if (length(settings_parts) != 2L || !grepl("uiOutput(\"bonus_pot_admin_controls\")", settings_parts[2], fixed=TRUE)) {
+  stop("Settings must expose Bonus Pot lifecycle actions.")
+}
+if (!grepl("Choose (none) and save to turn the game off.", source_text, fixed=TRUE)) {
+  stop("Settings must provide a way to turn off the active game.")
 }
 scope_required <- c(
   "pin_admin_session_scope <- function()",

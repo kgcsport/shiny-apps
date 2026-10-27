@@ -855,7 +855,7 @@ server <- function(input, output, session) {
     if (!is_admin()) return(fluidPage(h4("Admin"), p("You are not an admin.")))
     wellPanel(
       h4("Bonus Pot is controlled from Class Job Market"),
-      p("Use Games & Demos → Active Now in Class Job Market to configure the round, open or close submissions, reveal results, and apply payouts."),
+      p("Use Settings → Game Controls in Class Job Market to configure the round, open or close submissions, reveal results, and apply payouts."),
       tags$a(href="../class-job-market/", class="btn btn-primary", "Open Class Job Market →")
     )
   })
