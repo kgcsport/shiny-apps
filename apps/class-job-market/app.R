@@ -2646,7 +2646,8 @@ COOKIE_JS <- HTML("
     window.location.href = msg.url;
   });
   Shiny.addCustomMessageHandler('course_auth_return', function(msg) {
-    window.location.replace(safeCourseReturnPath(msg && msg.url));
+    var target = safeCourseReturnPath(msg && msg.url);
+    window.setTimeout(function() { window.location.replace(target); }, 100);
   });
   Shiny.addCustomMessageHandler('clean_url', function(msg) {
     if (window.history && window.history.replaceState)

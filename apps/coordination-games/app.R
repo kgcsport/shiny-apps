@@ -450,7 +450,8 @@ login_ui <- function(msg = NULL) {
     titlePanel("Bonus Pot"),
     if (!is.null(msg)) div(style = "color:#b00020; font-weight:bold;", msg),
     tags$p("Checking your Class Job Market sign-in…"),
-    tags$p(tags$small("If needed, you will be sent to Class Job Market and returned here.")),
+    tags$p(tags$small("If the automatic handoff does not begin, use the button below. You will return here after signing in.")),
+    tags$a(href = "/class-job-market/?return_to=%2Fcoordination-games%2F", class = "btn btn-primary", "Open Class Job Market sign-in"),
     demo_login_ui
   )
 }
@@ -462,7 +463,7 @@ shared_auth_js <- tags$script(HTML("
   // Shiny emits this as a jQuery event; the native listener above never fired,
   // leaving a visitor stranded on the checking-sign-in screen.
   setTimeout(sendAuthCookie, 300);
-  Shiny.addCustomMessageHandler('redirect_to_job_market', function(msg) { window.location.replace(msg.url); });
+  Shiny.addCustomMessageHandler('redirect_to_job_market', function(msg) { window.location.replace(msg.url || '/class-job-market/?return_to=%2Fcoordination-games%2F'); });
   function applyFontScale(scale) { localStorage.setItem('bonusPotFontScale', scale); document.documentElement.style.setProperty('--bp-font-scale', scale); }
   document.addEventListener('click', function(e) {
     var button = e.target.closest('#bp-font-down, #bp-font-reset, #bp-font-up');
@@ -538,7 +539,7 @@ ui <- fluidPage(class = "bp-app",
   conditionalPanel("output.authed",
     div(class = "bp-topbar",
       div(h2("Bonus Pot"), p("Make a contribution, follow the round, and see the shared outcome.")),
-      div(class = "bp-tools", tags$a(href="../class-job-market/", class="btn btn-default", "Class Job Market"), tags$span("Text size"),
+      div(class = "bp-tools", tags$a(href="/class-job-market/", class="btn btn-default", "Class Job Market"), tags$span("Text size"),
         tags$button(type="button", id="bp-font-down", "A−"),
         tags$button(type="button", id="bp-font-reset", "A"),
         tags$button(type="button", id="bp-font-up", "A+"))
@@ -575,7 +576,7 @@ server <- function(input, output, session) {
     if (rv$authed || .is_demo) return()
     row <- lookup_shared_session(input$auth_cookie %||% "")
     if (nrow(row) && !isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) { finish_login(row); return() }
-    session$sendCustomMessage("redirect_to_job_market", list(url="../class-job-market/?return_to=%2Fcoordination-games%2F"))
+    session$sendCustomMessage("redirect_to_job_market", list(url="/class-job-market/?return_to=%2Fcoordination-games%2F"))
   }, ignoreInit=FALSE)
 
 
@@ -890,7 +891,7 @@ server <- function(input, output, session) {
     wellPanel(
       h4("Bonus Pot is controlled from Class Job Market"),
       p("Use Settings → Game Controls in Class Job Market to configure the round, open or close submissions, reveal results, and apply payouts."),
-      tags$a(href="../class-job-market/", class="btn btn-primary", "Open Class Job Market →")
+      tags$a(href="/class-job-market/", class="btn btn-primary", "Open Class Job Market →")
     )
   })
   observeEvent(input$adm_apply, {
