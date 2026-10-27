@@ -827,6 +827,19 @@ Required verification:
 
 Critical invariants: unresolved assignments and pending scores remain visible and actionable across class dates; course or section scope may filter records but must not strand them; data migrations preserve historical records; and destructive actions require confirmation plus a recovery path.
 
+### Required change contract
+
+Before changing production behavior, add a concise contract to the relevant plan entry or pull-request description:
+
+1. **Scope:** state exactly what is changing and what is explicitly out of scope.
+2. **Invariants:** list the existing behaviors that must remain true, including every affected tab, role, class/section environment, and persistence boundary.
+3. **Acceptance scenarios:** write concrete instructor and student workflows with their expected result.
+4. **Dependency check:** before deleting, renaming, or relocating reactive or local state, search every consumer and either preserve the value or update every use.
+5. **Verification:** add or update a regression test for the changed path, run it with the relevant focused tests, then run the Docker image build. For UI/state changes, complete a manual smoke test of the affected role and tab before production deployment.
+
+If the intended behavior or a scope decision is ambiguous, stop and ask rather than inferring it. A change is not resolved merely because it parses or a helper test passes; the contract scenarios must pass end-to-end.
+
+
 - **2026-10-27** — Class Job Market is the command center for modular games: it owns which game is active and every instructor lifecycle action that changes persistent state. A standalone module owns only player UI and game mechanics against that shared state. Bonus Pot follows this boundary; its module uses the Class Job Market session cookie and has no reachable instructor setup, settlement, or backup controls.
 
 - **2026-10-27** — Games & Demos is player-facing only: configuration is in Settings. Scoped admins are pinned to `admin_assignments` for their session and cannot inherit or persist the instructor’s global course/section or change global game state.
