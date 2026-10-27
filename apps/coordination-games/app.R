@@ -6,16 +6,14 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 # their enrolled class size. The bonus-pot denominator is either the
 # section's class size OR the submitter count -- no other values.
 #
-# Shared tables (owned by class-job-market):
-#   - users(user_id, display_name, pw_hash, is_admin, section, active)
-#   - token_ledger(user_id, display_name, round_id, source_type, amount, earning, note)
+# Shared game records are initialized and controlled by Class Job Market.
+# This module reads that state and records student gameplay only.
 #
-# This app adds/manages:
-#   - olig_settings (singleton)   <- section + use_section_size flag
-#   - olig_rounds
-#   - olig_submissions             <- section-tagged
-#   - olig_payouts                 <- section-tagged
-#
+# Class Job Market owns:
+#   - olig_settings, olig_rounds, and olig_payouts
+#   - session lifecycle, token debits, and payout settlement
+# This module owns:
+#   - the student-facing interaction against the active shared session
 # Key behavior:
 # - Students log in with class-job-market credentials.
 # - Bonus Pot: students UPSERT their contribution while the round is open (no debit yet).
@@ -33,7 +31,7 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 
 library(shiny); library(DT); library(bcrypt); library(dplyr); library(tibble)
 library(DBI); library(RSQLite); library(stringr); library(ggplot2); library(tidyr)
-library(googledrive); library(googlesheets4); library(digest)
+
 
 this_file <- ""
 for (i in rev(seq_len(sys.nframe()))) {
@@ -85,124 +83,11 @@ db_query <- function(sql, params = NULL) DBI::dbGetQuery(get_con(), sql, params 
 
 # -------------------------
 # Init tables for coordination games module
-# -------------------------
-init_olig <- function() {
-  # Defensive: other apps own the users table, but make sure 'active' exists
-  # regardless of which app starts first against a fresh DB.
-  try(db_exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1;"), silent = TRUE)
-
-  # settings singleton
-  db_exec("
-    CREATE TABLE IF NOT EXISTS olig_settings (
-      id INTEGER PRIMARY KEY CHECK(id=1),
-      current_round INTEGER,
-      round_status TEXT,          -- open/closed/revealed
-      current_game TEXT,          -- 'pd' or 'bonus'
-      bonus_multiplier REAL,
-      pd_scale REAL,
-      pd_HH_A REAL, pd_HH_B REAL,
-      pd_HL_A REAL, pd_HL_B REAL,
-      pd_LH_A REAL, pd_LH_B REAL,
-      pd_LL_A REAL, pd_LL_B REAL,
-      updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
-    );
-  ")
-
-  # Migrate: add section + use_section_size if not present (safe to run repeatedly)
-  tryCatch(
-    db_exec("ALTER TABLE olig_settings ADD COLUMN section TEXT DEFAULT '';"),
-    error = function(e) NULL
-  )
-  # use_section_size: 1 = divide pot by section's enrolled count from users table
-  #                   0 = divide pot by number of students who submitted
-  tryCatch(
-    db_exec("ALTER TABLE olig_settings ADD COLUMN use_section_size INTEGER DEFAULT 1;"),
-    error = function(e) NULL
-  )
-  # legacy class_size column kept for DB compat but no longer used by UI
-  tryCatch(
-    db_exec("ALTER TABLE olig_settings ADD COLUMN class_size INTEGER;"),
-    error = function(e) NULL
-  )
-  # contrib_cap: max participation tokens a student can wager per bonus round (0 = no cap)
-  tryCatch(
-    db_exec("ALTER TABLE olig_settings ADD COLUMN contrib_cap REAL DEFAULT 0;"),
-    error = function(e) NULL
-  )
-
-  # round audit
-  db_exec("
-    CREATE TABLE IF NOT EXISTS olig_rounds (
-      round INTEGER PRIMARY KEY,
-      game TEXT NOT NULL,
-      status TEXT NOT NULL,
-      created_at TEXT DEFAULT (CURRENT_TIMESTAMP)
-    );
-  ")
-
-  # submissions (one per user per round; section-tagged)
-  db_exec("
-    CREATE TABLE IF NOT EXISTS olig_submissions (
-      round INTEGER NOT NULL,
-      user_id TEXT NOT NULL,
-      display_name TEXT,
-      game TEXT NOT NULL,
-      action TEXT,               -- pd: High/Low
-      contribute REAL,           -- bonus: amount
-      created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-      PRIMARY KEY (round, user_id)
-    );
-  ")
-  db_exec("CREATE INDEX IF NOT EXISTS ix_olig_sub_round ON olig_submissions(round);")
-
-  # Migrate: add section to submissions
-  tryCatch(
-    db_exec("ALTER TABLE olig_submissions ADD COLUMN section TEXT DEFAULT 'default';"),
-    error = function(e) NULL
-  )
-
-  # payout audit
-  db_exec("
-    CREATE TABLE IF NOT EXISTS olig_payouts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      round INTEGER,
-      user_id TEXT,
-      game TEXT,
-      payout REAL,
-      meta TEXT,
-      created_at TEXT DEFAULT (CURRENT_TIMESTAMP)
-    );
-  ")
-
-  # Migrate: add section to payouts (for per-section idempotency)
-  tryCatch(
-    db_exec("ALTER TABLE olig_payouts ADD COLUMN section TEXT DEFAULT 'default';"),
-    error = function(e) NULL
-  )
-
-  # Seed defaults if missing
-  n <- db_query("SELECT COUNT(*) n FROM olig_settings WHERE id=1;")$n[1]
-  if (is.na(n) || n == 0) {
-    db_exec("
-      INSERT INTO olig_settings(
-        id, current_round, round_status, current_game,
-        bonus_multiplier, pd_scale,
-        pd_HH_A, pd_HH_B, pd_HL_A, pd_HL_B, pd_LH_A, pd_LH_B, pd_LL_A, pd_LL_B,
-        section, use_section_size
-      ) VALUES (
-        1, 1, 'open', 'pd',
-        1.5, 0.1,
-        50, 50, 10, 70, 70, 10, 30, 30,
-        '', 1
-      );
-    ")
-  }
-}
+# Class Job Market is the schema and lifecycle owner. The player module must
+# not seed defaults or migrate a separate active-game state on startup.
+init_olig <- function() invisible(TRUE)
 init_olig()
-
-touch_olig <- function() {
-  db_exec("UPDATE olig_settings SET updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-}
+touch_olig <- function() invisible(FALSE)
 get_olig <- function() db_query("SELECT * FROM olig_settings WHERE id=1;")
 
 round_to_half <- function(x) round(x * 2) / 2
@@ -557,18 +442,24 @@ debit_pending_contributions <- function(round, sec) {
 # -------------------------
 login_ui <- function(msg = NULL) {
   fluidPage(
-    titlePanel("Coordination Games (Flex Pass Integrated)"),
+    titlePanel("Bonus Pot"),
     if (!is.null(msg)) div(style = "color:#b00020; font-weight:bold;", msg),
-    textInput("login_user", "Username"),
-    passwordInput("login_pw", "Password"),
-    actionButton("login_btn", "Sign in", class = "btn-primary"),
-    tags$small("Use the same username/password as the class job market."),
+    tags$p("Checking your Class Job Market sign-in…"),
+    tags$p(tags$small("If needed, you will be sent to Class Job Market and returned here.")),
     demo_login_ui
   )
 }
 
+shared_auth_js <- tags$script(HTML("
+(function() {
+  function sendAuthCookie() { Shiny.setInputValue('auth_cookie', (document.cookie.match(/(?:^|; )arcade_token=([^;]*)/) || ['', ''])[1], {priority: 'event'}); }
+  document.addEventListener('shiny:sessioninitialized', sendAuthCookie);
+  Shiny.addCustomMessageHandler('redirect_to_job_market', function(msg) { window.location.replace(msg.url); });
+})();
+"))
+
 ui <- fluidPage(
-  tags$head(tags$style(HTML("
+  tags$head(shared_auth_js, tags$style(HTML("
     /* --- Base font --- */
     body { font-size: 16px; }
 
@@ -619,32 +510,25 @@ server <- function(input, output, session) {
 
   rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE,
                        impersonate = FALSE, impersonate_uid = NULL, impersonate_name = NULL)
-
   output$demo_banner <- renderUI(demo_banner_ui(.is_demo, rv$is_admin))
   output$authed <- reactive(rv$authed)
   outputOptions(output, "authed", suspendWhenHidden = FALSE)
   output$auth_gate <- renderUI({ if (!rv$authed) login_ui() else NULL })
 
-  observeEvent(input$login_btn, {
-    u <- trimws(input$login_user %||% "")
-    p <- input$login_pw %||% ""
+  lookup_shared_session <- function(token) {
+    if (!nzchar(token %||% "")) return(data.frame())
+    tryCatch(db_query("SELECT u.user_id, u.display_name, u.is_admin, u.active FROM arcade_sessions s JOIN users u ON u.user_id=s.user_id WHERE s.token=? AND datetime(s.expires_at)>datetime('now') LIMIT 1;", list(token)), error=function(e) data.frame())
+  }
+  finish_login <- function(row) {
+    rv$authed <- TRUE; rv$user <- row$user_id[1]; rv$name <- row$display_name[1]; rv$is_admin <- isTRUE(as.integer(row$is_admin[1] %||% 0L) == 1L)
+  }
+  observeEvent(input$auth_cookie, {
+    if (rv$authed || .is_demo) return()
+    row <- lookup_shared_session(input$auth_cookie %||% "")
+    if (nrow(row) && !isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) { finish_login(row); return() }
+    session$sendCustomMessage("redirect_to_job_market", list(url="../class-job-market/?return_to=%2Fcoordination-games%2F"))
+  }, ignoreInit=FALSE)
 
-    row <- db_query("SELECT user_id, display_name, is_admin, pw_hash, active FROM users WHERE user_id=?;", list(u))
-    if (nrow(row) != 1) { showNotification("Login failed.", type = "error"); return() }
-
-    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) {
-      showNotification("This account has been archived. Contact your instructor.", type = "error"); return()
-    }
-
-    ph <- row$pw_hash[1] %||% ""
-    ok <- tryCatch(bcrypt::checkpw(p, ph), error = function(e) FALSE)
-    if (!isTRUE(ok)) { showNotification("Login failed.", type = "error"); return() }
-
-    rv$authed   <- TRUE
-    rv$user     <- row$user_id[1]
-    rv$name     <- row$display_name[1]
-    rv$is_admin <- isTRUE(as.integer(row$is_admin[1]) == 1)
-  })
 
   authed   <- reactive(rv$authed)
   user_id  <- reactive({
@@ -955,170 +839,20 @@ server <- function(input, output, session) {
   })
 
   # ---------------- Admin UI ----------------
+  # This is a player module. Class Job Market owns all session setup, state
+  # transitions, token debits, and payouts; keeping write controls out of this
+  # app prevents two instructor workflows from racing over the same records.
   output$admin_ui <- renderUI({
     req(authed())
     if (!is_admin()) return(fluidPage(h4("Admin"), p("You are not an admin.")))
-
-    o       <- olig_poll()
-    sec     <- olig_section(o)
-    use_sec <- as.integer(o$use_section_size[1] %||% 1)
-    has_col <- users_has_section_col()
-    cs      <- if (has_col && use_sec == 1L) section_class_size(sec) else NA_integer_
-    denom_lbl <- if (!is.na(cs)) sprintf("section class size (%d)", cs) else "submitter count"
-
-    # Section choices derived from users table (re-read on each render)
-    sec_choices <- if (has_col) sections_choices() else setNames("", "(users table has no section column)")
-
-    # Radio button labels -- only two options, no free input
-    cs_radio_lbl <- if (!is.na(cs))
-      sprintf("Section class size  (%d enrolled)", cs)
-    else if (has_col && nzchar(sec))
-      sprintf("Section class size  (section '%s' not found in users)", sec)
-    else
-      "Section class size  (no section selected or column missing)"
-    denom_choices <- setNames(c("1", "0"), c(cs_radio_lbl, "Submitter count"))
-
-    fluidPage(
-      h4("Admin controls"),
-      p(sprintf("Round: %d | Section: %s | Denominator: %s | Game: %s | Status: %s",
-                as.integer(o$current_round[1]),
-                if (nzchar(sec)) sec else "(none)",
-                denom_lbl,
-                as.character(o$current_game[1]),
-                as.character(o$round_status[1]))),
-
-      # Warning banner when users table has no section column
-      if (!has_col) div(
-        style = "background:#fff3cd; border:1px solid #ffc107; padding:10px; margin-bottom:10px; border-radius:4px;",
-        tags$strong("Warning:"),
-        " The ", tags$code("users"), " table does not have a ",
-        tags$code("section"), " column. Add a ",
-        tags$code("section TEXT"), " column to the ", tags$code("users"),
-        " table in ", tags$code("class-job-market.sqlite"),
-        " and assign each student to their section before using section-based class sizes."
-      ),
-
-      tags$hr(),
-
-      if (isTRUE(rv$impersonate)) div(
-        style = "background:#92400e; color:#fff; padding:8px 16px; border-radius:6px; margin-bottom:12px;",
-        strong(sprintf("IMPERSONATING: %s (%s)", rv$impersonate_name, rv$impersonate_uid)),
-        " — Student tab actions (PD choice, bonus contribution) are attributed to this student."
-      ),
-
-      wellPanel(
-        h5("Impersonate student (act as any student)"),
-        p("As admin, simulate game participation as any student. The Student tab will show their view and all submissions are recorded under their identity."),
-        fluidRow(
-          column(6, selectInput("impersonate_select", "Student to impersonate",
-            choices = {
-              us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 ORDER BY display_name;")
-              setNames(us$user_id, us$display_name)
-            }
-          )),
-          column(3, br(), actionButton("impersonate_start", "Start impersonating", class = "btn-warning")),
-          column(3, br(), actionButton("impersonate_stop",  "Stop impersonating",  class = "btn-secondary"))
-        )
-      ),
-
-      # --- Round / Section / Status ---
-      wellPanel(
-        h5("Round + Section + Status"),
-        fluidRow(
-          column(3,
-            numericInput("adm_round", "Round number",
-                         value = as.integer(o$current_round[1]), min = 1, step = 1)
-          ),
-          column(4,
-            selectInput("adm_section", "Active Section",
-                        choices  = sec_choices,
-                        selected = sec)
-          ),
-          column(5,
-            radioButtons("adm_use_section_size", "Bonus pot denominator",
-                         choices  = denom_choices,
-                         selected = as.character(use_sec),
-                         inline   = TRUE)
-          )
-        ),
-        fluidRow(
-          column(4,
-            selectInput("adm_game", "Game",
-                        choices  = c("Price War (PD)" = "pd", "Bonus Pot" = "bonus"),
-                        selected = as.character(o$current_game[1]))
-          ),
-          column(4,
-            selectInput("adm_status", "Status",
-                        choices  = c("open", "closed", "revealed"),
-                        selected = as.character(o$round_status[1]))
-          )
-        ),
-        actionButton("adm_apply", "Apply round settings", class = "btn-primary"),
-        actionButton("adm_clear", "Clear submissions (this round + section)", class = "btn-danger"),
-        tags$small(
-          "Switch Active Section when moving between class sections. ",
-          "Clearing removes submissions for the current section and reverses ",
-          "any bonus contribution debits from the token ledger."
-        )
-      ),
-
-      # --- Game Parameters ---
-      wellPanel(
-        h5("Game Parameters"),
-        numericInput("adm_m", "Bonus multiplier m",
-                     value = as.numeric(o$bonus_multiplier[1]), min = 1, step = 0.1),
-        numericInput("adm_contrib_cap", "Max participation tokens students can wager (0 = no cap)",
-                     value = as.numeric(o$contrib_cap[1] %||% 0), min = 0, step = 0.5),
-        numericInput("adm_pd_scale", "PD scale (participation tokens per payoff point)",
-                     value = as.numeric(o$pd_scale[1]), min = 0, step = 0.01),
-        tags$hr(),
-        h5("PD payoff matrix (A, B)"),
-        fluidRow(
-          column(6, numericInput("pd_HH_A", "HH: A", value = as.numeric(o$pd_HH_A[1]))),
-          column(6, numericInput("pd_HH_B", "HH: B", value = as.numeric(o$pd_HH_B[1])))
-        ),
-        fluidRow(
-          column(6, numericInput("pd_HL_A", "HL: A", value = as.numeric(o$pd_HL_A[1]))),
-          column(6, numericInput("pd_HL_B", "HL: B", value = as.numeric(o$pd_HL_B[1])))
-        ),
-        fluidRow(
-          column(6, numericInput("pd_LH_A", "LH: A", value = as.numeric(o$pd_LH_A[1]))),
-          column(6, numericInput("pd_LH_B", "LH: B", value = as.numeric(o$pd_LH_B[1])))
-        ),
-        fluidRow(
-          column(6, numericInput("pd_LL_A", "LL: A", value = as.numeric(o$pd_LL_A[1]))),
-          column(6, numericInput("pd_LL_B", "LL: B", value = as.numeric(o$pd_LL_B[1])))
-        ),
-        actionButton("adm_save_params", "Save parameters", class = "btn-secondary")
-      ),
-
-      # --- Settlement ---
-      wellPanel(
-        h5("Settlement"),
-        p("Set status to REVEALED, then click below to post payouts for the current section."),
-        actionButton("adm_payout", "Apply payouts to token ledger (one-time per section)", class = "btn-success"),
-        tags$small(
-          "Credits students in the current section via source_type='coordination_grant'. ",
-          "Bonus contributions are debited when the round is closed."
-        )
-      ),
-
-      # --- Backup ---
-      wellPanel(
-        h5("Backup"),
-        actionButton("adm_backup_sheets", "Backup tables to Sheets", class = "btn-secondary"),
-        actionButton("adm_backup_drive",  "Backup SQLite to Drive",  class = "btn-secondary"),
-        tags$small("Uses FLEX_PASS_SHEET_ID (Sheets) and FLEX_PASS_FOLDER_ID (Drive zip).")
-      ),
-
-      tags$hr(),
-      h5("Payout audit (latest 100)"),
-      DTOutput("payout_audit")
+    wellPanel(
+      h4("Bonus Pot is controlled from Class Job Market"),
+      p("Use Games & Demos → Active Now in Class Job Market to configure the round, open or close submissions, reveal results, and apply payouts."),
+      tags$a(href="../class-job-market/", class="btn btn-primary", "Open Class Job Market →")
     )
   })
-
   observeEvent(input$adm_apply, {
-    req(is_admin())
+    req(is_admin(), identical(Sys.getenv("ALLOW_LEGACY_COORDINATION_ADMIN"), "1"))
     use_sec <- suppressWarnings(as.integer(input$adm_use_section_size %||% "1"))
     if (is.na(use_sec)) use_sec <- 1L
     sec     <- as.character(input$adm_section %||% "")
@@ -1161,7 +895,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$adm_clear, {
-    req(is_admin())
+    req(is_admin(), identical(Sys.getenv("ALLOW_LEGACY_COORDINATION_ADMIN"), "1"))
     o   <- get_olig()
     r   <- as.integer(o$current_round[1])
     sec <- olig_section(o)
@@ -1191,7 +925,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$adm_save_params, {
-    req(is_admin())
+    req(is_admin(), identical(Sys.getenv("ALLOW_LEGACY_COORDINATION_ADMIN"), "1"))
     db_exec("
       UPDATE olig_settings SET
         bonus_multiplier=?, contrib_cap=?, pd_scale=?,
@@ -1212,7 +946,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$adm_payout, {
-    req(is_admin())
+    req(is_admin(), identical(Sys.getenv("ALLOW_LEGACY_COORDINATION_ADMIN"), "1"))
     o    <- get_olig()
     r    <- as.integer(o$current_round[1])
     game <- as.character(o$current_game[1])
@@ -1245,20 +979,20 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$adm_backup_sheets, {
-    req(is_admin())
+    req(is_admin(), identical(Sys.getenv("ALLOW_LEGACY_COORDINATION_ADMIN"), "1"))
     res <- tryCatch(backup_to_sheets(), error = function(e) list(ok = FALSE, msg = conditionMessage(e)))
     showNotification(res$msg, type = if (isTRUE(res$ok)) "message" else "error")
   })
 
   observeEvent(input$adm_backup_drive, {
-    req(is_admin())
+    req(is_admin(), identical(Sys.getenv("ALLOW_LEGACY_COORDINATION_ADMIN"), "1"))
     res <- tryCatch(backup_db_to_drive(), error = function(e) list(ok = FALSE, msg = conditionMessage(e)))
     showNotification(res$msg, type = if (isTRUE(res$ok)) "message" else "error")
   })
 
   # ---------------- Impersonation ----------------
   observeEvent(input$impersonate_start, {
-    req(is_admin(), input$impersonate_select)
+    req(is_admin(), identical(Sys.getenv("ALLOW_LEGACY_COORDINATION_ADMIN"), "1"), input$impersonate_select)
     uid <- as.character(input$impersonate_select)
     row <- db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid))
     if (!nrow(row)) { showNotification("User not found.", type = "error"); return() }
@@ -1272,7 +1006,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$impersonate_stop, {
-    req(is_admin())
+    req(is_admin(), identical(Sys.getenv("ALLOW_LEGACY_COORDINATION_ADMIN"), "1"))
     rv$impersonate      <- FALSE
     rv$impersonate_uid  <- NULL
     rv$impersonate_name <- NULL
@@ -1280,12 +1014,6 @@ server <- function(input, output, session) {
   })
 
   session$onSessionEnded(function() {
-    # Best-effort synchronous backup on session end only; game submissions stay DB-only.
-    if (db_changed_since_last_backup()) {
-      logf("session ended: backing up to Drive...")
-      tryCatch(backup_db_to_drive(),
-               error = function(e) logf("session-end backup FAILED:", conditionMessage(e)))
-    }
     if (!is.null(conn) && DBI::dbIsValid(conn)) try(DBI::dbDisconnect(conn), silent = TRUE)
   })
 }

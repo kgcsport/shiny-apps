@@ -475,6 +475,19 @@ db_exec("
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 ")
+db_exec("INSERT OR IGNORE INTO olig_settings(id,current_round,round_status,current_game,bonus_multiplier,contrib_cap,use_section_size,section) VALUES(1,1,'pending','bonus',1.5,0,1,'');")
+ensure_column("olig_settings", "pd_HH_A REAL")
+ensure_column("olig_settings", "pd_HH_B REAL")
+ensure_column("olig_settings", "pd_HL_A REAL")
+ensure_column("olig_settings", "pd_HL_B REAL")
+ensure_column("olig_settings", "pd_LH_A REAL")
+ensure_column("olig_settings", "pd_LH_B REAL")
+ensure_column("olig_settings", "pd_LL_A REAL")
+ensure_column("olig_settings", "pd_LL_B REAL")
+db_exec("CREATE TABLE IF NOT EXISTS olig_rounds(
+  round INTEGER PRIMARY KEY, game TEXT NOT NULL, status TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);")
 db_exec("CREATE TABLE IF NOT EXISTS olig_submissions (
   round     INTEGER NOT NULL,
   user_id   TEXT    NOT NULL,
@@ -483,6 +496,13 @@ db_exec("CREATE TABLE IF NOT EXISTS olig_submissions (
   contribute REAL,
   PRIMARY KEY (round, user_id)
 );")
+ensure_column("olig_submissions", "display_name TEXT")
+ensure_column("olig_submissions", "choice TEXT")
+ensure_column("olig_submissions", "game TEXT DEFAULT 'bonus'")
+ensure_column("olig_submissions", "action TEXT")
+ensure_column("olig_submissions", "created_at TEXT")
+db_exec("UPDATE olig_submissions SET game=CASE WHEN LOWER(COALESCE(choice,'')) IN ('high','low') THEN 'pd' ELSE 'bonus' END WHERE game IS NULL OR trim(game)='';")
+db_exec("CREATE INDEX IF NOT EXISTS ix_olig_sub_round ON olig_submissions(round);")
 db_exec("CREATE TABLE IF NOT EXISTS olig_payouts (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
   round   INTEGER,
@@ -492,7 +512,8 @@ db_exec("CREATE TABLE IF NOT EXISTS olig_payouts (
   meta    TEXT,
   section TEXT DEFAULT 'default'
 );")
- db_exec("CREATE TABLE IF NOT EXISTS pledges (
+ensure_column("olig_payouts", "section TEXT DEFAULT 'default'")
+db_exec("CREATE TABLE IF NOT EXISTS pledges (
   user_id      TEXT,
   exam_id      TEXT DEFAULT 'exam1',
   round        INTEGER,
@@ -2117,7 +2138,7 @@ APP_NAME <- get_config("app_name", "Classroom Economy")
 # Semester tools (price-index, flex-pass-app) have moved to the TOOLS list.
 GAMES <- list(
   list(id = "bonus_pot",        type = "either",
-       label = "Bonus Pot",     embedded = TRUE,
+       label = "Bonus Pot",     embedded = FALSE, url = "/coordination-games/",
        desc = "Contribute tokens to a shared pot. The group earns back more when participation is high — but individual incentives push the other way."),
   list(id = "prisoners_dilemma", type = "either",
        label = "Prisoner's Dilemma", embedded = TRUE,
@@ -2984,6 +3005,7 @@ server <- function(input, output, session) {
     target <- as.character(params$return_to %||% "")
     if (length(target) != 1L || nchar(target) > 300L) return("/class-job-market/")
     if (target %in% c("/review-quiz", "/review-quiz/")) return("/review-quiz/")
+    if (target %in% c("/coordination-games", "/coordination-games/")) return("/coordination-games/")
     if (target %in% c("/class-job-market/?view=cold-call-slide",
                        "/class-job-market?view=cold-call-slide")) {
       return("/class-job-market/?view=cold-call-slide")
@@ -3263,6 +3285,104 @@ server <- function(input, output, session) {
     }
   )
 
+  bonus_pot_sections <- function() {
+    rows <- tryCatch(db_query(
+      "SELECT DISTINCT section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0 AND trim(COALESCE(section,''))<>'' AND LOWER(COALESCE(course,''))=LOWER(?) ORDER BY section;",
+      list(scoped_course())), error = function(e) data.frame())
+    as.character(rows$section %||% character(0))
+  }
+
+  bonus_pot_debit <- function(round_id, section) {
+    subs <- tryCatch(db_query(
+      "SELECT user_id, COALESCE(contribute,0) AS contribute FROM olig_submissions WHERE round=? AND game='bonus' AND (section=? OR section IS NULL);",
+      list(as.integer(round_id), section)), error = function(e) data.frame())
+    posted <- 0L
+    for (i in seq_len(nrow(subs))) {
+      amount <- suppressWarnings(as.numeric(subs$contribute[i]))
+      if (!is.finite(amount) || amount <= 0) next
+      uid <- as.character(subs$user_id[i])
+      already <- tryCatch(db_query(
+        "SELECT COUNT(*) AS n FROM token_ledger WHERE user_id=? AND source_type='coordination_contrib' AND source_id=?;",
+        list(uid, as.integer(round_id)))$n[1], error = function(e) 0L)
+      if (as.integer(already %||% 0L) > 0L) next
+      db_exec(
+        "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note) SELECT user_id,display_name,'coordination_contrib',?,?,0,? FROM users WHERE user_id=?;",
+        list(as.integer(round_id), -amount,
+             sprintf("Bonus Pot contribution: round %d, section %s", as.integer(round_id), section), uid))
+      posted <- posted + 1L
+    }
+    posted
+  }
+
+  bonus_pot_apply_payouts <- function() {
+    s <- tryCatch(db_query("SELECT * FROM olig_settings WHERE id=1;"), error = function(e) data.frame())
+    if (!nrow(s) || !identical(as.character(s$current_game[1] %||% ""), "bonus"))
+      return(list(ok=FALSE, message="Bonus Pot is not the configured coordination game."))
+    if (!identical(as.character(s$round_status[1] %||% ""), "revealed"))
+      return(list(ok=FALSE, message="Set the Bonus Pot status to Revealed before applying payouts."))
+    round_id <- as.integer(s$current_round[1])
+    section <- as.character(s$section[1] %||% "")
+    already <- tryCatch(db_query(
+      "SELECT COUNT(*) AS n FROM olig_payouts WHERE round=? AND game='bonus' AND (section=? OR section IS NULL);",
+      list(round_id, section))$n[1], error=function(e) 0L)
+    if (as.integer(already %||% 0L) > 0L)
+      return(list(ok=FALSE, message="Bonus Pot payouts were already applied for this round and section."))
+    subs <- tryCatch(db_query(
+      "SELECT user_id,COALESCE(contribute,0) AS contribute FROM olig_submissions WHERE round=? AND game='bonus' AND (section=? OR section IS NULL);",
+      list(round_id, section)), error=function(e) data.frame())
+    if (!nrow(subs)) return(list(ok=FALSE, message="No Bonus Pot contributions exist for this round and section."))
+    total <- sum(suppressWarnings(as.numeric(subs$contribute)), na.rm=TRUE)
+    use_enrolled <- isTRUE(as.integer(s$use_section_size[1] %||% 1L) == 1L)
+    enrolled <- if (use_enrolled) tryCatch(db_query(
+      "SELECT COUNT(*) AS n FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0 AND LOWER(COALESCE(course,''))=LOWER(?) AND LOWER(COALESCE(section,''))=LOWER(?);",
+      list(scoped_course(), section))$n[1], error=function(e) NA_integer_) else NA_integer_
+    denom <- if (!is.na(enrolled) && as.integer(enrolled) > 0L) as.integer(enrolled) else nrow(subs)
+    share <- round((as.numeric(s$bonus_multiplier[1] %||% 1.5) * total / max(1L, denom)) * 2) / 2
+    meta <- sprintf("round=%d section=%s denominator=%s", round_id, section,
+                    if (!is.na(enrolled) && as.integer(enrolled)>0L) paste0("enrolled-", enrolled) else paste0("submitters-", nrow(subs)))
+    for (uid in as.character(subs$user_id)) {
+      db_exec("INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note) SELECT user_id,display_name,'coordination_grant',?,?,1,? FROM users WHERE user_id=?;",
+              list(round_id, share, paste("Bonus Pot payout", meta), uid))
+      db_exec("INSERT INTO olig_payouts(round,user_id,game,payout,meta,section) VALUES(?,?, 'bonus',?,?,?);",
+              list(round_id, uid, share, meta, section))
+    }
+    db_exec("UPDATE olig_settings SET updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    list(ok=TRUE, message=sprintf("Applied a %.1f-token Bonus Pot payout to %d contributor%s.", share, nrow(subs), if(nrow(subs)==1) "" else "s"))
+  }
+
+  output$bonus_pot_admin_controls <- renderUI({
+    req(rv$authed, rv$is_admin)
+    s <- olig_poll()$settings
+    if (!nrow(s)) return(div(class="alert alert-danger", "Bonus Pot settings are unavailable."))
+    sections <- bonus_pot_sections()
+    selected_section <- as.character(s$section[1] %||% "")
+    if (!selected_section %in% sections && length(sections)) selected_section <- sections[1]
+    status <- as.character(s$round_status[1] %||% "pending")
+    tagList(
+      div(class="alert alert-info", style="margin-bottom:.7rem;",
+          tags$b("Instructor controls"), ". This is the actual Bonus Pot round—not merely the active-game signpost."),
+      fluidRow(
+        column(3, numericInput("bp_admin_round", "Round", value=as.integer(s$current_round[1] %||% 1L), min=1, step=1)),
+        column(4, selectInput("bp_admin_section", "Section", choices=setNames(sections, sections), selected=selected_section)),
+        column(5, radioButtons("bp_admin_denominator", "Divide pot among", inline=TRUE,
+          choices=c("enrolled section"="enrolled", "contributors only"="contributors"),
+          selected=if(isTRUE(as.integer(s$use_section_size[1] %||% 1L)==1L)) "enrolled" else "contributors"))
+      ),
+      fluidRow(
+        column(4, numericInput("bp_admin_multiplier", "Multiplier", value=as.numeric(s$bonus_multiplier[1] %||% 1.5), min=1, step=.1)),
+        column(4, numericInput("bp_admin_cap", "Contribution cap (0 = none)", value=as.numeric(s$contrib_cap[1] %||% 0), min=0, step=.5)),
+        column(4, selectInput("bp_admin_status", "Status", choices=c("Pending"="pending", "Open"="open", "Closed"="closed", "Revealed"="revealed"), selected=status))
+      ),
+      div(style="display:flex;gap:.4rem;flex-wrap:wrap;",
+        actionButton("bp_admin_save", "Save setup", class="btn btn-primary btn-sm"),
+        actionButton("bp_admin_open", "Open", class="btn btn-success btn-sm"),
+        actionButton("bp_admin_close", "Close & debit contributions", class="btn btn-warning btn-sm", onclick="if(!confirm('Close this Bonus Pot round and debit saved contributions?')) return false;"),
+        actionButton("bp_admin_reveal", "Reveal", class="btn btn-info btn-sm"),
+        actionButton("bp_admin_payout", "Apply payouts", class="btn btn-success btn-sm", onclick="if(!confirm('Apply one-time payouts to the token ledger?')) return false;")
+      ),
+      tags$p(style="font-size:.8em;color:#777;margin:.6rem 0 0;", "Close debits each saved contribution once. Reveal then Apply payouts credits the calculated share once per contributor.")
+    )
+  })
   token_poll <- reactivePoll(6000, session,
     checkFunc = function() {
       if (is.null(rv$user_id)) return("")
@@ -4678,111 +4798,19 @@ server <- function(input, output, session) {
         div(class = "no-game", "Embedded UI coming soon.")
       )
     } else {
-      div(class = "launch-card",
-        div(class = "launch-info",
-          div(class = "launch-title", ginfo$label),
-          div(class = "launch-desc",  ginfo$desc)
-        ),
-        tags$a(class = "btn-launch", href = ginfo$url, target = "_blank", "Launch →")
+      tagList(
+        if (isTRUE(rv$is_admin) && identical(active, "bonus_pot")) uiOutput("bonus_pot_admin_controls"),
+        div(class = "launch-card",
+          div(class = "launch-info",
+            div(class = "launch-title", ginfo$label),
+            div(class = "launch-desc",  ginfo$desc)
+          ),
+          tags$a(class = "btn-launch", href = ginfo$url, target = "_blank", "Open game →")
+        )
       )
     }
   })
 
-  # ── Embedded: Bonus Pot ───────────────────────────────────────────────────────
-  output$embedded_bonus_pot <- renderUI({
-    req(rv$authed)
-    if (isTRUE(rv$is_admin)) {
-      return(div(class = "alert alert-info",
-                 "Administrators manage this game but are not players by default."))
-    }
-    op     <- olig_poll()
-    s      <- op$settings
-    if (!nrow(s)) return(div(class = "no-game", "Bonus Pot not configured yet."))
-
-    status <- s$round_status[1] %||% "pending"
-    round  <- as.integer(s$current_round[1] %||% 1L)
-    mult   <- as.numeric(s$bonus_multiplier[1] %||% 1.5)
-    cap    <- as.numeric(s$contrib_cap[1] %||% 0)
-    bal    <- token_bal()
-    sub    <- op$my_sub
-
-    prev_contrib <- if (nrow(sub) && as.integer(sub$round[1]) == round)
-      as.numeric(sub$contribute[1] %||% 0) else 0
-    max_c <- if (cap > 0) min(cap, floor(bal)) else floor(bal)
-
-    tagList(
-      tags$p(
-        tags$strong("Round "), round, " · ",
-        tags$strong("Status: "),
-        span(style = if (status == "open") "color:#1a6e3c;font-weight:600;"
-                     else "color:#b00020;font-weight:600;", toupper(status)),
-        " · ", tags$strong("Multiplier: "), sprintf("%.1f×", mult)
-      ),
-      if (status == "open") {
-        tagList(
-          tags$p(style = "color:#555;font-size:.9em;",
-            "Decide how many tokens to contribute. If the group contributes generously, everyone earns back more — but individual incentives cut the other way."),
-          fluidRow(
-            column(5,
-              numericInput("bp_contrib", "Your contribution (tokens):",
-                           value = isolate(rv$bp_contrib_val) %||% prev_contrib,
-                           min = 0, max = max(0, max_c), step = 1)),
-            column(4, tags$br(), tags$br(),
-                   actionButton("bp_submit", "Submit", class = "btn btn-primary"))
-          ),
-          tags$p(style = "color:#888;font-size:.82em;",
-            sprintf("Balance: %d tokens%s",
-                    as.integer(bal), if (cap > 0) sprintf("  ·  Cap: %d tokens/round", as.integer(cap)) else ""))
-        )
-      } else if (status == "closed") {
-        div(class = "alert alert-warning", "Round is closed. Results coming soon.")
-      } else if (status == "revealed") {
-        payout <- if (nrow(sub) && as.integer(sub$round[1]) == round)
-          sub$payout[1] else NA
-        div(class = "alert alert-success",
-          tags$strong("Round revealed! "),
-          if (!is.na(payout)) sprintf("Your payout: %d tokens.", as.integer(payout))
-          else "Check your Account tab for the credit.")
-      } else {
-        div(class = "no-game", "Round not open yet.")
-      }
-    )
-  })
-
-  observeEvent(input$bp_submit, {
-    req(rv$authed, rv$user_id)
-    if (isTRUE(rv$is_admin)) {
-      showNotification("Administrators are not eligible to submit to student games.", type = "warning"); return()
-    }
-    if (rv$is_demo) {
-      showNotification("Demo mode — submission not saved.", type = "warning"); return()
-    }
-    op  <- isolate(olig_poll())
-    s   <- op$settings
-    if (!nrow(s) || s$round_status[1] != "open") {
-      showNotification("Round is not open.", type = "error"); return()
-    }
-    contrib <- as.numeric(input$bp_contrib %||% 0)
-    if (is.na(contrib) || contrib < 0) {
-      showNotification("Enter a valid contribution.", type = "error"); return()
-    }
-    bal <- isolate(token_bal())
-    if (contrib > bal) {
-      showNotification(sprintf("Not enough tokens (balance: %d).", as.integer(bal)), type = "error"); return()
-    }
-    cap <- as.numeric(s$contrib_cap[1] %||% 0)
-    if (cap > 0 && contrib > cap) {
-      showNotification(sprintf("Exceeds round cap of %d tokens.", as.integer(cap)), type = "error"); return()
-    }
-    db_exec(
-      "INSERT INTO olig_submissions(round, user_id, section, choice, contribute)
-       VALUES(?,?,?,?,?)
-       ON CONFLICT(round, user_id) DO UPDATE
-         SET contribute=excluded.contribute, section=excluded.section;",
-      list(as.integer(s$current_round[1]), rv$user_id, rv$section %||% "", "contribute", contrib))
-    db_exec("UPDATE olig_settings SET updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-    showNotification(sprintf("Submitted %.1f FP contribution.", contrib), type = "message")
-  })
 
   # ── Embedded: Prisoner's Dilemma + Price War ──────────────────────────────────
   output$embedded_pd <- renderUI({
@@ -9461,7 +9489,7 @@ server <- function(input, output, session) {
     s <- olig_poll()$settings
     if (!nrow(s))
       return(tags$p(style = "color:#999;margin-bottom:.5rem;",
-                    "Run coordination-games once to initialize settings."))
+                    "Bonus Pot settings are unavailable. Refresh Class Job Market before opening the module."))
     tags$p(style = "margin-bottom:.5rem;",
       tags$strong("Game: "), toupper(s$current_game[1] %||% "—"), "   ",
       tags$strong("Class date: "), s$current_round[1], "   ",
@@ -11195,16 +11223,17 @@ server <- function(input, output, session) {
         tags$h6(style = "font-weight:700;color:#951829;", "Coordination Game Controls"),
         uiOutput("olig_status_display"),
         if (nrow(s)) {
-          tagList(
+          if (identical(active, "bonus_pot")) {
+            tags$p(style = "font-size:.8em;color:#666;margin-top:.5rem;margin-bottom:0;",
+              "Bonus Pot is controlled from Games & Demos → Active Now. The player module opens from that card.")
+          } else {
             fluidRow(
               column(4, actionButton("adm_open",   "Open",   class = "btn btn-success btn-sm btn-block")),
               column(4, actionButton("adm_close",  "Close",  class = "btn btn-warning btn-sm btn-block")),
-              column(4, actionButton("adm_reveal", "Reveal", class = "btn btn-danger  btn-sm btn-block",
+              column(4, actionButton("adm_reveal", "Reveal", class = "btn btn-danger btn-sm btn-block",
                                      onclick = "if(!confirm('Reveal round results? This cannot be undone.')) return false;"))
-            ),
-            tags$p(style = "font-size:.8em;color:#999;margin-top:.5rem;margin-bottom:0;",
-                   "For full payout setup use the Coordination Games app.")
-          )
+            )
+          }
         }
       )
 
@@ -11810,12 +11839,74 @@ server <- function(input, output, session) {
   observeEvent(input$set_active_btn, {
     req(rv$is_admin)
     g <- input$admin_game_sel %||% ""
-    if (nzchar(g))
+    if (nzchar(g)) {
       db_exec("UPDATE arcade_state SET active_game=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;", list(g))
-    else
+      if (identical(g, "bonus_pot")) {
+        db_exec("UPDATE olig_settings SET current_game='bonus', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+      } else if (g %in% c("prisoners_dilemma", "price_war")) {
+        db_exec("UPDATE olig_settings SET current_game='pd', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+      }
+    } else {
       db_exec("UPDATE arcade_state SET active_game=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    }
     showNotification(paste("Active game:", if (nzchar(g)) g else "cleared"), type = "message")
   })
+  # The Class Job Market active-game slot is authoritative. This also repairs
+  # state created before the unified controls existed.
+  observe({
+    req(rv$authed, rv$is_admin)
+    active <- arcade_poll()$active_game[1] %||% ""
+    target <- if (identical(active, "bonus_pot")) "bonus" else if (active %in% c("prisoners_dilemma", "price_war")) "pd" else ""
+    if (!nzchar(target)) return()
+    current <- tryCatch(db_query("SELECT current_game FROM olig_settings WHERE id=1;")$current_game[1] %||% "", error=function(e) "")
+    if (!identical(as.character(current), target))
+      db_exec("UPDATE olig_settings SET current_game=?,updated_at=CURRENT_TIMESTAMP WHERE id=1;", list(target))
+  })
+
+  save_bonus_pot_setup <- function(status_override = NULL) {
+    req(rv$is_admin, !rv$impersonating)
+    round_id <- suppressWarnings(as.integer(input$bp_admin_round %||% NA_integer_))
+    section <- trimws(as.character(input$bp_admin_section %||% ""))
+    multiplier <- suppressWarnings(as.numeric(input$bp_admin_multiplier %||% NA_real_))
+    cap <- suppressWarnings(as.numeric(input$bp_admin_cap %||% NA_real_))
+    status <- status_override %||% as.character(input$bp_admin_status %||% "pending")
+    if (is.na(round_id) || round_id < 1L || !nzchar(section) || !is.finite(multiplier) || multiplier < 1 || !is.finite(cap) || cap < 0) {
+      showNotification("Choose a round and section; multiplier must be at least 1 and cap cannot be negative.", type="error")
+      return(FALSE)
+    }
+    if (!status %in% c("pending", "open", "closed", "revealed")) status <- "pending"
+    db_exec("UPDATE olig_settings SET current_round=?,current_game='bonus',round_status=?,bonus_multiplier=?,contrib_cap=?,use_section_size=?,section=?,updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+            list(round_id, status, multiplier, cap,
+                 if (identical(input$bp_admin_denominator %||% "enrolled", "enrolled")) 1L else 0L,
+                 section))
+    db_exec("INSERT INTO olig_rounds(round,game,status) VALUES(?,'bonus',?) ON CONFLICT(round) DO UPDATE SET game='bonus',status=excluded.status;",
+            list(round_id, status))
+    if (identical(status, "closed")) {
+      debited <- bonus_pot_debit(round_id, section)
+      showNotification(sprintf("Bonus Pot closed; debited %d saved contribution%s.", debited, if(debited==1) "" else "s"), type="message")
+    } else {
+      showNotification(sprintf("Bonus Pot round %d is %s.", round_id, status), type="message")
+    }
+    TRUE
+  }
+
+  observeEvent(input$bp_admin_save, save_bonus_pot_setup(), ignoreNULL=TRUE)
+  observeEvent(input$bp_admin_open, save_bonus_pot_setup("open"), ignoreNULL=TRUE)
+  observeEvent(input$bp_admin_close, save_bonus_pot_setup("closed"), ignoreNULL=TRUE)
+  observeEvent(input$bp_admin_reveal, {
+    s <- tryCatch(db_query("SELECT round_status FROM olig_settings WHERE id=1;"), error=function(e)data.frame())
+    if (!nrow(s) || !identical(as.character(s$round_status[1] %||% ""), "closed")) {
+      showNotification("Close the Bonus Pot round before revealing it.", type="warning")
+      return()
+    }
+    save_bonus_pot_setup("revealed")
+  }, ignoreNULL=TRUE)
+  observeEvent(input$bp_admin_payout, {
+    req(rv$is_admin, !rv$impersonating)
+    result <- bonus_pot_apply_payouts()
+    showNotification(result$message, type=if(isTRUE(result$ok)) "message" else "error", duration=10)
+  }, ignoreNULL=TRUE)
+
   observeEvent(input$adm_open, {
     req(rv$is_admin)
     db_exec("UPDATE olig_settings SET round_status='open', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
@@ -11824,7 +11915,7 @@ server <- function(input, output, session) {
   observeEvent(input$adm_close, {
     req(rv$is_admin)
     db_exec("UPDATE olig_settings SET round_status='closed', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-    showNotification("Round closed. Run payouts in the Coordination Games app.", type = "warning", duration = 6)
+    showNotification("Round closed. Reveal and apply payouts from the active Bonus Pot card.", type = "warning", duration = 6)
   })
   observeEvent(input$adm_reveal, {
     req(rv$is_admin)
