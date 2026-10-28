@@ -20,7 +20,7 @@ db_exec("INSERT INTO user_environments(user_id,course,section) VALUES(?,?,?);", 
 envs <- db_query("SELECT course,section FROM user_environments WHERE user_id=? ORDER BY course,section;", list("student@vassar.edu"))
 stopifnot(nrow(envs) == 2L, any(envs$course == "ECON 160"), any(envs$course == "ECON 342"))
 app_text <- paste(readLines(app_path, warn=FALSE), collapse="\n")
-token_admin_contract <- c("SELECT u.user_id, u.display_name, u.course, u.section, u.is_admin", "Correct any active account's token balance", 'selectInput("indiv_uid", "Account:"')
+token_admin_contract <- c("SELECT u.user_id, u.display_name, u.course, u.section, u.is_admin", "Correct any active account's token balance", 'selectInput("indiv_uid", "Account:"', 'selectizeInput("token_admin_scope"', "filter_admin_account_scope_rows", "include_self=TRUE")
 for (needle in token_admin_contract) stopifnot(grepl(needle, app_text, fixed=TRUE))
 
 for (needle in c("user_environments", "session_environment_rows <- function()", "pin_session_environment()", "input$environment_course_sel", "input$environment_section_sel")) stopifnot(grepl(needle, app_text, fixed=TRUE))

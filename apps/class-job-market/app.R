@@ -2809,6 +2809,7 @@ server <- function(input, output, session) {
       stored <- parse_scope_sections(get_setting("active_sections", ""))
       if (length(stored)) stored else normalize_scope_sections(get_setting("active_section", ""))
     },
+    admin_account_scope = character(0),
     jobs_ver       = 0L,    # bumped after any job-post or category mutation
     students_ver   = 0L,    # bumped after any student roster mutation
     gradebook_ver  = 0L,    # bumped after any gradebook category/item mutation
@@ -2975,6 +2976,45 @@ server <- function(input, output, session) {
     rv$active_section <- env$section[pick]
     rv$active_sections <- env$section[pick]
     invisible(TRUE)
+  }
+
+  # Account administration can span several authorized environments without
+  # turning course-specific controls (rounds, games, or spending rules) into
+  # unsafe multi-course writes. The signed-in admin is always retained as an
+  # individual-adjustment target, even if their own profile has no course.
+  admin_account_scope_choices <- function() {
+    env <- session_environment_rows()
+    if (!nrow(env)) return(setNames(character(0), character(0)))
+    keys <- paste(norm_key(env$course), norm_key(env$section), sep="\r")
+    labels <- ifelse(nzchar(env$section),
+                     paste0(env$course, " / ", env$section), env$course)
+    keep <- !duplicated(keys)
+    setNames(keys[keep], labels[keep])
+  }
+  selected_admin_account_scope_keys <- function() {
+    choices <- admin_account_scope_choices()
+    allowed <- unname(choices)
+    selected <- unique(as.character(rv$admin_account_scope %||% character(0)))
+    if ("__all__" %in% selected) return(allowed)
+    selected <- intersect(selected, allowed)
+    if (length(selected)) return(selected)
+    course <- scoped_course()
+    sections <- scoped_sections()
+    fallback <- paste(norm_key(course), norm_key(sections), sep="\r")
+    intersect(fallback, allowed)
+  }
+  filter_admin_account_scope_rows <- function(df, include_self = FALSE) {
+    if (!nrow(df)) return(df)
+    keys <- selected_admin_account_scope_keys()
+    keep <- rep(FALSE, nrow(df))
+    if (length(keys) && all(c("course", "section") %in% names(df))) {
+      row_keys <- paste(norm_key(df$course), norm_key(df$section), sep="\r")
+      keep <- row_keys %in% keys
+    }
+    if (isTRUE(include_self) && "user_id" %in% names(df) && nzchar(rv$user_id %||% "")) {
+      keep <- keep | norm_key(df$user_id) == norm_key(rv$user_id)
+    }
+    df[keep, , drop=FALSE]
   }
   # Redefine the session scope after the legacy helpers above. Students use their
   # selected authorised environment; administrators use their role assignments.
@@ -11324,6 +11364,9 @@ server <- function(input, output, session) {
       )
 
     } else if (act == "token_admin") {
+      scope_choices <- c("All authorized classes / sections"="__all__",
+                         admin_account_scope_choices())
+      selected_account_scopes <- selected_admin_account_scope_keys()
       students <- tryCatch(db_query(
         "SELECT u.user_id, u.display_name, u.course, u.section, u.is_admin,
                 COALESCE(SUM(tl.amount),0) AS tokens_on_hand
@@ -11332,7 +11375,7 @@ server <- function(input, output, session) {
          WHERE COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
          GROUP BY u.user_id ORDER BY u.course, u.section, u.display_name;"),
         error = function(e) data.frame())
-      students <- scope_filter_rows(students)
+      students <- filter_admin_account_scope_rows(students, include_self=TRUE)
       if (nrow(students)) {
         students$tokens_pending <- 0
         ja_cols <- tryCatch(db_query("PRAGMA table_info(job_assignments);")$name,
@@ -11400,6 +11443,14 @@ server <- function(input, output, session) {
                nm_lbl)
       } else character(0)
       tagList(
+        div(class="spend-form-box", style="margin-bottom:.8rem;",
+          selectizeInput("token_admin_scope", "Accounts in scope:",
+                         choices=scope_choices, selected=selected_account_scopes,
+                         multiple=TRUE,
+                         options=list(placeholder="Choose one or more authorized class sections")),
+          tags$p(style="color:#666;font-size:.8rem;margin:.35rem 0 0;",
+                 "This filters the account list and individual corrections. It does not change the active class environment for jobs, games, or other course settings. Your own admin account is always available for an individual correction.")
+        ),
         if (nrow(students)) {
           div(style = "margin-bottom:.8rem;overflow-x:auto;",
             tags$p(style = "color:#555;font-size:.82rem;margin-bottom:.3rem;",
@@ -13171,6 +13222,12 @@ server <- function(input, output, session) {
   }, ignoreNULL = TRUE)
 
   # ── Token Admin ───────────────────────────────────────────────────────────────
+  observeEvent(input$token_admin_scope, {
+    req(rv$is_admin, !rv$impersonating)
+    allowed <- c("__all__", unname(admin_account_scope_choices()))
+    rv$admin_account_scope <- intersect(unique(as.character(input$token_admin_scope %||% character(0))), allowed)
+  }, ignoreInit=TRUE)
+
   observeEvent(input$bulk_award_btn, {
     req(rv$is_admin, !rv$impersonating)
     scope <- input$bulk_section %||% "current_scope"
@@ -13258,8 +13315,8 @@ server <- function(input, output, session) {
     if (!nzchar(uid) || is.na(amount) || amount == 0) {
       showNotification("Select an account and enter a non-zero amount.", type = "error"); return()
     }
-    eligible <- tryCatch(scope_filter_rows(db_query("SELECT user_id,course,section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;")), error=function(e)data.frame())
-    if (!uid %in% as.character(eligible$user_id %||% character(0))) { showNotification("Select an active account in your authorized class or section.", type="error"); return() }
+    eligible <- tryCatch(filter_admin_account_scope_rows(db_query("SELECT user_id,course,section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;"), include_self=TRUE), error=function(e)data.frame())
+    if (!uid %in% as.character(eligible$user_id %||% character(0))) { showNotification("Select an active account in one of your authorized class or section scopes.", type="error"); return() }
     u_row  <- db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid))
     dname  <- if (nrow(u_row)) u_row$display_name[1] %||% uid else uid
     lbl    <- if (nzchar(note)) note else "individual adjustment"
