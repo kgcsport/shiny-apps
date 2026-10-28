@@ -62,6 +62,9 @@ module_required <- c("textInput(\"login_user\"", "passwordInput(\"login_pw\"", "
 module_missing <- module_required[!vapply(module_required, grepl, logical(1), x=module_text, fixed=TRUE)]
 if (grepl("Flex Passes Contributed", module_text, fixed=TRUE) || grepl("Flex passes available", module_text, fixed=TRUE)) stop("Standalone Bonus Pot must use current participation-token terminology.")
 if (length(module_missing)) stop("Bonus Pot module boundary missing: ", paste(module_missing, collapse=" | "))
+login_layout <- c('class = "login-page"', 'class = "login-card"', 'class = "login-logo"', 'class = "login-tagline"', 'class = "btn-google"', 'class = "preview-grid"', 'class = "login-howto"')
+layout_missing <- login_layout[!vapply(login_layout, grepl, logical(1), x=module_text, fixed=TRUE)]
+if (length(layout_missing)) stop("Coordination Games must retain the Class Job Market login layout: ", paste(layout_missing, collapse=" | "))
 if (grepl("session$sendCustomMessage(\"redirect_to_job_market\"", module_text, fixed=TRUE)) stop("Coordination Games must show direct sign-in rather than automatically redirecting visitors away.")
 
 suppressPackageStartupMessages({ library(DBI); library(RSQLite) })

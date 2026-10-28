@@ -56,6 +56,7 @@ if (!length(shared_sqlite)) {
 shared_sqlite <- shared_sqlite[[1]]
 source(shared_sqlite)
 source(file.path(dirname(shared_sqlite), "demo_login.R"))
+GOOGLE_AUTH_ENABLED <- nzchar(Sys.getenv("GOOGLE_CLIENT_ID", "")) && nzchar(Sys.getenv("GOOGLE_CLIENT_SECRET", "")) && nzchar(Sys.getenv("SHINY_APP_URL", ""))
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a) && nzchar(as.character(a))) a else b
 
@@ -444,20 +445,26 @@ debit_pending_contributions <- function(round, sec) {
 
 # -------------------------
 # Auth UI
-# -------------------------
 login_ui <- function(msg = NULL) {
-  fluidPage(
-    titlePanel("Bonus Pot"),
-    if (!is.null(msg)) div(style = "color:#b00020; font-weight:bold;", msg),
-    tags$p("Sign in with your Class Job Market credentials to play."),
-    textInput("login_user", "Username or email"),
-    passwordInput("login_pw", "Password"),
-    actionButton("login_btn", "Sign in", class = "btn btn-primary"),
-    tags$hr(),
-    tags$p(tags$small("Use Google sign-in or need help with your credentials?")),
-    tags$a(href = "/auth/login?return_to=%2Fcoordination-games%2F", class = "btn btn-default", "Sign in with Google"),
-    tags$a(href = "/class-job-market/?return_to=%2Fcoordination-games%2F", class = "btn btn-link", "Open Class Job Market"),
-    demo_login_ui
+  div(class = "login-page",
+    div(class = "login-card",
+      div(class = "login-logo", "🎓 Classroom Economy"),
+      div(class = "login-tagline", if (GOOGLE_AUTH_ENABLED) "Sign in with your school Google account." else "Log in with credentials from your instructor."),
+      if (!is.null(msg)) div(style = "color:#b00020;font-weight:bold;margin-bottom:.75rem;", msg),
+      if (GOOGLE_AUTH_ENABLED) tags$a(href = "/auth/login?return_to=%2Fcoordination-games%2F", class = "btn-google",
+        tags$svg(xmlns = "http://www.w3.org/2000/svg", viewBox = "0 0 24 24", height = "18", width = "18",
+          tags$path(fill = "#4285F4", d = "M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"),
+          tags$path(fill = "#34A853", d = "M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"),
+          tags$path(fill = "#FBBC05", d = "M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"),
+          tags$path(fill = "#EA4335", d = "M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 5.29-4.53 6.16-4.53z")),
+        "Sign in with Google"),
+      if (GOOGLE_AUTH_ENABLED) tags$details(class = "admin-login-toggle", tags$summary("Sign in with password"), textInput("login_user", NULL, placeholder = "Username"), passwordInput("login_pw", NULL, placeholder = "Password"), actionButton("login_btn", "Sign In →", class = "btn btn-primary btn-block")) else tagList(textInput("login_user", NULL, placeholder = "Username"), passwordInput("login_pw", NULL, placeholder = "Password"), actionButton("login_btn", "Sign In →", class = "btn btn-primary btn-block")),
+      tags$hr(style = "margin:.9rem 0 .5rem;"),
+      tags$p(style = "font-size:.75rem;color:#aaa;text-align:center;margin-bottom:.4rem;", "What's here"),
+      div(class = "preview-grid", div(class = "preview-card", div(class = "preview-card-icon", "📋"), div(class = "preview-card-label", "Today"), div(class = "preview-card-desc", "Jobs, wages & active game")), div(class = "preview-card", div(class = "preview-card-icon", "🏪"), div(class = "preview-card-label", "Job Market"), div(class = "preview-card-desc", "Bid for or apply to jobs")), div(class = "preview-card", div(class = "preview-card-icon", "🎮"), div(class = "preview-card-label", "Games & Demos"), div(class = "preview-card-desc", "Live games + interactive demos"))),
+      tags$details(class = "login-howto", tags$summary("How to get started"), tags$ul(tags$li(tags$strong("Sign in"), " using your school Google account. Your instructor must add your email to the class roster first."), tags$li(tags$strong("Bonus Pot"), " lets you make a contribution and follow the shared outcome."), tags$li(tags$strong("Class Job Market"), " has your assignments, bids, and account."))),
+      demo_login_ui
+    )
   )
 }
 
@@ -499,6 +506,29 @@ ui <- fluidPage(class = "bp-app",
     .btn-success:hover { background-color: #245c43; border-color: #1b4d38; }
     a { color: #951829; }
     a:hover { color: #7a1221; }
+    .login-page { max-width:420px; margin:4rem auto; padding:0 1rem; }
+    .login-card { background:#fff; border-radius:12px; padding:2rem 2.25rem; box-shadow:0 3px 14px rgba(0,0,0,.1); }
+    .login-logo { font-size:1.6rem; font-weight:700; color:#951829; margin-bottom:.35rem; text-align:center; }
+    .login-tagline { font-size:.83rem; color:#888; text-align:center; margin-bottom:1.25rem; }
+    .login-card .btn { min-height:44px; padding:.55rem .9rem; font-size:.96rem; }
+    .login-card .form-control { min-height:44px; font-size:1rem; }
+    .btn-block { width:100%; }
+    .preview-grid { display:grid; grid-template-columns:1fr 1fr; gap:.5rem; margin:1rem 0 .75rem; }
+    .preview-card { background:#f8f8f8; border:1px solid #e8e8e8; border-radius:6px; padding:.55rem .65rem; }
+    .preview-card-icon { font-size:1.1rem; }
+    .preview-card-label { font-weight:600; font-size:.85rem; }
+    .preview-card-desc { color:#888; font-size:.74rem; }
+    .login-howto { margin-top:1rem; }
+    .login-howto summary { cursor:pointer; font-weight:600; color:#951829; font-size:.85rem; text-align:center; }
+    .login-howto ul { margin:.5rem 0 0; padding-left:1.1rem; font-size:.84rem; color:#555; }
+    .login-howto li { margin-bottom:.3rem; }
+    .btn-google { display:flex; align-items:center; justify-content:center; gap:.55rem; width:100%; padding:.65rem 1rem; background:#fff; border:1.5px solid #dadce0; border-radius:6px; font-size:.95rem; font-weight:500; color:#3c4043; cursor:pointer; transition:background .15s, box-shadow .15s; margin-bottom:.75rem; }
+    .btn-google:hover { background:#f8f9fa; box-shadow:0 1px 4px rgba(0,0,0,.15); }
+    .btn-google svg { flex-shrink:0; }
+    .admin-login-toggle { margin-top:.6rem; }
+    .admin-login-toggle summary { cursor:pointer; font-size:.82rem; color:#888; text-align:center; padding:.3rem 0; }
+    .admin-login-toggle summary:hover { color:#555; }
+    .admin-login-toggle .form-group { margin-top:.6rem; }
 
     /* --- Notifications: top-right, large, bold colors --- */
     .shiny-notification-panel {
