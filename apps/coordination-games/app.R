@@ -548,6 +548,20 @@ ui <- fluidPage(class = "bp-app",
     .shiny-notification-error   { background: #951829; }
     /* --- Bonus Pot player surface --- */
     .bp-app { max-width: 980px; margin: 0 auto; padding-bottom: 2rem; }
+    .bp-header { background:#951829; color:#fff; padding:.7rem 1.5rem; display:flex; align-items:center; gap:.75rem; margin:0 calc((980px - 100vw) / 2) 1rem; padding-left:max(1.5rem, calc((100vw - 980px) / 2)); padding-right:max(1.5rem, calc((100vw - 980px) / 2)); }
+    .bp-header-title { font-size:1.3rem; font-weight:700; flex:1; letter-spacing:.02em; }
+    .bp-header-name { font-size:.88rem; opacity:.85; }
+    .bp-env-picker { position:relative; font-size:.82rem; }
+    .bp-env-picker summary { list-style:none; cursor:pointer; white-space:nowrap; padding:.35rem .55rem; border:1px solid rgba(255,255,255,.45); border-radius:6px; background:rgba(255,255,255,.12); }
+    .bp-env-picker summary::-webkit-details-marker { display:none; }
+    .bp-env-picker summary::after { content:\" ▾\"; }
+    .bp-env-picker[open] summary::after { content:\" ▴\"; }
+    .bp-env-menu { position:absolute; right:0; top:calc(100% + .35rem); z-index:1050; min-width:320px; display:flex; gap:.45rem; padding:.55rem; border-radius:7px; background:#fff; color:#222; box-shadow:0 4px 16px rgba(0,0,0,.28); }
+    .bp-env-field { flex:1; min-width:0; }
+    .bp-env-field > span { display:block; font-size:.72rem; font-weight:700; color:#555; margin:0 0 .15rem .1rem; }
+    .bp-env-field .form-group { margin:0; }
+    .bp-env-field .selectize-control { margin:0; }
+    .bp-env-field .selectize-input { min-height:34px; padding:6px 8px; font-size:.83rem; }
     .bp-topbar { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin:1rem 0 .5rem; }
     .bp-topbar h2 { margin:0; color:#67111e; font-weight:700; }
     .bp-topbar p { margin:.2rem 0 0; color:#5e5e5e; }
@@ -570,12 +584,16 @@ ui <- fluidPage(class = "bp-app",
     .bp-note { color:#565656; line-height:1.45; }
     .bp-result { border-left:4px solid #951829; padding:.85rem 1rem; background:#fbf7f7; border-radius:0 7px 7px 0; }
     .bp-projector { font-size:1.15em; }
-    @media (max-width: 640px) { .bp-topbar { align-items:flex-start; flex-direction:column; } .bp-tools { align-self:flex-end; } .bp-card { padding:1rem; } }
+    @media (max-width: 640px) { .bp-header { flex-wrap:wrap; margin-left:-15px; margin-right:-15px; padding:.6rem .75rem; } .bp-header-title { flex-basis:100%; } .bp-env-menu { right:auto; left:0; min-width:min(320px, calc(100vw - 1.5rem)); } .bp-topbar { align-items:flex-start; flex-direction:column; } .bp-tools { align-self:flex-end; } .bp-card { padding:1rem; } }
     .shiny-notification-close   { color: rgba(255,255,255,0.8); font-size: 1.2rem; }
   "))),
   uiOutput("demo_banner"),
   uiOutput("auth_gate"),
   conditionalPanel("output.authed",
+    div(class = "bp-header",
+      div(class = "bp-header-title", "🎓 Classroom Economy · Bonus Pot"),
+      uiOutput("bp_header_widgets", inline = TRUE)
+    ),
     div(class = "bp-topbar",
       div(h2("Bonus Pot"), p("Make a contribution, follow the round, and see the shared outcome.")),
       div(class = "bp-tools", tags$a(href="/class-job-market/", class="btn btn-default", "Class Job Market"), tags$span("Text size"),
@@ -598,6 +616,7 @@ server <- function(input, output, session) {
   .is_demo <- dm$is_demo
 
   rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE,
+                       home_course = "", home_section = "", active_course = "", active_section = "", environment_ver = 0L,
                        impersonate = FALSE, impersonate_uid = NULL, impersonate_name = NULL,
                        auth_message = NULL)
   output$demo_banner <- renderUI(demo_banner_ui(.is_demo, rv$is_admin))
@@ -605,12 +624,65 @@ server <- function(input, output, session) {
   outputOptions(output, "authed", suspendWhenHidden = FALSE)
   output$auth_gate <- renderUI({ if (!rv$authed) login_ui(rv$auth_message) else NULL })
 
+  norm_key <- function(x) tolower(trimws(as.character(x)))
+  unique_ci <- function(x) {
+    x <- trimws(as.character(x))
+    x <- x[!is.na(x) & nzchar(x)]
+    x[!duplicated(tolower(x))]
+  }
+  admin_assignments_for <- function(user_id) tryCatch(
+    db_query("SELECT role, course, section FROM admin_assignments WHERE LOWER(user_id)=LOWER(?) ORDER BY CASE role WHEN 'super_admin' THEN 1 WHEN 'course_admin' THEN 2 ELSE 3 END, course, section;", list(user_id)),
+    error = function(e) data.frame(role=character(0), course=character(0), section=character(0))
+  )
+  session_environment_rows <- function() {
+    if (!isTRUE(rv$authed)) return(data.frame(course=character(0), section=character(0)))
+    if (!isTRUE(rv$is_admin)) {
+      out <- tryCatch(db_query("SELECT ue.course, ue.section FROM user_environments ue JOIN users u ON LOWER(u.user_id)=LOWER(ue.user_id) WHERE LOWER(ue.user_id)=LOWER(?) AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0 ORDER BY ue.course, ue.section;", list(rv$user)), error=function(e) data.frame())
+      if (!nrow(out) && nzchar(rv$home_course)) out <- data.frame(course=rv$home_course, section=rv$home_section, stringsAsFactors=FALSE)
+      return(out)
+    }
+    roles <- admin_assignments_for(rv$user)
+    if (!nrow(roles)) return(data.frame(course=character(0), section=character(0)))
+    if (any(roles$role == "super_admin")) {
+      return(tryCatch(db_query("SELECT DISTINCT course, section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0 AND TRIM(COALESCE(course,''))<>'' ORDER BY course, section;"), error=function(e) data.frame(course=character(0), section=character(0))))
+    }
+    out <- lapply(seq_len(nrow(roles)), function(i) {
+      course <- trimws(as.character(roles$course[i] %||% ""))
+      if (!nzchar(course)) return(data.frame(course=character(0), section=character(0)))
+      if (identical(as.character(roles$role[i]), "course_admin")) {
+        return(tryCatch(db_query("SELECT DISTINCT course, section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0 AND LOWER(COALESCE(course,''))=LOWER(?) AND TRIM(COALESCE(section,''))<>'' ORDER BY section;", list(course)), error=function(e) data.frame(course=character(0), section=character(0))))
+      }
+      data.frame(course=course, section=trimws(as.character(roles$section[i] %||% "")), stringsAsFactors=FALSE)
+    })
+    out <- do.call(rbind, out)
+    if (is.null(out) || !nrow(out)) return(data.frame(course=character(0), section=character(0)))
+    out[!duplicated(paste(norm_key(out$course), norm_key(out$section))), , drop=FALSE]
+  }
+  pin_bonus_environment <- function() {
+    env <- session_environment_rows()
+    if (!nrow(env)) { rv$active_course <- ""; rv$active_section <- ""; return(invisible(FALSE)) }
+    home <- which(norm_key(env$course) == norm_key(rv$home_course) & norm_key(env$section) == norm_key(rv$home_section))
+    pick <- if (length(home)) home[1] else 1L
+    rv$active_course <- env$course[pick]; rv$active_section <- env$section[pick]
+    invisible(TRUE)
+  }
+  switch_bonus_environment <- function(course, section) {
+    env <- session_environment_rows()
+    hit <- which(norm_key(env$course) == norm_key(course) & norm_key(env$section) == norm_key(section))
+    if (!length(hit)) return(FALSE)
+    rv$active_course <- env$course[hit[1]]; rv$active_section <- env$section[hit[1]]
+    rv$environment_ver <- rv$environment_ver + 1L
+    updateSelectInput(session, "adm_section", selected=rv$active_section)
+    TRUE
+  }
   lookup_shared_session <- function(token) {
     if (!nzchar(token %||% "")) return(data.frame())
-    tryCatch(db_query("SELECT u.user_id, u.display_name, u.is_admin, u.active FROM arcade_sessions s JOIN users u ON u.user_id=s.user_id WHERE s.token=? AND datetime(s.expires_at)>datetime('now') LIMIT 1;", list(token)), error=function(e) data.frame())
+    tryCatch(db_query("SELECT u.user_id, u.display_name, u.is_admin, u.active, u.course, u.section FROM arcade_sessions s JOIN users u ON u.user_id=s.user_id WHERE s.token=? AND datetime(s.expires_at)>datetime('now') LIMIT 1;", list(token)), error=function(e) data.frame())
   }
   finish_login <- function(row) {
-    rv$authed <- TRUE; rv$user <- row$user_id[1]; rv$name <- row$display_name[1]; rv$is_admin <- isTRUE(as.integer(row$is_admin[1] %||% 0L) == 1L); rv$auth_message <- NULL
+    rv$authed <- TRUE; rv$user <- row$user_id[1]; rv$name <- row$display_name[1]; rv$is_admin <- isTRUE(as.integer(row$is_admin[1] %||% 0L) == 1L)
+    rv$home_course <- as.character(row$course[1] %||% ""); rv$home_section <- as.character(row$section[1] %||% "")
+    pin_bonus_environment(); rv$auth_message <- NULL
   }
   issue_shared_cookie <- function(user_id) {
     token <- paste(sample(c(letters, LETTERS, 0:9), 48L, replace=TRUE), collapse="")
@@ -629,7 +701,7 @@ server <- function(input, output, session) {
     user_id <- tolower(trimws(as.character(input$login_user %||% "")))
     password <- as.character(input$login_pw %||% "")
     if (!nzchar(user_id) || !nzchar(password)) { rv$auth_message <- "Enter your username or email and password."; return() }
-    row <- tryCatch(db_query("SELECT user_id,display_name,pw_hash,is_admin,active FROM users WHERE LOWER(user_id)=LOWER(?) LIMIT 1;", list(user_id)), error=function(e) data.frame())
+    row <- tryCatch(db_query("SELECT user_id,display_name,pw_hash,is_admin,active,course,section FROM users WHERE LOWER(user_id)=LOWER(?) LIMIT 1;", list(user_id)), error=function(e) data.frame())
     valid <- nrow(row) == 1L && isTRUE(nzchar(row$pw_hash[1])) && isTRUE(tryCatch(bcrypt::checkpw(password, row$pw_hash[1]), error=function(e) FALSE))
     if (!valid) { rv$auth_message <- "Incorrect username or password."; return() }
     if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) { rv$auth_message <- "This account has been archived. Contact your instructor."; return() }
@@ -646,6 +718,53 @@ server <- function(input, output, session) {
     if (isTRUE(rv$impersonate) && !is.null(rv$impersonate_name)) rv$impersonate_name else rv$name
   })
   is_admin <- reactive(rv$is_admin)
+
+  output$bp_header_widgets <- renderUI({
+    req(authed())
+    env <- session_environment_rows()
+    courses <- unique_ci(env$course)
+    course <- rv$active_course
+    if (!course %in% courses && length(courses)) course <- courses[1]
+    sections <- unique_ci(env$section[norm_key(env$course) == norm_key(course)])
+    section <- rv$active_section
+    if (!section %in% sections && length(sections)) section <- sections[1]
+    tagList(
+      span(class="bp-header-name", rv$name),
+      if (nrow(env) > 1L)
+        tags$details(class="bp-env-picker",
+          tags$summary("Class / section"),
+          div(class="bp-env-menu",
+            div(class="bp-env-field", tags$span("Class"),
+              selectInput("environment_course_sel", NULL, choices=setNames(courses, courses), selected=course, width="100%")),
+            div(class="bp-env-field", tags$span("Section"),
+              selectInput("environment_section_sel", NULL, choices=setNames(sections, sections), selected=section, width="100%"))
+          )
+        )
+    )
+  })
+  observeEvent(input$environment_course_sel, {
+    req(authed())
+    env <- session_environment_rows()
+    course <- as.character(input$environment_course_sel %||% "")
+    rows <- env[norm_key(env$course) == norm_key(course), , drop=FALSE]
+    if (!nrow(rows)) return()
+    section <- rv$active_section
+    if (!norm_key(section) %in% norm_key(rows$section)) section <- rows$section[1]
+    switch_bonus_environment(course, section)
+  }, ignoreInit=TRUE)
+  observeEvent(input$environment_section_sel, {
+    req(authed())
+    switch_bonus_environment(input$environment_course_sel %||% rv$active_course,
+                             input$environment_section_sel %||% "")
+  }, ignoreInit=TRUE)
+  bonus_game_in_selected_environment <- function(o) {
+    selected <- trimws(as.character(rv$active_section %||% ""))
+    live <- trimws(olig_section(o))
+    if (nzchar(live) && !identical(norm_key(selected), norm_key(live))) return(FALSE)
+    scope_key <- paste0(norm_key(rv$active_course), "::", norm_key(selected))
+    state <- tryCatch(db_query("SELECT active_game FROM scope_arcade_state WHERE scope_key=? LIMIT 1;", list(scope_key)), error=function(e) data.frame())
+    !nrow(state) || !nzchar(as.character(state$active_game[1] %||% "")) || identical(as.character(state$active_game[1]), "bonus_pot")
+  }
 
   # Poll every 1200ms: shared state via olig_settings.updated_at for in-class games.
   olig_poll <- reactivePoll(
@@ -687,6 +806,8 @@ server <- function(input, output, session) {
   output$student_ui <- renderUI({
     req(authed())
     o   <- olig_poll()
+    rv$environment_ver
+    if (!bonus_game_in_selected_environment(o)) return(div(class="bp-card", h3("No active Bonus Pot game"), p(class="bp-note", sprintf("Bonus Pot is not active for %s right now.", rv$active_section))))
     sec <- olig_section(o)
 
     bal    <- token_balance(user_id())
@@ -743,6 +864,7 @@ server <- function(input, output, session) {
     # Read game state fresh (not via subs_poll) to avoid a reactive dependency
     # that could re-trigger the student UI render on every classmate submission.
     o   <- get_olig()
+    if (!is_admin() && !bonus_game_in_selected_environment(o)) { showNotification("Bonus Pot is not active in the selected class section.", type="error"); return() }
     sec <- olig_section(o)
 
     if (as.character(o$round_status[1]) != "open") {
@@ -771,6 +893,7 @@ server <- function(input, output, session) {
   observeEvent(input$submit_bonus, {
     req(authed())
     o   <- get_olig()
+    if (!is_admin() && !bonus_game_in_selected_environment(o)) { showNotification("Bonus Pot is not active in the selected class section.", type="error"); return() }
     sec <- olig_section(o)
 
     if (as.character(o$round_status[1]) != "open") {
@@ -945,6 +1068,7 @@ server <- function(input, output, session) {
     if (!is_admin()) return(fluidPage(h4("Admin"), p("You are not an admin.")))
 
     o       <- olig_poll()
+    rv$environment_ver
     sec     <- olig_section(o)
     use_sec <- as.integer(o$use_section_size[1] %||% 1)
     has_col <- users_has_section_col()
@@ -952,7 +1076,10 @@ server <- function(input, output, session) {
     denom_lbl <- if (!is.na(cs)) sprintf("section class size (%d)", cs) else "submitter count"
 
     # Section choices derived from users table (re-read on each render)
-    sec_choices <- if (has_col) sections_choices() else setNames("", "(users table has no section column)")
+    allowed_sections <- unique_ci(session_environment_rows()$section)
+    all_sec_choices <- if (has_col) sections_choices() else setNames("", "(users table has no section column)")
+    sec_choices <- all_sec_choices[norm_key(as.character(all_sec_choices)) %in% norm_key(allowed_sections)]
+    if (!length(sec_choices)) sec_choices <- setNames("", "(no authorized sections)")
 
     # Radio button labels -- only two options, no free input
     cs_radio_lbl <- if (!is.na(cs))
@@ -997,7 +1124,7 @@ server <- function(input, output, session) {
         fluidRow(
           column(6, selectInput("impersonate_select", "Student to impersonate",
             choices = {
-              us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 ORDER BY display_name;")
+              us <- db_query("SELECT user_id, display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND LOWER(COALESCE(course,''))=LOWER(?) AND LOWER(COALESCE(section,''))=LOWER(?) ORDER BY display_name;", list(rv$active_course, rv$active_section))
               setNames(us$user_id, us$display_name)
             }
           )),
@@ -1017,7 +1144,7 @@ server <- function(input, output, session) {
           column(4,
             selectInput("adm_section", "Active Section",
                         choices  = sec_choices,
-                        selected = sec)
+                        selected = if (nzchar(rv$active_section)) rv$active_section else sec)
           ),
           column(5,
             radioButtons("adm_use_section_size", "Bonus pot denominator",
@@ -1099,6 +1226,9 @@ server <- function(input, output, session) {
     use_sec <- suppressWarnings(as.integer(input$adm_use_section_size %||% "1"))
     if (is.na(use_sec)) use_sec <- 1L
     sec     <- as.character(input$adm_section %||% "")
+    allowed_env <- session_environment_rows()
+    allowed_hit <- which(norm_key(allowed_env$course) == norm_key(rv$active_course) & norm_key(allowed_env$section) == norm_key(sec))
+    if (!length(allowed_hit)) { showNotification("Choose a class section you are authorized to manage.", type="error"); return() }
     cs      <- if (use_sec == 1L) section_class_size(sec) else NA_integer_
     denom_lbl <- if (!is.na(cs)) sprintf("section class size (%d)", cs) else "submitter count"
 
@@ -1140,6 +1270,7 @@ server <- function(input, output, session) {
   observeEvent(input$adm_clear, {
     req(is_admin())
     o   <- get_olig()
+    if (!is_admin() && !bonus_game_in_selected_environment(o)) { showNotification("Bonus Pot is not active in the selected class section.", type="error"); return() }
     r   <- as.integer(o$current_round[1])
     sec <- olig_section(o)
 
