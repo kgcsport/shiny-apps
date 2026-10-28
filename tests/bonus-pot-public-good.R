@@ -18,11 +18,15 @@ db_query <- function(sql, params=NULL) {
   data.frame()
 }
 db_exec <- function(sql, params=NULL) {
+  if (grepl("token_ledger", sql, fixed=TRUE) && grepl("round_id", sql, fixed=TRUE)) {
+    stop("Standalone Bonus Pot must use shared token_ledger.source_id, not a nonexistent round_id column.")
+  }
   if (grepl("coordination_grant", sql, fixed=TRUE)) ledger[[length(ledger)+1L]] <<- list(user_id=params[[4]], amount=params[[2]])
   invisible(1L)
 }
 
 app_root <- if (file.exists("apps/coordination-games/app.R")) "apps" else "/srv/shiny-server"
+app_text <- paste(readLines(file.path(app_root, "coordination-games", "app.R"), warn=FALSE), collapse="\n")
 app <- parse(file.path(app_root, "coordination-games", "app.R"))
 for (ex in app) {
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "bonus_shares") eval(ex, envir=globalenv())
@@ -33,5 +37,6 @@ stopifnot(result$ok, length(ledger) == 3L)
 stopifnot(identical(sort(vapply(ledger, `[[`, character(1), "user_id")), sort(roster$user_id)))
 stopifnot(all(vapply(ledger, `[[`, numeric(1), "amount") == 1))
 cjm <- paste(readLines(file.path(app_root, "class-job-market", "app.R"), warn=FALSE), collapse="\n")
+stopifnot(!grepl("token_ledger(user_id, display_name, round_id", app_text, fixed=TRUE))
 stopifnot(grepl("for (uid in as.character(recipients$user_id))", cjm, fixed=TRUE))
 cat("Bonus Pot public-good payout: OK\n")

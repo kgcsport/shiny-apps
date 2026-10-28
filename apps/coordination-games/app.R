@@ -370,7 +370,7 @@ apply_payouts <- function(round, game) {
       pay <- payouts$payout[i]
       if (!is.finite(pay) || pay <= 0) next
       db_exec(
-        "INSERT INTO token_ledger(user_id, display_name, round_id, source_type, amount, earning, note)
+        "INSERT INTO token_ledger(user_id, display_name, source_type, source_id, amount, earning, note)
          SELECT user_id, display_name, ?, 'coordination_grant', ?, 1, ?
          FROM users WHERE user_id=?;",
         list(as.integer(round), pay,
@@ -398,7 +398,7 @@ apply_payouts <- function(round, game) {
       p   <- pay$payout[i]
       if (!is.finite(p) || p <= 0) next
       db_exec(
-        "INSERT INTO token_ledger(user_id, display_name, round_id, source_type, amount, earning, note)
+        "INSERT INTO token_ledger(user_id, display_name, source_type, source_id, amount, earning, note)
          SELECT user_id, display_name, ?, 'coordination_grant', ?, 1, ?
          FROM users WHERE user_id=?;",
         list(as.integer(round), p,
@@ -432,12 +432,12 @@ debit_pending_contributions <- function(round, sec) {
     c_val <- suppressWarnings(as.numeric(subs$contribute[i]))
     if (!is.finite(c_val) || c_val <= 0) next
     already <- db_query(
-      "SELECT COUNT(*) n FROM token_ledger WHERE user_id=? AND round_id=? AND source_type='coordination_contrib';",
+      "SELECT COUNT(*) n FROM token_ledger WHERE user_id=? AND source_id=? AND source_type='coordination_contrib';",
       list(uid, as.integer(round))
     )$n[1]
     if (as.integer(already) > 0) next
     db_exec(
-      "INSERT INTO token_ledger(user_id, display_name, round_id, source_type, amount, earning, note)
+      "INSERT INTO token_ledger(user_id, display_name, source_type, source_id, amount, earning, note)
        SELECT user_id, display_name, ?, 'coordination_contrib', ?, 0, ?
        FROM users WHERE user_id=?;",
       list(as.integer(round), -c_val,
@@ -1374,7 +1374,7 @@ server <- function(input, output, session) {
     # balances are restored as if the round never happened.
     n_debits <- db_exec(
       "DELETE FROM token_ledger
-       WHERE round_id=? AND source_type='coordination_contrib'
+       WHERE source_id=? AND source_type='coordination_contrib'
          AND user_id IN (
            SELECT user_id FROM olig_submissions
            WHERE round=? AND (section=? OR section IS NULL)
