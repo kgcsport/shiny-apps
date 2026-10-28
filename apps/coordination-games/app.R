@@ -1091,18 +1091,27 @@ server <- function(input, output, session) {
             if (status == "revealed") tagList(h4("Pair outcomes"), tableOutput("proj_pd_counts"))
           )
         } else {
-          use_sec <- isTRUE(as.integer(o$use_section_size[1] %||% 1) == 1)
-          cs <- if (use_sec) section_class_size(olig_section(o)) else NA_integer_
-          cs_note <- if (!is.na(cs)) sprintf("Shared with %d enrolled students", cs) else sprintf("Shared among %d submitters", n)
-          tagList(
-            h4("Class contribution"),
-            p(sprintf("Total: %.2f participation tokens · Multiplier: %.2f× · %s", sum(as.numeric(subs$contribute), na.rm = TRUE), as.numeric(o$bonus_multiplier[1]), cs_note)),
-            plotOutput("proj_bonus_plot", height = "350px"),
-            if (status == "revealed") {
-              shares <- bonus_shares(o, subs %>% filter(game == "bonus"))
-              if (nrow(shares) > 0) div(class = "bp-result", h4("Round result"), p(sprintf("Pot total: %.2f · Each student receives: %.2f participation tokens", shares$pot_total[1], round_to_half(shares$share_each[1]))))
-            }
-          )
+          show_live_bids <- isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)
+          bids_visible <- identical(status, "revealed") || show_live_bids
+          if (!bids_visible) {
+            tagList(
+              h4("Class contribution"),
+              p(class="bp-note", "Contributions are sealed until the instructor reveals the round.")
+            )
+          } else {
+            use_sec <- isTRUE(as.integer(o$use_section_size[1] %||% 1) == 1)
+            cs <- if (use_sec) section_class_size(olig_section(o)) else NA_integer_
+            cs_note <- if (!is.na(cs)) sprintf("Shared with %d enrolled students", cs) else sprintf("Shared among %d submitters", n)
+            tagList(
+              h4("Class contribution"),
+              p(sprintf("Total: %.2f participation tokens · Multiplier: %.2f× · %s", sum(as.numeric(subs$contribute), na.rm = TRUE), as.numeric(o$bonus_multiplier[1]), cs_note)),
+              plotOutput("proj_bonus_plot", height = "350px"),
+              if (status == "revealed") {
+                shares <- bonus_shares(o, subs %>% filter(game == "bonus"))
+                if (nrow(shares) > 0) div(class = "bp-result", h4("Round result"), p(sprintf("Pot total: %.2f · Each student receives: %.2f participation tokens", shares$pot_total[1], round_to_half(shares$share_each[1]))))
+              }
+            )
+        }
         }
       )
     )
@@ -1127,6 +1136,9 @@ server <- function(input, output, session) {
   output$proj_bonus_plot <- renderPlot({
     st <- subs_poll(); o <- st$olig; subs <- st$subs
     r  <- as.integer(o$current_round[1])
+    bids_visible <- identical(as.character(o$round_status[1] %||% ""), "revealed") ||
+      isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)
+    req(bids_visible)
     df <- subs %>% filter(round == r, game == "bonus") %>%
       mutate(contribute = as.numeric(contribute))
     req(nrow(df) > 0)

@@ -15,7 +15,9 @@ required <- c(
   "observeEvent(input$reset_bonus",
   "Contribution reset to 0",
   "INSERT OR REPLACE INTO olig_submissions",
-  "round_status[1] %||% \"\"), \"revealed\")"
+  "round_status[1] %||% \"\"), \"revealed\")",
+  "Contributions are sealed until the instructor reveals the round.",
+  "req(bids_visible)"
 )
 missing <- required[!vapply(required, grepl, logical(1), x=source_text, fixed=TRUE)]
 if (length(missing)) stop("Bonus Pot contribution-reset contract missing: ", paste(missing, collapse=" | "))
@@ -28,7 +30,10 @@ con <- DBI::dbConnect(RSQLite::SQLite(), ":memory:")
 on.exit(DBI::dbDisconnect(con), add=TRUE)
 DBI::dbExecute(con, "CREATE TABLE olig_submissions(round INTEGER,user_id TEXT,contribute REAL,PRIMARY KEY(round,user_id))")
 DBI::dbExecute(con, "INSERT OR REPLACE INTO olig_submissions(round,user_id,contribute) VALUES(1,'student-a',62.5)")
+DBI::dbExecute(con, "INSERT OR REPLACE INTO olig_submissions(round,user_id,contribute) VALUES(1,'student-b',14)")
 DBI::dbExecute(con, "INSERT OR REPLACE INTO olig_submissions(round,user_id,contribute) VALUES(1,'student-a',0)")
 row <- DBI::dbGetQuery(con, "SELECT contribute FROM olig_submissions WHERE round=1 AND user_id='student-a'")
 if (nrow(row) != 1L || !identical(as.numeric(row$contribute[1]), 0)) stop("Reset did not replace the saved contribution with zero.")
+other <- DBI::dbGetQuery(con, "SELECT contribute FROM olig_submissions WHERE round=1 AND user_id='student-b'")
+if (nrow(other) != 1L || !identical(as.numeric(other$contribute[1]), 14)) stop("One student's replacement erased another student's simultaneous contribution.")
 cat("critical Bonus Pot contribution reset: OK\n")
