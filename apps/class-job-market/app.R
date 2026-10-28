@@ -11498,6 +11498,29 @@ server <- function(input, output, session) {
                  "Positive = award; negative = deduct. Applied to every active non-admin student.")
         ),
         tags$hr(),
+        tags$h6(style = "font-weight:700;color:#951829;", "Random Token Lottery"),
+        tags$p(style = "color:#555;font-size:.88rem;",
+               "Randomly award the same token amount to a draw without replacement. First choose one or more class/section environments above; optionally narrow the draw to a named subset."),
+        div(class = "spend-form-box",
+          if (!nrow(non_admin_students)) {
+            tags$p(style = "color:#999;", "No active students are in the selected account scope.")
+          } else {
+            tagList(
+              fluidRow(
+                column(5, selectizeInput("random_award_pool", "Optional subset of students:",
+                                          choices = setNames(non_admin_students$user_id, stu_lbl[match(non_admin_students$user_id, students$user_id)]),
+                                          multiple = TRUE,
+                                          options=list(placeholder="Leave blank to draw from everyone in scope"))),
+                column(2, numericInput("random_award_count", "Students to draw:", value = 1, min = 1, step = 1)),
+                column(2, numericInput("random_award_amount", "Tokens each:", value = 1, min = 0.01, step = 0.25)),
+                column(3, textInput("random_award_note", "Note:", value = "Random token lottery"))
+              ),
+              actionButton("random_award_btn", "Draw & award", class = "btn btn-warning btn-sm",
+                           onclick = "if(!confirm('Randomly select and award these students? This posts token credits immediately.')) return false;")
+            )
+          }
+        ),
+        tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Individual Adjustment"),
         tags$p(style = "color:#555;font-size:.88rem;",
                "Correct any active account's token balance at any time, including your own or another administrator's. Use a positive amount to add tokens or a negative amount to deduct them. The correction is recorded separately so the original committed job remains auditable."),
@@ -13305,6 +13328,46 @@ server <- function(input, output, session) {
               abs(as.integer(amount)), if (abs(amount) == 1) "" else "s",
               nrow(targets), if (nrow(targets) == 1) "" else "s"),
       type = "message")
+  })
+
+  observeEvent(input$random_award_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    amount <- suppressWarnings(as.numeric(input$random_award_amount %||% NA_real_))
+    n_draw <- suppressWarnings(as.integer(input$random_award_count %||% NA_integer_))
+    note <- trimws(input$random_award_note %||% "")
+    if (!is.finite(amount) || amount <= 0 || is.na(n_draw) || n_draw < 1L) {
+      showNotification("Enter a positive token amount and at least one student to draw.", type="error")
+      return()
+    }
+    candidates <- tryCatch(filter_admin_account_scope_rows(db_query(
+      "SELECT user_id,display_name,course,section FROM users
+       WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;")),
+      error=function(e)data.frame())
+    allowed_ids <- as.character(candidates$user_id %||% character(0))
+    requested <- unique(as.character(input$random_award_pool %||% character(0)))
+    if (length(requested)) candidates <- candidates[candidates$user_id %in% intersect(requested, allowed_ids), , drop=FALSE]
+    if (!nrow(candidates)) {
+      showNotification("No eligible students are in the selected lottery pool.", type="error")
+      return()
+    }
+    if (n_draw > nrow(candidates)) {
+      showNotification(sprintf("Only %d eligible student%s are in this pool.", nrow(candidates), if(nrow(candidates)==1) "" else "s"), type="error")
+      return()
+    }
+    winners <- candidates[sample(seq_len(nrow(candidates)), n_draw, replace=FALSE), , drop=FALSE]
+    label <- if (nzchar(note)) note else "Random token lottery"
+    for (i in seq_len(nrow(winners))) {
+      uid <- winners$user_id[i]
+      dname <- winners$display_name[i] %||% uid
+      token_credit(uid, dname, amount, 1L, "random_award", note=label)
+    }
+    names <- as.character(winners$display_name %||% winners$user_id)
+    names[is.na(names) | !nzchar(names)] <- winners$user_id[is.na(names) | !nzchar(names)]
+    showNotification(
+      sprintf("Randomly awarded %s token%s to %d student%s: %s.",
+              format(amount, trim=TRUE, scientific=FALSE), if(amount==1) "" else "s",
+              nrow(winners), if(nrow(winners)==1) "" else "s", paste(names, collapse=", ")),
+      type="message", duration=10)
   })
 
   observeEvent(input$indiv_award_btn, {
