@@ -1030,14 +1030,13 @@ server <- function(input, output, session) {
     }
   })
 
-  # Contributions remain sealed for students until Reveal by default. An
-  # instructor may explicitly enable the existing public-contribution setting
-  # to show the live named list before then.
+  # Student names and individual contributions are private by default, both
+  # before and after Reveal. Reveal publishes aggregate results; an instructor
+  # must explicitly enable this setting to publish the named contribution list.
   output$public_contribution_list <- renderUI({
     req(authed())
     st <- subs_poll(); o <- st$olig
-    visible <- identical(as.character(o$round_status[1] %||% ""), "revealed") ||
-      isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)
+    visible <- isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)
     if (!visible || !identical(as.character(o$current_game[1] %||% ""), "bonus")) return(NULL)
     rows <- st$subs %>%
       filter(game == "bonus") %>%
@@ -1053,9 +1052,7 @@ server <- function(input, output, session) {
     }
     div(class="bp-card bp-result",
         h4("Class contributions"),
-        p(class="bp-note", if (identical(as.character(o$round_status[1] %||% ""), "revealed"))
-          "The round has been revealed."
-          else "Your instructor has chosen to show live named contributions for this round."),
+        p(class="bp-note", "Your instructor has chosen to show named contributions publicly for this round."),
         tags$table(class="table table-sm table-striped", style="margin-bottom:0;",
           tags$thead(tags$tr(tags$th("Student"), tags$th(style="text-align:right;", "Contribution"))),
           tags$tbody(lapply(seq_len(nrow(rows)), function(i) {
@@ -1256,7 +1253,7 @@ server <- function(input, output, session) {
           ),
           column(4,
             checkboxInput("adm_show_contributions",
-                          "Show named contributions publicly",
+                          "Show student names and contributions publicly",
                           value=isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L))
           )
         ),
@@ -1316,6 +1313,18 @@ server <- function(input, output, session) {
       DTOutput("payout_audit")
     )
   })
+  # Named contributions are opt-in per round. A new round must start private
+  # rather than inheriting the prior roundround047s47s public display setting.
+  observeEvent(input$adm_round, {
+    req(is_admin())
+    requested_round <- suppressWarnings(as.integer(input$adm_round %||% NA))
+    current <- get_olig()
+    if (is.finite(requested_round) && nrow(current) &&
+        requested_round != as.integer(current$current_round[1] %||% NA)) {
+      updateCheckboxInput(session, "adm_show_contributions", value = FALSE)
+    }
+  }, ignoreInit = TRUE)
+
   observeEvent(input$adm_apply, {
     req(is_admin())
     use_sec <- suppressWarnings(as.integer(input$adm_use_section_size %||% "1"))

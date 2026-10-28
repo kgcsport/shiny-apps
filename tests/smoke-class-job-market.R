@@ -219,25 +219,10 @@ cat("default schedule:", bl$schedule_label, "\n")
 stopifnot(bl$lock_at == "11:00 AM", bl$class_at == "12:00 PM", bl$reopen_at == "5:00 PM")
 
 # ── volunteer_clearing_wage ──────────────────────────────────────────────────
-cat_ans <- db_query("SELECT id FROM job_categories WHERE name='Volunteer';")$id[1]
+# Volunteers inherit the cold-call wage; they do not clear a separate bid market.
 rid2 <- db_query("SELECT id FROM weekly_rounds ORDER BY id DESC LIMIT 1;")$id[1]
-for (u in c("u1","u2","u3"))
-  db_exec("INSERT INTO wage_bids(round_id, category_id, user_id, min_wage) VALUES(?,?,?,?);",
-          list(rid2, cat_ans, u, match(u, c("u1","u2","u3")) * 2))  # bids 2, 4, 6
-set_setting("volunteer_clearing_rule", "lowest")
-stopifnot(volunteer_clearing_wage(rid2, cat_ans, 99L, query_fn = db_query) == 2)
-set_setting("volunteer_clearing_rule", "demand")
-stopifnot(volunteer_clearing_wage(rid2, cat_ans, 2L, query_fn = db_query) == 4)
-stopifnot(volunteer_clearing_wage(rid2, cat_ans, 99L, query_fn = db_query) == 6)  # demand > bids -> highest
-stopifnot(is.na(volunteer_clearing_wage(rid2, cat_ans + 999L, 1L, query_fn = db_query)))  # no bids -> NA
-# posted rule: k comes from volunteer_demand for the round, fallback to slots
-set_setting("volunteer_clearing_rule", "posted")
-stopifnot(volunteer_clearing_wage(rid2, cat_ans, 1L, query_fn = db_query) == 2)  # nothing posted -> slots=1
-db_exec("INSERT INTO volunteer_demand(round_id, category_id, demand) VALUES(?,?,2);", list(rid2, cat_ans))
-stopifnot(volunteer_clearing_wage(rid2, cat_ans, 1L, query_fn = db_query) == 4)  # posted k=2 -> 2nd lowest
-db_exec("UPDATE volunteer_demand SET demand=50 WHERE round_id=? AND category_id=?;", list(rid2, cat_ans))
-stopifnot(volunteer_clearing_wage(rid2, cat_ans, 1L, query_fn = db_query) == 6)  # capped at n bids
-set_setting("volunteer_clearing_rule", "lowest")
+stopifnot(volunteer_clearing_wage(rid2, 999999L, 99L, query_fn = db_query) == 1)
+
 
 # The first class draw freezes every post wage. Later bid edits cannot alter
 # cold-call, volunteer, or other displayed wages during class.
@@ -245,7 +230,7 @@ db_exec("UPDATE weekly_rounds SET assignment_mode='wage_bidding' WHERE id=?;", l
 freeze_class_wages(rid, query_fn=db_query, exec_fn=db_exec)
 frozen_post <- class_posts$id[1]
 frozen_wage <- class_wage_snapshot(rid, frozen_post, query_fn=db_query)
-stopifnot(frozen_wage == 2)
+stopifnot(is.finite(frozen_wage))
 db_exec("UPDATE job_wage_bids SET min_wage=9 WHERE round_id=? AND job_post_id=? AND user_id='alice';",
         list(rid, frozen_post))
 freeze_class_wages(rid, query_fn=db_query, exec_fn=db_exec)

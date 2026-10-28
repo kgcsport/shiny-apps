@@ -7440,14 +7440,16 @@ server <- function(input, output, session) {
     if (identical(as.character(ev$event_kind[1]), "assignment")) {
       assign_id <- as.integer(ev$job_assignment_id[1])
       cur <- tryCatch(db_query(
-        "SELECT COALESCE(tokens_awarded,0) AS tokens_awarded FROM job_assignments WHERE id=?;",
+        "SELECT assigned_wage, COALESCE(tokens_awarded,0) AS tokens_awarded FROM job_assignments WHERE id=?;",
         list(assign_id)), error=function(e) data.frame())
       if (!nrow(cur) || as.integer(cur$tokens_awarded[1] %||% 0L) == 1L) {
         db_exec("UPDATE live_score_events SET committed_at=datetime('now') WHERE id=?;",
                 list(as.integer(ev$id[1])))
         return(FALSE)
       }
-      final_wage <- as.numeric(cur$current_wage[1] %||% 0)
+      # An assignment's wage is fixed when it is assigned. Never look up the
+      # mutable post/category wage when scoring it.
+      final_wage <- as.numeric(cur$assigned_wage[1] %||% 0)
       tokens_to_award <- switch(outcome,
         complete = final_wage,
         tried = 1,
@@ -12321,7 +12323,8 @@ server <- function(input, output, session) {
     }
     uid   <- row$user_id[1]
     dname <- row$display_name[1] %||% uid
-    wage  <- as.numeric(row$current_wage[1] %||% 0)
+    # Complete jobs pay the wage snapshotted on the assignment.
+    wage  <- as.numeric(row$assigned_wage[1] %||% 0)
     tokens_to_award <- switch(outcome,
       complete = wage,
       tried    = 1,
