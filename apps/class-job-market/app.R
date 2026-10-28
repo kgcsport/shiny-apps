@@ -3921,6 +3921,8 @@ server <- function(input, output, session) {
           "SELECT COALESCE(group_concat(sig,'|'),'') ts FROM (
              SELECT jp.id || ':' || COALESCE(jp.wage_override,'') || ':' ||
                     COALESCE(jc.default_wage,'') || ':' ||
+                    COALESCE(jp.selection_time,'') || ':' ||
+                    COALESCE(jc.selection_time,'') || ':' ||
                     COALESCE(jp.description,'') AS sig
              FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
              ORDER BY jp.id);")$ts[1] %||% "",
@@ -3963,7 +3965,8 @@ server <- function(input, output, session) {
                 COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS assigned_wage,
                 wr.label AS round_label,
                 COALESCE(jp.description,'') AS description,
-                COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time
+                COALESCE(NULLIF(NULLIF(ja.selection_time,''),'any'),
+                         NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time
          FROM job_assignments ja
          JOIN job_posts jp ON jp.id=ja.job_post_id
          LEFT JOIN job_categories jc ON jc.id=jp.category_id
@@ -3985,7 +3988,8 @@ server <- function(input, output, session) {
                 COALESCE(ja.assignment_mode,'') AS assignment_mode,
                 COALESCE(jp.description,'') AS description,
                 COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0) AS assigned_wage,
-                COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time
+                COALESCE(NULLIF(NULLIF(ja.selection_time,''),'any'),
+                         NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS selection_time
          FROM job_assignments ja
          JOIN users u ON u.user_id=ja.user_id
          JOIN job_posts jp ON jp.id=ja.job_post_id
@@ -13674,13 +13678,15 @@ server <- function(input, output, session) {
     pairs <- compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
     if (!length(pairs)) { showNotification("Draw produced no assignments.", type = "error"); return() }
 
+    post_timing <- setNames(as.character(posts$selection_time %||% "any"), as.character(posts$id))
     for (p in pairs) {
+      assignment_timing <- post_timing[[as.character(p$post_id)]] %||% "any"
       db_exec(
-        "INSERT OR IGNORE INTO job_assignments(round_id, user_id, job_post_id, assigned_wage, assignment_mode)
-         VALUES(?,?,?,?,?);",
+        "INSERT OR IGNORE INTO job_assignments(round_id, user_id, job_post_id, assigned_wage, assignment_mode, selection_time)
+         VALUES(?,?,?,?,?,?);",
         list(target_rid, p$uid, p$post_id,
              if (is.na(p$wage %||% NA)) NA_real_ else as.numeric(p$wage),
-             mode))
+             mode, assignment_timing))
     }
     freeze_class_wages(rid)
     bid_close_note <- if (timing_filter %in% c("all", "start"))
