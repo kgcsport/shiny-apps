@@ -11318,11 +11318,11 @@ server <- function(input, output, session) {
 
     } else if (act == "token_admin") {
       students <- tryCatch(db_query(
-        "SELECT u.user_id, u.display_name, u.course, u.section,
+        "SELECT u.user_id, u.display_name, u.course, u.section, u.is_admin,
                 COALESCE(SUM(tl.amount),0) AS tokens_on_hand
          FROM users u
          LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
-         WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
+         WHERE COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
          GROUP BY u.user_id ORDER BY u.course, u.section, u.display_name;"),
         error = function(e) data.frame())
       students <- scope_filter_rows(students)
@@ -11376,6 +11376,7 @@ server <- function(input, output, session) {
           scope_choices <- c(scope_choices, setNames(scope_values, scope_labels))
         }
       }
+      non_admin_students <- if (nrow(students)) students[as.integer(students$is_admin %||% 0L) == 0L, , drop=FALSE] else data.frame()
       stu_lbl  <- if (nrow(students)) {
         sec_lbl <- as.character(students$section %||% "")
         course_lbl <- as.character(students$course %||% "")
@@ -11399,7 +11400,7 @@ server <- function(input, output, session) {
                    tags$b(style="color:#856404;", "Pending"), " = earned from jobs but not yet released — deductions consume these first."),
             tags$table(class = "table table-sm",
               tags$thead(tags$tr(
-                tags$th("Student"), tags$th("Class"), tags$th("Section"),
+                tags$th("Account"), tags$th("Class"), tags$th("Section"),
                 tags$th(style="text-align:right;", "On Hand"),
                 tags$th(style="text-align:right;color:#856404;", "Pending")
               )),
@@ -11441,13 +11442,13 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Individual Adjustment"),
         tags$p(style = "color:#555;font-size:.88rem;",
-               "Correct a student's token balance at any time, including after a job score is committed. Use a positive amount to add tokens or a negative amount to deduct them. The correction is recorded separately so the original committed job remains auditable."),
+               "Correct any active account's token balance at any time, including your own or another administrator's. Use a positive amount to add tokens or a negative amount to deduct them. The correction is recorded separately so the original committed job remains auditable."),
         div(class = "spend-form-box",
           if (!nrow(students)) {
-            tags$p(style = "color:#999;", "No students found.")
+            tags$p(style = "color:#999;", "No accounts found.")
           } else {
             fluidRow(
-              column(4, selectInput("indiv_uid", "Student:",
+              column(4, selectInput("indiv_uid", "Account:",
                                     choices = setNames(students$user_id, stu_lbl))),
               column(2, numericInput("indiv_amount", "Amount (+/-):", value = 1, step = 0.25)),
               column(4, textInput("indiv_note", "Correction note:", placeholder = "e.g. correct committed job wage")),
@@ -11461,12 +11462,12 @@ server <- function(input, output, session) {
         tags$p(style = "color:#555;font-size:.88rem;",
                "Award the same positive earned-token amount to a selected crew or group. Use this for one verified Taboo crew at a time."),
         div(class = "spend-form-box",
-          if (!nrow(students)) {
+          if (!nrow(non_admin_students)) {
             tags$p(style = "color:#999;", "No students found.")
           } else {
             fluidRow(
               column(5, selectizeInput("crew_award_uids", "Students:",
-                                        choices = setNames(students$user_id, stu_lbl),
+                                        choices = setNames(non_admin_students$user_id, stu_lbl[match(non_admin_students$user_id, students$user_id)]),
                                         multiple = TRUE)),
               column(2, numericInput("crew_award_amount", "Amount each:",
                                      value = 0.25, min = 0.01, step = 0.25)),
@@ -13247,8 +13248,10 @@ server <- function(input, output, session) {
     amount <- suppressWarnings(as.numeric(input$indiv_amount %||% 0))
     note   <- trimws(input$indiv_note %||% "")
     if (!nzchar(uid) || is.na(amount) || amount == 0) {
-      showNotification("Select a student and enter a non-zero amount.", type = "error"); return()
+      showNotification("Select an account and enter a non-zero amount.", type = "error"); return()
     }
+    eligible <- tryCatch(scope_filter_rows(db_query("SELECT user_id,course,section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;")), error=function(e)data.frame())
+    if (!uid %in% as.character(eligible$user_id %||% character(0))) { showNotification("Select an active account in your authorized class or section.", type="error"); return() }
     u_row  <- db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid))
     dname  <- if (nrow(u_row)) u_row$display_name[1] %||% uid else uid
     lbl    <- if (nzchar(note)) note else "individual adjustment"

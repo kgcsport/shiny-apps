@@ -851,3 +851,5 @@ If the intended behavior or a scope decision is ambiguous, stop and ask rather t
 - **2026-10-27** — Replaced the banner’s combined environment selector with a closed-by-default compact “Class / section” control containing separate class and section dropdowns.
 
 - **2026-10-28** — Standalone Bonus Pot now uses the Classroom Economy red banner and the same closed-by-default, two-dropdown class/section picker. The picker is session-local and restricted to the signed-in user’s authorized environments; it never silently changes the shared live round. A selected section only accepts play when Bonus Pot is active for that scope, while an authorized instructor can explicitly apply round settings from the standalone admin panel.
+
+- **2026-10-28** — Token Admin’s individual adjustment roster includes active non-demo administrator accounts (including the signed-in administrator), but bulk and crew awards remain student-only. The adjustment handler verifies the target is inside the administrator’s current authorized class/section scope before writing the audited ledger correction.
