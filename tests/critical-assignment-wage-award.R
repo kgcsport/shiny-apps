@@ -15,3 +15,17 @@ eval_source <- substr(source_text, eval_start[[1]], eval_start[[1]] + 4000L)
 if (!grepl("wage  <- as.numeric(row$assigned_wage[1] %||% 0)", eval_source, fixed = TRUE)) stop("Assignment evaluation must queue complete jobs at their assigned wage.")
 if (grepl("row$current_wage", eval_source, fixed = TRUE)) stop("Assignment evaluation must not read undeclared current_wage.")
 cat("critical assignment wage award: OK\n")
+
+# Repair contract: historical remediation is narrow, idempotent, and opt-in.
+repair_required <- c(
+  "zeroed_completed_job_repairs <- function()",
+  "COALESCE(ja.assigned_wage,0)>0",
+  "COALESCE(ja.tokens_awarded,0)=0",
+  "lse.event_kind='assignment' AND lse.committed_at IS NOT NULL",
+  "tl.source_type='job' AND tl.source_id=ja.id AND tl.amount>0",
+  "repair_zeroed_jobs_btn",
+  "Repair prior zero-token completed jobs",
+  "Repair: completed job previously recorded as 0"
+)
+repair_missing <- repair_required[!vapply(repair_required, grepl, logical(1), x = source_text, fixed = TRUE)]
+if (length(repair_missing)) stop("Completed-job zero repair contract missing: ", paste(repair_missing, collapse = " | "))

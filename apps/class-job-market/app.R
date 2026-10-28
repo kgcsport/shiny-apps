@@ -7489,6 +7489,28 @@ server <- function(input, output, session) {
     TRUE
   }
 
+  zeroed_completed_job_repairs <- function() {
+    rows <- tryCatch(db_query("SELECT ja.id, ja.user_id, u.display_name, ja.assigned_wage FROM job_assignments ja JOIN users u ON u.user_id=ja.user_id WHERE LOWER(TRIM(COALESCE(ja.outcome,'')))='complete' AND COALESCE(ja.assigned_wage,0)>0 AND COALESCE(ja.tokens_awarded,0)=0 AND EXISTS (SELECT 1 FROM live_score_events lse WHERE lse.job_assignment_id=ja.id AND lse.event_kind='assignment' AND lse.committed_at IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM token_ledger tl WHERE tl.user_id=ja.user_id AND tl.source_type='job' AND tl.source_id=ja.id AND tl.amount>0);"), error=function(e)data.frame())
+    scope_filter_rows(rows)
+  }
+
+  observeEvent(input$repair_zeroed_jobs_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    rows <- zeroed_completed_job_repairs()
+    if (!nrow(rows)) { showNotification("No completed zero-token job awards need repair in this class scope.", type="message"); return() }
+    repaired <- 0L
+    for (i in seq_len(nrow(rows))) {
+      r <- rows[i, ]
+      wage <- as.numeric(r$assigned_wage[1])
+      db_exec("UPDATE job_assignments SET tokens_awarded=?, tokens_credited=1, updated_at=datetime('now') WHERE id=? AND LOWER(TRIM(COALESCE(outcome,'')))='complete' AND COALESCE(tokens_awarded,0)=0;", list(wage, as.integer(r$id[1])))
+      db_exec("UPDATE live_score_events SET tokens=?, tokens_credited=1 WHERE job_assignment_id=? AND event_kind='assignment' AND outcome='complete' AND committed_at IS NOT NULL;", list(wage, as.integer(r$id[1])))
+      token_credit(r$user_id[1], r$display_name[1] %||% r$user_id[1], wage, 1L, "job", as.integer(r$id[1]), note="Repair: completed job previously recorded as 0")
+      repaired <- repaired + 1L
+    }
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification(sprintf("Repaired and credited %d completed job award%s.", repaired, if (repaired == 1L) "" else "s"), type="message")
+  }, ignoreNULL=TRUE)
+
   observeEvent(input$drop_live_score_btn, {
     req(rv$is_admin, !rv$impersonating)
     eid <- suppressWarnings(as.integer(input$drop_live_score_btn %||% 0))
@@ -9464,6 +9486,12 @@ server <- function(input, output, session) {
       wellPanel(
         tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
                 "Live Score Audit"),
+        actionButton("repair_zeroed_jobs_btn", "Repair prior zero-token completed jobs",
+                     class = "btn btn-outline-warning btn-sm",
+                     style = "margin-bottom:.55rem;",
+                     title = "Credit only completed jobs with a positive stored wage, a zero award, and no existing job-token credit",
+                     onclick = "if(!confirm('Repair only completed jobs that have a positive saved wage but were mistakenly recorded at 0 tokens? Missed jobs and already credited jobs are excluded.')) return false;"),
+
         if (!nrow(pending_show)) {
           tags$p(style = "color:#999;margin:0;",
                  "No pending live scores. Taps during class will queue here for review.")
