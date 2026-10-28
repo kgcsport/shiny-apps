@@ -3587,10 +3587,10 @@ server <- function(input, output, session) {
         column(4, selectInput("bp_admin_status", "Status", choices=c("Pending"="pending", "Open"="open", "Closed"="closed", "Revealed"="revealed"), selected=status))
       ),
       checkboxInput("bp_admin_show_contributions",
-                    "Show named student contributions publicly for this round",
+                    "Show named student contributions live before reveal",
                     value=isTRUE(as.integer(s$show_contributions[1] %||% 0L) == 1L)),
       tags$p(style="color:#666;font-size:.8rem;margin:-.4rem 0 .6rem;",
-             "Off by default. When enabled, students can see each contributor's name and contribution amount in Bonus Pot."),
+             "Off by default: student contributions stay sealed until Reveal. Enable only to show the live named contribution list during the round."),
       div(style="display:flex;gap:.4rem;flex-wrap:wrap;",
         actionButton("bp_admin_save", "Save setup", class="btn btn-primary btn-sm"),
         actionButton("bp_admin_open", "Open", class="btn btn-success btn-sm"),

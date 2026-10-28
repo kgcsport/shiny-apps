@@ -853,3 +853,52 @@ If the intended behavior or a scope decision is ambiguous, stop and ask rather t
 - **2026-10-28** — Standalone Bonus Pot now uses the Classroom Economy red banner and the same closed-by-default, two-dropdown class/section picker. The picker is session-local and restricted to the signed-in user’s authorized environments; it never silently changes the shared live round. A selected section only accepts play when Bonus Pot is active for that scope, while an authorized instructor can explicitly apply round settings from the standalone admin panel.
 
 - **2026-10-28** — Token Admin’s individual adjustment roster includes active non-demo administrator accounts (including the signed-in administrator), but bulk and crew awards remain student-only. The adjustment handler verifies the target is inside the administrator’s current authorized class/section scope before writing the audited ledger correction.
+
+## Frozen Navigation Consolidation Plan (2026-10-28)
+
+This is a **design contract, not an implementation task**. Do not reorganize
+student-facing navigation until the preservation tests below are written and
+passing.
+
+### Student navigation
+
+The eventual student navigation has five tabs, each representing a distinct way
+to engage with the course:
+
+| Tab | Purpose | Preserved content |
+|---|---|---|
+| **Account** | Personal status | A compact Today subsection, token balance/history, grades, and personal job history. |
+| **Participation** | In-class labor market | Job pools, bids, revealed draws, current assignments, and active-game entry points. |
+| **Spend** | Token choices | Extensions, reweighting, flex-question funding, and refund/approval requests. |
+| **Assignments** | Course work | Problem-set status/deadlines, policy-brief topic/question, presentation, progress report, final submission, and relevant assessment information. |
+| **Games & Demos** | Interactive activities | Active game and the elective demo catalog. |
+
+**Live Tracker** and **Settings** remain administrator-only. They must be
+server-side authorization guarded, not merely hidden in the browser.
+
+### Safe implementation constraints
+
+- This is a UI and navigation refactor only: no grade, job, bid, token, roster,
+  policy-team, or game state may be migrated, recomputed, or deleted.
+- Do not render the same Shiny output ID in two places. Extract reusable UI
+  helpers for Today/Participation components instead.
+- Preserve every current action handler and database query unless a dedicated
+  regression test shows the replacement is behaviorally identical.
+- Update every programmatic tab navigation (`updateTabsetPanel`), active-tab
+  poll gate, help link, and return path alongside the visible tab labels.
+- Maintain the current scoped course/section rules for students and admins.
+
+### Required regression checks before release
+
+1. A student sees exactly Account, Participation, Spend, Assignments, and Games
+   & Demos; an authorized admin additionally sees Live Tracker and Settings.
+2. Participation still permits the applicable wage/ticket bid flow, shows the
+   correct reveal state, and exposes assignment instructions and active-game
+   entry points.
+3. Account retains Today-status, token balance/history, grades, and job history.
+4. Assignments retains problem-set deadlines and all student/admin Policy Brief
+   workflows, including topic review and rubric navigation.
+5. Direct client-side attempts to select an admin tab cannot expose admin data or
+   mutate it.
+6. Existing records render from their existing tables with no data migration.
+7. All navigation buttons and polling paths resolve to a live destination after

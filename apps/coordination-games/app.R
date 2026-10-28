@@ -781,7 +781,9 @@ server <- function(input, output, session) {
     valueFunc  = function() get_olig()
   )
 
-  # Poll every 1200ms: submissions filtered to the current section.
+  # Poll every 1200ms: submissions filtered to the current section. The
+  # signature includes values, not merely row count: a student may replace an
+  # existing Bonus Pot contribution, including replacing it with zero.
   subs_poll <- reactivePoll(
     1200, session,
     checkFunc = function() {
@@ -789,9 +791,12 @@ server <- function(input, output, session) {
       paste0(
         o$updated_at[1] %||% "", "|",
         db_query(
-          "SELECT COUNT(*) n FROM olig_submissions WHERE round=? AND (section=? OR section IS NULL);",
+          "SELECT COUNT(*) || '|' || COALESCE(SUM(COALESCE(contribute,0)),0) || '|' ||
+                  COALESCE(GROUP_CONCAT(user_id || ':' || COALESCE(contribute,'') || ':' || COALESCE(action,''), '|'),'') AS sig
+             FROM olig_submissions
+             WHERE round=? AND (section=? OR section IS NULL);",
           list(as.integer(o$current_round[1]), olig_section(o))
-        )$n[1]
+        )$sig[1] %||% ""
       )
     },
     valueFunc = function() {
@@ -852,7 +857,10 @@ server <- function(input, output, session) {
         } else {
           tagList(
             sliderInput("bonus_c", "Contribution (participation tokens)", min = 0, max = max(0, floor(eff_max * 2) / 2), value = 0, step = 0.5),
-            if (status == "open") actionButton("submit_bonus", "Save my contribution", class = "btn-primary bp-submit"),
+            if (status == "open") div(class="bp-actions",
+              actionButton("submit_bonus", "Save / replace contribution", class = "btn-primary bp-submit"),
+              actionButton("reset_bonus", "Reset to 0", class = "btn-default bp-submit")
+            ),
             p(class = "bp-note", sprintf("Multiplier: %.2f×. %s Contributions are debited only when the round closes.", as.numeric(o$bonus_multiplier[1]), cs_note))
           )
         }
@@ -934,9 +942,32 @@ server <- function(input, output, session) {
            as.character(name()), c_val, sec)
     )
     showNotification(
-      sprintf("Saved %.1f participation token(s) as your contribution. You can change it until the round closes.", c_val),
+      sprintf("Saved %.1f participation token(s) as your contribution. You can replace or reset it until the round closes.", c_val),
       type = "message"
     )
+  })
+
+  observeEvent(input$reset_bonus, {
+    req(authed())
+    o <- get_olig()
+    if (!is_admin() && !bonus_game_in_selected_environment(o)) {
+      showNotification("Bonus Pot is not active in the selected class section.", type="error")
+      return()
+    }
+    if (as.character(o$round_status[1]) != "open" ||
+        as.character(o$current_game[1]) != "bonus") {
+      showNotification("This Bonus Pot round is not open for changes.", type="error")
+      return()
+    }
+    sec <- olig_section(o)
+    db_exec(
+      "INSERT OR REPLACE INTO olig_submissions(round, user_id, display_name, game, action, contribute, section)
+       VALUES(?, ?, ?, 'bonus', NULL, 0, ?);",
+      list(as.integer(o$current_round[1]), as.character(user_id()),
+           as.character(name()), sec)
+    )
+    updateSliderInput(session, "bonus_c", value=0)
+    showNotification("Contribution reset to 0. You can still replace it until the round closes.", type="message")
   })
 
   output$student_result <- renderUI({
@@ -951,7 +982,9 @@ server <- function(input, output, session) {
         c_saved <- suppressWarnings(as.numeric(my_sub$contribute[1]))
         c_saved <- if (is.finite(c_saved)) c_saved else 0
         return(tagList(
-          p(strong(sprintf("Saved contribution: %.1f participation token(s).", c_saved))),
+          p(strong(if (c_saved > 0)
+            sprintf("Saved contribution: %.1f participation token(s).", c_saved)
+            else "Your contribution is set to 0.")),
           p(if (status == "open")
               "You can update your contribution until the round closes."
             else
@@ -997,12 +1030,14 @@ server <- function(input, output, session) {
     }
   })
 
-  # Named contributions are only shown when an instructor explicitly enables
-  # the current Bonus Pot round's public-contribution setting.
+  # Contributions remain sealed for students until Reveal by default. An
+  # instructor may explicitly enable the existing public-contribution setting
+  # to show the live named list before then.
   output$public_contribution_list <- renderUI({
     req(authed())
     st <- subs_poll(); o <- st$olig
-    visible <- isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)
+    visible <- identical(as.character(o$round_status[1] %||% ""), "revealed") ||
+      isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)
     if (!visible || !identical(as.character(o$current_game[1] %||% ""), "bonus")) return(NULL)
     rows <- st$subs %>%
       filter(game == "bonus") %>%
@@ -1018,7 +1053,9 @@ server <- function(input, output, session) {
     }
     div(class="bp-card bp-result",
         h4("Class contributions"),
-        p(class="bp-note", "Your instructor has chosen to share named contributions for this round."),
+        p(class="bp-note", if (identical(as.character(o$round_status[1] %||% ""), "revealed"))
+          "The round has been revealed."
+          else "Your instructor has chosen to show live named contributions for this round."),
         tags$table(class="table table-sm table-striped", style="margin-bottom:0;",
           tags$thead(tags$tr(tags$th("Student"), tags$th(style="text-align:right;", "Contribution"))),
           tags$tbody(lapply(seq_len(nrow(rows)), function(i) {
