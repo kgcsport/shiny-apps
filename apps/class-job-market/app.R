@@ -495,6 +495,7 @@ db_exec("
     pd_scale REAL DEFAULT 0.1,
     contrib_cap REAL DEFAULT 0,
     use_section_size INTEGER DEFAULT 1,
+    show_contributions INTEGER DEFAULT 0,
     section TEXT DEFAULT '',
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
@@ -508,6 +509,7 @@ ensure_column("olig_settings", "pd_LH_A REAL")
 ensure_column("olig_settings", "pd_LH_B REAL")
 ensure_column("olig_settings", "pd_LL_A REAL")
 ensure_column("olig_settings", "pd_LL_B REAL")
+ensure_column("olig_settings", "show_contributions INTEGER DEFAULT 0")
 db_exec("CREATE TABLE IF NOT EXISTS olig_rounds(
   round INTEGER PRIMARY KEY, game TEXT NOT NULL, status TEXT NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -3544,6 +3546,11 @@ server <- function(input, output, session) {
         column(4, numericInput("bp_admin_cap", "Contribution cap (0 = none)", value=as.numeric(s$contrib_cap[1] %||% 0), min=0, step=.5)),
         column(4, selectInput("bp_admin_status", "Status", choices=c("Pending"="pending", "Open"="open", "Closed"="closed", "Revealed"="revealed"), selected=status))
       ),
+      checkboxInput("bp_admin_show_contributions",
+                    "Show named student contributions publicly for this round",
+                    value=isTRUE(as.integer(s$show_contributions[1] %||% 0L) == 1L)),
+      tags$p(style="color:#666;font-size:.8rem;margin:-.4rem 0 .6rem;",
+             "Off by default. When enabled, students can see each contributor's name and contribution amount in Bonus Pot."),
       div(style="display:flex;gap:.4rem;flex-wrap:wrap;",
         actionButton("bp_admin_save", "Save setup", class="btn btn-primary btn-sm"),
         actionButton("bp_admin_open", "Open", class="btn btn-success btn-sm"),
@@ -11944,9 +11951,10 @@ server <- function(input, output, session) {
       return(FALSE)
     }
     if (!status %in% c("pending", "open", "closed", "revealed")) status <- "pending"
-    db_exec("UPDATE olig_settings SET current_round=?,current_game='bonus',round_status=?,bonus_multiplier=?,contrib_cap=?,use_section_size=?,section=?,updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+    db_exec("UPDATE olig_settings SET current_round=?,current_game='bonus',round_status=?,bonus_multiplier=?,contrib_cap=?,use_section_size=?,show_contributions=?,section=?,updated_at=CURRENT_TIMESTAMP WHERE id=1;",
             list(round_id, status, multiplier, cap,
                  if (identical(input$bp_admin_denominator %||% "enrolled", "enrolled")) 1L else 0L,
+                 if (isTRUE(input$bp_admin_show_contributions)) 1L else 0L,
                  section))
     db_exec("INSERT INTO olig_rounds(round,game,status) VALUES(?,'bonus',?) ON CONFLICT(round) DO UPDATE SET game='bonus',status=excluded.status;",
             list(round_id, status))

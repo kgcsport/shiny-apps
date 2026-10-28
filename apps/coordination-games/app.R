@@ -86,6 +86,14 @@ db_query <- function(sql, params = NULL) DBI::dbGetQuery(get_con(), sql, params 
 # does not create a second set of tables or defaults when launched directly.
 init_olig <- function() invisible(TRUE)
 init_olig()
+# Class Job Market owns the shared schema, but this idempotent migration lets
+# a direct Bonus Pot visit work immediately after deployment as well.
+ensure_olig_column <- function(name, definition) {
+  cols <- tryCatch(db_query("PRAGMA table_info(olig_settings);")$name,
+                   error = function(e) character(0))
+  if (!name %in% cols) db_exec(paste0("ALTER TABLE olig_settings ADD COLUMN ", definition, ";"))
+}
+ensure_olig_column("show_contributions", "show_contributions INTEGER DEFAULT 0")
 touch_olig <- function() db_exec("UPDATE olig_settings SET updated_at=CURRENT_TIMESTAMP WHERE id=1;")
 get_olig <- function() db_query("SELECT * FROM olig_settings WHERE id=1;")
 
@@ -849,7 +857,8 @@ server <- function(input, output, session) {
           )
         }
       ),
-      div(class = "bp-card bp-result", uiOutput("student_result"))
+      div(class = "bp-card bp-result", uiOutput("student_result")),
+      uiOutput("public_contribution_list")
     )
   })
 
@@ -986,6 +995,38 @@ server <- function(input, output, session) {
         p(sprintf("Payout to participation tokens: %.2f (credited; rounded to nearest 0.5)", payout))
       )
     }
+  })
+
+  # Named contributions are only shown when an instructor explicitly enables
+  # the current Bonus Pot round's public-contribution setting.
+  output$public_contribution_list <- renderUI({
+    req(authed())
+    st <- subs_poll(); o <- st$olig
+    visible <- isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)
+    if (!visible || !identical(as.character(o$current_game[1] %||% ""), "bonus")) return(NULL)
+    rows <- st$subs %>%
+      filter(game == "bonus") %>%
+      transmute(
+        Student = ifelse(!is.na(display_name) & nzchar(trimws(as.character(display_name))),
+                         as.character(display_name), "Student"),
+        Contribution = sprintf("%.1f", suppressWarnings(as.numeric(contribute)))
+      ) %>%
+      arrange(Student)
+    if (!nrow(rows)) {
+      return(div(class="bp-card bp-result", h4("Class contributions"),
+                 p(class="bp-note", "No contributions have been submitted yet.")))
+    }
+    div(class="bp-card bp-result",
+        h4("Class contributions"),
+        p(class="bp-note", "Your instructor has chosen to share named contributions for this round."),
+        tags$table(class="table table-sm table-striped", style="margin-bottom:0;",
+          tags$thead(tags$tr(tags$th("Student"), tags$th(style="text-align:right;", "Contribution"))),
+          tags$tbody(lapply(seq_len(nrow(rows)), function(i) {
+            tags$tr(tags$td(rows$Student[i]),
+                    tags$td(style="text-align:right;", rows$Contribution[i]))
+          }))
+        )
+    )
   })
 
   # ---------------- Projector UI ----------------
@@ -1163,6 +1204,11 @@ server <- function(input, output, session) {
             selectInput("adm_status", "Status",
                         choices  = c("open", "closed", "revealed"),
                         selected = as.character(o$round_status[1]))
+          ),
+          column(4,
+            checkboxInput("adm_show_contributions",
+                          "Show named contributions publicly",
+                          value=isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L))
           )
         ),
         actionButton("adm_apply", "Apply round settings", class = "btn-primary"),
@@ -1234,9 +1280,10 @@ server <- function(input, output, session) {
 
     db_exec(
       "UPDATE olig_settings SET current_round=?, current_game=?, round_status=?,
-       section=?, use_section_size=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+       section=?, use_section_size=?, show_contributions=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
       list(as.integer(input$adm_round), as.character(input$adm_game),
-           as.character(input$adm_status), sec, use_sec)
+           as.character(input$adm_status), sec, use_sec,
+           if (isTRUE(input$adm_show_contributions)) 1L else 0L)
     )
     db_exec(
       "INSERT OR IGNORE INTO olig_rounds(round, game, status) VALUES(?, ?, ?);",
