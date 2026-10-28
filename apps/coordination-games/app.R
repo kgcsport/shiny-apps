@@ -449,15 +449,26 @@ login_ui <- function(msg = NULL) {
   fluidPage(
     titlePanel("Bonus Pot"),
     if (!is.null(msg)) div(style = "color:#b00020; font-weight:bold;", msg),
-    tags$p("Checking your Class Job Market sign-in…"),
-    tags$p(tags$small("If the automatic handoff does not begin, use the button below. You will return here after signing in.")),
-    tags$a(href = "/class-job-market/?return_to=%2Fcoordination-games%2F", class = "btn btn-primary", "Open Class Job Market sign-in"),
+    tags$p("Sign in with your Class Job Market credentials to play."),
+    textInput("login_user", "Username or email"),
+    passwordInput("login_pw", "Password"),
+    actionButton("login_btn", "Sign in", class = "btn btn-primary"),
+    tags$hr(),
+    tags$p(tags$small("Use Google sign-in or need help with your credentials?")),
+    tags$a(href = "/auth/login?return_to=%2Fcoordination-games%2F", class = "btn btn-default", "Sign in with Google"),
+    tags$a(href = "/class-job-market/?return_to=%2Fcoordination-games%2F", class = "btn btn-link", "Open Class Job Market"),
     demo_login_ui
   )
 }
 
 shared_auth_js <- tags$script(HTML("
 (function() {
+  Shiny.addCustomMessageHandler('set_arcade_cookie', function(msg) {
+    if (msg.token) {
+      document.cookie = 'arcade_token=' + encodeURIComponent(msg.token) +
+        '; expires=' + new Date(msg.expires).toUTCString() + '; path=/; SameSite=Lax';
+    }
+  });
   function sendAuthCookie() { Shiny.setInputValue('auth_cookie', (document.cookie.match(/(?:^|; )arcade_token=([^;]*)/) || ['', ''])[1], {priority: 'event'}); }
   $(document).on('shiny:sessioninitialized', sendAuthCookie);
   // Shiny emits this as a jQuery event; the native listener above never fired,
@@ -559,25 +570,44 @@ server <- function(input, output, session) {
   .is_demo <- dm$is_demo
 
   rv <- reactiveValues(authed = FALSE, user = NULL, name = NULL, is_admin = FALSE,
-                       impersonate = FALSE, impersonate_uid = NULL, impersonate_name = NULL)
+                       impersonate = FALSE, impersonate_uid = NULL, impersonate_name = NULL,
+                       auth_message = NULL)
   output$demo_banner <- renderUI(demo_banner_ui(.is_demo, rv$is_admin))
   output$authed <- reactive(rv$authed)
   outputOptions(output, "authed", suspendWhenHidden = FALSE)
-  output$auth_gate <- renderUI({ if (!rv$authed) login_ui() else NULL })
+  output$auth_gate <- renderUI({ if (!rv$authed) login_ui(rv$auth_message) else NULL })
 
   lookup_shared_session <- function(token) {
     if (!nzchar(token %||% "")) return(data.frame())
     tryCatch(db_query("SELECT u.user_id, u.display_name, u.is_admin, u.active FROM arcade_sessions s JOIN users u ON u.user_id=s.user_id WHERE s.token=? AND datetime(s.expires_at)>datetime('now') LIMIT 1;", list(token)), error=function(e) data.frame())
   }
   finish_login <- function(row) {
-    rv$authed <- TRUE; rv$user <- row$user_id[1]; rv$name <- row$display_name[1]; rv$is_admin <- isTRUE(as.integer(row$is_admin[1] %||% 0L) == 1L)
+    rv$authed <- TRUE; rv$user <- row$user_id[1]; rv$name <- row$display_name[1]; rv$is_admin <- isTRUE(as.integer(row$is_admin[1] %||% 0L) == 1L); rv$auth_message <- NULL
+  }
+  issue_shared_cookie <- function(user_id) {
+    token <- paste(sample(c(letters, LETTERS, 0:9), 48L, replace=TRUE), collapse="")
+    db_exec("INSERT INTO arcade_sessions(token,user_id,expires_at) VALUES(?,?,datetime('now','+14 days'));", list(token, user_id))
+    session$sendCustomMessage("set_arcade_cookie", list(token=token, expires=format(Sys.time() + 14*86400, "%Y-%m-%dT%H:%M:%SZ", tz="UTC")))
   }
   observeEvent(input$auth_cookie, {
     if (rv$authed || .is_demo) return()
-    row <- lookup_shared_session(input$auth_cookie %||% "")
+    token <- input$auth_cookie %||% ""
+    if (!nzchar(token)) return()
+    row <- lookup_shared_session(token)
     if (nrow(row) && !isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) { finish_login(row); return() }
-    session$sendCustomMessage("redirect_to_job_market", list(url="/class-job-market/?return_to=%2Fcoordination-games%2F"))
+    rv$auth_message <- "Your previous sign-in has expired. Please sign in below."
   }, ignoreInit=FALSE)
+  observeEvent(input$login_btn, {
+    user_id <- tolower(trimws(as.character(input$login_user %||% "")))
+    password <- as.character(input$login_pw %||% "")
+    if (!nzchar(user_id) || !nzchar(password)) { rv$auth_message <- "Enter your username or email and password."; return() }
+    row <- tryCatch(db_query("SELECT user_id,display_name,pw_hash,is_admin,active FROM users WHERE LOWER(user_id)=LOWER(?) LIMIT 1;", list(user_id)), error=function(e) data.frame())
+    valid <- nrow(row) == 1L && isTRUE(nzchar(row$pw_hash[1])) && isTRUE(tryCatch(bcrypt::checkpw(password, row$pw_hash[1]), error=function(e) FALSE))
+    if (!valid) { rv$auth_message <- "Incorrect username or password."; return() }
+    if (isTRUE(as.integer(row$active[1] %||% 1L) == 0L)) { rv$auth_message <- "This account has been archived. Contact your instructor."; return() }
+    finish_login(row)
+    if (!.is_demo) issue_shared_cookie(row$user_id[1])
+  })
 
 
   authed   <- reactive(rv$authed)

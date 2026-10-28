@@ -58,10 +58,11 @@ if (grepl("UPDATE arcade_state SET active_game", source_text, fixed=TRUE)) stop(
 
 module_path <- if (file.exists("apps/coordination-games/app.R")) "apps/coordination-games/app.R" else "/srv/shiny-server/coordination-games/app.R"
 module_text <- paste(readLines(module_path, warn=FALSE), collapse="\n")
-module_required <- c("Open Class Job Market sign-in", "/class-job-market/?return_to=%2Fcoordination-games%2F", "lookup_shared_session", "redirect_to_job_market", "return_to=%2Fcoordination-games%2F", 'href="/class-job-market/"', "Bonus Pot is controlled from Class Job Market", "ALLOW_LEGACY_COORDINATION_ADMIN", "$(document).on('shiny:sessioninitialized', sendAuthCookie);", "setTimeout(sendAuthCookie, 300);", "bp-font-up", "Participation Tokens Contributed", "Save my contribution")
+module_required <- c("textInput(\"login_user\"", "passwordInput(\"login_pw\"", "actionButton(\"login_btn\"", "bcrypt::checkpw", "issue_shared_cookie", "set_arcade_cookie", "Sign in with Google", "lookup_shared_session", "return_to=%2Fcoordination-games%2F", 'href="/class-job-market/"', "Bonus Pot is controlled from Class Job Market", "ALLOW_LEGACY_COORDINATION_ADMIN", "$(document).on('shiny:sessioninitialized', sendAuthCookie);", "bp-font-up", "Participation Tokens Contributed", "Save my contribution")
 module_missing <- module_required[!vapply(module_required, grepl, logical(1), x=module_text, fixed=TRUE)]
 if (grepl("Flex Passes Contributed", module_text, fixed=TRUE) || grepl("Flex passes available", module_text, fixed=TRUE)) stop("Standalone Bonus Pot must use current participation-token terminology.")
 if (length(module_missing)) stop("Bonus Pot module boundary missing: ", paste(module_missing, collapse=" | "))
+if (grepl("session$sendCustomMessage(\"redirect_to_job_market\"", module_text, fixed=TRUE)) stop("Coordination Games must show direct sign-in rather than automatically redirecting visitors away.")
 
 suppressPackageStartupMessages({ library(DBI); library(RSQLite) })
 con <- dbConnect(SQLite(), ":memory:")
