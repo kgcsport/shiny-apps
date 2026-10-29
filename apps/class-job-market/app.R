@@ -699,6 +699,15 @@ db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_override(
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(user_id COLLATE NOCASE, assignment_name COLLATE NOCASE)
 );")
+db_exec("CREATE TABLE IF NOT EXISTS gradebook_exam_drops(
+  user_id TEXT NOT NULL,
+  assignment_name TEXT NOT NULL,
+  transfer_to TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(user_id COLLATE NOCASE, assignment_name COLLATE NOCASE)
+);")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('assignment_grade_policy','final_score');")
 
 mark_grade_override <- function(user_id, assignment_name, reason = "Manual grade") {
@@ -1919,6 +1928,10 @@ compute_student_grade <- function(uid, exclude_assignments = character(0)) {
     "SELECT assignment_name, score, max_score, grade_pct FROM student_grades WHERE user_id=?;",
     list(uid)), error = function(e) data.frame())
 
+  exam_drops <- tryCatch(db_query(
+    "SELECT assignment_name, transfer_to, note FROM gradebook_exam_drops WHERE LOWER(user_id)=LOWER(?);",
+    list(uid)), error = function(e) data.frame())
+
   if (!nrow(cats)) return(list(cats = data.frame(), items = data.frame(), overall = NA_real_))
   excluded_keys <- tolower(trimws(as.character(exclude_assignments %||% character(0))))
   excluded_keys <- unique(excluded_keys[nzchar(excluded_keys)])
@@ -1949,6 +1962,22 @@ compute_student_grade <- function(uid, exclude_assignments = character(0)) {
         max_score     = if (nrow(matched) && !is_excluded) as.numeric(matched$max_score[1] %||% NA) else NA_real_,
         stringsAsFactors = FALSE
       ))
+    }
+  }
+
+  # A documented individual exam drop removes only that item and transfers its
+  # configured weight to the selected final item. The original grade remains stored.
+  if (nrow(exam_drops) && nrow(all_items)) {
+    item_key <- function(x) tolower(trimws(as.character(x %||% "")))
+    for (k in seq_len(nrow(exam_drops))) {
+      from_idx <- which(item_key(all_items$item_name) == item_key(exam_drops$assignment_name[k]))
+      to_idx <- which(item_key(all_items$item_name) == item_key(exam_drops$transfer_to[k]))
+      if (length(from_idx) != 1L || length(to_idx) != 1L || from_idx == to_idx) next
+      moved_weight <- as.numeric(all_items$item_weight[from_idx] %||% 0)
+      all_items$grade_pct[from_idx] <- NA_real_
+      all_items$score[from_idx] <- NA_real_
+      all_items$max_score[from_idx] <- NA_real_
+      all_items$item_weight[to_idx] <- as.numeric(all_items$item_weight[to_idx] %||% 0) + moved_weight
     }
   }
 
@@ -10829,6 +10858,10 @@ server <- function(input, output, session) {
         "Add a new gradebook item…" = "__new__"
       )
       gradebook_category_choices <- if (nrow(cats)) stats::setNames(as.character(cats$id), cats$name) else character(0)
+      sync_items <- tryCatch(unique(manual_grade_catalog()$assignment), error = function(e) character(0))
+      sync_items <- sort(sync_items[nzchar(sync_items)])
+      sync_choices <- c("All mapped assignments" = "__all__", stats::setNames(sync_items, sync_items))
+
 
       get_item_names_for_cat <- function(cat_row) {
         gradebook_item_specs(cat_row, inames)$item_name
@@ -10840,16 +10873,21 @@ server <- function(input, output, session) {
 
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Grades & Gradebook"),
-        tags$h6(style = "font-weight:700;margin-top:.8rem;", "Cloudflare problem-set sync"),
-        radioButtons("assignment_grade_policy", "Grade policy:",
-                     choices = assignment_grade_policy_choices,
-                     selected = assignment_policy, inline = FALSE),
-        tags$p(style = "color:#666;font-size:.82rem;",
-               "Sync maps Worker assignments to existing gradebook items (for example, PS1 → Problem Set 1). It never creates new items."),
-        textInput("assignment_grade_protected", "Protect existing grades (comma-separated):", value=as.character(get_setting("assignment_grade_protected", "PS1"))),
-        textInput("assignment_grade_excluded", "Exclude entirely from sync (comma-separated):", value=as.character(get_setting("assignment_grade_excluded", ""))),
-        actionButton("save_assignment_grade_policy_btn", "Save policy", class="btn btn-sm btn-outline-primary"),
-        actionButton("sync_cloudflare_grades_btn", "Sync now", class="btn btn-sm btn-primary"),
+        tags$h6(style="font-weight:700;margin-top:.8rem;", "Cloudflare problem-set sync"),
+        fluidRow(
+          column(7, selectInput("sync_cloudflare_assignment", "Assignment:", choices=sync_choices, selected="__all__")),
+          column(5, tags$br(), actionButton("sync_cloudflare_grades_btn", "Sync selected", class="btn btn-sm btn-primary"))
+        ),
+        tags$p(style="color:#666;font-size:.82rem;",
+               "Sync only the selected mapped item, or choose All mapped assignments. Existing protected manual grades remain untouched."),
+        tags$details(
+          style="margin:.45rem 0 .75rem;background:#f8f9fa;border:1px solid #e2e5e8;border-radius:8px;padding:.55rem .7rem;",
+          tags$summary(style="cursor:pointer;color:#951829;font-weight:700;", "Sync policy & safeguards"),
+          radioButtons("assignment_grade_policy", "Grade policy:", choices=assignment_grade_policy_choices, selected=assignment_policy, inline=FALSE),
+          textInput("assignment_grade_protected", "Protect existing grades (comma-separated):", value=as.character(get_setting("assignment_grade_protected", "PS1"))),
+          textInput("assignment_grade_excluded", "Exclude entirely from sync (comma-separated):", value=as.character(get_setting("assignment_grade_excluded", ""))),
+          actionButton("save_assignment_grade_policy_btn", "Save policy", class="btn btn-sm btn-outline-primary")
+        ),
         tags$p(style="color:#555;font-size:.82rem;margin:.5rem 0;",
                "Edit grade percentages directly in the raw grade rows below. CSV uploads overwrite existing rows when enabled."),
 
@@ -11012,7 +11050,6 @@ server <- function(input, output, session) {
           "Optional: ", tags$code("score"), ", ", tags$code("max_score"), ", ",
           tags$code("grade_pct"), " (0–100). Assignment names should match your item names above."),
         tags$details(
-          open = NA,
           style = "margin:.4rem 0 .8rem;background:#f8f9fa;border:1px solid #e2e5e8;border-radius:8px;padding:.65rem .8rem;",
           tags$summary(style = "cursor:pointer;color:#951829;font-weight:700;",
                        "CSV rubric — one row per student and assignment"),
@@ -11156,6 +11193,38 @@ server <- function(input, output, session) {
                          onclick="if(!confirm('Delete every raw grade row for the selected assignment name(s), for all students?')) return false;")
             ),
 
+            # Student-specific exam drops are an explicit, reversible grade calculation adjustment.
+            {
+              drop_students <- tryCatch(scope_filter_rows(db_query("SELECT user_id,display_name,course,section FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0 ORDER BY section,display_name;")), error=function(e)data.frame())
+              drop_choices <- if (nrow(drop_students)) stats::setNames(as.character(drop_students$user_id), paste0(drop_students$display_name, " · ", drop_students$section)) else character(0)
+              drop_items <- unique(as.character(gradebook_target_rows$assignment %||% character(0)))
+              final_idx <- which(tolower(trimws(drop_items)) == "final")
+              final_default <- if (length(final_idx)) drop_items[final_idx[1]] else if (length(drop_items)) drop_items[1] else ""
+              existing_drops <- tryCatch(scope_filter_rows(db_query("SELECT d.user_id,d.assignment_name,d.transfer_to,d.note,d.updated_at,u.display_name,u.course,u.section FROM gradebook_exam_drops d LEFT JOIN users u ON LOWER(u.user_id)=LOWER(d.user_id) ORDER BY u.section,u.display_name,d.assignment_name;")), error=function(e)data.frame())
+              tags$details(
+                style="margin:.55rem 0 .8rem;background:#fff8e8;border:1px solid #ead7a5;border-radius:8px;padding:.65rem .8rem;",
+                tags$summary(style="cursor:pointer;color:#7c5b00;font-weight:700;", "Student exam-drop adjustment"),
+                tags$p(style="color:#66511b;font-size:.82rem;margin:.55rem 0;", "Drop one selected exam for one student and move its configured grade weight to the selected final item. The original grade stays in the raw record; save a note for the audit trail."),
+                if (!length(drop_choices) || !length(drop_items)) tags$p("Add active students and gradebook items first.") else tagList(
+                  fluidRow(
+                    column(4, selectInput("exam_drop_student", "Student:", choices=drop_choices)),
+                    column(3, selectInput("exam_drop_assignment", "Exam to drop:", choices=drop_items)),
+                    column(3, selectInput("exam_drop_transfer_to", "Transfer weight to:", choices=drop_items, selected=final_default)),
+                    column(2, tags$br(), actionButton("save_exam_drop_btn", "Save drop", class="btn btn-sm btn-warning"))
+                  ),
+                  textInput("exam_drop_note", "Note:", placeholder="e.g. documented absence; exam weight moved to Final"),
+                  if (nrow(existing_drops)) tags$table(class="table table-sm", style="font-size:.82rem;margin:.55rem 0 0;",
+                    tags$thead(tags$tr(tags$th("Student"), tags$th("Dropped"), tags$th("Transferred to"), tags$th("Note"), tags$th(""))),
+                    tags$tbody(lapply(seq_len(nrow(existing_drops)), function(di) {
+                      dr <- existing_drops[di,,drop=FALSE]
+                      tags$tr(tags$td(dr$display_name[1] %||% dr$user_id[1]), tags$td(dr$assignment_name[1]), tags$td(dr$transfer_to[1]), tags$td(dr$note[1] %||% ""),
+                        tags$td(tags$button(class="btn btn-xs btn-outline-danger", onclick=sprintf("if(confirm('Remove this exam-drop adjustment?')) Shiny.setInputValue('delete_exam_drop_btn',{user_id:%s,assignment:%s},{priority:'event'});", jsonlite::toJSON(as.character(dr$user_id[1]),auto_unbox=TRUE), jsonlite::toJSON(as.character(dr$assignment_name[1]),auto_unbox=TRUE)), "Remove")))
+                    }))
+                  )
+                )
+              )
+            },
+
             # Online grade summary (if grades uploaded)
             if (!nrow(grade_rows)) {
               tags$p(style = "color:#999;font-size:.9em;margin-top:.5rem;",
@@ -11189,31 +11258,27 @@ server <- function(input, output, session) {
                     tags$tbody(lapply(stu_ids, function(uid) {
                       stu_nm  <- grade_rows$display_name[grade_rows$user_id == uid][1] %||% uid
                       stu_sec <- grade_rows$section[grade_rows$user_id == uid][1] %||% ""
-                      stu_gr  <- if (nrow(gr_mapped)) gr_mapped[!is.na(gr_mapped$user_id) & gr_mapped$user_id == uid, , drop=FALSE] else data.frame()
-                      wt_num <- 0; wt_den <- 0
+                      gb_student <- compute_student_grade(uid)
                       cat_cells <- lapply(cat_names, function(cn) {
-                        cat_gr <- if (nrow(stu_gr) && "cat_name" %in% names(stu_gr))
-                          stu_gr[!is.na(stu_gr$cat_name) & stu_gr$cat_name == cn, , drop=FALSE]
-                        else data.frame()
-                        avg <- NA_real_
-                        graded_cat <- if (nrow(cat_gr)) cat_gr[!is.na(cat_gr$grade_pct), , drop=FALSE] else data.frame()
-                        if (nrow(graded_cat)) {
-                          iw <- as.numeric(graded_cat$item_weight %||% 0)
-                          avg <- if (sum(iw, na.rm = TRUE) > 0)
-                            sum(graded_cat$grade_pct * iw, na.rm = TRUE) / sum(iw, na.rm = TRUE)
-                          else mean(graded_cat$grade_pct, na.rm = TRUE)
-                        }
-                        if (!is.na(avg)) {
-                          w <- sum(as.numeric(graded_cat$item_weight %||% 0), na.rm = TRUE)
-                          wt_num <<- wt_num + avg * w
-                          wt_den <<- wt_den + w
-                        }
-                        tags$td(style = "text-align:right;",
-                                if (!is.na(avg)) sprintf("%.1f%%", avg) else tags$span(style="color:#ccc;","—"))
+                        cr <- gb_student$cats[gb_student$cats$category == cn, , drop=FALSE]
+                        avg <- if (nrow(cr)) as.numeric(cr$cat_avg[1]) else NA_real_
+                        tags$td(style = "text-align:right;", if (!is.na(avg)) sprintf("%.1f%%", avg) else tags$span(style="color:#ccc;","—"))
                       })
-                      wtd <- if (wt_den > 0) sprintf("%.1f%%", wt_num / wt_den) else "—"
+                      wtd <- if (is.finite(gb_student$overall)) sprintf("%.1f%%", gb_student$overall) else "—"
+                      item_rows <- lapply(seq_len(nrow(gb_student$items)), function(ii) {
+                        it <- gb_student$items[ii,,drop=FALSE]
+                        tags$tr(tags$td(it$item_name[1]), tags$td(it$category_name[1]), tags$td(if (is.finite(it$grade_pct[1])) sprintf("%.1f%%", it$grade_pct[1]) else "—"), tags$td(sprintf("%.4g%%", it$item_weight[1])))
+                      })
+                      stu_drop <- if (exists("existing_drops") && nrow(existing_drops)) existing_drops[tolower(existing_drops$user_id) == tolower(uid),,drop=FALSE] else data.frame()
+                      student_detail <- tags$details(
+                        tags$summary(style="cursor:pointer;color:#951829;font-weight:600;", stu_nm),
+                        div(style="min-width:28rem;max-width:42rem;padding:.45rem 0;",
+                          if (nrow(stu_drop)) tags$p(style="color:#7c5b00;font-size:.8rem;", paste0("Exam drop: ", stu_drop$assignment_name[1], " → ", stu_drop$transfer_to[1], if (nzchar(stu_drop$note[1] %||% "")) paste0(" (", stu_drop$note[1], ")") else "")),
+                          tags$table(class="table table-condensed", style="font-size:.8rem;margin:0;", tags$thead(tags$tr(tags$th("Item"),tags$th("Category"),tags$th("Grade"),tags$th("Weight"))), tags$tbody(item_rows))
+                        )
+                      )
                       tags$tr(
-                        tags$td(stu_nm),
+                        tags$td(student_detail),
                         tags$td(style="color:#888;font-size:.82em;", stu_sec),
                         tagList(cat_cells),
                         tags$td(style="text-align:right;font-weight:600;", wtd)
@@ -12540,7 +12605,7 @@ server <- function(input, output, session) {
     NA_character_
   }
 
-  sync_cloudflare_gradebook <- function() {
+  sync_cloudflare_gradebook <- function(only_assignment = "") {
     tryCatch({
     policy <- as.character(get_setting("assignment_grade_policy", "final_score"))[1]
     if (!isTRUE(policy %in% unname(assignment_grade_policy_choices))) policy <- "final_score"
@@ -12552,6 +12617,8 @@ server <- function(input, output, session) {
     if (!nrow(roster)) return(list(ok=FALSE, message="No active students are available for matching."))
     key <- function(x) tolower(trimws(as.character(x %||% "")))
     assignment_key <- function(x) gsub("[^a-z0-9]", "", key(x))
+    selected_key <- assignment_key(only_assignment)
+
     protected_raw <- as.character(get_setting("assignment_grade_protected", "PS1"))[1]
     protected_items <- assignment_key(strsplit(protected_raw %||% "", "[,;\\n]+")[[1]])
     excluded_raw <- as.character(get_setting("assignment_grade_excluded", ""))[1]
@@ -12574,15 +12641,18 @@ server <- function(input, output, session) {
       labels <- if (is.data.frame(summary) && nrow(summary)) paste(sprintf("%s=%s/%s", summary$id, summary$gradebookKey %||% "<missing>", summary$submissionRows %||% 0), collapse=", ") else "none"
       return(list(ok=TRUE, message=sprintf("Worker returned 0 grade rows across %d assignment%s. Keys/submissions: %s", n_assign, if(n_assign==1)"" else "s", labels), rows=0L))
     }
-    synced <- 0L; skipped <- 0L; unmatched <- 0L; unmatched_key <- 0L; unmatched_student <- 0L
+    synced <- 0L; skipped <- 0L; filtered <- 0L; unmatched <- 0L; unmatched_key <- 0L; unmatched_student <- 0L
     for (i in seq_len(nrow(rows))) {
       r <- rows[i, , drop=FALSE]
       aid <- as.character(r$assignmentId[1] %||% "")
       title <- as.character(r$assignmentTitle[1] %||% aid)
       worker_key <- worker_assignment_key(r)
+      if (nzchar(selected_key) && !identical(worker_key, selected_key)) { filtered <- filtered + 1L; next }
+
       hit_item <- which(assignment_key(catalog$assignment) == worker_key)
       item <- if (length(hit_item)) as.character(catalog$assignment[hit_item[1]]) else ""
       if (!nzchar(item)) { unmatched <- unmatched + 1L; unmatched_key <- unmatched_key + 1L; next }
+
       if (assignment_key(item) %in% excluded_items) { skipped <- skipped + 1L; next }
       ext <- key(r$externalId[1] %||% "")
       nm <- key(r$studentName[1] %||% "")
@@ -12673,10 +12743,40 @@ server <- function(input, output, session) {
     rv$gradebook_ver <- rv$gradebook_ver + 1L
   }, ignoreNULL=TRUE)
 
+  observeEvent(input$save_exam_drop_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    uid <- trimws(as.character(input$exam_drop_student %||% ""))
+    assignment <- trimws(as.character(input$exam_drop_assignment %||% ""))
+    transfer_to <- trimws(as.character(input$exam_drop_transfer_to %||% ""))
+    note <- trimws(as.character(input$exam_drop_note %||% ""))
+    catalog <- manual_grade_catalog()$assignment %||% character(0)
+    roster <- tryCatch(scope_filter_rows(db_query("SELECT user_id,course,section FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1;")), error=function(e)data.frame())
+    valid_item <- function(x) any(tolower(trimws(catalog)) == tolower(trimws(x)))
+    if (!nzchar(uid) || !uid %in% roster$user_id || !valid_item(assignment) || !valid_item(transfer_to) || identical(tolower(assignment), tolower(transfer_to))) {
+      showNotification("Choose a student, an exam item, and a different final item.", type="error"); return()
+    }
+    if (!nzchar(note)) { showNotification("Add a brief note for this exam-drop adjustment.", type="error"); return() }
+    db_exec("INSERT INTO gradebook_exam_drops(user_id,assignment_name,transfer_to,note,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(user_id,assignment_name) DO UPDATE SET transfer_to=excluded.transfer_to,note=excluded.note,updated_at=CURRENT_TIMESTAMP;", list(uid,assignment,transfer_to,note))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification(sprintf("Dropped %s for %s; its weight now goes to %s.", assignment, uid, transfer_to), type="message")
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$delete_exam_drop_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    ev <- input$delete_exam_drop_btn %||% list()
+    uid <- trimws(as.character(ev$user_id %||% "")); assignment <- trimws(as.character(ev$assignment %||% ""))
+    roster <- tryCatch(scope_filter_rows(db_query("SELECT user_id,course,section FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1;")), error=function(e)data.frame())
+    if (!nzchar(uid) || !nzchar(assignment) || !uid %in% roster$user_id) return()
+    db_exec("DELETE FROM gradebook_exam_drops WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?);", list(uid,assignment))
+    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    showNotification("Exam-drop adjustment removed; the original grade now counts again.", type="message")
+  }, ignoreNULL=TRUE)
+
+
   observeEvent(input$sync_cloudflare_grades_btn, {
     req(rv$is_admin)
     result <- tryCatch(
-      sync_cloudflare_gradebook(),
+      sync_cloudflare_gradebook(if (identical(input$sync_cloudflare_assignment %||% "__all__", "__all__")) "" else input$sync_cloudflare_assignment),
       error=function(e) {
         calls <- sys.calls()
         trace <- if (length(calls)) paste(vapply(tail(calls, min(6L, length(calls))), function(x) paste(deparse(x), collapse=""), character(1)), collapse=" <- ") else "unknown"
