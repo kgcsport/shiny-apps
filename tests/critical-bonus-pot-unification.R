@@ -6,7 +6,7 @@ source_text <- paste(readLines(app_path, warn=FALSE), collapse="\n")
 required <- c(
   'label = "Bonus Pot",     embedded = TRUE, url = "/coordination-games/"',
   'actionButton("bp_admin_open", "Open"',
-  'actionButton("bp_admin_close", "Close & debit contributions"',
+  'actionButton("bp_admin_close", "Close & debit"',
   'actionButton("bp_admin_reveal", "Reveal"',
   'actionButton("bp_admin_payout", "Apply payouts"',
   'checkboxInput("bp_admin_show_contributions"',
@@ -60,7 +60,7 @@ if (grepl("UPDATE arcade_state SET active_game", source_text, fixed=TRUE)) stop(
 
 module_path <- if (file.exists("apps/coordination-games/app.R")) "apps/coordination-games/app.R" else "/srv/shiny-server/coordination-games/app.R"
 module_text <- paste(readLines(module_path, warn=FALSE), collapse="\n")
-module_required <- c("textInput(\"login_user\"", "passwordInput(\"login_pw\"", "actionButton(\"login_btn\"", "bcrypt::checkpw", "issue_shared_cookie", "set_arcade_cookie", "Sign in with Google", "lookup_shared_session", "return_to=%2Fcoordination-games%2F", "actionButton(\"adm_apply\"", "actionButton(\"adm_clear\"", "actionButton(\"adm_payout\"", "output$admin_ui <- renderUI({", "touch_olig <- function() db_exec", "req(is_admin())", "bp-font-up", "Participation Tokens Contributed", "Save / replace contribution", "bp-header", "bp_header_widgets", "environment_course_sel", "environment_section_sel", "session_environment_rows <- function()", "scope_arcade_state", "bonus_game_in_selected_environment", "show_contributions INTEGER DEFAULT 0", "output$public_contribution_list", "Show student names and contributions publicly")
+module_required <- c("textInput(\"login_user\"", "passwordInput(\"login_pw\"", "actionButton(\"login_btn\"", "bcrypt::checkpw", "issue_shared_cookie", "set_arcade_cookie", "Sign in with Google", "lookup_shared_session", "return_to=%2Fcoordination-games%2F", "actionButton(\"adm_apply\"", "actionButton(\"adm_clear\"", "actionButton(\"adm_payout\"", "output$admin_ui <- renderUI({", "touch_olig <- function() db_exec", "req(is_admin())", "bp-font-up", "Participation Tokens Contributed", "Save contribution", "bp-header", "bp_header_widgets", "environment_course_sel", "environment_section_sel", "session_environment_rows <- function()", "scope_arcade_state", "bonus_game_in_selected_environment", "show_contributions INTEGER DEFAULT 0", "output$public_contribution_list", "Show names & amounts")
 module_missing <- module_required[!vapply(module_required, grepl, logical(1), x=module_text, fixed=TRUE)]
 if (grepl("Flex Passes Contributed", module_text, fixed=TRUE) || grepl("Flex passes available", module_text, fixed=TRUE)) stop("Standalone Bonus Pot must use current participation-token terminology.")
 if (length(module_missing)) stop("Bonus Pot module boundary missing: ", paste(module_missing, collapse=" | "))

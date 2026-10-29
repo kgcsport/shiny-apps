@@ -24,7 +24,7 @@ repair_required <- c(
   "lse.event_kind='assignment' AND lse.committed_at IS NOT NULL",
   "tl.source_type='job' AND tl.source_id=ja.id AND tl.amount>0",
   "repair_zeroed_jobs_btn",
-  "Repair prior zero-token completed jobs",
+  "Repair zeroed jobs",
   "Repair: completed job previously recorded as 0"
 )
 repair_missing <- repair_required[!vapply(repair_required, grepl, logical(1), x = source_text, fixed = TRUE)]

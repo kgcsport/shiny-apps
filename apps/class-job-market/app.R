@@ -3586,15 +3586,15 @@ server <- function(input, output, session) {
         column(4, numericInput("bp_admin_cap", "Contribution cap (0 = none)", value=as.numeric(s$contrib_cap[1] %||% 0), min=0, step=.5)),
         column(4, selectInput("bp_admin_status", "Status", choices=c("Pending"="pending", "Open"="open", "Closed"="closed", "Revealed"="revealed"), selected=status))
       ),
-      checkboxInput("bp_admin_show_contributions",
-                    "Show named student contributions live before reveal",
-                    value=isTRUE(as.integer(s$show_contributions[1] %||% 0L) == 1L)),
+      div(title="Show student names and contribution amounts live before reveal",
+          checkboxInput("bp_admin_show_contributions", "Show names & amounts",
+                        value=isTRUE(as.integer(s$show_contributions[1] %||% 0L) == 1L))),
       tags$p(style="color:#666;font-size:.8rem;margin:-.4rem 0 .6rem;",
              "Off by default: student contributions stay sealed until Reveal. Enable only to show the live named contribution list during the round."),
       div(style="display:flex;gap:.4rem;flex-wrap:wrap;",
         actionButton("bp_admin_save", "Save setup", class="btn btn-primary btn-sm"),
         actionButton("bp_admin_open", "Open", class="btn btn-success btn-sm"),
-        actionButton("bp_admin_close", "Close & debit contributions", class="btn btn-warning btn-sm", onclick="if(!confirm('Close this Bonus Pot round and debit saved contributions?')) return false;"),
+        actionButton("bp_admin_close", "Close & debit", class="btn btn-warning btn-sm", title="Close this round and debit saved contributions", onclick="if(!confirm('Close this Bonus Pot round and debit saved contributions?')) return false;"),
         actionButton("bp_admin_reveal", "Reveal", class="btn btn-info btn-sm"),
         actionButton("bp_admin_payout", "Apply payouts", class="btn btn-success btn-sm", onclick="if(!confirm('Apply one-time payouts to the token ledger?')) return false;")
       ),
@@ -5278,8 +5278,8 @@ server <- function(input, output, session) {
             if (max_contribution > 0L) tagList(
               numericInput("flex_contribution", "Tokens to contribute:",
                            value=contribution_value, min=1, max=max_contribution, step=1),
-              actionButton("submit_flex_contribution", "Contribute to the class reveal",
-                           class = "btn btn-warning")
+              actionButton("submit_flex_contribution", "Contribute",
+                           class = "btn btn-warning", title = "Contribute tokens to this class reveal")
             ) else {
               tags$p(style = "color:#9a6b00;font-size:.85rem;",
                      "You do not currently have spendable tokens for this contribution.")
@@ -6201,7 +6201,7 @@ server <- function(input, output, session) {
               value=existing("uncertainty"), rows=3, width="100%"),
             div(style="display:flex;gap:.5rem;align-items:center;",
               actionButton("save_policy_progress_draft_btn", "Save draft", class="btn btn-default"),
-              actionButton("submit_policy_progress_btn", "Submit progress report", class="btn btn-primary"),
+              actionButton("submit_policy_progress_btn", "Submit report", class="btn btn-primary"),
               if (nrow(report) && identical(as.character(report$status[1]), "submitted"))
                 tags$p(style="color:#397339;font-size:.84rem;", "Submitted; you can still update it if needed."))
           )
@@ -6273,8 +6273,8 @@ server <- function(input, output, session) {
                         value=tr$topic_note %||% "", rows=2, width="100%",
                         placeholder="Optional approval or revision note"),
           div(style="display:flex;gap:.5rem;flex-wrap:wrap;",
-            actionButton("save_policy_topic_review_btn", "Save topic review", class="btn btn-primary"),
-            actionButton("policy_admin_open_grader_btn", "Open rubric grader", class="btn btn-default"))
+            actionButton("save_policy_topic_review_btn", "Save review", class="btn btn-primary"),
+            actionButton("policy_admin_open_grader_btn", "Grade rubric", class="btn btn-default"))
         ),
         tags$h4("Milestones"),
         tags$ul(tags$li(paste("Presentation —", fmt_date(tr$presentation_date))),
@@ -6300,7 +6300,7 @@ server <- function(input, output, session) {
                   placeholder="Short topic or policy area"),
         textAreaInput("student_policy_question", "Guiding question:", value=r$policy_question %||% "",
                       rows=2, width="100%", placeholder="What question should the brief answer?"),
-        actionButton("save_student_policy_brief_btn", "Save topic and question", class="btn btn-primary"),
+        actionButton("save_student_policy_brief_btn", "Save topic", class="btn btn-primary", title="Save the topic and guiding question"),
         if (identical(r$topic_status %||% "pending", "approved"))
           tags$p(style="color:#1a6e3c;font-size:.84rem;", "Topic approved by instructor."),
         if (identical(r$topic_status %||% "pending", "needs_revision"))
@@ -9486,7 +9486,7 @@ server <- function(input, output, session) {
       wellPanel(
         tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
                 "Live Score Audit"),
-        actionButton("repair_zeroed_jobs_btn", "Repair prior zero-token completed jobs",
+        actionButton("repair_zeroed_jobs_btn", "Repair zeroed jobs",
                      class = "btn btn-outline-warning btn-sm",
                      style = "margin-bottom:.55rem;",
                      title = "Credit only completed jobs with a positive stored wage, a zero award, and no existing job-token credit",
@@ -9643,7 +9643,7 @@ server <- function(input, output, session) {
   output$settings_tab <- renderUI({
     req(rv$is_admin)
     tagList(
-      wellPanel(tags$strong("Active scope: "), paste(c(scoped_course(), scoped_sections()), collapse=" / "), tags$p(style="color:#666;font-size:.82rem;margin:.25rem 0 .4rem;", "Roster, jobs, market controls, tracker choices, exports, Flex funding, and spending options use this scope."), actionButton("open_scope_picker_btn", "Change course / sections", class="btn btn-sm btn-outline-primary")),
+      wellPanel(tags$strong("Active scope: "), paste(c(scoped_course(), scoped_sections()), collapse=" / "), tags$p(style="color:#666;font-size:.82rem;margin:.25rem 0 .4rem;", "Roster, jobs, market controls, tracker choices, exports, Flex funding, and spending options use this scope."), actionButton("open_scope_picker_btn", "Change scope", class="btn btn-sm btn-outline-primary")),
       tutorial_note("How to configure the app", c("Jobs: edit reusable templates, instructions, wages, timing, and posts for the selected class date.", "Job Market Controls: choose the class date and adjust allocation or bidding at any time.", "Spending Options: enable or disable token purchases for the active class / section environment.", "Students: add, archive, restore, or impersonate roster members.", "Token Admin and Grades: make audited corrections and import course records.")),
       wellPanel(selectInput("config_action", "Settings section:", width = "100%", choices = c(
         "Jobs"="jobs", "Job Market Controls"="round_setup", "Students"="students", "Token Admin"="token_admin", "Spending Options"="spending", "Policy Rubrics"="policy_rubrics", "Grades & Gradebook"="gradebook", "Exports"="exports", "Extensions"="extensions", "Flex Questions"="flex_questions", "Game Controls"="game_controls", "App Settings"="app_settings", "Demo / Testing"="sandbox_demo"), selected="jobs"), uiOutput("config_panel"))
@@ -9674,7 +9674,7 @@ server <- function(input, output, session) {
     act <- input$config_action %||% "jobs"
     if (act == "spending") {
       enabled <- spending_enabled_for_scope()
-      tagList(tags$h5("Spending options"), tags$p(style="color:#555;font-size:.88rem;", "This setting applies only to the active class / section environment. Existing purchases and token history are preserved."), checkboxInput("spending_enabled_input", "Allow students to purchase extensions, grade reweights, and candidate-question funding", value=enabled), actionButton("save_spending_options_btn", "Save spending options", class="btn btn-primary"), if (!enabled) div(class="alert alert-warning", style="margin-top:.75rem;", "Student spending is currently disabled for this environment."))
+      tagList(tags$h5("Spending options"), tags$p(style="color:#555;font-size:.88rem;", "This setting applies only to the active class / section environment. Existing purchases and token history are preserved. It covers extensions, grade reweights, and question funding."), checkboxInput("spending_enabled_input", "Enable student spending", value=enabled), actionButton("save_spending_options_btn", "Save spending", class="btn btn-primary"), if (!enabled) div(class="alert alert-warning", style="margin-top:.75rem;", "Student spending is currently disabled for this environment."))
     } else if (act == "jobs") {
       rid_row <- tryCatch(active_round_row(),
                           error = function(e) data.frame())
@@ -10782,9 +10782,9 @@ server <- function(input, output, session) {
           textAreaInput("policy_rubric_next", "Priority for the next stage:", rows=2, width="100%",
                         value=if(nrow(current)) current$next_steps[1] %||% "" else ""),
           div(style="display:flex;gap:.5rem;flex-wrap:wrap;",
-            actionButton("save_policy_rubric_draft_btn", "Save private draft",
+            actionButton("save_policy_rubric_draft_btn", "Save draft",
                          class="btn btn-outline-primary"),
-            actionButton("release_policy_rubric_btn", "Release to team",
+            actionButton("release_policy_rubric_btn", "Release",
                          class="btn btn-primary",
                          onclick="if(!confirm('Release this scored rubric to every member of the selected team?')) return false;")
           )
@@ -11072,9 +11072,10 @@ server <- function(input, output, session) {
           textAreaInput("assessment_summary_general_note", "General note to students (optional):",
                         placeholder = "e.g. This report shows your final score after the stated grading adjustments.",
                         rows = 2, width = "100%"),
-          checkboxInput("assessment_summary_require_reveal", "Students must click Reveal grade before this assessment affects their visible course grade", value = FALSE),
+          checkboxInput("assessment_summary_require_reveal", "Require student grade reveal", value = FALSE),
+          tags$p(style="color:#777;font-size:.78rem;margin:-.35rem 0 .45rem;", "When enabled, this assessment affects a student's visible course grade only after they click Reveal grade."),
           fluidRow(
-            column(6, selectInput("assessment_summary_gradebook_item", "Write Final grade to gradebook:",
+            column(6, selectInput("assessment_summary_gradebook_item", "Gradebook item:",
                                   choices = gradebook_target_choices, selected = "__match__", width = "100%")),
             column(3, numericInput("assessment_summary_gradebook_max", "Gradebook maximum:",
                                    value = 100, min = 0.01, step = 1, width = "100%"))
@@ -11082,7 +11083,7 @@ server <- function(input, output, session) {
           conditionalPanel('input.assessment_summary_gradebook_item === "__new__"',
             fluidRow(
               column(5, textInput("assessment_summary_new_gradebook_item", "New item name:", placeholder = "e.g. Midterm")),
-              column(5, selectInput("assessment_summary_new_gradebook_category", "Add it to category:",
+              column(5, selectInput("assessment_summary_new_gradebook_category", "Category:",
                                     choices = gradebook_category_choices))
             ),
             tags$p(style="color:#856404;font-size:.78rem;margin-top:-.3rem;",
@@ -11091,8 +11092,8 @@ server <- function(input, output, session) {
           uiOutput("assessment_summary_mapper"),
           uiOutput("assessment_summary_preview"),
           div(style = "display:flex;align-items:end;gap:.7rem;flex-wrap:wrap;margin-top:.35rem;",
-            checkboxInput("assessment_summary_replace", "Replace this assessment in the current class/section scope", value = TRUE),
-            actionButton("import_assessment_summary_btn", "Import mapped summary", class = "btn btn-sm btn-primary")
+            checkboxInput("assessment_summary_replace", "Replace in current scope", value = TRUE),
+            actionButton("import_assessment_summary_btn", "Import summary", class = "btn btn-sm btn-primary")
           ),
           tags$p(style = "color:#777;font-size:.78rem;margin:.45rem 0 0;",
                  "Student identifier must match the Class Job Market username (often the Vassar email). Only active students in the selected class and section(s) can be imported; unmatched rows are skipped and reported.")
@@ -11376,9 +11377,9 @@ server <- function(input, output, session) {
       )
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Active Game Slot"),
-        selectInput("admin_game_sel", "Which game is active now?",
+        selectInput("admin_game_sel", "Active game",
                     choices = all_game_choices, selected = active, width = "100%"),
-        actionButton("set_active_btn", "Set active game", class = "btn btn-warning btn-sm"),
+        actionButton("set_active_btn", "Set active", class = "btn btn-warning btn-sm"),
         tags$p(style = "font-size:.82em;color:#888;margin-top:.5rem;",
                "Students see this immediately on their Games tab. Choose (none) and save to turn the game off."),
         tags$hr(),

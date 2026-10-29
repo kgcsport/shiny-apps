@@ -858,7 +858,8 @@ server <- function(input, output, session) {
           tagList(
             sliderInput("bonus_c", "Contribution (participation tokens)", min = 0, max = max(0, floor(eff_max * 2) / 2), value = 0, step = 0.5),
             if (status == "open") div(class="bp-actions",
-              actionButton("submit_bonus", "Save / replace contribution", class = "btn-primary bp-submit"),
+              actionButton("submit_bonus", "Save contribution", class = "btn-primary bp-submit",
+                           title = "Save or replace your contribution"),
               actionButton("reset_bonus", "Reset to 0", class = "btn-default bp-submit")
             ),
             p(class = "bp-note", sprintf("Multiplier: %.2f×. %s Contributions are debited only when the round closes.", as.numeric(o$bonus_multiplier[1]), cs_note))
@@ -1252,13 +1253,14 @@ server <- function(input, output, session) {
                         selected = as.character(o$round_status[1]))
           ),
           column(4,
-            checkboxInput("adm_show_contributions",
-                          "Show student names and contributions publicly",
-                          value=isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L))
+            div(title = "Show student names and contribution amounts publicly",
+                checkboxInput("adm_show_contributions", "Show names & amounts",
+                              value=isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)))
           )
         ),
-        actionButton("adm_apply", "Apply round settings", class = "btn-primary"),
-        actionButton("adm_clear", "Clear submissions (this round + section)", class = "btn-danger"),
+        actionButton("adm_apply", "Save round", class = "btn-primary"),
+        actionButton("adm_clear", "Clear round", class = "btn-danger",
+                     title = "Clear submissions for this round and section"),
         tags$small(
           "Switch Active Section when moving between class sections. ",
           "Clearing removes submissions for the current section and reverses ",
@@ -1300,7 +1302,8 @@ server <- function(input, output, session) {
       wellPanel(
         h5("Settlement"),
         p("Set status to REVEALED, then click below to post payouts for the current section."),
-        actionButton("adm_payout", "Apply payouts to token ledger (one-time per section)", class = "btn-success"),
+        actionButton("adm_payout", "Pay out", class = "btn-success",
+                     title = "Apply one-time payouts to the token ledger for this section"),
         tags$small(
           "Credits students in the current section via source_type='coordination_grant'. ",
           "Bonus contributions are debited when the round is closed."

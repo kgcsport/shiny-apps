@@ -32,7 +32,7 @@ users via class-job-market admin panel before running these tests.
 
 1. Admin sets status → `closed`.
 2. Admin sets status → `revealed`.
-3. Admin clicks **Apply payouts to token ledger**.
+3. Admin clicks **Pay out**.
 
 **Expected:**
 - Alice (High vs Bob's Low): payoff 10 pts × pd_scale = 1.0 token
@@ -56,7 +56,7 @@ users via class-job-market admin panel before running these tests.
 1. Admin sets status → `closed`.
    - **Expected:** Contribution debits post to `token_ledger` (`source_type='coordination_contrib'`, `earning=0`, `amount=-2.0` for Alice).
 2. Admin sets status → `revealed`.
-3. Admin clicks **Apply payouts to token ledger**.
+3. Admin clicks **Pay out**.
    - **Expected:** Payout credits for each student in section: `pot / class_size`, rounded to 0.5.
 
 ### CG-06 — Contribution exceeds balance is blocked
