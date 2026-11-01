@@ -496,6 +496,7 @@ db_exec("
     contrib_cap REAL DEFAULT 0,
     use_section_size INTEGER DEFAULT 1,
     show_contributions INTEGER DEFAULT 0,
+    minimum_contribution REAL DEFAULT 0,
     section TEXT DEFAULT '',
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
@@ -510,6 +511,7 @@ ensure_column("olig_settings", "pd_LH_B REAL")
 ensure_column("olig_settings", "pd_LL_A REAL")
 ensure_column("olig_settings", "pd_LL_B REAL")
 ensure_column("olig_settings", "show_contributions INTEGER DEFAULT 0")
+ensure_column("olig_settings", "minimum_contribution REAL DEFAULT 0")
 db_exec("CREATE TABLE IF NOT EXISTS olig_rounds(
   round INTEGER PRIMARY KEY, game TEXT NOT NULL, status TEXT NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
