@@ -1192,7 +1192,7 @@ server <- function(input, output, session) {
       sprintf("Section class size  (section '%s' not found in users)", sec)
     else
       "Section class size  (no section selected or column missing)"
-    denom_choices <- c(cs_radio_lbl = "section", "Submitter count" = "submitters", "Submits at least a threshold" = "threshold")
+    denom_choices <- setNames(c("section", "submitters", "threshold"), c(cs_radio_lbl, "Submitter count", "Submits at least a threshold"))
 
     fluidPage(
       h4("Admin controls"),

@@ -59,4 +59,6 @@ stopifnot(!grepl("token_ledger(user_id, display_name, round_id", app_text, fixed
 stopifnot(grepl("for (uid in as.character(recipients$user_id))", cjm, fixed=TRUE))
 stopifnot(grepl("\"submits at least\"=\"threshold\"", cjm, fixed=TRUE))
 stopifnot(grepl("denominator_mode=?,denominator_threshold=?", cjm, fixed=TRUE))
+stopifnot(grepl("setNames(c(\"section\", \"submitters\", \"threshold\")", app_text, fixed=TRUE))
+stopifnot(!grepl("c(cs_radio_lbl = \"section\"", app_text, fixed=TRUE))
 cat("Bonus Pot public-good payout: OK\n")
