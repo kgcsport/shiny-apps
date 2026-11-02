@@ -160,7 +160,7 @@ exec(con, "CREATE TABLE IF NOT EXISTS olig_settings (
   bonus_multiplier REAL, pd_scale REAL,
   pd_HH_A REAL, pd_HH_B REAL, pd_HL_A REAL, pd_HL_B REAL,
   pd_LH_A REAL, pd_LH_B REAL, pd_LL_A REAL, pd_LL_B REAL,
-  section TEXT DEFAULT '', use_section_size INTEGER DEFAULT 1,
+  section TEXT DEFAULT '', use_section_size INTEGER DEFAULT 1, denominator_mode TEXT DEFAULT 'section', denominator_threshold REAL DEFAULT 0,
   class_size INTEGER, contrib_cap REAL DEFAULT 0,
   updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
 );")

@@ -495,6 +495,8 @@ db_exec("
     pd_scale REAL DEFAULT 0.1,
     contrib_cap REAL DEFAULT 0,
     use_section_size INTEGER DEFAULT 1,
+    denominator_mode TEXT DEFAULT 'section',
+    denominator_threshold REAL DEFAULT 0,
     show_contributions INTEGER DEFAULT 0,
     minimum_contribution REAL DEFAULT 0,
     section TEXT DEFAULT '',
@@ -512,6 +514,14 @@ ensure_column("olig_settings", "pd_LL_A REAL")
 ensure_column("olig_settings", "pd_LL_B REAL")
 ensure_column("olig_settings", "show_contributions INTEGER DEFAULT 0")
 ensure_column("olig_settings", "minimum_contribution REAL DEFAULT 0")
+olig_setting_columns <- tryCatch(db_query("PRAGMA table_info(olig_settings);")$name,
+                                 error = function(e) character(0))
+if (!"denominator_mode" %in% olig_setting_columns) {
+  ensure_column("olig_settings", "denominator_mode TEXT DEFAULT 'section'")
+  # Preserve the old two-option setting when upgrading an existing database.
+  db_exec("UPDATE olig_settings SET denominator_mode=CASE WHEN COALESCE(use_section_size,1)=1 THEN 'section' ELSE 'submitters' END WHERE id=1;")
+}
+ensure_column("olig_settings", "denominator_threshold REAL DEFAULT 0")
 db_exec("CREATE TABLE IF NOT EXISTS olig_rounds(
   round INTEGER PRIMARY KEY, game TEXT NOT NULL, status TEXT NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -3572,18 +3582,23 @@ server <- function(input, output, session) {
       list(round_id, section)), error=function(e) data.frame())
     if (!nrow(subs)) return(list(ok=FALSE, message="No Bonus Pot contributions exist for this round and section."))
     total <- sum(suppressWarnings(as.numeric(subs$contribute)), na.rm=TRUE)
-    use_enrolled <- isTRUE(as.integer(s$use_section_size[1] %||% 1L) == 1L)
-    enrolled <- if (use_enrolled) tryCatch(db_query(
+    mode <- tolower(trimws(as.character(s$denominator_mode[1] %||% "")))
+    if (!mode %in% c("section", "submitters", "threshold")) {
+      mode <- if (isTRUE(as.integer(s$use_section_size[1] %||% 1L) == 1L)) "section" else "submitters"
+    }
+    threshold <- if (identical(mode, "threshold")) max(0, as.numeric(s$denominator_threshold[1] %||% 0)) else 0
+    qualifying <- subs[suppressWarnings(as.numeric(subs$contribute)) >= threshold, , drop=FALSE]
+    enrolled <- if (identical(mode, "section")) tryCatch(db_query(
       "SELECT COUNT(*) AS n FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0 AND LOWER(COALESCE(course,''))=LOWER(?) AND LOWER(COALESCE(section,''))=LOWER(?);",
       list(scoped_course(), section))$n[1], error=function(e) NA_integer_) else NA_integer_
-    denom <- if (!is.na(enrolled) && as.integer(enrolled) > 0L) as.integer(enrolled) else nrow(subs)
-    share <- round((as.numeric(s$bonus_multiplier[1] %||% 1.5) * total / max(1L, denom)) * 2) / 2
-    recipients <- if (!is.na(enrolled) && as.integer(enrolled) > 0L) tryCatch(db_query(
+    recipients <- if (identical(mode, "threshold")) data.frame(user_id=as.character(qualifying$user_id)) else if (!is.na(enrolled) && as.integer(enrolled) > 0L) tryCatch(db_query(
       "SELECT user_id FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0 AND LOWER(COALESCE(course,''))=LOWER(?) AND LOWER(COALESCE(section,''))=LOWER(?);",
       list(scoped_course(), section)), error=function(e) data.frame()) else data.frame(user_id=as.character(subs$user_id))
-    if (!nrow(recipients)) recipients <- data.frame(user_id=as.character(subs$user_id))
+    if (!nrow(recipients)) return(list(ok=FALSE, message=if (identical(mode, "threshold")) "No student met the selected contribution threshold." else "No Bonus Pot recipients are available."))
+    denom <- nrow(recipients)
+    share <- round((as.numeric(s$bonus_multiplier[1] %||% 1.5) * total / denom) * 2) / 2
     meta <- sprintf("round=%d section=%s denominator=%s", round_id, section,
-                    if (!is.na(enrolled) && as.integer(enrolled)>0L) paste0("enrolled-", enrolled) else paste0("submitters-", nrow(subs)))
+                    if (identical(mode, "threshold")) paste0("threshold-", threshold, "-", denom) else if (!is.na(enrolled) && as.integer(enrolled)>0L) paste0("enrolled-", enrolled) else paste0("submitters-", denom))
     for (uid in as.character(recipients$user_id)) {
       db_exec("INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note) SELECT user_id,display_name,'coordination_grant',?,?,1,? FROM users WHERE user_id=?;",
               list(round_id, share, paste("Bonus Pot payout", meta), uid))
@@ -3609,8 +3624,12 @@ server <- function(input, output, session) {
         column(3, numericInput("bp_admin_round", "Round", value=as.integer(s$current_round[1] %||% 1L), min=1, step=1)),
         column(4, selectInput("bp_admin_section", "Section", choices=setNames(sections, sections), selected=selected_section)),
         column(5, radioButtons("bp_admin_denominator", "Divide pot among", inline=TRUE,
-          choices=c("enrolled section"="enrolled", "contributors only"="contributors"),
-          selected=if(isTRUE(as.integer(s$use_section_size[1] %||% 1L)==1L)) "enrolled" else "contributors"))
+          choices=c("enrolled section"="enrolled", "contributors only"="contributors", "submits at least"="threshold"),
+          selected={ mode <- tolower(trimws(as.character(s$denominator_mode[1] %||% ""))); if (!mode %in% c("section", "submitters", "threshold")) mode <- if (isTRUE(as.integer(s$use_section_size[1] %||% 1L)==1L)) "section" else "submitters"; c(section="enrolled", submitters="contributors", threshold="threshold")[[mode]] }),
+          conditionalPanel("input.bp_admin_denominator === 'threshold'",
+            numericInput("bp_admin_threshold", "Token threshold", value=max(0, as.numeric(s$denominator_threshold[1] %||% 0)), min=0, step=.5)
+          )
+        )
       ),
       fluidRow(
         column(4, numericInput("bp_admin_multiplier", "Multiplier", value=as.numeric(s$bonus_multiplier[1] %||% 1.5), min=1, step=.1)),
@@ -12121,15 +12140,20 @@ server <- function(input, output, session) {
     section <- trimws(as.character(input$bp_admin_section %||% ""))
     multiplier <- suppressWarnings(as.numeric(input$bp_admin_multiplier %||% NA_real_))
     cap <- suppressWarnings(as.numeric(input$bp_admin_cap %||% NA_real_))
+    denominator <- as.character(input$bp_admin_denominator %||% "enrolled")
+    threshold <- suppressWarnings(as.numeric(input$bp_admin_threshold %||% 0))
+    if (!denominator %in% c("enrolled", "contributors", "threshold")) denominator <- "enrolled"
+    if (!is.finite(threshold) || threshold < 0) threshold <- 0
     status <- status_override %||% as.character(input$bp_admin_status %||% "pending")
     if (is.na(round_id) || round_id < 1L || !nzchar(section) || !is.finite(multiplier) || multiplier < 1 || !is.finite(cap) || cap < 0) {
       showNotification("Choose a round and section; multiplier must be at least 1 and cap cannot be negative.", type="error")
       return(FALSE)
     }
     if (!status %in% c("pending", "open", "closed", "revealed")) status <- "pending"
-    db_exec("UPDATE olig_settings SET current_round=?,current_game='bonus',round_status=?,bonus_multiplier=?,contrib_cap=?,use_section_size=?,show_contributions=?,section=?,updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+    db_exec("UPDATE olig_settings SET current_round=?,current_game='bonus',round_status=?,bonus_multiplier=?,contrib_cap=?,use_section_size=?,denominator_mode=?,denominator_threshold=?,show_contributions=?,section=?,updated_at=CURRENT_TIMESTAMP WHERE id=1;",
             list(round_id, status, multiplier, cap,
-                 if (identical(input$bp_admin_denominator %||% "enrolled", "enrolled")) 1L else 0L,
+                 if (identical(denominator, "enrolled")) 1L else 0L,
+                 c(enrolled="section", contributors="submitters", threshold="threshold")[[denominator]], threshold,
                  if (isTRUE(input$bp_admin_show_contributions)) 1L else 0L,
                  section))
     db_exec("INSERT INTO olig_rounds(round,game,status) VALUES(?,'bonus',?) ON CONFLICT(round) DO UPDATE SET game='bonus',status=excluded.status;",

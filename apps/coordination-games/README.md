@@ -12,11 +12,12 @@ This app adds:
 - `olig_settings`, `olig_rounds`, `olig_submissions`, `olig_payouts`
 
 ## Important accounting rules
-- Bonus Pot contributions are **debited immediately** to the ledger as `purpose='oligopoly_contrib'`.
-- On reveal, each student gets credited their share via `purpose='grant'` with a **negative** amount.
-- PD payouts are credited via `purpose='grant'` as well (no debits).
+- Bonus Pot contributions are debited once when the instructor closes the round.
+- The multiplied pot is credited on reveal through the shared `token_ledger`.
+- The instructor may divide the pot among every enrolled student in the section, all submitters, or only submitters at or above an explicitly selected token threshold. The threshold is ignored in the other two modes.
+- PD payouts are credited through the shared ledger.
 
-All credits are **rounded to nearest 0.5**.
+All credits are rounded to the nearest 0.5 token.
 
 ## Pointing to the shared DB
 By default it uses the same path as your other app:

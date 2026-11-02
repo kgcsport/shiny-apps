@@ -36,7 +36,27 @@ result <- apply_payouts(1L, "bonus")
 stopifnot(result$ok, length(ledger) == 3L)
 stopifnot(identical(sort(vapply(ledger, `[[`, character(1), "user_id")), sort(roster$user_id)))
 stopifnot(all(vapply(ledger, `[[`, numeric(1), "amount") == 1))
+
+# Threshold mode is opt-in: only submitters at or above the chosen threshold
+# receive a share, while all submitted contributions still build the pot.
+olig <- data.frame(bonus_multiplier=1.5, use_section_size=1L,
+                   denominator_mode="threshold", denominator_threshold=2,
+                   section="S01")
+subs <- tibble(round=2L, user_id=c("high", "low", "zero"), section="S01",
+               game="bonus", contribute=c(4, 1, 0))
+ledger <- list()
+result <- apply_payouts(2L, "bonus")
+stopifnot(result$ok, length(ledger) == 1L)
+stopifnot(identical(ledger[[1]]$user_id, "high"), identical(ledger[[1]]$amount, 7.5))
+
+# The threshold must not affect the established enrolled-section mode.
+olig$denominator_mode <- "section"
+olig$denominator_threshold <- 99
+shares <- bonus_shares(olig, subs)
+stopifnot(identical(shares$n_denom[1], 3L), identical(shares$share_each[1], 2.5))
 cjm <- paste(readLines(file.path(app_root, "class-job-market", "app.R"), warn=FALSE), collapse="\n")
 stopifnot(!grepl("token_ledger(user_id, display_name, round_id", app_text, fixed=TRUE))
 stopifnot(grepl("for (uid in as.character(recipients$user_id))", cjm, fixed=TRUE))
+stopifnot(grepl("\"submits at least\"=\"threshold\"", cjm, fixed=TRUE))
+stopifnot(grepl("denominator_mode=?,denominator_threshold=?", cjm, fixed=TRUE))
 cat("Bonus Pot public-good payout: OK\n")

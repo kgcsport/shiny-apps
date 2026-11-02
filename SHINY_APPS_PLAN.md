@@ -163,6 +163,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-11-02** — Bonus Pot now has an explicit third denominator mode, **submits at least**. It saves a nonnegative token threshold and divides the multiplied pot only among submitters at or above that threshold. Scope: this changes Bonus Pot denominator selection only; Price War, contribution debiting, section scoping, and token-ledger idempotence are out of scope. Invariants: enrolled-section mode still pays every active non-admin, non-demo student in the selected section; contributor mode still pays every submitter; the threshold is ignored unless its third mode is selected. Acceptance: an instructor selects the third option and threshold, a student can still submit below it, and only qualifying submitters receive the share on payout. Dependency check: both Class Job Market and standalone Coordination Games controls, student messaging, schema migration, and payout paths use the same persisted mode. Verification: `Rscript --vanilla tests/bonus-pot-public-good.R`, the two focused critical Bonus Pot fixtures, parser checks, and `Rscript --vanilla tests/smoke-class-job-market.R` pass. Browser staging remains required before production promotion.
+
 - **2026-10-26** — Adopt a non-regression protocol for Class Job Market changes: identify preserved and new behavior before coding; add a workflow-level regression fixture for every production bug; test historical dates and selected course/section scope where relevant; stage the immutable image; and report the exact verification evidence before calling a change resolved. Pending assignments and pending Live Score Audit events must remain visible and actionable until committed, returned, or deleted.
 
 - **2026-10-27** — Administrator status means management access, not automatic student-game eligibility. Across Class Job Market, default student rosters, class-size denominators, draws, and collective-action games exclude `is_admin=1`; a future instructor control may explicitly include administrators for the rare intentional case.
@@ -440,6 +442,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-11-02** (Codex) — Added an opt-in Bonus Pot denominator mode, **submits at least**, with an instructor-entered token threshold. Only qualifying submitters receive the divided multiplied pot; below-threshold submissions remain valid and still contribute to the pot. The legacy enrolled-section and all-submitter modes retain their prior payout rules. Added idempotent SQLite migration fields, synchronized both instructor control surfaces, and extended `tests/bonus-pot-public-good.R` to verify threshold payout and the unchanged enrolled-section result. Focused fixtures, app parsing, and the Class Job Market smoke test pass; browser staging is still pending.
 
 - **2026-10-27** — Aligned Bonus Pot with the public-good game used in ECON 160: when the enrolled-section denominator is selected, the multiplied pot is now paid to every active, non-admin, non-demo student in that section—including zero contributors. The fallback remains submitter-only when no enrolled roster is available. Added `tests/bonus-pot-public-good.R`, which verifies that one contributor and two zero-contributors each receive the same (1.5\times2/3=1) token share; the Docker build runs it.
 
@@ -797,6 +801,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** (Claude Code, branch `claude/class-job-market-simplify-szx2ai`) — Fixed settings-panel reactivity, student-poll invalidation keys, and fresh-DB migration ordering in class-job-market. Replaced the seeded job catalog with the simplified 4-category/11-template model plus a one-time data migration. Added template-level timing/voluntary/in-draw/auto-copy (carried into rounds by "Create next round"), a `during` timing with a cold-call draw filter, the recurring bid-lock schedule, the volunteer clearing-wage engine with three rules and a per-class posted-demand editor, student-facing volunteer wages, and a scratch-DB smoke test.
 
 ## Next actions
+
+1. Stage the Bonus Pot threshold-denominator image and browser-test instructor selection plus one qualifying and one below-threshold student submission before production promotion.
 
 1. Build the Collective Action student and instructor UI around the tested prototype engine, including explicit section versus course scope selection and an off-by-default “include administrators” control.
 2. Add a multi-process SQLite contention test and bounded write-retry policy before enabling a live classroom round.

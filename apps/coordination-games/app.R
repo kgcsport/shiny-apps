@@ -4,7 +4,7 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 # Uses the shared DB (class-job-market.sqlite) for auth and token accounting.
 # Section-aware: sections are stored in the `sections` DB table with
 # their enrolled class size. The bonus-pot denominator is either the
-# section's class size OR the submitter count -- no other values.
+# section's class size, the submitter count, or a contribution-threshold subset.
 #
 # Shared game records live in the Class Job Market database. The standalone
 # Bonus Pot app and Class Job Market are supported control surfaces over the
@@ -18,7 +18,7 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 # - Bonus Pot: students UPSERT their contribution while the round is open (no debit yet).
 #   When admin sets status → 'closed', contributions are DEBITED (source_type='coordination_contrib').
 #   On reveal each student in the section gets a CREDIT = pot / class_size
-#   (or / submitter count if class_size is 0/NULL), rounded to nearest 0.5.
+#   (or / submitter count, or / qualifying submitters), rounded to nearest 0.5.
 # - Price War (PD): no staking; payoff = pd_payoff_points * pd_scale, rounded 0.5.
 #   PD choices can also be changed while the round is open (upsert).
 #
@@ -95,6 +95,14 @@ ensure_olig_column <- function(name, definition) {
 }
 ensure_olig_column("show_contributions", "show_contributions INTEGER DEFAULT 0")
 ensure_olig_column("minimum_contribution", "minimum_contribution REAL DEFAULT 0")
+olig_setting_columns <- tryCatch(db_query("PRAGMA table_info(olig_settings);")$name,
+                                 error = function(e) character(0))
+if (!"denominator_mode" %in% olig_setting_columns) {
+  ensure_olig_column("denominator_mode", "denominator_mode TEXT DEFAULT 'section'")
+  # Existing databases had only the two use_section_size choices. Preserve them.
+  db_exec("UPDATE olig_settings SET denominator_mode=CASE WHEN COALESCE(use_section_size,1)=1 THEN 'section' ELSE 'submitters' END WHERE id=1;")
+}
+ensure_olig_column("denominator_threshold", "denominator_threshold REAL DEFAULT 0")
 touch_olig <- function() db_exec("UPDATE olig_settings SET updated_at=CURRENT_TIMESTAMP WHERE id=1;")
 get_olig <- function() db_query("SELECT * FROM olig_settings WHERE id=1;")
 
@@ -317,22 +325,25 @@ pd_pair_payoffs <- function(olig, subs) {
   out
 }
 
-# bonus_shares: denominator is EITHER the section's enrolled count (from users table)
-# OR the number of students who actually submitted. No other values.
+# bonus_shares: enrolled section, all submitters, or only submitters
+# whose contribution reaches the configured threshold.
 bonus_shares <- function(olig, subs) {
   if (!nrow(subs)) return(tibble())
   m <- as.numeric(olig$bonus_multiplier[1] %||% 1.5)
-  threshold <- max(0, as.numeric(olig$minimum_contribution[1] %||% 0))
+  mode <- tolower(trimws(as.character(olig$denominator_mode[1] %||% "")))
+  if (!mode %in% c("section", "submitters", "threshold")) {
+    mode <- if (isTRUE(as.integer(olig$use_section_size[1] %||% 1L) == 1L)) "section" else "submitters"
+  }
+  threshold <- if (identical(mode, "threshold")) max(0, as.numeric(olig$denominator_threshold[1] %||% 0)) else 0
   subs <- subs %>% mutate(
     contribute = ifelse(is.na(contribute) | !nzchar(as.character(contribute)), 0, as.numeric(contribute)),
     eligible = contribute >= threshold
   )
   total <- sum(subs$contribute, na.rm = TRUE)
   pot <- m * total
-  use_sec <- isTRUE(as.integer(olig$use_section_size[1] %||% 1) == 1)
-  cs <- if (use_sec && threshold <= 0) section_class_size(olig_section(olig)) else NA_integer_
-  n_denom <- if (threshold > 0) sum(subs$eligible) else if (!is.na(cs)) cs else nrow(subs)
-  denom_source <- if (threshold > 0) sprintf("members meeting %.1f-token minimum (%d)", threshold, n_denom) else if (!is.na(cs)) sprintf("section class size (%d enrolled)", cs) else sprintf("submitter count (%d)", nrow(subs))
+  cs <- if (identical(mode, "section")) section_class_size(olig_section(olig)) else NA_integer_
+  n_denom <- if (identical(mode, "threshold")) sum(subs$eligible) else if (!is.na(cs)) cs else nrow(subs)
+  denom_source <- if (identical(mode, "threshold")) sprintf("submitters at or above %.1f tokens (%d)", threshold, n_denom) else if (!is.na(cs)) sprintf("section class size (%d enrolled)", cs) else sprintf("submitter count (%d)", nrow(subs))
   share <- if (n_denom > 0) pot / n_denom else 0
   subs %>% mutate(total_contrib=total, pot_total=pot, n_denom=n_denom, denom_source=denom_source, share_each=share)
 }
@@ -354,13 +365,15 @@ apply_payouts <- function(round, game) {
   if (game == "bonus") {
     shares       <- bonus_shares(olig, subs)
     denom_source <- if (nrow(shares) > 0) shares$denom_source[1] else sprintf("submitter count (%d)", nrow(subs))
-    use_sec      <- isTRUE(as.integer(olig$use_section_size[1] %||% 1L) == 1L)
-    threshold <- max(0, as.numeric(olig$minimum_contribution[1] %||% 0))
-    recipients <- if (threshold > 0) shares %>% filter(eligible) %>% distinct(user_id) else if (use_sec && !is.na(section_class_size(sec))) db_query(
+    mode <- tolower(trimws(as.character(olig$denominator_mode[1] %||% "")))
+    if (!mode %in% c("section", "submitters", "threshold")) {
+      mode <- if (isTRUE(as.integer(olig$use_section_size[1] %||% 1L) == 1L)) "section" else "submitters"
+    }
+    recipients <- if (identical(mode, "threshold")) shares %>% filter(eligible) %>% distinct(user_id) else if (identical(mode, "section") && !is.na(section_class_size(sec))) db_query(
       "SELECT user_id FROM users WHERE section=? AND COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0;", list(sec)
     ) else tibble(user_id=unique(as.character(subs$user_id)))
-    if (!nrow(recipients) && threshold <= 0) recipients <- tibble(user_id=unique(as.character(subs$user_id)))
-    if (!nrow(recipients)) return(list(ok=FALSE, msg="No student met the minimum contribution."))
+    if (!nrow(recipients) && !identical(mode, "threshold")) recipients <- tibble(user_id=unique(as.character(subs$user_id)))
+    if (!nrow(recipients)) return(list(ok=FALSE, msg="No student met the selected contribution threshold."))
     payouts <- recipients %>% mutate(payout=round_to_half(shares$share_each[1]))
     for (i in seq_len(nrow(payouts))) {
       uid <- payouts$user_id[i]
@@ -826,11 +839,14 @@ server <- function(input, output, session) {
 
     game_lbl <- if (game == "pd") "Price War" else "Bonus Pot"
     status_class <- paste0("bp-pill bp-status-", status)
-    use_sec <- isTRUE(as.integer(o$use_section_size[1] %||% 1) == 1)
-    cs <- if (use_sec) section_class_size(sec) else NA_integer_
-    cs_note <- if (!is.na(cs)) sprintf("The pot is shared with all %d enrolled students in this section.", cs) else "The pot is shared among students who submit."
+    denom_mode <- tolower(trimws(as.character(o$denominator_mode[1] %||% "")))
+    if (!denom_mode %in% c("section", "submitters", "threshold")) {
+      denom_mode <- if (isTRUE(as.integer(o$use_section_size[1] %||% 1L) == 1L)) "section" else "submitters"
+    }
+    cs <- if (identical(denom_mode, "section")) section_class_size(sec) else NA_integer_
+    denom_threshold <- max(0, as.numeric(o$denominator_threshold[1] %||% 0))
+    cs_note <- if (identical(denom_mode, "threshold")) sprintf("The pot is shared only with students who submit at least %.1f tokens.", denom_threshold) else if (!is.na(cs)) sprintf("The pot is shared with all %d enrolled students in this section.", cs) else "The pot is shared among students who submit."
     cap <- as.numeric(o$contrib_cap[1] %||% 0)
-    minimum <- max(0, as.numeric(o$minimum_contribution[1] %||% 0))
     eff_max <- if (is.finite(cap) && cap > 0) min(bal, cap) else bal
 
     tagList(
@@ -860,7 +876,7 @@ server <- function(input, output, session) {
                            title = "Save or replace your contribution"),
               actionButton("reset_bonus", "Reset to 0", class = "btn-default bp-submit")
             ),
-            p(class = "bp-note", sprintf("Multiplier: %.2f×. %s%s Contributions are debited only when the round closes.", as.numeric(o$bonus_multiplier[1]), cs_note, if (minimum > 0) sprintf(" Give 0, or at least %.1f tokens to join the pot.", minimum) else ""))
+            p(class = "bp-note", sprintf("Multiplier: %.2f×. %s Contributions are debited only when the round closes.", as.numeric(o$bonus_multiplier[1]), cs_note))
           )
         }
       ),
@@ -921,9 +937,6 @@ server <- function(input, output, session) {
 
     c_val <- round_to_half(as.numeric(input$bonus_c %||% 0))
     if (!is.finite(c_val) || c_val < 0) c_val <- 0
-    minimum <- max(0, as.numeric(o$minimum_contribution[1] %||% 0))
-    if (c_val > 0 && c_val < minimum) { showNotification(sprintf("Contribute 0, or at least %.1f participation tokens to join the pot.", minimum), type="error"); return() }
-
     bal <- token_balance(user_id())
     if (c_val > bal + 1e-9) {
       showNotification("Not enough participation tokens.", type = "error"); return()
@@ -1158,10 +1171,13 @@ server <- function(input, output, session) {
     o       <- olig_poll()
     rv$environment_ver
     sec     <- olig_section(o)
-    use_sec <- as.integer(o$use_section_size[1] %||% 1)
+    denom_mode <- tolower(trimws(as.character(o$denominator_mode[1] %||% "")))
+    if (!denom_mode %in% c("section", "submitters", "threshold")) {
+      denom_mode <- if (isTRUE(as.integer(o$use_section_size[1] %||% 1L) == 1L)) "section" else "submitters"
+    }
     has_col <- users_has_section_col()
-    cs      <- if (has_col && use_sec == 1L) section_class_size(sec) else NA_integer_
-    denom_lbl <- if (!is.na(cs)) sprintf("section class size (%d)", cs) else "submitter count"
+    cs <- if (has_col && identical(denom_mode, "section")) section_class_size(sec) else NA_integer_
+    denom_lbl <- if (identical(denom_mode, "threshold")) sprintf("submitters at or above %.1f tokens", max(0, as.numeric(o$denominator_threshold[1] %||% 0))) else if (!is.na(cs)) sprintf("section class size (%d)", cs) else "submitter count"
 
     # Section choices derived from users table (re-read on each render)
     allowed_sections <- unique_ci(session_environment_rows()$section)
@@ -1169,14 +1185,14 @@ server <- function(input, output, session) {
     sec_choices <- all_sec_choices[norm_key(as.character(all_sec_choices)) %in% norm_key(allowed_sections)]
     if (!length(sec_choices)) sec_choices <- setNames("", "(no authorized sections)")
 
-    # Radio button labels -- only two options, no free input
+    # Three denominator choices; the threshold applies only in its own mode.
     cs_radio_lbl <- if (!is.na(cs))
       sprintf("Section class size  (%d enrolled)", cs)
     else if (has_col && nzchar(sec))
       sprintf("Section class size  (section '%s' not found in users)", sec)
     else
       "Section class size  (no section selected or column missing)"
-    denom_choices <- setNames(c("1", "0"), c(cs_radio_lbl, "Submitter count"))
+    denom_choices <- c(cs_radio_lbl = "section", "Submitter count" = "submitters", "Submits at least a threshold" = "threshold")
 
     fluidPage(
       h4("Admin controls"),
@@ -1237,8 +1253,12 @@ server <- function(input, output, session) {
           column(5,
             radioButtons("adm_use_section_size", "Bonus pot denominator",
                          choices  = denom_choices,
-                         selected = as.character(use_sec),
-                         inline   = TRUE)
+                         selected = denom_mode,
+                         inline   = TRUE),
+            conditionalPanel("input.adm_use_section_size === 'threshold'",
+              numericInput("adm_denominator_threshold", "Token threshold",
+                           value=max(0, as.numeric(o$denominator_threshold[1] %||% 0)), min=0, step=0.5)
+            )
           )
         ),
         fluidRow(
@@ -1275,8 +1295,6 @@ server <- function(input, output, session) {
                      value = as.numeric(o$bonus_multiplier[1]), min = 1, step = 0.1),
         numericInput("adm_contrib_cap", "Max participation tokens students can wager (0 = no cap)",
                      value = as.numeric(o$contrib_cap[1] %||% 0), min = 0, step = 0.5),
-        numericInput("adm_minimum_contribution", "Minimum to join pot (0 = everyone shares)",
-                     value = as.numeric(o$minimum_contribution[1] %||% 0), min = 0, step = 0.5),
         numericInput("adm_pd_scale", "PD scale (participation tokens per payoff point)",
                      value = as.numeric(o$pd_scale[1]), min = 0, step = 0.01),
         tags$hr(),
@@ -1332,20 +1350,23 @@ server <- function(input, output, session) {
 
   observeEvent(input$adm_apply, {
     req(is_admin())
-    use_sec <- suppressWarnings(as.integer(input$adm_use_section_size %||% "1"))
-    if (is.na(use_sec)) use_sec <- 1L
+    denom_mode <- as.character(input$adm_use_section_size %||% "section")
+    if (!denom_mode %in% c("section", "submitters", "threshold")) denom_mode <- "section"
+    use_sec <- if (identical(denom_mode, "section")) 1L else 0L
+    denom_threshold <- suppressWarnings(as.numeric(input$adm_denominator_threshold %||% 0))
+    if (!is.finite(denom_threshold) || denom_threshold < 0) denom_threshold <- 0
     sec     <- as.character(input$adm_section %||% "")
     allowed_env <- session_environment_rows()
     allowed_hit <- which(norm_key(allowed_env$course) == norm_key(rv$active_course) & norm_key(allowed_env$section) == norm_key(sec))
     if (!length(allowed_hit)) { showNotification("Choose a class section you are authorized to manage.", type="error"); return() }
-    cs      <- if (use_sec == 1L) section_class_size(sec) else NA_integer_
-    denom_lbl <- if (!is.na(cs)) sprintf("section class size (%d)", cs) else "submitter count"
+    cs <- if (identical(denom_mode, "section")) section_class_size(sec) else NA_integer_
+    denom_lbl <- if (identical(denom_mode, "threshold")) sprintf("submitters at or above %.1f tokens", denom_threshold) else if (!is.na(cs)) sprintf("section class size (%d)", cs) else "submitter count"
 
     db_exec(
       "UPDATE olig_settings SET current_round=?, current_game=?, round_status=?,
-       section=?, use_section_size=?, show_contributions=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+       section=?, use_section_size=?, denominator_mode=?, denominator_threshold=?, show_contributions=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
       list(as.integer(input$adm_round), as.character(input$adm_game),
-           as.character(input$adm_status), sec, use_sec,
+           as.character(input$adm_status), sec, use_sec, denom_mode, denom_threshold,
            if (isTRUE(input$adm_show_contributions)) 1L else 0L)
     )
     db_exec(
@@ -1412,7 +1433,7 @@ server <- function(input, output, session) {
     req(is_admin())
     db_exec("
       UPDATE olig_settings SET
-        bonus_multiplier=?, contrib_cap=?, minimum_contribution=?, pd_scale=?,
+        bonus_multiplier=?, contrib_cap=?, pd_scale=?,
         pd_HH_A=?, pd_HH_B=?,
         pd_HL_A=?, pd_HL_B=?,
         pd_LH_A=?, pd_LH_B=?,
@@ -1420,7 +1441,7 @@ server <- function(input, output, session) {
         updated_at=CURRENT_TIMESTAMP
       WHERE id=1;
     ", list(
-      as.numeric(input$adm_m),     as.numeric(input$adm_contrib_cap), as.numeric(input$adm_minimum_contribution), as.numeric(input$adm_pd_scale),
+      as.numeric(input$adm_m),     as.numeric(input$adm_contrib_cap), as.numeric(input$adm_pd_scale),
       as.numeric(input$pd_HH_A),   as.numeric(input$pd_HH_B),
       as.numeric(input$pd_HL_A),   as.numeric(input$pd_HL_B),
       as.numeric(input$pd_LH_A),   as.numeric(input$pd_LH_B),
