@@ -443,6 +443,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-02** (Codex) — Corrected the standalone Coordination Games denominator radio label: the first choice now renders the actual section-size label (for example, `Section class size (24 enrolled)`) rather than the internal variable name `cs_radio_lbl`. Added a regression assertion. The published image `6a3b44b6a13be96d614c9d1dd19ef5c7c4b6f0cd` was staged successfully: healthy container, HTTP 200, Bonus Pot payout fixture, and label-source verification all pass.
+
 - **2026-11-02** (Codex) — Added an opt-in Bonus Pot denominator mode, **submits at least**, with an instructor-entered token threshold. Only qualifying submitters receive the divided multiplied pot; below-threshold submissions remain valid and still contribute to the pot. The legacy enrolled-section and all-submitter modes retain their prior payout rules. Added idempotent SQLite migration fields, synchronized both instructor control surfaces, and extended `tests/bonus-pot-public-good.R` to verify threshold payout and the unchanged enrolled-section result. Focused fixtures, app parsing, and the Class Job Market smoke test pass. The published SHA was staged in an isolated container, with HTTP 200, healthy container state, the published-image payout fixture, and migration-column verification all passing. Production promotion awaits Reclaim SSH public-key access.
 
 - **2026-10-27** — Aligned Bonus Pot with the public-good game used in ECON 160: when the enrolled-section denominator is selected, the multiplied pot is now paid to every active, non-admin, non-demo student in that section—including zero contributors. The fallback remains submitter-only when no enrolled roster is available. Added `tests/bonus-pot-public-good.R`, which verifies that one contributor and two zero-contributors each receive the same (1.5\times2/3=1) token share; the Docker build runs it.
@@ -802,7 +804,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Restore SSH public-key access to the Reclaim deployment host, then run `scripts/reclaim.sh promote ghcr.io/kgcsport/shiny-apps:1ff91feb0f5ded8353ec388bfdb20dd39f96b15a` and `scripts/reclaim.sh health`.
+1. Restore SSH public-key access to the Reclaim deployment host, then run `scripts/reclaim.sh promote ghcr.io/kgcsport/shiny-apps:6a3b44b6a13be96d614c9d1dd19ef5c7c4b6f0cd` and `scripts/reclaim.sh health`.
 
 1. Build the Collective Action student and instructor UI around the tested prototype engine, including explicit section versus course scope selection and an off-by-default “include administrators” control.
 2. Add a multi-process SQLite contention test and bounded write-retry policy before enabling a live classroom round.
