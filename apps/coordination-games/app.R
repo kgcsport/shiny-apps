@@ -690,6 +690,7 @@ server <- function(input, output, session) {
     if (!length(hit)) return(FALSE)
     rv$active_course <- env$course[hit[1]]; rv$active_section <- env$section[hit[1]]
     rv$environment_ver <- rv$environment_ver + 1L
+    updateSelectInput(session, "adm_course", selected=rv$active_course)
     updateSelectInput(session, "adm_section", selected=rv$active_section)
     TRUE
   }
@@ -1179,10 +1180,14 @@ server <- function(input, output, session) {
     cs <- if (has_col && identical(denom_mode, "section")) section_class_size(sec) else NA_integer_
     denom_lbl <- if (identical(denom_mode, "threshold")) sprintf("submitters at or above %.1f tokens", max(0, as.numeric(o$denominator_threshold[1] %||% 0))) else if (!is.na(cs)) sprintf("section class size (%d)", cs) else "submitter count"
 
-    # Section choices derived from users table (re-read on each render)
-    allowed_sections <- unique_ci(session_environment_rows()$section)
-    all_sec_choices <- if (has_col) sections_choices() else setNames("", "(users table has no section column)")
-    sec_choices <- all_sec_choices[norm_key(as.character(all_sec_choices)) %in% norm_key(allowed_sections)]
+    # A game configuration always acts on one authorized course/section pair.
+    # Full admins receive every active course; scoped admins receive only their roles.
+    allowed_env <- session_environment_rows()
+    course_choices <- unique_ci(allowed_env$course)
+    active_course <- rv$active_course
+    if (!norm_key(active_course) %in% norm_key(course_choices) && length(course_choices)) active_course <- course_choices[1]
+    allowed_sections <- unique_ci(allowed_env$section[norm_key(allowed_env$course) == norm_key(active_course)])
+    sec_choices <- setNames(allowed_sections, allowed_sections)
     if (!length(sec_choices)) sec_choices <- setNames("", "(no authorized sections)")
 
     # Three denominator choices; the threshold applies only in its own mode.
@@ -1246,15 +1251,19 @@ server <- function(input, output, session) {
                          value = as.integer(o$current_round[1]), min = 1, step = 1)
           ),
           column(4,
-            selectInput("adm_section", "Active Section",
-                        choices  = sec_choices,
-                        selected = if (nzchar(rv$active_section)) rv$active_section else sec)
+            selectInput("adm_course", "Active Course",
+                        choices=setNames(course_choices, course_choices), selected=active_course)
           ),
           column(5,
+            selectInput("adm_section", "Active Section",
+                        choices=sec_choices,
+                        selected=if (identical(norm_key(active_course), norm_key(rv$active_course)) && nzchar(rv$active_section)) rv$active_section else unname(sec_choices[1]))
+          )
+        ),
+        fluidRow(
+          column(12,
             radioButtons("adm_use_section_size", "Bonus pot denominator",
-                         choices  = denom_choices,
-                         selected = denom_mode,
-                         inline   = TRUE),
+                         choices=denom_choices, selected=denom_mode, inline=TRUE),
             conditionalPanel("input.adm_use_section_size === 'threshold'",
               numericInput("adm_denominator_threshold", "Token threshold",
                            value=max(0, as.numeric(o$denominator_threshold[1] %||% 0)), min=0, step=0.5)
@@ -1346,7 +1355,21 @@ server <- function(input, output, session) {
         requested_round != as.integer(current$current_round[1] %||% NA)) {
       updateCheckboxInput(session, "adm_show_contributions", value = FALSE)
     }
+
   }, ignoreInit = TRUE)
+  # Keep the section selector constrained to the course explicitly selected
+  # above. Saving then validates and activates that exact authorized pair.
+  observeEvent(input$adm_course, {
+    req(is_admin())
+    env <- session_environment_rows()
+    course <- as.character(input$adm_course %||% "")
+    sections <- unique_ci(env$section[norm_key(env$course) == norm_key(course)])
+    if (!length(sections)) return()
+    selected <- if (identical(norm_key(course), norm_key(rv$active_course)) &&
+                    norm_key(rv$active_section) %in% norm_key(sections)) rv$active_section else sections[1]
+    updateSelectInput(session, "adm_section", choices=setNames(sections, sections), selected=selected)
+  }, ignoreInit=TRUE)
+
 
   observeEvent(input$adm_apply, {
     req(is_admin())
@@ -1355,10 +1378,16 @@ server <- function(input, output, session) {
     use_sec <- if (identical(denom_mode, "section")) 1L else 0L
     denom_threshold <- suppressWarnings(as.numeric(input$adm_denominator_threshold %||% 0))
     if (!is.finite(denom_threshold) || denom_threshold < 0) denom_threshold <- 0
-    sec     <- as.character(input$adm_section %||% "")
+    course <- as.character(input$adm_course %||% rv$active_course)
+    sec <- as.character(input$adm_section %||% "")
     allowed_env <- session_environment_rows()
-    allowed_hit <- which(norm_key(allowed_env$course) == norm_key(rv$active_course) & norm_key(allowed_env$section) == norm_key(sec))
-    if (!length(allowed_hit)) { showNotification("Choose a class section you are authorized to manage.", type="error"); return() }
+    allowed_hit <- which(norm_key(allowed_env$course) == norm_key(course) &
+                         norm_key(allowed_env$section) == norm_key(sec))
+    if (!length(allowed_hit)) {
+      showNotification("Choose a course and section you are authorized to manage.", type="error")
+      return()
+    }
+    switch_bonus_environment(course, sec)
     cs <- if (identical(denom_mode, "section")) section_class_size(sec) else NA_integer_
     denom_lbl <- if (identical(denom_mode, "threshold")) sprintf("submitters at or above %.1f tokens", denom_threshold) else if (!is.na(cs)) sprintf("section class size (%d)", cs) else "submitter count"
 

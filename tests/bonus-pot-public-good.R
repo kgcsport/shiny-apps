@@ -61,4 +61,12 @@ stopifnot(grepl("\"submits at least\"=\"threshold\"", cjm, fixed=TRUE))
 stopifnot(grepl("denominator_mode=?,denominator_threshold=?", cjm, fixed=TRUE))
 stopifnot(grepl("setNames(c(\"section\", \"submitters\", \"threshold\")", app_text, fixed=TRUE))
 stopifnot(!grepl("c(cs_radio_lbl = \"section\"", app_text, fixed=TRUE))
+# Regression: save must authorize the exact course/section selected by the
+# instructor rather than a hidden previously active environment.
+stopifnot(grepl('selectInput("adm_course", "Active Course"' , app_text, fixed=TRUE))
+stopifnot(grepl('observeEvent(input$adm_course' , app_text, fixed=TRUE))
+stopifnot(grepl('course <- as.character(input$adm_course %||% rv$active_course)' , app_text, fixed=TRUE))
+stopifnot(grepl('norm_key(allowed_env$course) == norm_key(course)' , app_text, fixed=TRUE))
+stopifnot(grepl('switch_bonus_environment(course, sec)' , app_text, fixed=TRUE))
+stopifnot(!grepl('norm_key(allowed_env$course) == norm_key(rv$active_course) & norm_key(allowed_env$section)' , app_text, fixed=TRUE))
 cat("Bonus Pot public-good payout: OK\n")
