@@ -113,6 +113,23 @@ if (!"denominator_mode" %in% olig_setting_columns) {
   db_exec("UPDATE olig_settings SET denominator_mode=CASE WHEN COALESCE(use_section_size,1)=1 THEN 'section' ELSE 'submitters' END WHERE id=1;")
 }
 ensure_olig_column("denominator_threshold", "denominator_threshold REAL DEFAULT 0")
+ensure_olig_column("pool_structure", "pool_structure TEXT DEFAULT 'shared_pot'")
+ensure_olig_column("open_multiplier", "open_multiplier REAL DEFAULT 1.5")
+ensure_olig_column("commitment_multiplier", "commitment_multiplier REAL DEFAULT 1.5")
+ensure_olig_column("commitment_entry_cost", "commitment_entry_cost REAL DEFAULT 3")
+ensure_olig_column("commitment_min_contribution", "commitment_min_contribution REAL DEFAULT 0")
+ensure_olig_column("allow_exit", "allow_exit INTEGER DEFAULT 1")
+for (column in c("club_choice TEXT DEFAULT 'open'", "entry_cost REAL DEFAULT 0", "starting_balance REAL", "club_final_balance REAL")) {
+  col <- strsplit(column, " ", fixed=TRUE)[[1]][1]
+  existing <- tryCatch(db_query("PRAGMA table_info(olig_submissions);")$name, error=function(e) character())
+  if (!col %in% existing) db_exec(paste0("ALTER TABLE olig_submissions ADD COLUMN ", column, ";"))
+}
+db_exec("CREATE TABLE IF NOT EXISTS bonus_club_round_snapshots(
+  round INTEGER NOT NULL, section TEXT NOT NULL, pool_structure TEXT NOT NULL,
+  open_multiplier REAL NOT NULL, commitment_multiplier REAL NOT NULL,
+  commitment_entry_cost REAL NOT NULL, commitment_min_contribution REAL NOT NULL,
+  allow_exit INTEGER NOT NULL, finalized_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(round,section));")
 touch_olig <- function() db_exec("UPDATE olig_settings SET updated_at=CURRENT_TIMESTAMP WHERE id=1;")
 get_olig <- function() db_query("SELECT * FROM olig_settings WHERE id=1;")
 
@@ -358,6 +375,33 @@ bonus_shares <- function(olig, subs) {
   subs %>% mutate(total_contrib=total, pot_total=pot, n_denom=n_denom, denom_source=denom_source, share_each=share)
 }
 
+club_choice_snapshot <- function(olig, round, section) {
+  saved <- tryCatch(db_query("SELECT * FROM bonus_club_round_snapshots WHERE round=? AND section=?;", list(as.integer(round), section)), error=function(e)data.frame())
+  if (nrow(saved)) return(saved[1, , drop=FALSE])
+  data.frame(pool_structure=as.character(olig$pool_structure[1] %||% "shared_pot"),
+    open_multiplier=as.numeric(olig$open_multiplier[1] %||% olig$bonus_multiplier[1] %||% 1.5),
+    commitment_multiplier=as.numeric(olig$commitment_multiplier[1] %||% olig$bonus_multiplier[1] %||% 1.5),
+    commitment_entry_cost=as.numeric(olig$commitment_entry_cost[1] %||% 3),
+    commitment_min_contribution=as.numeric(olig$commitment_min_contribution[1] %||% 0),
+    allow_exit=as.integer(olig$allow_exit[1] %||% 1L))
+}
+
+club_choice_results <- function(snapshot, subs) {
+  if (!nrow(subs)) return(data.frame())
+  subs$club_choice <- tolower(trimws(as.character(subs$club_choice %||% "open")))
+  subs$club_choice[!subs$club_choice %in% c("open","commitment","exit")] <- "open"
+  subs$contribute <- pmax(0, as.numeric(subs$contribute %||% 0))
+  subs$entry_cost <- pmax(0, as.numeric(subs$entry_cost %||% 0))
+  out <- lapply(c("open","commitment"), function(club) {
+    rows <- subs[subs$club_choice == club, , drop=FALSE]; n <- nrow(rows)
+    multiplier <- if (club == "open") as.numeric(snapshot$open_multiplier[1]) else as.numeric(snapshot$commitment_multiplier[1])
+    total <- if(n) sum(rows$contribute + rows$entry_cost) else NA_real_
+    share <- if(n) multiplier * total / n else NA_real_
+    data.frame(club=club, members=n, total_contributed=total, average_contribution=if(n)mean(rows$contribute) else NA_real_, multiplier=multiplier, return_per_member=share, stringsAsFactors=FALSE)
+  })
+  do.call(rbind, out)
+}
+
 # Apply payouts into the shared ledger -- filtered to current section
 apply_payouts <- function(round, game) {
   olig <- get_olig()
@@ -373,6 +417,27 @@ apply_payouts <- function(round, game) {
   }
 
   if (game == "bonus") {
+    if (identical(as.character(olig$pool_structure[1] %||% "shared_pot"), "club_choice")) {
+      snapshot <- club_choice_snapshot(olig, round, sec)
+      results <- club_choice_results(snapshot, subs)
+      for (club in c("open", "commitment")) {
+        rows <- subs[tolower(as.character(subs$club_choice %||% "open")) == club, , drop=FALSE]
+        share <- results$return_per_member[results$club == club]
+        if (!length(share) || !is.finite(share)) next
+        for (i in seq_len(nrow(rows))) {
+          uid <- rows$user_id[i]; pay <- round_to_half(share[1])
+          if (pay > 0) {
+            db_exec("INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note) SELECT user_id,display_name,?, ?, ?,1,? FROM users WHERE user_id=?;", list("coordination_grant",as.integer(round),pay,sprintf("club_choice_%s round=%d section=%s",club,round,sec),uid))
+            db_exec("INSERT INTO olig_payouts(round,user_id,game,payout,meta,section) VALUES(?,?,?,?,?,?);", list(round,uid,"bonus",pay,paste0("club=",club),sec))
+          }
+          start <- as.numeric(rows$starting_balance[i] %||% NA_real_)
+          final <- if(is.finite(start)) start-as.numeric(rows$contribute[i] %||% 0)-as.numeric(rows$entry_cost[i] %||% 0)+pay else NA_real_
+          db_exec("UPDATE olig_submissions SET club_final_balance=? WHERE round=? AND user_id=? AND (section=? OR section IS NULL);",list(final,round,uid,sec))
+        }
+      }
+      touch_olig()
+      return(list(ok=TRUE,msg="Applied Club Choice payouts by club."))
+    }
     shares       <- bonus_shares(olig, subs)
     denom_source <- if (nrow(shares) > 0) shares$denom_source[1] else sprintf("submitter count (%d)", nrow(subs))
     mode <- tolower(trimws(as.character(olig$denominator_mode[1] %||% "")))
@@ -450,6 +515,7 @@ debit_pending_contributions <- function(round, sec) {
   for (i in seq_len(nrow(subs))) {
     uid   <- subs$user_id[i]
     c_val <- suppressWarnings(as.numeric(subs$contribute[i]))
+    c_val <- c_val + suppressWarnings(as.numeric(subs$entry_cost[i] %||% 0))
     if (!is.finite(c_val) || c_val <= 0) next
     already <- db_query(
       "SELECT COUNT(*) n FROM token_ledger WHERE user_id=? AND source_id=? AND source_type='coordination_contrib';",
@@ -879,6 +945,13 @@ server <- function(input, output, session) {
             radioButtons("pd_action", "Choose a price", choiceNames = c("High price", "Low price"), choiceValues = c("High", "Low"), inline = TRUE),
             if (status == "open") actionButton("submit_pd", "Save my choice", class = "btn-primary bp-submit")
           )
+        } else if (identical(as.character(o$pool_structure[1] %||% "shared_pot"), "club_choice")) {
+          tagList(
+            radioButtons("club_choice", "Choose one", choices=c("Open Club: free to join."="open", setNames("commitment",sprintf("Commitment Club: requires a %.1f-token membership contribution.",as.numeric(o$commitment_entry_cost[1] %||% 3))), "Exit: do not join either club this round."="exit"), inline=FALSE),
+            numericInput("club_contribution", "Contribution to your chosen club", value=0,min=0,max=max(0,bal),step=.5),
+            if(status=="open") actionButton("submit_club","Save final club choice",class="btn-primary bp-submit"),
+            p(class="bp-note", "Your token balance is private. The membership contribution is included in the Commitment Club pot and shared with that club.")
+          )
         } else {
           tagList(
             sliderInput("bonus_c", "Contribution (participation tokens)", min = 0, max = max(0, floor(eff_max * 2) / 2), value = 0, step = 0.5),
@@ -970,6 +1043,16 @@ server <- function(input, output, session) {
       sprintf("Saved %.1f participation token(s) as your contribution. You can replace or reset it until the round closes.", c_val),
       type = "message"
     )
+  })
+
+  observeEvent(input$submit_club, {
+    req(authed()); o <- get_olig(); sec <- olig_section(o)
+    if (!identical(GAME_MODE,"bonus") || !bonus_game_in_selected_environment(o) || as.character(o$round_status[1])!="open" || !identical(as.character(o$pool_structure[1] %||% ""),"club_choice")) { showNotification("Club Choice is not open for this section.",type="error");return() }
+    club <- input$club_choice %||% ""; contribution <- round_to_half(as.numeric(input$club_contribution %||% NA_real_)); entry <- if(identical(club,"commitment")) max(0,as.numeric(o$commitment_entry_cost[1] %||% 3)) else 0
+    if(!club %in% c("open","commitment","exit") || (!isTRUE(as.integer(o$allow_exit[1] %||% 1L)==1L) && identical(club,"exit")) || !is.finite(contribution) || contribution<0 || (identical(club,"exit") && contribution!=0) || (identical(club,"commitment") && contribution < max(0,as.numeric(o$commitment_min_contribution[1] %||% 0)))) { showNotification("Choose a permitted club and valid contribution.",type="error");return() }
+    starting <- token_balance(user_id()); if(entry+contribution > starting+1e-9){showNotification("Membership contribution plus contribution exceeds your private token balance.",type="error");return()}
+    db_exec("INSERT INTO olig_submissions(round,user_id,display_name,game,action,contribute,section,club_choice,entry_cost,starting_balance) VALUES(?,?,?,'bonus',NULL,?,?,?,?,?,?) ON CONFLICT(round,user_id) DO UPDATE SET display_name=excluded.display_name,contribute=excluded.contribute,section=excluded.section,club_choice=excluded.club_choice,entry_cost=excluded.entry_cost,starting_balance=excluded.starting_balance,created_at=CURRENT_TIMESTAMP;",list(as.integer(o$current_round[1]),as.character(user_id()),as.character(name()),contribution,sec,club,entry,starting))
+    showNotification("Club choice saved. It is final when the round closes.",type="message")
   })
 
   observeEvent(input$reset_bonus, {
@@ -1113,6 +1196,10 @@ server <- function(input, output, session) {
             if (status == "revealed") tagList(h4("Pair outcomes"), tableOutput("proj_pd_counts"))
           )
         } else {
+          if (identical(as.character(o$pool_structure[1] %||% "shared_pot"), "club_choice") && status == "revealed") {
+            snap <- club_choice_snapshot(o,r,sec); clubs <- club_choice_results(snap,subs %>% filter(game=="bonus"))
+            return(tagList(h4("Club Choice results"), tableOutput("club_choice_results")))
+          }
           show_live_bids <- isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)
           bids_visible <- identical(status, "revealed") || show_live_bids
           if (!bids_visible) {
@@ -1138,6 +1225,12 @@ server <- function(input, output, session) {
       )
     )
   })
+
+  output$club_choice_results <- renderTable({
+    st<-subs_poll();o<-st$olig; req(identical(as.character(o$pool_structure[1] %||% ""),"club_choice"), identical(as.character(o$round_status[1]),"revealed"))
+    z<-club_choice_results(club_choice_snapshot(o,as.integer(o$current_round[1]),st$section),st$subs %>% filter(game=="bonus"));
+    data.frame(Outcome=c("Members","Total contributed","Average contribution","Multiplier","Return per member"), `Open Club`=c(z$members[z$club=="open"],z$total_contributed[z$club=="open"],z$average_contribution[z$club=="open"],z$multiplier[z$club=="open"],z$return_per_member[z$club=="open"]), `Commitment Club`=c(z$members[z$club=="commitment"],z$total_contributed[z$club=="commitment"],z$average_contribution[z$club=="commitment"],z$multiplier[z$club=="commitment"],z$return_per_member[z$club=="commitment"]), check.names=FALSE)
+  },rownames=FALSE)
 
   output$proj_pd_counts <- renderTable({
     st      <- subs_poll(); o <- st$olig; subs <- st$subs
@@ -1280,6 +1373,12 @@ server <- function(input, output, session) {
             )
           )
         ),
+        radioButtons("adm_pool_structure", "Round structure", choices=c("Shared pot (current Bonus Pot)"="shared_pot", "Club Choice (students sort into clubs)"="club_choice"), selected=as.character(o$pool_structure[1] %||% "shared_pot"), inline=TRUE),
+        conditionalPanel("input.adm_pool_structure === 'club_choice'",
+          div(class="alert alert-info", "Club Choice demonstrates sorting into institutions with different rules. It does not establish that observed group differences were caused by the institution."),
+          fluidRow(column(4,numericInput("adm_open_multiplier","Open Club multiplier",value=as.numeric(o$open_multiplier[1] %||% o$bonus_multiplier[1]),min=0,step=.1)), column(4,numericInput("adm_commitment_multiplier","Commitment Club multiplier",value=as.numeric(o$commitment_multiplier[1] %||% o$bonus_multiplier[1]),min=0,step=.1)), column(4,numericInput("adm_commitment_entry_cost","Commitment membership contribution",value=as.numeric(o$commitment_entry_cost[1] %||% 3),min=0,step=.5))),
+          fluidRow(column(6,numericInput("adm_commitment_min_contribution","Commitment Club minimum contribution",value=as.numeric(o$commitment_min_contribution[1] %||% 0),min=0,step=.5)),column(6,checkboxInput("adm_allow_exit","Allow Exit",value=isTRUE(as.integer(o$allow_exit[1] %||% 1)==1))))
+        ),
         fluidRow(
           column(4,
             selectInput("adm_game", "Game",
@@ -1403,10 +1502,11 @@ server <- function(input, output, session) {
 
     db_exec(
       "UPDATE olig_settings SET current_round=?, current_game=?, round_status=?,
-       section=?, use_section_size=?, denominator_mode=?, denominator_threshold=?, show_contributions=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
+       section=?, use_section_size=?, denominator_mode=?, denominator_threshold=?, show_contributions=?, pool_structure=?,open_multiplier=?,commitment_multiplier=?,commitment_entry_cost=?,commitment_min_contribution=?,allow_exit=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
       list(as.integer(input$adm_round), GAME_DB_VALUE,
            as.character(input$adm_status), sec, use_sec, denom_mode, denom_threshold,
-           if (isTRUE(input$adm_show_contributions)) 1L else 0L)
+           if (isTRUE(input$adm_show_contributions)) 1L else 0L,
+           input$adm_pool_structure %||% "shared_pot", as.numeric(input$adm_open_multiplier %||% input$adm_m),as.numeric(input$adm_commitment_multiplier %||% input$adm_m),as.numeric(input$adm_commitment_entry_cost %||% 3),as.numeric(input$adm_commitment_min_contribution %||% 0),if(isTRUE(input$adm_allow_exit))1L else 0L)
     )
     db_exec(
       "INSERT OR IGNORE INTO olig_rounds(round, game, status) VALUES(?, ?, ?);",
@@ -1427,6 +1527,7 @@ server <- function(input, output, session) {
     # When closing a bonus round, debit all pending contributions.
     if (as.character(input$adm_status) == "closed" &&
         identical(GAME_DB_VALUE, "bonus")) {
+      if (identical(input$adm_pool_structure %||% "shared_pot", "club_choice")) db_exec("INSERT OR REPLACE INTO bonus_club_round_snapshots(round,section,pool_structure,open_multiplier,commitment_multiplier,commitment_entry_cost,commitment_min_contribution,allow_exit,finalized_at) VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP);",list(as.integer(input$adm_round),sec,"club_choice",as.numeric(input$adm_open_multiplier %||% input$adm_m),as.numeric(input$adm_commitment_multiplier %||% input$adm_m),as.numeric(input$adm_commitment_entry_cost %||% 3),as.numeric(input$adm_commitment_min_contribution %||% 0),if(isTRUE(input$adm_allow_exit))1L else 0L))
       n_debited <- debit_pending_contributions(as.integer(input$adm_round), sec)
       if (n_debited > 0) {
         showNotification(

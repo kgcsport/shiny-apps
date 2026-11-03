@@ -163,6 +163,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-11-03** — Add Club Choice as a Bonus Pot round structure, not a new app. It preserves `shared_pot` as the default and snapshots Club Choice multipliers, membership cost, minimum contribution, and exit rule at close. Commitment membership cost is included in that club's pooled contribution. Student balances stay private; revealed results are aggregate by club. Scope excludes Price War and does not alter existing shared-pot payout semantics.
+
 - **2026-11-03** — Price War is a clean-slate standalone game. Its rounds, submissions, and payout idempotency are stored only in `price_war_rounds`, `price_war_submissions`, and `price_war_payouts`, each keyed by course, section, and round. Bonus Pot remains on its existing persistence model and is out of scope for this change. Class Job Market retains only scoped activation and links to Price War's dedicated setup. Acceptance: a Price War setup or payout cannot overwrite Bonus Pot settings; two course/section pairs may retain separate rounds with the same round number; students directly visiting Price War only submit to the active scoped round.
 
 - **2026-11-03** — Finish the coordination-game split with two player routes: `/bonus-pot/` is exclusively the contribution public-good game and `/price-war/` is exclusively the High/Low-price Prisoner's-Dilemma variant. Scope: game catalog, direct routes, shared-login return allowlists, active-slot embeds, standalone player-mode guards, and regression coverage. Invariants: both games retain the shared Class Job Market database/session and scoped active-game state; activating a game still controls the shared live round; inactive `either` cards remain safely openable and never accept a mismatched live-game submission. Acceptance: a student can open either game from Games & Demos without activation; an activated Bonus Pot or Price War appears in Active Now and its own route; Google/password/shared-cookie login returns to the chosen game. Verification: parser checks plus focused navigation and existing Bonus Pot payout/unification fixtures.
@@ -449,6 +451,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-11-03** (Codex) — Added the Club Choice Bonus Pot mode: open/commitment/exit selection, private balance validation, optional commitment minimum, contribution-plus-membership debit, close-time rule snapshots, separate club pooling/payouts, and an aggregate revealed comparison. Existing shared-pot tests continue to pass.
 
 - **2026-11-03** (Codex) — Fully detached Price War from the unused Bonus Pot/legacy coordination state. `/price-war/` now owns course-section-round keyed round, submission, and payout tables, including per-student payout idempotency; it keeps the shared authentication and token ledger only. Class Job Market no longer changes `olig_settings` when activating Price War and directs setup/tracking to the standalone route. Focused navigation, parser, Bonus Pot-unification, and public-good payout checks pass.
 
