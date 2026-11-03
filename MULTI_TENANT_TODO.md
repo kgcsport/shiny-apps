@@ -37,13 +37,13 @@ today needs all of these set:
 
 | Env var | Used by | Purpose |
 |---|---|---|
-| `GOOGLE_SERVICE_ACCOUNT_JSON` / `GOOGLE_APPLICATION_CREDENTIALS` | class-job-picker, coordination-games, flex_pass_actions, price-index, supply-auction-game | Google service-account auth |
-| `FLEX_PASS_SHEET_ID` | coordination-games, flex_pass_actions | Credentials Google Sheet |
-| `FLEX_PASS_FOLDER_ID` | coordination-games, flex_pass_actions, price-index | Drive backup folder (optional) |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` / `GOOGLE_APPLICATION_CREDENTIALS` | class-job-picker, bonus-pot, flex_pass_actions, price-index, supply-auction-game | Google service-account auth |
+| `FLEX_PASS_SHEET_ID` | bonus-pot, flex_pass_actions | Credentials Google Sheet |
+| `FLEX_PASS_FOLDER_ID` | bonus-pot, flex_pass_actions, price-index | Drive backup folder (optional) |
 | `AUCTION_FOLDER_ID` | supply-auction-game | Drive backup folder |
 | `CLASS_JOB_SHEET_ID` | class-job-picker | Summary write-back sheet |
 | `PUB_ECON_FOLDER_ID`, `FINALQ_SHEET_ID`, `CRED_CSV`, `CRED_PATH` | flex_pass_actions | Legacy credential sources |
-| `DB_PATH_OVERRIDE` | coordination-games | DB path override |
+| `DB_PATH_OVERRIDE` | bonus-pot | DB path override |
 | `SHINY_PASSWORD` | bonus-entry, class-job-picker, club-insurance-game | Shared admin password |
 | `CONNECT_CONTENT_DIR` | nearly every app | Where the shared `data/` dir lives |
 

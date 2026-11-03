@@ -125,7 +125,7 @@ demo_banner_ui <- function(is_demo, is_admin = FALSE) {
 # Shows mode toggle + quick-open links for all other apps.
 demo_settings_panel <- function(is_demo) {
   other_apps <- list(
-    list(label = "Coordination Games", path = "../coordination-games/"),
+    list(label = "Bonus Pot",          path = "../bonus-pot/"),
     list(label = "Review Quiz",        path = "../review-quiz/"),
     list(label = "Supply Auction",     path = "../supply-auction-game/"),
     list(label = "Price Index",        path = "../price-index/"),

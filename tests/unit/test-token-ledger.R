@@ -91,7 +91,7 @@ test_that("spend_tokens with exact balance succeeds (zero remainder)", {
 
 test_that("coordination_grant (earning=1) raises spendable and lifetime", {
   con <- new_db(); on.exit(DBI::dbDisconnect(con))
-  # Simulate coordination-games payout insert pattern
+  # Simulate bonus-pot payout insert pattern
   exec(con,
     "INSERT INTO token_ledger(user_id, display_name, round_id, source_type, amount, earning, note)
      SELECT user_id, display_name, 1, 'coordination_grant', 2.5, 1, 'pd bonus'

@@ -2205,7 +2205,7 @@ APP_NAME <- get_config("app_name", "Classroom Economy")
 # Semester tools (price-index, flex-pass-app) have moved to the TOOLS list.
 GAMES <- list(
   list(id = "bonus_pot",        type = "either",
-       label = "Bonus Pot",     embedded = TRUE, url = "/coordination-games/",
+       label = "Bonus Pot",     embedded = TRUE, url = "/bonus-pot/",
        desc = "Contribute tokens to a shared pot. The group earns back more when participation is high — but individual incentives push the other way."),
   list(id = "prisoners_dilemma", type = "either",
        label = "Prisoner's Dilemma", embedded = TRUE,
@@ -2661,7 +2661,7 @@ COOKIE_JS <- HTML("
       if (target.origin !== window.location.origin) return '/class-job-market/';
       var targetPath = target.pathname.endsWith('/') ? target.pathname.slice(0, -1) : target.pathname;
       if (targetPath === '/review-quiz') return '/review-quiz/';
-      if (targetPath === '/coordination-games') return '/coordination-games/';
+      if (targetPath === '/bonus-pot') return '/bonus-pot/';
       if (targetPath === '/class-job-market' &&
           target.searchParams.get('view') === 'cold-call-slide') {
         return '/class-job-market/?view=cold-call-slide';
@@ -3204,7 +3204,7 @@ server <- function(input, output, session) {
     target <- as.character(params$return_to %||% "")
     if (length(target) != 1L || nchar(target) > 300L) return("/class-job-market/")
     if (target %in% c("/review-quiz", "/review-quiz/")) return("/review-quiz/")
-    if (target %in% c("/coordination-games", "/coordination-games/")) return("/coordination-games/")
+    if (target %in% c("/bonus-pot", "/bonus-pot/")) return("/bonus-pot/")
     if (target %in% c("/class-job-market/?view=cold-call-slide",
                        "/class-job-market?view=cold-call-slide")) {
       return("/class-job-market/?view=cold-call-slide")
@@ -5069,7 +5069,7 @@ server <- function(input, output, session) {
 
   output$embedded_bonus_pot <- renderUI({
     req(rv$authed)
-    tags$iframe(src="/coordination-games/", title="Bonus Pot",
+    tags$iframe(src="/bonus-pot/", title="Bonus Pot",
       style="width:100%;height:720px;border:0;border-radius:6px;background:#fff;")
   })
 

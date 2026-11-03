@@ -163,6 +163,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-11-03** — Rename the deployed Bonus Pot route from `/coordination-games/` to `/bonus-pot/` before extracting Price War as its own application. Scope: route, OAuth/login return allowlists, Class Job Market embedding, demo links, Docker parse gates, tests, and active lecture/QR links. The legacy `/coordination-games/` route remains a redirect only, so existing QR codes and bookmarks reach Bonus Pot; it owns no authentication or game state. Invariants: Bonus Pot continues to use the shared Class Job Market session and records; all maintained links use `/bonus-pot/`; neither persistent data nor the separate-game data-model migration changes in this step. Acceptance: a direct `/bonus-pot/` visit, a Class Job Market iframe, and OAuth return all land on Bonus Pot; a direct legacy-route visit redirects there. Verification: focused Bonus Pot/return-path checks, R parser checks, and a rendered Public Economics deck.
+
 - **2026-11-02** — Bonus Pot now has an explicit third denominator mode, **submits at least**. It saves a nonnegative token threshold and divides the multiplied pot only among submitters at or above that threshold. Scope: this changes Bonus Pot denominator selection only; Price War, contribution debiting, section scoping, and token-ledger idempotence are out of scope. Invariants: enrolled-section mode still pays every active non-admin, non-demo student in the selected section; contributor mode still pays every submitter; the threshold is ignored unless its third mode is selected. Acceptance: an instructor selects the third option and threshold, a student can still submit below it, and only qualifying submitters receive the share on payout. Dependency check: both Class Job Market and standalone Coordination Games controls, student messaging, schema migration, and payout paths use the same persisted mode. Verification: `Rscript --vanilla tests/bonus-pot-public-good.R`, the two focused critical Bonus Pot fixtures, parser checks, and `Rscript --vanilla tests/smoke-class-job-market.R` pass. Staging completed with published image `1ff91feb0f5ded8353ec388bfdb20dd39f96b15a`: HTTP health, published-image payout regression, and SQLite schema migration passed. Production promotion is blocked only by Reclaim SSH public-key access.
 
 - **2026-11-02** — Standalone Coordination Games authorizes instructor configuration against the explicit course/section pair selected in its admin form, not against hidden prior session state. Scope: this repairs selection and authorization UX only; it does not broaden role grants or alter game/payout persistence. Invariants: super-admins retain access to all active non-demo course/section environments; scoped admins see only their assigned environments; an unauthorized pair is still rejected. Acceptance: an authorized admin can choose any managed course, sees only that course’s managed sections, saves a permitted pair, and the saved pair becomes the active session environment. Verification: the focused Bonus Pot regression includes the selector/handler contract; `Rscript --vanilla tests/bonus-pot-public-good.R`, `Rscript --vanilla tests/admin-roles.R`, and an R parser check pass. Published image `2192943bdf0760dce7a9dc8d090e392c65600f65` was staged healthy with HTTP 200, in-container parse, a seeded database, and the focused regression passing.
@@ -443,6 +445,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-11-03** (Codex) — Renamed the live Bonus Pot module to `/bonus-pot/` and updated the Class Job Market iframe, shared-login return allowlists, demo links, Docker parse gates, focused tests, documentation, and Public Economics/Religion lecture sources. `/coordination-games/` is now a compatibility-only redirect to `/bonus-pot/`; it does not own state. Focused R payout/privacy/reset/unification tests, all three app parser checks, and the Demo Kit OAuth return-path test pass. Public Economics lecture rendering is verified; full image/staging verification remains next.
 
 - **2026-11-02** (Codex) — Fixed standalone Coordination Games admin environment switching. The form now shows an explicit Active Course selector, restricts Active Section to authorized sections in that course, validates the selected pair rather than stale hidden session state, and activates that pair only after a successful save. Added a regression guard to the focused Bonus Pot test. Focused Bonus Pot and admin-role tests plus an app parser check pass. Published image `2192943bdf0760dce7a9dc8d090e392c65600f65` was staged successfully: healthy container, HTTP 200, seeded database, in-container app parse, and focused Bonus Pot regression all pass.
 - **2026-11-02** (Codex) — Corrected the standalone Coordination Games denominator radio label: the first choice now renders the actual section-size label (for example, `Section class size (24 enrolled)`) rather than the internal variable name `cs_radio_lbl`. Added a regression assertion. The published image `6a3b44b6a13be96d614c9d1dd19ef5c7c4b6f0cd` was staged successfully: healthy container, HTTP 200, Bonus Pot payout fixture, and label-source verification all pass.
@@ -806,17 +810,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-
-1. Restore SSH public-key access to the Reclaim deployment host, then run `scripts/reclaim.sh promote ghcr.io/kgcsport/shiny-apps:6a3b44b6a13be96d614c9d1dd19ef5c7c4b6f0cd` and `scripts/reclaim.sh health`.
-
-1. Build the Collective Action student and instructor UI around the tested prototype engine, including explicit section versus course scope selection and an off-by-default “include administrators” control.
-2. Add a multi-process SQLite contention test and bounded write-retry policy before enabling a live classroom round.
-3. Stage the prototype with a synthetic roster; verify sealed submissions, lock/reveal, and course isolation.
-
-
-1. Stage and verify the image containing `4264c05` plus the Live Score Audit build gate: confirm old-date Pending assignment outcomes appear in Live Score Audit, then approve one and confirm it leaves Pending.
-2. Repair the existing broad unit/smoke baseline, then promote the cross-date fixture from a Docker build gate to the full required workflow suite.
-3. Browser-test both Review Quiz sign-in flows: Class Job Market → Review Quiz without a prompt, and a direct Review Quiz visit → Class Job Market/Google → Review Quiz.
+1. Migrate Bonus Pot persistence from global/singleton settings to an explicit course + section + round scope, with a seeded SQLite regression fixture for back-to-back sections.
+2. Extract the paired Prisoner's Dilemma / Price War mechanics into a dedicated `/price-war/` app and route it through the same shared-login gateway.
+3. Build and stage the immutable image; manually verify the legacy redirect, Bonus Pot direct/iframe/OAuth entry paths, and a Price War round before any production promotion.
 
 ## Questions for Kyle
 

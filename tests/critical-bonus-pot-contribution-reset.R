@@ -2,10 +2,10 @@
 # Critical contract: an open Bonus Pot contribution is replaceable, including
 # reset-to-zero, and the live submission signature notices value-only changes.
 
-app_path <- if (file.exists("apps/coordination-games/app.R")) {
-  "apps/coordination-games/app.R"
+app_path <- if (file.exists("apps/bonus-pot/app.R")) {
+  "apps/bonus-pot/app.R"
 } else {
-  "/srv/shiny-server/coordination-games/app.R"
+  "/srv/shiny-server/bonus-pot/app.R"
 }
 source_text <- paste(readLines(app_path, warn=FALSE), collapse="\n")
 

@@ -4,7 +4,7 @@
 app_path <- if (file.exists("apps/class-job-market/app.R")) "apps/class-job-market/app.R" else "/srv/shiny-server/class-job-market/app.R"
 source_text <- paste(readLines(app_path, warn=FALSE), collapse="\n")
 required <- c(
-  'label = "Bonus Pot",     embedded = TRUE, url = "/coordination-games/"',
+  'label = "Bonus Pot",     embedded = TRUE, url = "/bonus-pot/"',
   'actionButton("bp_admin_open", "Open"',
   'actionButton("bp_admin_close", "Close & debit"',
   'actionButton("bp_admin_reveal", "Reveal"',
@@ -17,8 +17,8 @@ required <- c(
 )
 missing <- required[!vapply(required, grepl, logical(1), x=source_text, fixed=TRUE)]
 if (length(missing)) stop("Bonus Pot command-center contract missing: ", paste(missing, collapse=" | "))
-if (!grepl("if (targetPath === '/coordination-games') return '/coordination-games/';", source_text, fixed=TRUE)) stop("Class Job Market must preserve Coordination Games as a safe post-login return target.")
-if (!grepl("window.setTimeout(function() { window.location.replace(target); }, 100);", source_text, fixed=TRUE)) stop("Class Job Market must write the shared cookie before returning visitors to Coordination Games.")
+if (!grepl("if (targetPath === '/bonus-pot') return '/bonus-pot/';", source_text, fixed=TRUE)) stop("Class Job Market must preserve Bonus Pot as a safe post-login return target.")
+if (!grepl("window.setTimeout(function() { window.location.replace(target); }, 100);", source_text, fixed=TRUE)) stop("Class Job Market must write the shared cookie before returning visitors to Bonus Pot.")
 active_marker <- "output$active_slot_inner <- renderUI({"
 active_parts <- strsplit(source_text, active_marker, fixed=TRUE)[[1]]
 if (length(active_parts) != 2L) stop("Could not isolate Games & Demos active slot.")
@@ -58,16 +58,16 @@ active_scope_missing <- active_scope_required[!vapply(active_scope_required, gre
 if (length(active_scope_missing)) stop("Environment-scoped active-game contract missing: ", paste(active_scope_missing, collapse=" | "))
 if (grepl("UPDATE arcade_state SET active_game", source_text, fixed=TRUE)) stop("Active-game writes must not use global arcade_state.")
 
-module_path <- if (file.exists("apps/coordination-games/app.R")) "apps/coordination-games/app.R" else "/srv/shiny-server/coordination-games/app.R"
+module_path <- if (file.exists("apps/bonus-pot/app.R")) "apps/bonus-pot/app.R" else "/srv/shiny-server/bonus-pot/app.R"
 module_text <- paste(readLines(module_path, warn=FALSE), collapse="\n")
-module_required <- c("textInput(\"login_user\"", "passwordInput(\"login_pw\"", "actionButton(\"login_btn\"", "bcrypt::checkpw", "issue_shared_cookie", "set_arcade_cookie", "Sign in with Google", "lookup_shared_session", "return_to=%2Fcoordination-games%2F", "actionButton(\"adm_apply\"", "actionButton(\"adm_clear\"", "actionButton(\"adm_payout\"", "output$admin_ui <- renderUI({", "touch_olig <- function() db_exec", "req(is_admin())", "bp-font-up", "Participation Tokens Contributed", "Save contribution", "bp-header", "bp_header_widgets", "environment_course_sel", "environment_section_sel", "session_environment_rows <- function()", "scope_arcade_state", "bonus_game_in_selected_environment", "show_contributions INTEGER DEFAULT 0", "output$public_contribution_list", "Show names & amounts")
+module_required <- c("textInput(\"login_user\"", "passwordInput(\"login_pw\"", "actionButton(\"login_btn\"", "bcrypt::checkpw", "issue_shared_cookie", "set_arcade_cookie", "Sign in with Google", "lookup_shared_session", "return_to=%2Fbonus-pot%2F", "actionButton(\"adm_apply\"", "actionButton(\"adm_clear\"", "actionButton(\"adm_payout\"", "output$admin_ui <- renderUI({", "touch_olig <- function() db_exec", "req(is_admin())", "bp-font-up", "Participation Tokens Contributed", "Save contribution", "bp-header", "bp_header_widgets", "environment_course_sel", "environment_section_sel", "session_environment_rows <- function()", "scope_arcade_state", "bonus_game_in_selected_environment", "show_contributions INTEGER DEFAULT 0", "output$public_contribution_list", "Show names & amounts")
 module_missing <- module_required[!vapply(module_required, grepl, logical(1), x=module_text, fixed=TRUE)]
 if (grepl("Flex Passes Contributed", module_text, fixed=TRUE) || grepl("Flex passes available", module_text, fixed=TRUE)) stop("Standalone Bonus Pot must use current participation-token terminology.")
 if (length(module_missing)) stop("Bonus Pot module boundary missing: ", paste(module_missing, collapse=" | "))
 login_layout <- c('class = "login-page"', 'class = "login-card"', 'class = "login-logo"', 'class = "login-tagline"', 'class = "btn-google"', 'class = "preview-grid"', 'class = "login-howto"')
 layout_missing <- login_layout[!vapply(login_layout, grepl, logical(1), x=module_text, fixed=TRUE)]
-if (length(layout_missing)) stop("Coordination Games must retain the Class Job Market login layout: ", paste(layout_missing, collapse=" | "))
-if (grepl("session$sendCustomMessage(\"redirect_to_job_market\"", module_text, fixed=TRUE)) stop("Coordination Games must show direct sign-in rather than automatically redirecting visitors away.")
+if (length(layout_missing)) stop("Bonus Pot must retain the Class Job Market login layout: ", paste(layout_missing, collapse=" | "))
+if (grepl("session$sendCustomMessage(\"redirect_to_job_market\"", module_text, fixed=TRUE)) stop("Bonus Pot must show direct sign-in rather than automatically redirecting visitors away.")
 if (grepl("ALLOW_LEGACY_COORDINATION_ADMIN", module_text, fixed=TRUE)) stop("Standalone Bonus Pot admin controls must not require a retired feature flag.")
 
 suppressPackageStartupMessages({ library(DBI); library(RSQLite) })

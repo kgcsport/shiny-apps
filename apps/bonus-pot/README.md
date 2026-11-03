@@ -1,6 +1,6 @@
-# Oligopoly Game (Integrated)
+# Bonus Pot
 
-This app **shares the same SQLite DB + login** as your flex-pass app.
+This app **shares the same SQLite DB + login** as Class Job Market.
 
 ## Requirements
 The shared DB must contain (from your flex-pass app):
@@ -15,7 +15,6 @@ This app adds:
 - Bonus Pot contributions are debited once when the instructor closes the round.
 - The multiplied pot is credited on reveal through the shared `token_ledger`.
 - The instructor may divide the pot among every enrolled student in the section, all submitters, or only submitters at or above an explicitly selected token threshold. The threshold is ignored in the other two modes.
-- PD payouts are credited through the shared ledger.
 
 All credits are rounded to the nearest 0.5 token.
 

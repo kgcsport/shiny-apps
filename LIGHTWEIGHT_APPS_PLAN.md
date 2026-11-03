@@ -124,7 +124,7 @@ Shiny default it must meet all of these:
 
 ## Explicit non-goals
 
-- Replacing `class-job-market`, `price-index`, `coordination-games`,
+- Replacing `class-job-market`, `price-index`, `bonus-pot`,
   `class-job-picker`, or their Google/SQLite/OAuth integration.
 - Moving grades, roster data, tokens, or student identities into a second
   datastore.

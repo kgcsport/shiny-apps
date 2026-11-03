@@ -153,7 +153,7 @@ for (col in c("problem_sets", "extension_purchases", "grade_categories",
   # These are complex tables the app creates on its own; we skip them here.
 }
 
-# coordination-games tables
+# bonus-pot tables
 exec(con, "CREATE TABLE IF NOT EXISTS olig_settings (
   id INTEGER PRIMARY KEY CHECK(id=1),
   current_round INTEGER, round_status TEXT, current_game TEXT,

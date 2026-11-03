@@ -49,7 +49,7 @@ Shiny app can spawn another R worker.
 | `supply-auction-game` | Own auction state plus shared auth/DB and optional Drive backup | **Split decision.** A no-credit room-code version fits Durable Objects; retain the current app when roster/token integration matters. | Medium |
 | `demo-kit-site` | LLM proxy, generated-game persistence, existing Node companion service | **Keep on Reclaim for now.** It is already moving toward Node; D1/R2 is possible later but is not a Shiny-memory quick win. | Medium |
 | `price-index` | Shared authentication, longitudinal student baskets, SQLite, Drive backup | **Keep on Reclaim.** Consider D1 only as part of an authoritative student-data migration. | Low |
-| `coordination-games` | Shared login, sections, token debits/payouts, Google backup | **Keep on Reclaim.** Its teaching value depends on the canonical ledger. | Low |
+| `bonus-pot` | Shared login, sections, token debits/payouts, Google backup | **Keep on Reclaim.** Its teaching value depends on the canonical ledger. | Low |
 | `class-job-picker` | Shared users, persistent job history, admin console, Google Sheets write-back | **Keep on Reclaim.** A future D1 migration should be coordinated with `class-job-market`. | Low |
 | `class-job-market` | Authoritative users, OAuth sessions, jobs, grades, token ledger, admin workflows | **Keep on Reclaim.** This is the persistence boundary, not an incremental port. | Do not pivot piecemeal |
 

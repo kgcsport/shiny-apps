@@ -25,9 +25,9 @@ db_exec <- function(sql, params=NULL) {
   invisible(1L)
 }
 
-app_root <- if (file.exists("apps/coordination-games/app.R")) "apps" else "/srv/shiny-server"
-app_text <- paste(readLines(file.path(app_root, "coordination-games", "app.R"), warn=FALSE), collapse="\n")
-app <- parse(file.path(app_root, "coordination-games", "app.R"))
+app_root <- if (file.exists("apps/bonus-pot/app.R")) "apps" else "/srv/shiny-server"
+app_text <- paste(readLines(file.path(app_root, "bonus-pot", "app.R"), warn=FALSE), collapse="\n")
+app <- parse(file.path(app_root, "bonus-pot", "app.R"))
 for (ex in app) {
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "bonus_shares") eval(ex, envir=globalenv())
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "apply_payouts") eval(ex, envir=globalenv())

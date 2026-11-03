@@ -1,6 +1,6 @@
 # Manual Test Script — All Other Apps
 
-Covers: coordination-games, review-quiz, price-index, supply-auction-game,
+Covers: bonus-pot, review-quiz, price-index, supply-auction-game,
 class-job-picker, bonus-entry, club-insurance-game, theory-of-firm, excise-tax-game,
 sloman-trading-game, airplanes-game.
 
@@ -9,7 +9,7 @@ users via class-job-market admin panel before running these tests.
 
 ---
 
-## Coordination Games (`apps/coordination-games`)
+## Bonus Pot (`apps/bonus-pot`)
 
 ### CG-01 — Student login
 

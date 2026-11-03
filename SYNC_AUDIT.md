@@ -6,7 +6,7 @@ work out of hot submit paths where practical.
 | App | File | Sync path | Hot path? | Change / finding |
 |---|---|---|---|---|
 | class-job-picker | `apps/class-job-picker/app.R` | `read_sheet()` historical import, `write_sheet()` summary write-back | No routine student submit path found | Left unchanged; SQLite is the active data layer and Sheets is summary/import only. |
-| coordination-games | `apps/coordination-games/app.R` | `backup_to_sheets()`, `backup_db_to_drive()` | No student submit path found | Admin backup buttons remain synchronous; session-end backup has an explicit best-effort comment. |
+| bonus-pot | `apps/bonus-pot/app.R` | `backup_to_sheets()`, `backup_db_to_drive()` | No student submit path found | Admin backup buttons remain synchronous; session-end backup has an explicit best-effort comment. |
 | flex_pass_actions | `apps/flex_pass_actions/app.R` | Sheets backup/admin sync, Drive backup/restore, session-end backup | Submit actions are DB-only; session end can still sync | Added comment that session-end backup is best-effort and submit actions stay DB-only. Admin backup/restore remains explicit and synchronous. |
 | flex_pass_actions | `apps/flex_pass_actions/helpers.R` | Legacy Drive/Sheets backup helpers | Helper-level only | Left helper behavior unchanged; callers control when it runs. |
 | price-index | `apps/price-index/app.R` | `backup_async()` on logout/session end/manual button | No, uses async backup | Added comment on session-end async backup; price submissions remain DB-only. |

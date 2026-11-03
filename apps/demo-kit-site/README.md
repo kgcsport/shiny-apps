@@ -85,7 +85,7 @@ This folder was incubated inside `kgcsport/shiny-apps`, which contains instructo
 - `apps/class-job-market`: class jobs or participation market that illustrates matching incentives and student choices.
 - `apps/class-job-picker`: lightweight tool for assigning or selecting classroom jobs.
 - `apps/excise-tax-game`: tax policy activity with instructor-controlled parameters and outcomes.
-- `apps/coordination-games`: coordination-game examples for strategic interaction.
+- `apps/bonus-pot`: coordination-game examples for strategic interaction.
 - `apps/review-quiz`: quiz-style classroom review tool.
 - `apps/club-insurance-game`: classroom game for insurance, risk pooling, and group decision-making.
 

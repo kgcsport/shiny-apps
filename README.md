@@ -45,13 +45,13 @@ Everything else is **optional**, for legacy/extra functionality only:
 
 | Env var | Used by | What it enables |
 |---|---|---|
-| `GOOGLE_SERVICE_ACCOUNT_JSON` / `GOOGLE_APPLICATION_CREDENTIALS` | class-job-picker, coordination-games, flex_pass_actions, price-index, supply-auction-game | Google Drive backups + Sheets sync |
-| `FLEX_PASS_SHEET_ID` | coordination-games, flex_pass_actions | Manage the roster via a Google Sheet instead of the in-app admin panel |
-| `FLEX_PASS_FOLDER_ID` | coordination-games, flex_pass_actions, price-index | Off-site Drive backup of the shared DB |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` / `GOOGLE_APPLICATION_CREDENTIALS` | class-job-picker, bonus-pot, flex_pass_actions, price-index, supply-auction-game | Google Drive backups + Sheets sync |
+| `FLEX_PASS_SHEET_ID` | bonus-pot, flex_pass_actions | Manage the roster via a Google Sheet instead of the in-app admin panel |
+| `FLEX_PASS_FOLDER_ID` | bonus-pot, flex_pass_actions, price-index | Off-site Drive backup of the shared DB |
 | `AUCTION_FOLDER_ID` | supply-auction-game | Off-site Drive backup of the auction DB |
 | `CLASS_JOB_SHEET_ID` | class-job-picker | One-off historical import / summary write-back to Sheets |
 | `PUB_ECON_FOLDER_ID`, `FINALQ_SHEET_ID`, `CRED_CSV`, `CRED_PATH` | flex_pass_actions | Legacy alternate credential sources |
-| `DB_PATH_OVERRIDE` | coordination-games | Override the shared DB path |
+| `DB_PATH_OVERRIDE` | bonus-pot | Override the shared DB path |
 | `SHINY_PASSWORD` | bonus-entry, class-job-picker, club-insurance-game | Shared admin password for those apps |
 
 ## Reclaim deployment procedure

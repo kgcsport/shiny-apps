@@ -8,7 +8,7 @@ Small Reclaim/Docker efficiency audit, July 2026. No broad rewrites were made.
 | arcade | `apps/arcade/app.R` | 6000ms | Added interval comments | Wallet/pledge state can lag slightly to reduce DB reads. |
 | excise-tax-game | `apps/excise-tax-game/app.R` | 2500ms | Added interval comment | Lightweight room/game refresh; already above 1000ms. |
 | price-index | `apps/price-index/app.R` | 8000ms | Added interval comments | Wave and aggregate prices are not latency-sensitive. |
-| coordination-games | `apps/coordination-games/app.R` | 1200ms | Added interval comments | Live in-class game state; already above 1000ms. |
+| bonus-pot | `apps/bonus-pot/app.R` | 1200ms | Added interval comments | Live in-class game state; already above 1000ms. |
 | flex_pass_actions | `apps/flex_pass_actions/app.R` | 3500ms | Added interval comment | Live game state/settings; already above 1000ms. |
 | flex_pass_actions | `apps/flex_pass_actions/app.R` | 3600000ms | Added interval comment | Hourly check for daily backup. |
 | flex_pass_actions | `apps/flex_pass_actions/helpers.R` | caller-supplied | Added helper comment | Cached DB polling helper used by callers. |

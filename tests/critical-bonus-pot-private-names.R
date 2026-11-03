@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Critical contract: Reveal permits aggregate results, but names remain private
 # unless the explicit public-names setting is enabled.
-app_path <- if (file.exists("apps/coordination-games/app.R")) "apps/coordination-games/app.R" else "/srv/shiny-server/coordination-games/app.R"
+app_path <- if (file.exists("apps/bonus-pot/app.R")) "apps/bonus-pot/app.R" else "/srv/shiny-server/bonus-pot/app.R"
 source_text <- paste(readLines(app_path, warn = FALSE), collapse = "\n")
 list_start <- regexpr("output\\$public_contribution_list <- renderUI\\(\\{", source_text, perl = TRUE)
 if (list_start[[1]] < 1L) stop("Could not locate public contribution list.")
