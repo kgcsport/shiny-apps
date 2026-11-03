@@ -9432,6 +9432,11 @@ server <- function(input, output, session) {
         op     <- olig_poll()
         s      <- op$settings
         active <- arcade_poll()$active_game[1] %||% ""
+        if (identical(active, "price_war")) return(wellPanel(
+          tags$h6(style="font-weight:700;color:#951829;margin-bottom:.6rem;", "🎮 Price War"),
+          tags$p("Price War now keeps independent course, section, and round records."),
+          tags$a(href="/price-war/", target="_blank", class="btn btn-sm btn-primary", "Open Price War controls →")
+        ))
         if (!nrow(s) || !nzchar(active)) return(NULL)
 
         cur_round  <- as.integer(s$current_round[1] %||% 1L)
@@ -11481,6 +11486,8 @@ server <- function(input, output, session) {
         if (nrow(s)) {
           if (identical(active, "bonus_pot")) {
             uiOutput("bonus_pot_admin_controls")
+          } else if (identical(active, "price_war")) {
+            div(class="alert alert-info", "Price War has independent course/section/round setup. ", tags$a(href="/price-war/", target="_blank", "Open Price War controls →"))
           } else {
             fluidRow(
               column(4, actionButton("adm_open", "Open", class = "btn btn-success btn-sm btn-block")),
@@ -12132,8 +12139,6 @@ server <- function(input, output, session) {
       set_active_game_for_scope(g)
       if (identical(g, "bonus_pot")) {
         db_exec("UPDATE olig_settings SET current_game='bonus', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-      } else if (identical(g, "price_war")) {
-        db_exec("UPDATE olig_settings SET current_game='pd', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
       }
     } else {
       set_active_game_for_scope("")

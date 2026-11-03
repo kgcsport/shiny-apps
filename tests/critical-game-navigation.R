@@ -2,16 +2,14 @@
 
 # Regression: Either/or cards must remain direct entry points, while a live
 # class round still renders in the Active Now slot. Price War must have its own
-# route and use the shared player in Price War mode.
+# route and own persistence, not Bonus Pot's coordination tables.
 app_root <- if (file.exists("apps/class-job-market/app.R")) "apps" else "/srv/shiny-server"
 hub_path <- file.path(app_root, "class-job-market", "app.R")
 hub <- paste(readLines(hub_path, warn=FALSE), collapse="\n")
 price_path <- file.path(app_root, "price-war", "app.R")
-bonus_path <- file.path(app_root, "bonus-pot", "app.R")
 
 if (!file.exists(price_path)) stop("Price War must have its own deployable app route.")
 price <- paste(readLines(price_path, warn=FALSE), collapse="\n")
-bonus <- paste(readLines(bonus_path, warn=FALSE), collapse="\n")
 
 required_hub <- c(
   'label = "Bonus Pot",     embedded = TRUE, url = "/bonus-pot/"',
@@ -25,13 +23,10 @@ missing_hub <- required_hub[!vapply(required_hub, grepl, logical(1), x=hub, fixe
 if (length(missing_hub)) stop("Games navigation is missing: ", paste(missing_hub, collapse=", "))
 if (grepl('list(id = "prisoners_dilemma"', hub, fixed=TRUE)) stop("Price War must replace the duplicate Prisoner's Dilemma catalog entry.")
 
-if (!grepl('Sys.setenv(COORDINATION_GAME_MODE = "price_war")', price, fixed=TRUE) ||
-    !grepl('"..", "bonus-pot", "app.R"', price, fixed=TRUE)) stop("Price War route must load the shared player in Price War mode.")
-for (needle in c('GAME_ID <- if (identical(GAME_MODE, "price_war")) "price_war" else "bonus_pot"',
-                 'GAME_ROUTE <- if (identical(GAME_MODE, "price_war")) "/price-war/" else "/bonus-pot/"',
-                 'identical(as.character(state$active_game[1]), GAME_ID)',
-                 'setNames(GAME_DB_VALUE, GAME_TITLE)')) {
-  if (!grepl(needle, bonus, fixed=TRUE)) stop("Shared player is missing route isolation: ", needle)
+for (needle in c("CREATE TABLE IF NOT EXISTS price_war_rounds", "CREATE TABLE IF NOT EXISTS price_war_submissions", "CREATE TABLE IF NOT EXISTS price_war_payouts", "PRIMARY KEY(course,section,round)", "price_war_payout")) {
+  if (!grepl(needle, price, fixed=TRUE)) stop("Price War standalone persistence is missing: ", needle)
 }
+if (grepl("olig_settings", price, fixed=TRUE) || grepl("olig_submissions", price, fixed=TRUE) || grepl("olig_payouts", price, fixed=TRUE)) stop("Price War must not use Bonus Pot persistence.")
+if (grepl("current_game='pd'", hub, fixed=TRUE)) stop("Activating Price War must not alter Bonus Pot settings.")
 
 cat("critical-game-navigation: PASS\n")
