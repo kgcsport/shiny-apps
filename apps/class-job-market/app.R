@@ -2207,11 +2207,8 @@ GAMES <- list(
   list(id = "bonus_pot",        type = "either",
        label = "Bonus Pot",     embedded = TRUE, url = "/bonus-pot/",
        desc = "Contribute tokens to a shared pot. The group earns back more when participation is high — but individual incentives push the other way."),
-  list(id = "prisoners_dilemma", type = "either",
-       label = "Prisoner's Dilemma", embedded = TRUE,
-       desc = "Cooperate or defect? See how individual incentives produce outcomes that are collectively worse."),
   list(id = "price_war",        type = "either",
-       label = "Price War",     embedded = TRUE,
+       label = "Price War",     embedded = TRUE, url = "/price-war/",
        desc = "Set prices in a duopoly. Can you sustain collusion, or does competition drive prices to the floor?"),
   list(id = "supply-auction-game", type = "either",
        label = "Supply Auction", embedded = FALSE, url = "/supply-auction-game/",
@@ -2662,6 +2659,7 @@ COOKIE_JS <- HTML("
       var targetPath = target.pathname.endsWith('/') ? target.pathname.slice(0, -1) : target.pathname;
       if (targetPath === '/review-quiz') return '/review-quiz/';
       if (targetPath === '/bonus-pot') return '/bonus-pot/';
+      if (targetPath === '/price-war') return '/price-war/';
       if (targetPath === '/class-job-market' &&
           target.searchParams.get('view') === 'cold-call-slide') {
         return '/class-job-market/?view=cold-call-slide';
@@ -3205,6 +3203,7 @@ server <- function(input, output, session) {
     if (length(target) != 1L || nchar(target) > 300L) return("/class-job-market/")
     if (target %in% c("/review-quiz", "/review-quiz/")) return("/review-quiz/")
     if (target %in% c("/bonus-pot", "/bonus-pot/")) return("/bonus-pot/")
+    if (target %in% c("/price-war", "/price-war/")) return("/price-war/")
     if (target %in% c("/class-job-market/?view=cold-call-slide",
                        "/class-job-market?view=cold-call-slide")) {
       return("/class-job-market/?view=cold-call-slide")
@@ -5017,6 +5016,9 @@ server <- function(input, output, session) {
               div(class = "game-list-actions",
                 if (is_live && g$embedded)
                   tags$em(style = "color:#951829;", "↑ Embedded in the active slot above")
+                else if (identical(g$type, "either") && !is.null(g$url))
+                  tags$a(href = g$url, target = "_blank",
+                         class = "btn btn-sm btn-primary", "Open game →")
                 else if (!g$embedded)
                   tags$a(href = g$url, target = "_blank",
                          class = "btn btn-sm btn-primary", "Open game →")
@@ -5058,8 +5060,7 @@ server <- function(input, output, session) {
     if (ginfo$embedded) {
       switch(active,
         bonus_pot         = uiOutput("embedded_bonus_pot"),
-        prisoners_dilemma = uiOutput("embedded_pd"),
-        price_war         = uiOutput("embedded_pd"),
+        price_war         = uiOutput("embedded_price_war"),
         div(class = "no-game", "Embedded UI coming soon.")
       )
     } else {
@@ -5070,6 +5071,12 @@ server <- function(input, output, session) {
   output$embedded_bonus_pot <- renderUI({
     req(rv$authed)
     tags$iframe(src="/bonus-pot/", title="Bonus Pot",
+      style="width:100%;height:720px;border:0;border-radius:6px;background:#fff;")
+  })
+
+  output$embedded_price_war <- renderUI({
+    req(rv$authed)
+    tags$iframe(src="/price-war/", title="Price War",
       style="width:100%;height:720px;border:0;border-radius:6px;background:#fff;")
   })
 
@@ -12125,7 +12132,7 @@ server <- function(input, output, session) {
       set_active_game_for_scope(g)
       if (identical(g, "bonus_pot")) {
         db_exec("UPDATE olig_settings SET current_game='bonus', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-      } else if (g %in% c("prisoners_dilemma", "price_war")) {
+      } else if (identical(g, "price_war")) {
         db_exec("UPDATE olig_settings SET current_game='pd', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
       }
     } else {

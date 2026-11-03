@@ -31,6 +31,16 @@ try(writeLines(substr(basename(getwd()), 1, 15), "/proc/self/comm"), silent = TR
 library(shiny); library(DT); library(bcrypt); library(dplyr); library(tibble)
 library(DBI); library(RSQLite); library(stringr); library(ggplot2); library(tidyr)
 
+# This player is shared by the two separately addressable coordination games.
+# The thin /price-war/ entry point sets COORDINATION_GAME_MODE before sourcing
+# this file; the normal /bonus-pot/ entry point retains the Bonus Pot mode.
+GAME_MODE <- Sys.getenv("COORDINATION_GAME_MODE", "bonus")
+if (!GAME_MODE %in% c("bonus", "price_war")) GAME_MODE <- "bonus"
+GAME_ID <- if (identical(GAME_MODE, "price_war")) "price_war" else "bonus_pot"
+GAME_DB_VALUE <- if (identical(GAME_MODE, "price_war")) "pd" else "bonus"
+GAME_TITLE <- if (identical(GAME_MODE, "price_war")) "Price War" else "Bonus Pot"
+GAME_ROUTE <- if (identical(GAME_MODE, "price_war")) "/price-war/" else "/bonus-pot/"
+
 
 this_file <- ""
 for (i in rev(seq_len(sys.nframe()))) {
@@ -464,10 +474,10 @@ debit_pending_contributions <- function(round, sec) {
 login_ui <- function(msg = NULL) {
   div(class = "login-page",
     div(class = "login-card",
-      div(class = "login-logo", "🎓 Bonus Pot"),
+      div(class = "login-logo", paste("🎓", GAME_TITLE)),
       div(class = "login-tagline", if (GOOGLE_AUTH_ENABLED) "Sign in with your school Google account." else "Log in with credentials from your instructor."),
       if (!is.null(msg)) div(style = "color:#b00020;font-weight:bold;margin-bottom:.75rem;", msg),
-      if (GOOGLE_AUTH_ENABLED) tags$a(href = "/auth/login?return_to=%2Fbonus-pot%2F", class = "btn-google",
+      if (GOOGLE_AUTH_ENABLED) tags$a(href = paste0("/auth/login?return_to=", utils::URLencode(GAME_ROUTE, reserved=TRUE)), class = "btn-google",
         tags$svg(xmlns = "http://www.w3.org/2000/svg", viewBox = "0 0 24 24", height = "18", width = "18",
           tags$path(fill = "#4285F4", d = "M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"),
           tags$path(fill = "#34A853", d = "M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"),
@@ -478,7 +488,7 @@ login_ui <- function(msg = NULL) {
       tags$hr(style = "margin:.9rem 0 .5rem;"),
       tags$p(style = "font-size:.75rem;color:#aaa;text-align:center;margin-bottom:.4rem;", "What's here"),
       div(class = "preview-grid", div(class = "preview-card", div(class = "preview-card-icon", "📋"), div(class = "preview-card-label", "Today"), div(class = "preview-card-desc", "Jobs, wages & active game")), div(class = "preview-card", div(class = "preview-card-icon", "🏪"), div(class = "preview-card-label", "Job Market"), div(class = "preview-card-desc", "Bid for or apply to jobs")), div(class = "preview-card", div(class = "preview-card-icon", "🎮"), div(class = "preview-card-label", "Games & Demos"), div(class = "preview-card-desc", "Live games + interactive demos"))),
-      tags$details(class = "login-howto", tags$summary("How to get started"), tags$ul(tags$li(tags$strong("Sign in"), " using your school Google account. Your instructor must add your email to the class roster first."), tags$li(tags$strong("Bonus Pot"), " lets you make a contribution and follow the shared outcome."), tags$li(tags$strong("Class Job Market"), " has your assignments, bids, and account."))),
+      tags$details(class = "login-howto", tags$summary("How to get started"), tags$ul(tags$li(tags$strong("Sign in"), " using your school Google account. Your instructor must add your email to the class roster first."), tags$li(tags$strong(GAME_TITLE), if (identical(GAME_MODE, "price_war")) " lets you choose a price and follow the market outcome." else " lets you make a contribution and follow the shared outcome."), tags$li(tags$strong("Class Job Market"), " has your assignments, bids, and account."))),
       demo_login_ui
     )
   )
@@ -497,7 +507,7 @@ shared_auth_js <- tags$script(HTML("
   // Shiny emits this as a jQuery event; the native listener above never fired,
   // leaving a visitor stranded on the checking-sign-in screen.
   setTimeout(sendAuthCookie, 300);
-  Shiny.addCustomMessageHandler('redirect_to_job_market', function(msg) { window.location.replace(msg.url || '/class-job-market/?return_to=%2Fbonus-pot%2F'); });
+  Shiny.addCustomMessageHandler('redirect_to_job_market', function(msg) { window.location.replace(msg.url || '/class-job-market/'); });
   function applyFontScale(scale) { localStorage.setItem('bonusPotFontScale', scale); document.documentElement.style.setProperty('--bp-font-scale', scale); }
   document.addEventListener('click', function(e) {
     var button = e.target.closest('#bp-font-down, #bp-font-reset, #bp-font-up');
@@ -609,11 +619,11 @@ ui <- fluidPage(class = "bp-app",
   uiOutput("auth_gate"),
   conditionalPanel("output.authed",
     div(class = "bp-header",
-      div(class = "bp-header-title", "🎓 Classroom Economy · Bonus Pot"),
+      div(class = "bp-header-title", paste("🎓 Classroom Economy ·", GAME_TITLE)),
       uiOutput("bp_header_widgets", inline = TRUE)
     ),
     div(class = "bp-topbar",
-      div(h2("Bonus Pot"), p("Make a contribution, follow the round, and see the shared outcome.")),
+      div(h2(GAME_TITLE), p(if (identical(GAME_MODE, "price_war")) "Choose a price, follow the round, and see the market outcome." else "Make a contribution, follow the round, and see the shared outcome.")),
       div(class = "bp-tools", tags$a(href="/class-job-market/", class="btn btn-default", "Class Job Market"), tags$span("Text size"),
         tags$button(type="button", id="bp-font-down", "A−"),
         tags$button(type="button", id="bp-font-reset", "A"),
@@ -782,7 +792,7 @@ server <- function(input, output, session) {
     if (nzchar(live) && !identical(norm_key(selected), norm_key(live))) return(FALSE)
     scope_key <- paste0(norm_key(rv$active_course), "::", norm_key(selected))
     state <- tryCatch(db_query("SELECT active_game FROM scope_arcade_state WHERE scope_key=? LIMIT 1;", list(scope_key)), error=function(e) data.frame())
-    !nrow(state) || !nzchar(as.character(state$active_game[1] %||% "")) || identical(as.character(state$active_game[1]), "bonus_pot")
+    !nrow(state) || !nzchar(as.character(state$active_game[1] %||% "")) || identical(as.character(state$active_game[1]), GAME_ID)
   }
 
   # Poll every 1200ms: shared state via olig_settings.updated_at for in-class games.
@@ -831,14 +841,14 @@ server <- function(input, output, session) {
     req(authed())
     o   <- olig_poll()
     rv$environment_ver
-    if (!bonus_game_in_selected_environment(o)) return(div(class="bp-card", h3("No active Bonus Pot game"), p(class="bp-note", sprintf("Bonus Pot is not active for %s right now.", rv$active_section))))
+    if (!bonus_game_in_selected_environment(o) || !identical(as.character(o$current_game[1] %||% ""), GAME_DB_VALUE)) return(div(class="bp-card", h3(paste("No active", GAME_TITLE, "game")), p(class="bp-note", sprintf("%s is not active for %s right now. You can return here whenever your instructor opens a round.", GAME_TITLE, rv$active_section))))
     sec <- olig_section(o)
 
     bal    <- token_balance(user_id())
     game   <- as.character(o$current_game[1])
     status <- as.character(o$round_status[1])
 
-    game_lbl <- if (game == "pd") "Price War" else "Bonus Pot"
+    game_lbl <- GAME_TITLE
     status_class <- paste0("bp-pill bp-status-", status)
     denom_mode <- tolower(trimws(as.character(o$denominator_mode[1] %||% "")))
     if (!denom_mode %in% c("section", "submitters", "threshold")) {
@@ -864,7 +874,7 @@ server <- function(input, output, session) {
       div(class = "bp-card",
         h4(if (status == "open") "Make or update your choice" else "This round is not accepting submissions"),
         if (status != "open") div(class = "bp-note", "Wait for the instructor to open the next round. Results appear here after the round is revealed."),
-        if (game == "pd") {
+        if (identical(GAME_MODE, "price_war")) {
           tagList(
             radioButtons("pd_action", "Choose a price", choiceNames = c("High price", "Low price"), choiceValues = c("High", "Low"), inline = TRUE),
             if (status == "open") actionButton("submit_pd", "Save my choice", class = "btn-primary bp-submit")
@@ -897,7 +907,7 @@ server <- function(input, output, session) {
     # Read game state fresh (not via subs_poll) to avoid a reactive dependency
     # that could re-trigger the student UI render on every classmate submission.
     o   <- get_olig()
-    if (!is_admin() && !bonus_game_in_selected_environment(o)) { showNotification("Bonus Pot is not active in the selected class section.", type="error"); return() }
+    if (!identical(GAME_MODE, "price_war") || (!is_admin() && !bonus_game_in_selected_environment(o))) { showNotification("Price War is not active in the selected class section.", type="error"); return() }
     sec <- olig_section(o)
 
     if (as.character(o$round_status[1]) != "open") {
@@ -926,7 +936,7 @@ server <- function(input, output, session) {
   observeEvent(input$submit_bonus, {
     req(authed())
     o   <- get_olig()
-    if (!is_admin() && !bonus_game_in_selected_environment(o)) { showNotification("Bonus Pot is not active in the selected class section.", type="error"); return() }
+    if (!identical(GAME_MODE, "bonus") || (!is_admin() && !bonus_game_in_selected_environment(o))) { showNotification("Bonus Pot is not active in the selected class section.", type="error"); return() }
     sec <- olig_section(o)
 
     if (as.character(o$round_status[1]) != "open") {
@@ -965,7 +975,7 @@ server <- function(input, output, session) {
   observeEvent(input$reset_bonus, {
     req(authed())
     o <- get_olig()
-    if (!is_admin() && !bonus_game_in_selected_environment(o)) {
+    if (!identical(GAME_MODE, "bonus") || (!is_admin() && !bonus_game_in_selected_environment(o))) {
       showNotification("Bonus Pot is not active in the selected class section.", type="error")
       return()
     }
@@ -1273,8 +1283,8 @@ server <- function(input, output, session) {
         fluidRow(
           column(4,
             selectInput("adm_game", "Game",
-                        choices  = c("Price War (PD)" = "pd", "Bonus Pot" = "bonus"),
-                        selected = as.character(o$current_game[1]))
+                        choices  = setNames(GAME_DB_VALUE, GAME_TITLE),
+                        selected = GAME_DB_VALUE)
           ),
           column(4,
             selectInput("adm_status", "Status",
@@ -1394,29 +1404,29 @@ server <- function(input, output, session) {
     db_exec(
       "UPDATE olig_settings SET current_round=?, current_game=?, round_status=?,
        section=?, use_section_size=?, denominator_mode=?, denominator_threshold=?, show_contributions=?, updated_at=CURRENT_TIMESTAMP WHERE id=1;",
-      list(as.integer(input$adm_round), as.character(input$adm_game),
+      list(as.integer(input$adm_round), GAME_DB_VALUE,
            as.character(input$adm_status), sec, use_sec, denom_mode, denom_threshold,
            if (isTRUE(input$adm_show_contributions)) 1L else 0L)
     )
     db_exec(
       "INSERT OR IGNORE INTO olig_rounds(round, game, status) VALUES(?, ?, ?);",
-      list(as.integer(input$adm_round), as.character(input$adm_game), as.character(input$adm_status))
+      list(as.integer(input$adm_round), GAME_DB_VALUE, as.character(input$adm_status))
     )
     db_exec(
       "UPDATE olig_rounds SET game=?, status=? WHERE round=?;",
-      list(as.character(input$adm_game), as.character(input$adm_status), as.integer(input$adm_round))
+      list(GAME_DB_VALUE, as.character(input$adm_status), as.integer(input$adm_round))
     )
     showNotification(
       sprintf("Updated: Round %d | Section '%s' | Denominator: %s | Game: %s | Status: %s.",
               as.integer(input$adm_round),
               if (nzchar(sec)) sec else "(none)",
-              denom_lbl, input$adm_game, input$adm_status),
+              denom_lbl, GAME_TITLE, input$adm_status),
       type = "message"
     )
 
     # When closing a bonus round, debit all pending contributions.
     if (as.character(input$adm_status) == "closed" &&
-        as.character(input$adm_game) == "bonus") {
+        identical(GAME_DB_VALUE, "bonus")) {
       n_debited <- debit_pending_contributions(as.integer(input$adm_round), sec)
       if (n_debited > 0) {
         showNotification(

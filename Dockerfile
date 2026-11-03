@@ -15,11 +15,13 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # be parsed. Runtime startup is exercised separately by the staging smoke test.
 RUN Rscript --vanilla -e "parse(file='/srv/shiny-server/class-job-market/app.R'); cat('class-job-market parse OK\n')"
 RUN Rscript --vanilla -e "parse(file='/srv/shiny-server/bonus-pot/app.R'); cat('bonus-pot parse OK\n')"
+RUN Rscript --vanilla -e "parse(file='/srv/shiny-server/price-war/app.R'); cat('price-war parse OK\n')"
 RUN Rscript --vanilla -e "parse(file='/srv/shiny-server/coordination-games/app.R'); cat('coordination-games redirect parse OK\n')"
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-live-score-audit.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-assignment-wage-award.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-gradebook-ux.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-bonus-pot-unification.R
+RUN Rscript --vanilla /srv/shiny-server/tests/critical-game-navigation.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-bonus-pot-private-names.R
 RUN Rscript --vanilla /srv/shiny-server/tests/admin-roles.R
 RUN Rscript --vanilla /srv/shiny-server/tests/bonus-pot-public-good.R
