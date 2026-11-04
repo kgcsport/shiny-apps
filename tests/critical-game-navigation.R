@@ -33,7 +33,7 @@ for (needle in c("if (length(p)) dbGetQuery(db(), sql, params=p) else dbGetQuery
 for (needle in c("Shiny.setInputValue('auth_cookie'", "observeEvent(input$auth_cookie", "arcade_sessions s JOIN users u", "issue_shared_cookie <- function", "set_arcade_cookie", "actionButton(\"login_btn\"", "req(rv$admin,nzchar(rv$course),nzchar(rv$section))")) {
   if (!grepl(needle, price, fixed=TRUE)) stop("Price War must use the existing Class Job Market session and selected environment: ", needle)
 }
-for (needle in c("pair_code_counts <- function(actions)", "levels=c(\"HH\", \"HL\", \"LH\", \"LL\")", "tabPanel(\"Play\"", "tabPanel(\"Results\"", "if (rv$admin) tabs <- c(tabs,list(tabPanel(\"Settings\"", "active_tab=\"Play\"", "id=\"price_war_tab\", selected=rv$active_tab", "observeEvent(input$price_war_tab")) {
+for (needle in c("pair_code_counts <- function(actions)", "levels=c(\"HH\", \"HL\", \"LH\", \"LL\")", "tabPanel(\"Play\"", "tabPanel(\"Results\"", "if (rv$admin) tabs <- c(tabs,list(tabPanel(\"Settings\"", "active_tab=\"Play\"", "id=\"price_war_tab\", selected=rv$active_tab", "observeEvent(input$price_war_tab", "pw-header", "environment_course_sel", "environment_section_sel")) {
   if (!grepl(needle, price, fixed=TRUE)) stop("Price War must provide student play, aggregate results, and an admin-only Settings tab: ", needle)
 }
 expected_pairs <- data.frame(pair=c("HH", "HL", "LH", "LL"), count=c(1L, 1L, 1L, 1L))

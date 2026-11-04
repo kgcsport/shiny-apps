@@ -64,7 +64,7 @@ shared_auth_js <- tags$script(HTML("
 "))
 
 ui <- fluidPage(
-  tags$head(tags$style(HTML("body{background:#f7f7f5}.pw{max-width:850px;margin:2rem auto}.card{background:#fff;border:1px solid #ddd;border-radius:9px;padding:1.2rem;margin:.8rem 0}.live{color:#176b3a;font-weight:700}.muted{color:#666}.login-page{max-width:420px;margin:4rem auto;padding:0 1rem}.login-card{background:#fff;border-radius:12px;padding:2rem 2.25rem;box-shadow:0 3px 14px rgba(0,0,0,.1)}.login-logo{font-size:1.6rem;font-weight:700;color:#951829;margin-bottom:.35rem;text-align:center}.login-tagline{font-size:.83rem;color:#888;text-align:center;margin-bottom:1.25rem}.btn-google{display:block;text-align:center;width:100%;padding:.65rem 1rem;background:#fff;border:1.5px solid #dadce0;border-radius:6px;font-size:.95rem;font-weight:500;color:#3c4043;margin-bottom:.75rem}.admin-login-toggle summary{cursor:pointer;font-size:.82rem;color:#888;text-align:center;padding:.3rem 0}")), shared_auth_js),
+  tags$head(tags$style(HTML("body{background:#f7f7f5}.pw{max-width:850px;margin:0 auto 2rem}.pw-header{background:#951829;color:#fff;padding:.7rem max(1rem,calc((100vw - 850px)/2));display:flex;align-items:center;gap:.75rem;margin:0 0 1rem}.pw-header-title{font-size:1.3rem;font-weight:700;flex:1}.pw-header-name{font-size:.88rem;opacity:.85}.pw-env-picker{display:flex;gap:.45rem;align-items:center}.pw-env-picker .form-group{margin:0}.pw-env-picker .control-label{font-size:.72rem;margin:0 0 .1rem}.pw-env-picker .selectize-input{min-width:120px;min-height:34px;padding:6px 8px;font-size:.83rem;color:#222}.pw-env-single{font-size:.88rem;padding:.35rem .55rem;border:1px solid rgba(255,255,255,.45);border-radius:6px;background:rgba(255,255,255,.12)}.card{background:#fff;border:1px solid #ddd;border-radius:9px;padding:1.2rem;margin:.8rem 0}.live{color:#176b3a;font-weight:700}.muted{color:#666}.login-page{max-width:420px;margin:4rem auto;padding:0 1rem}.login-card{background:#fff;border-radius:12px;padding:2rem 2.25rem;box-shadow:0 3px 14px rgba(0,0,0,.1)}.login-logo{font-size:1.6rem;font-weight:700;color:#951829;margin-bottom:.35rem;text-align:center}.login-tagline{font-size:.83rem;color:#888;text-align:center;margin-bottom:1.25rem}.btn-google{display:block;text-align:center;width:100%;padding:.65rem 1rem;background:#fff;border:1.5px solid #dadce0;border-radius:6px;font-size:.95rem;font-weight:500;color:#3c4043;margin-bottom:.75rem}.admin-login-toggle summary{cursor:pointer;font-size:.82rem;color:#888;text-align:center;padding:.3rem 0}@media(max-width:640px){.pw-header{flex-wrap:wrap;padding:.6rem .75rem}.pw-header-title{flex-basis:100%}.pw-env-picker{width:100%}.pw-env-picker>div{flex:1}.pw-env-picker .selectize-input{min-width:0}}")), shared_auth_js),
   uiOutput("page")
 )
 
@@ -107,7 +107,12 @@ server <- function(input, output, session) {
   output$page <- renderUI({
     if(!logged_in()) return(div(class="login-page",div(class="login-card",div(class="login-logo","🎓 Price War"),div(class="login-tagline",if(GOOGLE_AUTH_ENABLED)"Sign in with your school Google account." else "Log in with your Class Job Market credentials."),if(!is.null(rv$message))p(style="color:#951829",rv$message),if(GOOGLE_AUTH_ENABLED)tags$a(href="/auth/login?return_to=%2Fprice-war%2F",class="btn-google","Sign in with Google"),if(GOOGLE_AUTH_ENABLED)tags$details(class="admin-login-toggle",tags$summary("Sign in with password"),textInput("login_user",NULL,placeholder="Username"),passwordInput("login_pw",NULL,placeholder="Password"),actionButton("login_btn","Sign In →",class="btn btn-primary btn-block"))else tagList(textInput("login_user",NULL,placeholder="Username"),passwordInput("login_pw",NULL,placeholder="Password"),actionButton("login_btn","Sign In →",class="btn btn-primary btn-block")))))
     e <- environments()
-    choices <- setNames(paste(e$course,e$section,sep="||"),paste(e$course,"—",e$section))
+    courses <- unique(as.character(e$course))
+    course <- rv$course
+    if (!course %in% courses && length(courses)) course <- courses[1]
+    sections <- unique(as.character(e$section[tolower(e$course)==tolower(course)]))
+    section <- rv$section
+    if (!section %in% sections && length(sections)) section <- sections[1]
     r <- round_row()
     status_note <- if (!active()) div(class="card muted","No Price War round is active for this class / section.") else if (!nrow(r)) div(class="card muted","Your instructor has not set up a Price War round yet.") else NULL
     play_ui <- if (!active() || !nrow(r)) status_note else div(class="card",h3(paste("Round",r$round[1])),p(class=if(r$status[1]=="open")"live" else "muted",toupper(r$status[1])),if(r$status[1]=="open")tagList(p("Choose your price. Your choice is paired with another student after the round closes."),radioButtons("action","Your price",c("High price"="High","Low price"="Low"),inline=TRUE),actionButton("submit","Save choice",class="btn-primary")) else p("Choices are no longer being accepted."))
@@ -117,10 +122,14 @@ server <- function(input, output, session) {
     tabs <- list(tabPanel("Play", play_ui), tabPanel("Results", results_ui))
     if (rv$admin) tabs <- c(tabs,list(tabPanel("Settings", admin_ui)))
     if (!rv$active_tab %in% vapply(tabs, function(tab) tab$attribs$title, character(1))) rv$active_tab <- "Play"
-    div(class="pw",div(class="card",h2("Price War"),p("A High/Low-price Prisoner's-Dilemma game."),selectInput("env","Class / section",choices,selected=paste(rv$course,rv$section,sep="||"))),do.call(tabsetPanel,c(list(id="price_war_tab", selected=rv$active_tab),tabs)))
+    tagList(
+      div(class="pw-header",div(class="pw-header-title","🎓 Classroom Economy · Price War"),span(class="pw-header-name",rv$name),if(nrow(e)>1L)div(class="pw-env-picker",div(tags$label("Class"),selectInput("environment_course_sel",NULL,choices=courses,selected=course,width="100%")),div(tags$label("Section"),selectInput("environment_section_sel",NULL,choices=sections,selected=section,width="100%"))) else span(class="pw-env-single",paste(course,"·",section))),
+      div(class="pw",div(class="card",h2("Price War"),p("A High/Low-price Prisoner's-Dilemma game.")),do.call(tabsetPanel,c(list(id="price_war_tab", selected=rv$active_tab),tabs)))
+    )
   })
   observeEvent(input$price_war_tab, { rv$active_tab <- input$price_war_tab %||% "Play" }, ignoreInit=TRUE)
-  observeEvent(input$env,{ p<-strsplit(input$env,"||",fixed=TRUE)[[1]];if(length(p)==2)choose_env(p[1],p[2]) })
+  observeEvent(input$environment_course_sel,{ e<-environments(); course<-input$environment_course_sel%||%""; rows<-e[tolower(e$course)==tolower(course),,drop=FALSE]; if(!nrow(rows))return(); section<-rv$section; if(!section%in%rows$section)section<-rows$section[1]; choose_env(course,section) },ignoreInit=TRUE)
+  observeEvent(input$environment_section_sel,{ choose_env(input$environment_course_sel%||%rv$course,input$environment_section_sel%||%"") },ignoreInit=TRUE)
   session$onSessionEnded(function(){if(!is.null(con)&&dbIsValid(con))dbDisconnect(con)})
 }
 shinyApp(ui,server)
