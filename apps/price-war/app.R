@@ -60,8 +60,12 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  rv <- reactiveValues(user=NULL, name=NULL, admin=FALSE, course="", section="", message=NULL)
+  rv <- reactiveValues(user=NULL, name=NULL, admin=FALSE, course="", section="", message=NULL, player_user=NULL, player_name=NULL, impersonating=FALSE)
   logged_in <- reactive(!is.null(rv$user))
+  requested_embed <- reactive({
+    params <- tryCatch(parseQueryString(sub("^\\?", "", session$clientData$url_search %||% "")), error=function(e) list())
+    list(embedded=identical(as.character(params$embedded %||% ""), "1"), course=as.character(params$course %||% ""), section=as.character(params$section %||% ""), impersonate=as.character(params$impersonate %||% ""))
+  })
   environments <- reactive({
     req(logged_in())
     if (!rv$admin) {
@@ -114,13 +118,25 @@ server <- function(input, output, session) {
       pair_code_counts(actions)
     }
   )
-  finish <- function(row) { rv$user<-row$user_id[1];rv$name<-row$display_name[1];rv$admin<-isTRUE(as.integer(row$is_admin[1])==1); e<-environments();if(nrow(e)){rv$course<-e$course[1];rv$section<-e$section[1]};rv$message<-NULL }
+  finish <- function(row) { rv$user<-row$user_id[1];rv$name<-row$display_name[1];rv$admin<-isTRUE(as.integer(row$is_admin[1])==1);rv$player_user<-rv$user;rv$player_name<-rv$name;rv$impersonating<-FALSE;e<-environments();if(nrow(e)){rv$course<-e$course[1];rv$section<-e$section[1]};rv$message<-NULL }
+  observe({
+    req(logged_in())
+    request <- requested_embed()
+    if (isTRUE(request$embedded) && nzchar(request$course) && nzchar(request$section) &&
+        (!identical(tolower(rv$course), tolower(request$course)) || !identical(tolower(rv$section), tolower(request$section)))) {
+      choose_env(request$course, request$section)
+    }
+    if (isTRUE(request$embedded) && rv$admin && nzchar(request$impersonate)) {
+      target <- q("SELECT user_id,display_name FROM users WHERE lower(user_id)=lower(?) AND COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND lower(course)=lower(?) AND lower(section)=lower(?) LIMIT 1;",list(request$impersonate,rv$course,rv$section))
+      if (nrow(target)) { rv$player_user <- target$user_id[1]; rv$player_name <- target$display_name[1]; rv$impersonating <- TRUE }
+    }
+  })
   observeEvent(input$auth_cookie,{ tok<-input$auth_cookie%||%"";if(nzchar(tok)&&!logged_in()){z<-tryCatch(q("SELECT u.user_id,u.display_name,u.is_admin FROM arcade_sessions s JOIN users u ON u.user_id=s.user_id WHERE s.token=? AND datetime(s.expires_at)>datetime('now') LIMIT 1;",list(tok)),error=function(e)data.frame());if(nrow(z))finish(z)}},ignoreInit=FALSE)
   issue_shared_cookie <- function(user_id) { token<-paste(sample(c(letters,LETTERS,0:9),48L,replace=TRUE),collapse=""); x("INSERT INTO arcade_sessions(token,user_id,expires_at) VALUES(?,?,datetime('now','+14 days'));",list(token,user_id)); session$sendCustomMessage("set_arcade_cookie",list(token=token,expires=format(Sys.time()+14*86400,"%Y-%m-%dT%H:%M:%SZ",tz="UTC"))) }
   observeEvent(input$login_btn,{ z<-tryCatch(q("SELECT user_id,display_name,pw_hash,is_admin,active FROM users WHERE lower(user_id)=lower(?) LIMIT 1;",list(input$login_user%||%"")),error=function(e)data.frame());if(!nrow(z)||!isTRUE(as.integer(z$active[1])==1)||!bcrypt::checkpw(input$login_pw%||%"",z$pw_hash[1])){rv$message<-"Incorrect username or password.";return()};finish(z);issue_shared_cookie(z$user_id[1]) })
 
-  observeEvent(input$save_round, {
-    req(rv$admin,nzchar(rv$course),nzchar(rv$section))
+observeEvent(input$save_round, {
+req(rv$admin, !rv$impersonating,nzchar(rv$course),nzchar(rv$section))
     vals <- as.numeric(c(input$scale,input$hh_a,input$hh_b,input$hl_a,input$hl_b,input$lh_a,input$lh_b,input$ll_a,input$ll_b))
     if(any(!is.finite(vals))) return()
     x("INSERT INTO price_war_rounds(course,section,round,status,pd_scale,hh_a,hh_b,hl_a,hl_b,lh_a,lh_b,ll_a,ll_b,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(course,section,round) DO UPDATE SET status=excluded.status,pd_scale=excluded.pd_scale,hh_a=excluded.hh_a,hh_b=excluded.hh_b,hl_a=excluded.hl_a,hl_b=excluded.hl_b,lh_a=excluded.lh_a,lh_b=excluded.lh_b,ll_a=excluded.ll_a,ll_b=excluded.ll_b,updated_at=CURRENT_TIMESTAMP;",as.list(c(rv$course,rv$section,as.integer(input$round),input$status,vals)))
@@ -131,11 +147,11 @@ server <- function(input, output, session) {
     state <- current_game_state(); r <- state$round
     if(!state$active || !nrow(r) || r$status[1]!="open") return()
     a <- input$action%||%""; if(!a%in%c("High","Low")) return()
-    x("INSERT INTO price_war_submissions(course,section,round,user_id,display_name,action,submitted_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(course,section,round,user_id) DO UPDATE SET action=excluded.action,submitted_at=CURRENT_TIMESTAMP;",list(rv$course,rv$section,r$round[1],rv$user,rv$name,a))
+    x("INSERT INTO price_war_submissions(course,section,round,user_id,display_name,action,submitted_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(course,section,round,user_id) DO UPDATE SET action=excluded.action,submitted_at=CURRENT_TIMESTAMP;",list(rv$course,rv$section,r$round[1],rv$player_user,rv$player_name,a))
     showNotification("Choice saved. You can change it until the round closes.")
   })
   observeEvent(input$payout, {
-    req(rv$admin)
+    req(rv$admin, !rv$impersonating)
     r <- current_game_state()$round
     if(!nrow(r)||r$status[1]!="revealed") return()
     s <- q("SELECT * FROM price_war_submissions WHERE course=? AND section=? AND round=? ORDER BY submitted_at,user_id;",list(rv$course,rv$section,r$round[1]))
@@ -157,16 +173,31 @@ server <- function(input, output, session) {
     div(class="card",h3(paste("Round",r$round[1],"pair counts")),p("Counts update as completed pairs are formed. The first choice in each label is Player A; the second is Player B."),fluidRow(lapply(seq_len(nrow(counts)), function(i) column(3,div(class="card",style="text-align:center;margin:.25rem 0;",h4(counts$pair[i]),div(style="font-size:2em;font-weight:700;",counts$count[i]))))))
   })
   output$settings_ui <- renderUI({
+    req(rv$admin, !rv$impersonating)
+    r <- game_poll()$round
+    div(class="card",h3("Round settings"),p("These controls are visible only to instructors."),numericInput("round","Round",value=if(nrow(r))r$round[1]else 1,min=1),selectInput("status","Status",c("pending","open","closed","revealed"),selected=if(nrow(r))r$status[1]else"pending"),numericInput("scale","Tokens per payoff point",value=if(nrow(r))r$pd_scale[1]else .1),fluidRow(column(6,numericInput("hh_a","High / High: A",value=if(nrow(r))r$hh_a[1]else 3),numericInput("hl_a","High / Low: A",value=if(nrow(r))r$hl_a[1]else 0),numericInput("lh_a","Low / High: A",value=if(nrow(r))r$lh_a[1]else 5),numericInput("ll_a","Low / Low: A",value=if(nrow(r))r$ll_a[1]else 1)),column(6,numericInput("hh_b","High / High: B",value=if(nrow(r))r$hh_b[1]else 3),numericInput("hl_b","High / Low: B",value=if(nrow(r))r$hl_b[1]else 5),numericInput("lh_b","Low / High: B",value=if(nrow(r))r$lh_b[1]else 0),numericInput("ll_b","Low / Low: B",value=if(nrow(r))r$ll_b[1]else 1))),actionButton("save_round","Save round",class="btn-primary"),actionButton("payout","Apply revealed payouts",class="btn-success"),tags$hr(),uiOutput("settings_diagnostics"))
+  })
+  output$settings_diagnostics <- renderUI({
     req(rv$admin)
     r <- game_poll()$round
-    div(class="card",h3("Round settings"),p("These controls are visible only to instructors."),numericInput("round","Round",value=if(nrow(r))r$round[1]else 1,min=1),selectInput("status","Status",c("pending","open","closed","revealed"),selected=if(nrow(r))r$status[1]else"pending"),numericInput("scale","Tokens per payoff point",value=if(nrow(r))r$pd_scale[1]else .1),fluidRow(column(6,numericInput("hh_a","High / High: A",value=if(nrow(r))r$hh_a[1]else 3),numericInput("hl_a","High / Low: A",value=if(nrow(r))r$hl_a[1]else 0),numericInput("lh_a","Low / High: A",value=if(nrow(r))r$lh_a[1]else 5),numericInput("ll_a","Low / Low: A",value=if(nrow(r))r$ll_a[1]else 1)),column(6,numericInput("hh_b","High / High: B",value=if(nrow(r))r$hh_b[1]else 3),numericInput("hl_b","High / Low: B",value=if(nrow(r))r$hl_b[1]else 5),numericInput("lh_b","Low / High: B",value=if(nrow(r))r$lh_b[1]else 0),numericInput("ll_b","Low / Low: B",value=if(nrow(r))r$ll_b[1]else 1))),actionButton("save_round","Save round",class="btn-primary"),actionButton("payout","Apply revealed payouts",class="btn-success"))
+    if (!nrow(r)) return(div(class="alert alert-info", "Create a round to inspect submissions."))
+    counts <- submission_poll()
+    entries <- q("SELECT display_name,action,submitted_at FROM price_war_submissions WHERE course=? AND section=? AND round=? ORDER BY submitted_at,user_id;",list(rv$course,rv$section,r$round[1]))
+    paired <- sum(counts$count)
+    tagList(
+      h4("Live submission diagnostic"),
+      p(sprintf("%d submitted choice(s): %d complete pair(s), %d waiting for a partner.", nrow(entries), paired, nrow(entries) - paired)),
+      fluidRow(lapply(seq_len(nrow(counts)), function(i) column(3,div(class="card",style="text-align:center;margin:.25rem 0;",strong(counts$pair[i]),div(style="font-size:1.5em;font-weight:700;",counts$count[i]))))),
+      if (nrow(entries)) tags$table(class="table table-condensed",tags$thead(tags$tr(tags$th("Student"),tags$th("Choice"),tags$th("Submitted"))),tags$tbody(lapply(seq_len(nrow(entries)),function(i) tags$tr(tags$td(entries$display_name[i] %||% "Student"),tags$td(entries$action[i]),tags$td(entries$submitted_at[i]))))) else p(class="muted", "No entries yet.")
+    )
   })
   output$page <- renderUI({
     if(!logged_in()) return(div(class="login-page",div(class="login-card",div(class="login-logo","🎓 Price War"),div(class="login-tagline",if(GOOGLE_AUTH_ENABLED)"Sign in with your school Google account." else "Log in with your Class Job Market credentials."),if(!is.null(rv$message))p(style="color:#951829",rv$message),if(GOOGLE_AUTH_ENABLED)tags$a(href="/auth/login?return_to=%2Fprice-war%2F",class="btn-google","Sign in with Google"),if(GOOGLE_AUTH_ENABLED)tags$details(class="admin-login-toggle",tags$summary("Sign in with password"),textInput("login_user",NULL,placeholder="Username"),passwordInput("login_pw",NULL,placeholder="Password"),actionButton("login_btn","Sign In →",class="btn btn-primary btn-block"))else tagList(textInput("login_user",NULL,placeholder="Username"),passwordInput("login_pw",NULL,placeholder="Password"),actionButton("login_btn","Sign In →",class="btn btn-primary btn-block")))))
     e <- environments(); courses <- unique(as.character(e$course)); course <- if(rv$course%in%courses)rv$course else courses[1]; sections <- unique(as.character(e$section[tolower(e$course)==tolower(course)])); section <- if(rv$section%in%sections)rv$section else sections[1]
     tabs <- list(tabPanel("Play",uiOutput("play_ui")),tabPanel("Results",uiOutput("results_ui")))
-    if(rv$admin) tabs <- c(tabs,list(tabPanel("Settings",uiOutput("settings_ui"))))
-    tagList(div(class="pw-header",div(class="pw-header-title","🎓 Classroom Economy · Price War"),span(class="pw-header-name",rv$name),if(nrow(e)>1L)div(class="pw-env-picker",div(tags$label("Class"),selectInput("environment_course_sel",NULL,choices=courses,selected=course,width="100%")),div(tags$label("Section"),selectInput("environment_section_sel",NULL,choices=sections,selected=section,width="100%"))) else span(class="pw-env-single",paste(course,"·",section))),div(class="pw",div(class="card",h2("Price War"),p("A High/Low-price Prisoner's-Dilemma game.")),do.call(tabsetPanel,c(list(id="price_war_tab"),tabs))))
+    if(rv$admin && !rv$impersonating) tabs <- c(tabs,list(tabPanel("Settings",uiOutput("settings_ui"))))
+    header <- if (requested_embed()$embedded) NULL else div(class="pw-header",div(class="pw-header-title","🎓 Classroom Economy · Price War"),span(class="pw-header-name",rv$name),if(nrow(e)>1L)div(class="pw-env-picker",div(tags$label("Class"),selectInput("environment_course_sel",NULL,choices=courses,selected=course,width="100%")),div(tags$label("Section"),selectInput("environment_section_sel",NULL,choices=sections,selected=section,width="100%"))) else span(class="pw-env-single",paste(course,"·",section)))
+    tagList(header,div(class="pw",div(class="card",h2("Price War"),p("A High/Low-price Prisoner's-Dilemma game."),if(rv$impersonating)div(class="alert alert-info",paste("Viewing as",rv$player_name,"(student view)."))),do.call(tabsetPanel,c(list(id="price_war_tab"),tabs))))
   })
   observeEvent(input$environment_course_sel,{e<-environments();course<-input$environment_course_sel%||%"";rows<-e[tolower(e$course)==tolower(course),,drop=FALSE];if(nrow(rows))choose_env(course,rows$section[1])},ignoreInit=TRUE)
   observeEvent(input$environment_section_sel,{choose_env(input$environment_course_sel%||%rv$course,input$environment_section_sel%||%"")},ignoreInit=TRUE)

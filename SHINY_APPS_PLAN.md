@@ -454,6 +454,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** (Codex) — Embedded Price War now takes its selected course/section from Class Job Market and suppresses its standalone banner/switcher there. The active-panel iframe forwards the existing admin impersonation target as a validated student-player context. Settings now shows an instructor-only, pre-reveal diagnostic with each saved entry, HH/HL/LH/LL counts, and unpaired-entry count; the workflow regression asserts that diagnostic after two student submissions.
+
 - **2026-11-04** (Codex) — Rebuilt Price War’s reactive boundaries to match Bonus Pot: the Play form listens only to round/status changes, Results alone polls submissions, and Settings is a separate admin surface. Added a scratch-SQLite workflow fixture covering two simultaneous student submissions plus an instructor setting update.
 
 - **2026-11-04** (Codex) — Added the Classroom Economy header to Price War, with the authenticated user and a scoped class/section picker matching the Bonus Pot pattern. The picker exposes only environments authorized for that user and refreshes the selected game state.

@@ -16,7 +16,7 @@ required_hub <- c(
   'label = "Bonus Pot",     embedded = TRUE, url = "/bonus-pot/"',
   'label = "Price War",     embedded = TRUE, url = "/price-war/"',
   'identical(g$type, "either") && !is.null(g$url)',
-  'tags$iframe(src="/price-war/", title="Price War"',
+  'tags$iframe(src=paste0("/price-war/?embedded=1&course=", course, "&section=", section, "&impersonate=", impersonate), title="Price War"',
   "if (targetPath === '/price-war') return '/price-war/';",
   'if (target %in% c("/price-war", "/price-war/")) return("/price-war/")'
 )
@@ -33,7 +33,7 @@ for (needle in c("if (length(p)) dbGetQuery(db(), sql, params=p) else dbGetQuery
 for (needle in c("Shiny.setInputValue('auth_cookie'", "observeEvent(input$auth_cookie", "arcade_sessions s JOIN users u", "issue_shared_cookie <- function", "set_arcade_cookie", "actionButton(\"login_btn\"", "req(rv$admin,nzchar(rv$course),nzchar(rv$section))")) {
   if (!grepl(needle, price, fixed=TRUE)) stop("Price War must use the existing Class Job Market session and selected environment: ", needle)
 }
-for (needle in c("pair_code_counts <- function(actions)", "levels=c(\"HH\", \"HL\", \"LH\", \"LL\")", "tabPanel(\"Play\"", "tabPanel(\"Results\"", "if(rv$admin) tabs <- c(tabs,list(tabPanel(\"Settings\"", "output$play_ui <- renderUI", "output$results_ui <- renderUI", "output$settings_ui <- renderUI", "game_poll <- reactivePoll", "submission_poll <- reactivePoll", "pw-header", "environment_course_sel", "environment_section_sel")) {
+for (needle in c("pair_code_counts <- function(actions)", "levels=c(\"HH\", \"HL\", \"LH\", \"LL\")", "tabPanel(\"Play\"", "tabPanel(\"Results\"", "if(rv$admin && !rv$impersonating) tabs <- c(tabs,list(tabPanel(\"Settings\"", "output$play_ui <- renderUI", "output$results_ui <- renderUI", "output$settings_ui <- renderUI", "output$settings_diagnostics <- renderUI", "Live submission diagnostic", "request$impersonate", "player_user", "game_poll <- reactivePoll", "submission_poll <- reactivePoll", "pw-header", "environment_course_sel", "environment_section_sel")) {
   if (!grepl(needle, price, fixed=TRUE)) stop("Price War must provide student play, aggregate results, and an admin-only Settings tab: ", needle)
 }
 expected_pairs <- data.frame(pair=c("HH", "HL", "LH", "LL"), count=c(1L, 1L, 1L, 1L))

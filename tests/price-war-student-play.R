@@ -43,6 +43,10 @@ if (!identical(round_state$status[1], "open")) stop("Student submissions must no
 testServer(server, {
   session$setInputs(auth_cookie="token-admin")
   session$flushReact()
+  diagnostic <- paste(as.character(output$settings_diagnostics), collapse="\n")
+  if (!grepl("Live submission diagnostic", diagnostic, fixed=TRUE) || !grepl("Student A", diagnostic, fixed=TRUE) || !grepl("Student B", diagnostic, fixed=TRUE) || !grepl("HL", diagnostic, fixed=TRUE)) {
+    stop("Instructor diagnostics must show the saved student entries and their pending pair outcome before reveal.")
+  }
   session$setInputs(round=1, status="open", scale=.75, hh_a=3, hh_b=3, hl_a=0, hl_b=5, lh_a=5, lh_b=0, ll_a=1, ll_b=1, save_round=1)
   session$flushReact()
 })

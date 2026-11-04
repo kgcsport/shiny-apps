@@ -5093,7 +5093,10 @@ server <- function(input, output, session) {
 
   output$embedded_price_war <- renderUI({
     req(rv$authed)
-    tags$iframe(src="/price-war/", title="Price War",
+    course <- utils::URLencode(as.character(rv$active_course %||% ""), reserved=TRUE)
+    section <- utils::URLencode(as.character(rv$active_section %||% ""), reserved=TRUE)
+    impersonate <- if (isTRUE(rv$impersonating)) utils::URLencode(as.character(rv$user_id %||% ""), reserved=TRUE) else ""
+    tags$iframe(src=paste0("/price-war/?embedded=1&course=", course, "&section=", section, "&impersonate=", impersonate), title="Price War",
       style="width:100%;height:720px;border:0;border-radius:6px;background:#fff;")
   })
 
