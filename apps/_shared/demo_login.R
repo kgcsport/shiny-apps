@@ -249,6 +249,64 @@ reconcile_demo_job_schema <- function(demo_con) {
   invisible(TRUE)
 }
 
+# The Bonus Pot app can be opened directly in the sandbox, so its shared game
+# tables must be upgraded here as well.  Copying CREATE TABLE statements from
+# production does not add columns to an already-existing demo table.
+reconcile_demo_bonus_pot_schema <- function(demo_con) {
+  DBI::dbExecute(demo_con, "CREATE TABLE IF NOT EXISTS olig_settings (
+    id INTEGER PRIMARY KEY, current_round INTEGER DEFAULT 1,
+    round_status TEXT DEFAULT 'pending', current_game TEXT DEFAULT 'bonus',
+    bonus_multiplier REAL DEFAULT 1.5, section TEXT DEFAULT '',
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );")
+  DBI::dbExecute(demo_con, "CREATE TABLE IF NOT EXISTS olig_submissions (
+    round INTEGER NOT NULL, user_id TEXT NOT NULL, section TEXT DEFAULT 'default',
+    choice TEXT, contribute REAL, PRIMARY KEY (round, user_id)
+  );")
+  DBI::dbExecute(demo_con, "CREATE TABLE IF NOT EXISTS bonus_club_round_snapshots (
+    round INTEGER NOT NULL, section TEXT NOT NULL, pool_structure TEXT NOT NULL,
+    open_multiplier REAL NOT NULL, commitment_multiplier REAL NOT NULL,
+    commitment_entry_cost REAL NOT NULL, commitment_min_contribution REAL NOT NULL,
+    allow_exit INTEGER NOT NULL, finalized_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (round, section)
+  );")
+
+  required <- list(
+    olig_settings = c(
+      "current_round INTEGER DEFAULT 1", "round_status TEXT DEFAULT 'pending'",
+      "current_game TEXT DEFAULT 'bonus'", "section TEXT DEFAULT ''",
+      "updated_at TEXT DEFAULT CURRENT_TIMESTAMP", "show_contributions INTEGER DEFAULT 0",
+      "minimum_contribution REAL DEFAULT 0", "denominator_mode TEXT DEFAULT 'section'",
+      "denominator_threshold REAL DEFAULT 0", "pool_structure TEXT DEFAULT 'shared_pot'",
+      "open_multiplier REAL DEFAULT 1.5", "commitment_multiplier REAL DEFAULT 1.5",
+      "commitment_entry_cost REAL DEFAULT 3", "commitment_min_contribution REAL DEFAULT 0",
+      "allow_exit INTEGER DEFAULT 1"
+    ),
+    olig_submissions = c(
+      "display_name TEXT", "game TEXT DEFAULT 'bonus'", "action TEXT", "created_at TEXT",
+      "club_choice TEXT DEFAULT 'open'", "entry_cost REAL DEFAULT 0",
+      "starting_balance REAL", "club_final_balance REAL"
+    ),
+    bonus_club_round_snapshots = c(
+      "pool_structure TEXT DEFAULT 'shared_pot'", "open_multiplier REAL DEFAULT 1.5",
+      "commitment_multiplier REAL DEFAULT 1.5", "commitment_entry_cost REAL DEFAULT 3",
+      "commitment_min_contribution REAL DEFAULT 0", "allow_exit INTEGER DEFAULT 1",
+      "finalized_at TEXT DEFAULT CURRENT_TIMESTAMP"
+    )
+  )
+  for (table_name in names(required)) {
+    existing <- DBI::dbGetQuery(demo_con, sprintf("PRAGMA table_info(%s);", table_name))$name
+    for (column_def in required[[table_name]]) {
+      column_name <- strsplit(column_def, "\\s+")[[1]][1]
+      if (!column_name %in% existing) {
+        DBI::dbExecute(demo_con, sprintf("ALTER TABLE %s ADD COLUMN %s;", table_name, column_def))
+        existing <- c(existing, column_name)
+      }
+    }
+  }
+  invisible(TRUE)
+}
+
 # ── Synthetic job market for the sandbox ─────────────────────────────────────
 # Seed once per disposable demo database. Subsequent browser sessions must not
 # reset these tables or they would erase another student's rehearsal bids.
@@ -345,6 +403,7 @@ demo_db_bootstrap <- function(demo_con, prod_path) {
       try(DBI::dbExecute(demo_con, sql), silent = TRUE)
 
     reconcile_demo_job_schema(demo_con)
+    reconcile_demo_bonus_pot_schema(demo_con)
 
     # CREATE TABLE IF NOT EXISTS does not upgrade an older sandbox schema.
     # Reconcile the login columns explicitly before resetting canonical users;

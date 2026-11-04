@@ -1059,7 +1059,7 @@ server <- function(input, output, session) {
     club <- input$club_choice %||% ""; contribution <- round_to_half(as.numeric(input$club_contribution %||% NA_real_)); entry <- if(identical(club,"commitment")) max(0,as.numeric(o$commitment_entry_cost[1] %||% 3)) else 0
     if(!club %in% c("open","commitment","exit") || (!isTRUE(as.integer(o$allow_exit[1] %||% 1L)==1L) && identical(club,"exit")) || !is.finite(contribution) || contribution<0 || (identical(club,"exit") && contribution!=0) || (identical(club,"commitment") && contribution < max(0,as.numeric(o$commitment_min_contribution[1] %||% 0)))) { showNotification("Choose a permitted club and valid contribution.",type="error");return() }
     starting <- token_balance(user_id()); if(entry+contribution > starting+1e-9){showNotification("Membership contribution plus contribution exceeds your private token balance.",type="error");return()}
-    db_exec("INSERT INTO olig_submissions(round,user_id,display_name,game,action,contribute,section,club_choice,entry_cost,starting_balance) VALUES(?,?,?,'bonus',NULL,?,?,?,?,?,?) ON CONFLICT(round,user_id) DO UPDATE SET display_name=excluded.display_name,contribute=excluded.contribute,section=excluded.section,club_choice=excluded.club_choice,entry_cost=excluded.entry_cost,starting_balance=excluded.starting_balance,created_at=CURRENT_TIMESTAMP;",list(as.integer(o$current_round[1]),as.character(user_id()),as.character(name()),contribution,sec,club,entry,starting))
+    db_exec("INSERT INTO olig_submissions(round,user_id,display_name,game,action,contribute,section,club_choice,entry_cost,starting_balance) VALUES(?,?,?,'bonus',NULL,?,?,?,?,?) ON CONFLICT(round,user_id) DO UPDATE SET display_name=excluded.display_name,contribute=excluded.contribute,section=excluded.section,club_choice=excluded.club_choice,entry_cost=excluded.entry_cost,starting_balance=excluded.starting_balance,created_at=CURRENT_TIMESTAMP;",list(as.integer(o$current_round[1]),as.character(user_id()),as.character(name()),contribution,sec,club,entry,starting))
     showNotification("Club choice saved. It is final when the round closes.",type="message")
   })
 
@@ -1237,6 +1237,9 @@ server <- function(input, output, session) {
   output$club_choice_results <- renderTable({
     st<-subs_poll();o<-st$olig; req(identical(as.character(o$pool_structure[1] %||% ""),"club_choice"), identical(as.character(o$round_status[1]),"revealed"))
     z<-club_choice_results(club_choice_snapshot(o,as.integer(o$current_round[1]),st$section),st$subs %>% filter(game=="bonus"));
+    if (!nrow(z)) return(data.frame(
+      Outcome=c("Members","Total contributed","Average contribution","Multiplier","Return per member"),
+      `Open Club`=rep("—",5), `Commitment Club`=rep("—",5), check.names=FALSE))
     data.frame(Outcome=c("Members","Total contributed","Average contribution","Multiplier","Return per member"), `Open Club`=c(z$members[z$club=="open"],z$total_contributed[z$club=="open"],z$average_contribution[z$club=="open"],z$multiplier[z$club=="open"],z$return_per_member[z$club=="open"]), `Commitment Club`=c(z$members[z$club=="commitment"],z$total_contributed[z$club=="commitment"],z$average_contribution[z$club=="commitment"],z$multiplier[z$club=="commitment"],z$return_per_member[z$club=="commitment"]), check.names=FALSE)
   },rownames=FALSE)
 

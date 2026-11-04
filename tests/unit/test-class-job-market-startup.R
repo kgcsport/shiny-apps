@@ -387,6 +387,18 @@ test_that("demo bootstrap upgrades an old users schema and repairs credentials",
       CREATE TABLE job_templates(
         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT
       );")
+    # Simulate the pre-Club-Choice sandbox schema.  The old table must gain
+    # every column the direct Bonus Pot player and reveal paths now use.
+    DBI::dbExecute(demo_con, "
+      CREATE TABLE olig_submissions(
+        round INTEGER NOT NULL, user_id TEXT NOT NULL, section TEXT,
+        choice TEXT, contribute REAL, PRIMARY KEY(round,user_id)
+      );")
+    DBI::dbExecute(demo_con, "
+      CREATE TABLE bonus_club_round_snapshots(
+        round INTEGER NOT NULL, section TEXT NOT NULL,
+        PRIMARY KEY(round,section)
+      );")
 
     expect_error(app$demo_db_bootstrap(demo_con, db_path()), NA)
     expect_true(all(c("course", "active", "is_demo") %in% cols(demo_con, "users")))
@@ -409,6 +421,12 @@ test_that("demo bootstrap upgrades an old users schema and repairs credentials",
     expect_equal(nrow(demo_environments), 6L)
     expect_true(all(demo_environments$course == "DEMO 101"))
     expect_true(all(demo_environments$section %in% c("S01", "S02")))
+    expect_true(all(c("display_name", "game", "action", "created_at", "club_choice",
+                      "entry_cost", "starting_balance", "club_final_balance") %in%
+                    cols(demo_con, "olig_submissions")))
+    expect_true(all(c("pool_structure", "open_multiplier", "commitment_multiplier",
+                      "commitment_entry_cost", "commitment_min_contribution", "allow_exit",
+                      "finalized_at") %in% cols(demo_con, "bonus_club_round_snapshots")))
 
     practice <- DBI::dbGetQuery(demo_con, "
       SELECT wr.id, wr.label, wr.assignment_mode, wr.bidding_enabled,

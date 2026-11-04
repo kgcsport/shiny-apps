@@ -454,6 +454,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** — Repaired stale demo-sandbox compatibility for Bonus Pot Club Choice: bootstrap now migrates the shared game tables and columns used by submissions and snapshots. The Club Choice projector also renders a stable empty-results table instead of failing when a revealed round has no recorded entries.
+
 - **2026-11-04** (Codex) — Removed the retired Prisoner’s Dilemma scale and payoff-matrix controls from Bonus Pot Settings. Its parameter save now updates only the Bonus Pot multiplier and contribution cap; legacy PD columns remain untouched for historical compatibility.
 
 - **2026-11-04** (Codex) — Fixed the revealed Club Choice projector failure: its aggregate-results helper treated multi-student submission columns as scalar values, causing the revealed-only render error. It now normalizes full vectors for club, contribution, and entry-cost fields; the focused Bonus Pot regression covers Open, Commitment, and Exit entries in the same revealed round.

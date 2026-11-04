@@ -66,6 +66,10 @@ club_results <- club_choice_results(club_snapshot, club_subs)
 stopifnot(identical(club_results$members, c(1L, 1L)))
 stopifnot(identical(club_results$total_contributed, c(2, 7)))
 stopifnot(identical(club_results$return_per_member, c(3, 14)))
+# No submissions is a valid reveal state (for example after a demo reset); the
+# projector renderer handles the empty result set rather than constructing
+# incompatible zero-length table columns.
+stopifnot(!nrow(club_choice_results(club_snapshot, club_subs[0, ])))
 cjm <- paste(readLines(file.path(app_root, "class-job-market", "app.R"), warn=FALSE), collapse="\n")
 stopifnot(!grepl("token_ledger(user_id, display_name, round_id", app_text, fixed=TRUE))
 stopifnot(grepl("for (uid in as.character(recipients$user_id))", cjm, fixed=TRUE))
@@ -86,4 +90,7 @@ stopifnot(!grepl('norm_key(allowed_env$course) == norm_key(rv$active_course) & n
 stopifnot(!grepl('numericInput("adm_pd_scale"', app_text, fixed=TRUE))
 stopifnot(!grepl('h5("PD payoff matrix (A, B)")', app_text, fixed=TRUE))
 stopifnot(!grepl('input$adm_pd_scale', app_text, fixed=TRUE))
+stopifnot(grepl('if (!nrow(z)) return(data.frame(', app_text, fixed=TRUE))
+stopifnot(grepl("starting_balance) VALUES(?,?,?,'bonus',NULL,?,?,?,?,?)", app_text, fixed=TRUE))
+stopifnot(!grepl("starting_balance) VALUES(?,?,?,'bonus',NULL,?,?,?,?,?,?)", app_text, fixed=TRUE))
 cat("Bonus Pot public-good payout: OK\n")
