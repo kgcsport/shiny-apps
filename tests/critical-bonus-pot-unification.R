@@ -32,8 +32,13 @@ if (grepl("bonus_pot_admin_controls", active_fragment, fixed=TRUE) ||
 }
 settings_marker <- "} else if (act == \"game_controls\") {"
 settings_parts <- strsplit(source_text, settings_marker, fixed=TRUE)[[1]]
-if (length(settings_parts) != 2L || !grepl("uiOutput(\"bonus_pot_admin_controls\")", settings_parts[2], fixed=TRUE)) {
-  stop("Settings must expose Bonus Pot lifecycle actions.")
+if (length(settings_parts) != 2L ||
+    !grepl("Bonus Pot setup lives in the Bonus Pot game panel.", settings_parts[2], fixed=TRUE) ||
+    !grepl('href="/bonus-pot/"', settings_parts[2], fixed=TRUE)) {
+  stop("Settings must direct Bonus Pot setup to the standalone game panel.")
+}
+if (grepl("uiOutput(\"bonus_pot_admin_controls\")", settings_parts[2], fixed=TRUE)) {
+  stop("Settings must not render duplicate Bonus Pot lifecycle controls.")
 }
 if (!grepl("Choose (none) and save to turn the game off.", source_text, fixed=TRUE)) {
   stop("Settings must provide a way to turn off the active game.")
