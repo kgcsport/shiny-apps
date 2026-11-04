@@ -452,6 +452,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** (Codex) — Restored Price War’s classroom layout: all users have separate Play and aggregate Results tabs, while the round configuration and payout controls are behind an admin-only Settings tab. Results report completed HH, HL, LH, and LL pair counts without exposing student identities.
+
 - **2026-11-04** (Codex) — Made direct Price War entry use the shared Bonus Pot/Class Job Market login contract: Google sign-in returns to Price War, password sign-in creates the same 14-day `arcade_token` session cookie, and either route makes the user signed in across the classroom apps.
 
 - **2026-11-04** (Codex) — Restored Price War’s Class Job Market single sign-on: the standalone app now sends the shared `arcade_token` cookie to its server and validates it as `auth_cookie`, matching the Bonus Pot contract. Its round-save handler now persists to the selected environment instead of nonexistent form fields.

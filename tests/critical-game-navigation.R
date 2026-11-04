@@ -32,6 +32,9 @@ for (needle in c("if (length(p)) dbGetQuery(db(), sql, params=p) else dbGetQuery
 for (needle in c("Shiny.setInputValue('auth_cookie'", "observeEvent(input$auth_cookie", "arcade_sessions s JOIN users u", "issue_shared_cookie <- function", "set_arcade_cookie", "actionButton(\"login_btn\"", "req(rv$admin,nzchar(rv$course),nzchar(rv$section))")) {
   if (!grepl(needle, price, fixed=TRUE)) stop("Price War must use the existing Class Job Market session and selected environment: ", needle)
 }
+for (needle in c("pair_code_counts <- function(actions)", "levels=c(\"HH\", \"HL\", \"LH\", \"LL\")", "tabPanel(\"Play\"", "tabPanel(\"Results\"", "if (rv$admin) tabs <- c(tabs,list(tabPanel(\"Settings\"")) {
+  if (!grepl(needle, price, fixed=TRUE)) stop("Price War must provide student play, aggregate results, and an admin-only Settings tab: ", needle)
+}
 if (grepl("choose_env(input$course,input$section)", price, fixed=TRUE)) stop("Price War setup must not reference nonexistent course/section inputs.")
 if (grepl("olig_settings", price, fixed=TRUE) || grepl("olig_submissions", price, fixed=TRUE) || grepl("olig_payouts", price, fixed=TRUE)) stop("Price War must not use Bonus Pot persistence.")
 if (grepl("current_game='pd'", hub, fixed=TRUE)) stop("Activating Price War must not alter Bonus Pot settings.")
