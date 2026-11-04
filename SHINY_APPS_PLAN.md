@@ -452,6 +452,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** (Codex) — Restored Price War’s Class Job Market single sign-on: the standalone app now sends the shared `arcade_token` cookie to its server and validates it as `auth_cookie`, matching the Bonus Pot contract. Its round-save handler now persists to the selected environment instead of nonexistent form fields.
+
 - **2026-11-04** (Codex) — Updated the critical Bonus Pot regression fixture after the control-surface consolidation: it now requires Settings to direct instructors to `/bonus-pot/` and rejects the retired duplicate lifecycle form. This restores the Docker/GitHub build gate while retaining the single-source setup design.
 
 - **2026-11-03** (Codex) — Consolidated Bonus Pot administration into its game panel. Class Job Market Settings now retains only the active-game selector and links instructors to Bonus Pot for round setup, lifecycle, and Club Choice rules, preventing the formerly divergent duplicate forms from overwriting each other.

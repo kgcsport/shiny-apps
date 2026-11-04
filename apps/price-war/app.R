@@ -37,8 +37,19 @@ x("CREATE TABLE IF NOT EXISTS price_war_payouts(
   user_id TEXT NOT NULL, payout REAL NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(course,section,round,user_id));")
 
+shared_auth_js <- tags$script(HTML("
+(function() {
+  function sendAuthCookie() {
+    var match = document.cookie.match(/(?:^|; )arcade_token=([^;]*)/);
+    Shiny.setInputValue('auth_cookie', match ? decodeURIComponent(match[1]) : '', {priority: 'event'});
+  }
+  $(document).on('shiny:sessioninitialized', sendAuthCookie);
+  setTimeout(sendAuthCookie, 300);
+})();
+"))
+
 ui <- fluidPage(
-  tags$head(tags$style(HTML("body{background:#f7f7f5}.pw{max-width:850px;margin:2rem auto}.card{background:#fff;border:1px solid #ddd;border-radius:9px;padding:1.2rem;margin:.8rem 0}.live{color:#176b3a;font-weight:700}.muted{color:#666}"))),
+  tags$head(tags$style(HTML("body{background:#f7f7f5}.pw{max-width:850px;margin:2rem auto}.card{background:#fff;border:1px solid #ddd;border-radius:9px;padding:1.2rem;margin:.8rem 0}.live{color:#176b3a;font-weight:700}.muted{color:#666}")), shared_auth_js),
   uiOutput("page")
 )
 
@@ -65,9 +76,9 @@ server <- function(input, output, session) {
   active <- reactive({ poll(); z <- tryCatch(q("SELECT active_game FROM scope_arcade_state WHERE scope_key=?;",list(key(rv$course,rv$section))),error=function(e)data.frame()); nrow(z)&&identical(z$active_game[1],"price_war") })
   round_row <- reactive({ poll(); if(!nzchar(rv$course)||!nzchar(rv$section)) return(data.frame()); q("SELECT * FROM price_war_rounds WHERE course=? AND section=? ORDER BY round DESC LIMIT 1;",list(rv$course,rv$section)) })
   finish <- function(row) { rv$user<-row$user_id[1];rv$name<-row$display_name[1];rv$admin<-isTRUE(as.integer(row$is_admin[1])==1); e<-environments();if(nrow(e)){rv$course<-e$course[1];rv$section<-e$section[1]} }
-  observeEvent(input$cookie,{ tok<-input$cookie%||%"";if(nzchar(tok)&&!logged_in()){z<-tryCatch(q("SELECT u.user_id,u.display_name,u.is_admin FROM arcade_sessions s JOIN users u ON u.user_id=s.user_id WHERE s.token=? AND datetime(s.expires_at)>datetime('now') LIMIT 1;",list(tok)),error=function(e)data.frame());if(nrow(z))finish(z)}},ignoreInit=FALSE)
+  observeEvent(input$auth_cookie,{ tok<-input$auth_cookie%||%"";if(nzchar(tok)&&!logged_in()){z<-tryCatch(q("SELECT u.user_id,u.display_name,u.is_admin FROM arcade_sessions s JOIN users u ON u.user_id=s.user_id WHERE s.token=? AND datetime(s.expires_at)>datetime('now') LIMIT 1;",list(tok)),error=function(e)data.frame());if(nrow(z))finish(z)}},ignoreInit=FALSE)
   observeEvent(input$login,{ z<-tryCatch(q("SELECT user_id,display_name,pw_hash,is_admin,active FROM users WHERE lower(user_id)=lower(?) LIMIT 1;",list(input$user%||%"")),error=function(e)data.frame());if(!nrow(z)||!isTRUE(as.integer(z$active[1])==1)||!bcrypt::checkpw(input$pass%||%"",z$pw_hash[1])){rv$message<-"Incorrect sign-in.";return()};finish(z) })
-  observeEvent(input$save_round,{ req(rv$admin); if(!choose_env(input$course,input$section))return(); vals<-as.numeric(c(input$scale,input$hh_a,input$hh_b,input$hl_a,input$hl_b,input$lh_a,input$lh_b,input$ll_a,input$ll_b));if(any(!is.finite(vals)))return(); x("INSERT INTO price_war_rounds(course,section,round,status,pd_scale,hh_a,hh_b,hl_a,hl_b,lh_a,lh_b,ll_a,ll_b,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(course,section,round) DO UPDATE SET status=excluded.status,pd_scale=excluded.pd_scale,hh_a=excluded.hh_a,hh_b=excluded.hh_b,hl_a=excluded.hl_a,hl_b=excluded.hl_b,lh_a=excluded.lh_a,lh_b=excluded.lh_b,ll_a=excluded.ll_a,ll_b=excluded.ll_b,updated_at=CURRENT_TIMESTAMP;",as.list(c(rv$course,rv$section,as.integer(input$round),input$status,vals))); showNotification("Price War round saved.") })
+  observeEvent(input$save_round,{ req(rv$admin,nzchar(rv$course),nzchar(rv$section)); vals<-as.numeric(c(input$scale,input$hh_a,input$hh_b,input$hl_a,input$hl_b,input$lh_a,input$lh_b,input$ll_a,input$ll_b));if(any(!is.finite(vals)))return(); x("INSERT INTO price_war_rounds(course,section,round,status,pd_scale,hh_a,hh_b,hl_a,hl_b,lh_a,lh_b,ll_a,ll_b,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(course,section,round) DO UPDATE SET status=excluded.status,pd_scale=excluded.pd_scale,hh_a=excluded.hh_a,hh_b=excluded.hh_b,hl_a=excluded.hl_a,hl_b=excluded.hl_b,lh_a=excluded.lh_a,lh_b=excluded.lh_b,ll_a=excluded.ll_a,ll_b=excluded.ll_b,updated_at=CURRENT_TIMESTAMP;",as.list(c(rv$course,rv$section,as.integer(input$round),input$status,vals))); showNotification("Price War round saved.") })
   observeEvent(input$submit,{ req(logged_in(),active());r<-round_row();if(!nrow(r)||r$status[1]!="open")return();a<-input$action%||%"";if(!a%in%c("High","Low"))return();x("INSERT INTO price_war_submissions(course,section,round,user_id,display_name,action,submitted_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(course,section,round,user_id) DO UPDATE SET action=excluded.action,submitted_at=CURRENT_TIMESTAMP;",list(rv$course,rv$section,r$round[1],rv$user,rv$name,a));showNotification("Choice saved.") })
   observeEvent(input$payout,{ req(rv$admin);r<-round_row();if(!nrow(r)||r$status[1]!="revealed")return();s<-q("SELECT * FROM price_war_submissions WHERE course=? AND section=? AND round=? ORDER BY submitted_at,user_id;",list(rv$course,rv$section,r$round[1]));if(nrow(s)<2)return();s<-s[seq_len(nrow(s)-nrow(s)%%2),];for(i in seq(1,nrow(s),by=2)){a<-s$action[i];b<-s$action[i+1];pay<-if(a=="High"&&b=="High")c(r$hh_a[1],r$hh_b[1])else if(a=="High")c(r$hl_a[1],r$hl_b[1])else if(b=="High")c(r$lh_a[1],r$lh_b[1])else c(r$ll_a[1],r$ll_b[1]);for(j in 0:1){amt<-round(pay[j+1]*r$pd_scale[1]*2)/2; if(amt>0){n<-x("INSERT OR IGNORE INTO price_war_payouts(course,section,round,user_id,payout) VALUES(?,?,?,?,?);",list(rv$course,rv$section,r$round[1],s$user_id[i+j],amt));if(n==1)x("INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note) VALUES(?,?,?,?,?,1,?);",list(s$user_id[i+j],s$display_name[i+j],"price_war_payout",r$round[1],amt,paste("Price War",rv$course,rv$section,"round",r$round[1])))} }};showNotification("Price War payouts applied once.") })
   output$page <- renderUI({
