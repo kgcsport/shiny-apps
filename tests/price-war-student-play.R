@@ -53,6 +53,15 @@ testServer(server, {
 if (dbGetQuery(setup, "SELECT COUNT(*) AS n FROM price_war_submissions WHERE user_id='student-a'")$n[1] != 0L) stop("Withdraw must delete only the player's current Price War entry.")
 play("token-a", "High")
 testServer(server, {
+  session$setInputs(auth_cookie="token-a")
+  session$flushReact()
+  sealed_results <- paste(as.character(output$results_ui), collapse="\n")
+  if (!grepl("sealed until the instructor reveals", sealed_results, fixed=TRUE) ||
+      grepl("HL", sealed_results, fixed=TRUE)) {
+    stop("Students must not see Price War pair counts before Reveal.")
+  }
+})
+testServer(server, {
   session$setInputs(auth_cookie="token-admin")
   session$flushReact()
   diagnostic <- paste(as.character(output$settings_diagnostics), collapse="\n")

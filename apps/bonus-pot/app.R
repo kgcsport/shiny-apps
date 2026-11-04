@@ -1146,14 +1146,14 @@ server <- function(input, output, session) {
     }
   })
 
-  # Student names and individual contributions are private by default, both
-  # before and after Reveal. Reveal publishes aggregate results; an instructor
-  # must explicitly enable this setting to publish the named contribution list.
+  # Student names and individual contributions are private before Reveal.
+  # After Reveal an instructor may explicitly publish the named list.
   output$public_contribution_list <- renderUI({
     req(authed())
     st <- subs_poll(); o <- st$olig
     visible <- isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)
-    if (!visible || !identical(as.character(o$current_game[1] %||% ""), "bonus")) return(NULL)
+    if (!visible || !identical(as.character(o$round_status[1] %||% ""), "revealed") ||
+        !identical(as.character(o$current_game[1] %||% ""), "bonus")) return(NULL)
     rows <- st$subs %>%
       filter(game == "bonus") %>%
       transmute(
@@ -1195,21 +1195,21 @@ server <- function(input, output, session) {
         div(class = "bp-meta",
           span(class = "bp-pill", sprintf("Section %s", sec)),
           span(class = paste0("bp-pill bp-status-", status), toupper(status)),
-          span(class = "bp-pill", sprintf("%d submission%s", n, if (n == 1) "" else "s"))
+          if (identical(status, "revealed"))
+            span(class = "bp-pill", sprintf("%d submission%s", n, if (n == 1) "" else "s"))
         ),
         if (cur_game == "pd") {
-          tagList(
+          if (identical(status, "revealed")) tagList(
             h4("Class choices"),
             p(sprintf("High price: %d · Low price: %d", sum(subs$action == "High", na.rm = TRUE), sum(subs$action == "Low", na.rm = TRUE))),
-            if (status == "revealed") tagList(h4("Pair outcomes"), tableOutput("proj_pd_counts"))
-          )
+            h4("Pair outcomes"), tableOutput("proj_pd_counts")
+          ) else tagList(h4("Class choices"), p(class="bp-note", "Choices are sealed until the instructor reveals the round."))
         } else {
           if (identical(as.character(o$pool_structure[1] %||% "shared_pot"), "club_choice") && status == "revealed") {
             snap <- club_choice_snapshot(o,r,sec); clubs <- club_choice_results(snap,subs %>% filter(game=="bonus"))
             return(tagList(h4("Club Choice results"), tableOutput("club_choice_results")))
           }
-          show_live_bids <- isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)
-          bids_visible <- identical(status, "revealed") || show_live_bids
+          bids_visible <- identical(status, "revealed")
           if (!bids_visible) {
             tagList(
               h4("Class contribution"),
@@ -1403,7 +1403,7 @@ server <- function(input, output, session) {
           ),
           column(4,
             div(title = "Show student names and contribution amounts publicly",
-                checkboxInput("adm_show_contributions", "Show names & amounts",
+                checkboxInput("adm_show_contributions", "Show names & amounts after reveal",
                               value=isTRUE(as.integer(o$show_contributions[1] %||% 0L) == 1L)))
           )
         ),
@@ -1439,10 +1439,36 @@ server <- function(input, output, session) {
         )
       ),
 
+      wellPanel(
+        h5("Live submission diagnostic"),
+        p("Visible only to instructors. Student and projector views remain sealed until Reveal."),
+        uiOutput("admin_live_diagnostics")
+      ),
+
 
       tags$hr(),
       h5("Payout audit (latest 100)"),
       DTOutput("payout_audit")
+    )
+  })
+  output$admin_live_diagnostics <- renderUI({
+    req(authed(), is_admin())
+    st <- subs_poll(); o <- st$olig
+    entries <- st$subs %>% filter(game == "bonus") %>%
+      transmute(
+        Student=ifelse(!is.na(display_name) & nzchar(trimws(as.character(display_name))), as.character(display_name), as.character(user_id)),
+        Choice=ifelse(identical(as.character(o$pool_structure[1] %||% ""), "club_choice"),
+                      tools::toTitleCase(as.character(club_choice %||% "open")), "Bonus Pot"),
+        Contribution=sprintf("%.1f", suppressWarnings(as.numeric(contribute))),
+        `Membership contribution`=sprintf("%.1f", suppressWarnings(as.numeric(entry_cost %||% 0)))
+      )
+    if (!nrow(entries)) return(p(class="bp-note", "No submissions yet."))
+    tagList(
+      p(sprintf("%d submission%s so far.", nrow(entries), if (nrow(entries) == 1L) "" else "s")),
+      tags$table(class="table table-sm table-striped", style="margin-bottom:0;",
+        tags$thead(tags$tr(lapply(names(entries), tags$th))),
+        tags$tbody(lapply(seq_len(nrow(entries)), function(i) tags$tr(lapply(entries[i, ], tags$td))))
+      )
     )
   })
   # Named contributions are opt-in per round. A new round must start private

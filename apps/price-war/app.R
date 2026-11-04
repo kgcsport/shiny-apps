@@ -190,8 +190,11 @@ req(rv$admin, !rv$impersonating,nzchar(rv$course),nzchar(rv$section))
   output$results_ui <- renderUI({
     state <- game_poll(); r <- state$round
     if (!nrow(r)) return(div(class="card muted","Results will appear after an instructor creates a round."))
+    if (!identical(as.character(r$status[1]), "revealed"))
+      return(div(class="card muted", h3(paste("Round", r$round[1], "results")),
+                 p("Choices and pair counts are sealed until the instructor reveals the round.")))
     counts <- submission_poll()
-    div(class="card",h3(paste("Round",r$round[1],"pair counts")),p("Counts update as completed pairs are formed. The first choice in each label is Player A; the second is Player B."),fluidRow(lapply(seq_len(nrow(counts)), function(i) column(3,div(class="card",style="text-align:center;margin:.25rem 0;",h4(counts$pair[i]),div(style="font-size:2em;font-weight:700;",counts$count[i]))))))
+    div(class="card",h3(paste("Round",r$round[1],"pair counts")),p("The first choice in each label is Player A; the second is Player B."),fluidRow(lapply(seq_len(nrow(counts)), function(i) column(3,div(class="card",style="text-align:center;margin:.25rem 0;",h4(counts$pair[i]),div(style="font-size:2em;font-weight:700;",counts$count[i]))))))
   })
   output$settings_ui <- renderUI({
     req(rv$admin, !rv$impersonating)
