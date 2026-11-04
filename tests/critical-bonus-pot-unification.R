@@ -40,8 +40,9 @@ if (length(settings_parts) != 2L ||
 if (grepl("uiOutput(\"bonus_pot_admin_controls\")", settings_parts[2], fixed=TRUE)) {
   stop("Settings must not render duplicate Bonus Pot lifecycle controls.")
 }
-if (!grepl("Choose (none) and save to turn the game off.", source_text, fixed=TRUE)) {
-  stop("Settings must provide a way to turn off the active game.")
+if (!grepl('actionButton("clear_active_game_btn", "Turn off active game"', source_text, fixed=TRUE) ||
+    !grepl("Turning a game off removes it from Active Now", source_text, fixed=TRUE)) {
+  stop("Settings must provide an explicit way to turn off the active game.")
 }
 for (needle in c("bootstrap_normal_demo_course <- function()", "demo-instructor", "course_admin", "DEMO 101")) {
   if (!grepl(needle, source_text, fixed=TRUE)) stop("Class Job Market must seed the normal Demo course and its scoped instructor: ", needle)
