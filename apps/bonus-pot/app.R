@@ -947,7 +947,7 @@ server <- function(input, output, session) {
           )
         } else if (identical(as.character(o$pool_structure[1] %||% "shared_pot"), "club_choice")) {
           tagList(
-            radioButtons("club_choice", "Choose one", choices=c("Open Club: free to join."="open", setNames("commitment",sprintf("Commitment Club: requires a %.1f-token membership contribution.",as.numeric(o$commitment_entry_cost[1] %||% 3))), "Exit: do not join either club this round."="exit"), inline=FALSE),
+            radioButtons("club_choice", "Choose one", choices=c(setNames("open",sprintf("Open Club: free to join (%.2f× multiplier).",as.numeric(o$open_multiplier[1] %||% o$bonus_multiplier[1] %||% 1.5))), setNames("commitment",sprintf("Commitment Club: requires a %.1f-token membership contribution (%.2f× multiplier).",as.numeric(o$commitment_entry_cost[1] %||% 3),as.numeric(o$commitment_multiplier[1] %||% o$bonus_multiplier[1] %||% 1.5))), "Exit: no loss, no gain."="exit"), inline=FALSE),
             numericInput("club_contribution", "Contribution to your chosen club", value=0,min=0,max=max(0,bal),step=.5),
             if(status=="open") actionButton("submit_club","Save final club choice",class="btn-primary bp-submit"),
             p(class="bp-note", "Your token balance is private. The membership contribution is included in the Commitment Club pot and shared with that club.")

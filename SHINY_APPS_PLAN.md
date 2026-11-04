@@ -454,6 +454,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** (Codex) — Clarified Club Choice labels in Bonus Pot: each club radio option now states its current multiplier, including the Commitment Club multiplier beside its membership cost; Exit now reads **“no loss, no gain.”**
+
 - **2026-11-04** (Codex) — Price War’s student surface now uses explicit **High**, **Low**, and **Withdraw** buttons. It displays the authenticated player’s saved choice (or that they have not yet played), permits changing or withdrawing only while the scoped round is open, and keeps that player-specific refresh independent of classmates’ simultaneous submissions. The scratch-SQLite workflow regression now verifies saved-choice status and withdrawal.
 
 - **2026-11-04** (Codex) — Embedded Price War now takes its selected course/section from Class Job Market and suppresses its standalone banner/switcher there. The active-panel iframe forwards the existing admin impersonation target as a validated student-player context. Settings now shows an instructor-only, pre-reveal diagnostic with each saved entry, HH/HL/LH/LL counts, and unpaired-entry count; the workflow regression asserts that diagnostic after two student submissions.
