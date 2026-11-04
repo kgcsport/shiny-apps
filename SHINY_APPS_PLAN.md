@@ -163,6 +163,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-11-04** — Grade-reweight caps are cumulative per student: pending and approved requests share one percentage-point allowance across category-level and individual-assignment reallocations; rejected requests do not consume it. Class-job assignment visibility is independently controlled by its stored class date, section, and start/end timing; selecting **All assignments** is the only action that reveals both groups.
+
 - **2026-11-03** — Add Club Choice as a Bonus Pot round structure, not a new app. It preserves `shared_pot` as the default and snapshots Club Choice multipliers, membership cost, minimum contribution, and exit rule at close. Commitment membership cost is included in that club's pooled contribution. Student balances stay private; revealed results are aggregate by club. Scope excludes Price War and does not alter existing shared-pot payout semantics.
 
 - **2026-11-03** — Price War is a clean-slate standalone game. Its rounds, submissions, and payout idempotency are stored only in `price_war_rounds`, `price_war_submissions`, and `price_war_payouts`, each keyed by course, section, and round. Bonus Pot remains on its existing persistence model and is out of scope for this change. Class Job Market retains only scoped activation and links to Price War's dedicated setup. Acceptance: a Price War setup or payout cannot overwrite Bonus Pot settings; two course/section pairs may retain separate rounds with the same round number; students directly visiting Price War only submit to the active scoped round.
@@ -453,6 +455,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 ## Work Log
 
 - **2026-11-04** (Codex) — Added the Classroom Economy header to Price War, with the authenticated user and a scoped class/section picker matching the Bonus Pot pattern. The picker exposes only environments authorized for that user and refreshes the selected game state.
+
+- **2026-11-04** (Codex) — Enforced the Grade Reweight percentage cap as a cumulative allowance across pending and approved category/assignment requests, with remaining allowance shown to students and server-side validation for stale forms. Centralized class-job reveal filtering by class date, section, and start/end timing so selected Start, End, and All reveal groups are independent. Extended the Class Job Market SQLite smoke fixture for both regressions; smoke test and parser check pass.
 
 - **2026-11-04** (Codex) — Preserved the selected Price War tab across its live refreshes, so instructors can remain on Results or Settings while submission and status polling continues.
 

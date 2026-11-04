@@ -22,7 +22,9 @@ app <- parse("apps/class-job-market/app.R")
 wanted <- c("seed_class_job_defaults", "get_setting", "bid_lock_status",
             "volunteer_clearing_wage", "class_wage_snapshot", "freeze_class_wages",
             "close_bidding_after_draw", "overdue_pending_jobs", "assignment_round_for_timing",
-            "reveal_timings_for_scope", "round_bid_datetime_value",
+            "reveal_timings_for_scope", "assignment_reveal_timing", "assignment_is_revealed",
+            "rw_points_requested", "get_rw_max_points", "rw_remaining_points", "validate_rw_request_points", "norm_key",
+            "round_bid_datetime_value",
             "round_bid_window_values", "round_bid_window_status",
             "validate_ticket_allocation", "order_job_posts_for_clearing",
             "normalize_wage_pricing_rule", "uniform_procurement_wage", "compute_application_pairs",
@@ -102,6 +104,22 @@ stopifnot(identical(reveal_timings_for_scope("start"), "start"))
 stopifnot(identical(reveal_timings_for_scope("end"), "end"))
 stopifnot(identical(reveal_timings_for_scope("all"), c("start", "end")))
 
+# A reveal applies only to assignments in its selected timing group and section.
+# This mirrors the student Today workflow, including past-class rows keyed by
+# their original class date/round.
+reveal_fixture <- data.frame(
+  round_id = c(10L, 10L, 10L, 11L),
+  section = c("S01", "S01", "S02", "S01"),
+  timing = c("start", "end", "end", "end"),
+  revealed = c(1L, 0L, 1L, 1L),
+  stringsAsFactors = FALSE
+)
+stopifnot(assignment_is_revealed("S01", "start", reveal_fixture))
+stopifnot(assignment_is_revealed("S02", "end", reveal_fixture))
+stopifnot(!assignment_is_revealed("S02", "start", reveal_fixture))
+stopifnot(!assignment_is_revealed("S01", "end", reveal_fixture, round_id = 10L))
+stopifnot(assignment_is_revealed("S01", "end", reveal_fixture, round_id = 11L))
+
 # Pull the table-creation / migration SQL straight from app.R: run every
 # top-level db_exec("...") call whose SQL is a literal string.
 sql_run <- 0
@@ -110,7 +128,7 @@ run_exec_calls <- function(ex) {
   fn <- as.character(ex[[1]])[1]
   if (fn %in% c("db_exec") && length(ex) >= 2 && is.character(ex[[2]])) {
     sql <- ex[[2]]
-    if (grepl("job_|weekly_rounds|labor_settings|wage_bids|application_bids|users|arcade|volunteer_demand|class_wage_snapshots", sql)) {
+    if (grepl("job_|weekly_rounds|labor_settings|wage_bids|application_bids|users|arcade|volunteer_demand|class_wage_snapshots|grade_reweight_requests", sql)) {
       db_exec(sql); sql_run <<- sql_run + 1
     }
   } else if (fn == "ensure_column" && length(ex) >= 3 &&
@@ -200,6 +218,22 @@ stopifnot(db_query("SELECT COUNT(*) n FROM job_categories;")$n[1] == 4)
 
 # ── bid_lock_status ──────────────────────────────────────────────────────────
 set_setting <- function(k, v) db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES(?,?);", list(k, v))
+# The reweight cap is cumulative across category-level and assignment-level
+# requests. Rejected requests do not consume a student's allowance.
+set_setting("grade_reweight_max_points", "5")
+db_exec("INSERT INTO grade_reweight_requests(user_id,from_category,to_category,points,status)
+         VALUES('reweight-student','Homework','Midterm',2,'pending');")
+db_exec("INSERT INTO grade_reweight_requests(user_id,from_category,to_category,points,status,level)
+         VALUES('reweight-student','Exam 1','Final',2,'approved','assignment');")
+db_exec("INSERT INTO grade_reweight_requests(user_id,from_category,to_category,points,status)
+         VALUES('reweight-student','Midterm','Final',4,'rejected');")
+stopifnot(rw_points_requested("reweight-student") == 4L)
+stopifnot(rw_remaining_points("reweight-student") == 1L)
+stopifnot(rw_remaining_points("student-with-no-requests") == 5L)
+stopifnot(validate_rw_request_points("reweight-student", 1L)$ok)
+stopifnot(!validate_rw_request_points("reweight-student", 2L)$ok)
+stopifnot(!validate_rw_request_points("reweight-student", 0L)$ok)
+
 set_setting("bid_lock_enabled", "0")
 stopifnot(isFALSE(bid_lock_status()$locked))
 set_setting("bid_lock_enabled", "1")

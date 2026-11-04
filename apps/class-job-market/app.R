@@ -1848,6 +1848,21 @@ rw_cost_for_request <- function(uid, points, schedule_text = NULL) {
 get_rw_max_points <- function() {
   as.integer(tryCatch(get_setting("grade_reweight_max_points", "5"), error=function(e)"5") %||% 5L)
 }
+rw_remaining_points <- function(uid) {
+  max(0L, get_rw_max_points() - rw_points_requested(uid))
+}
+validate_rw_request_points <- function(uid, points) {
+  points <- suppressWarnings(as.integer(points))
+  remaining <- rw_remaining_points(uid)
+  if (!is.finite(points) || points < 1L)
+    return(list(ok = FALSE, points = points, remaining = remaining,
+                message = "Choose at least one percentage point to move."))
+  if (points > remaining)
+    return(list(ok = FALSE, points = points, remaining = remaining,
+                message = sprintf("That exceeds your remaining grade-reweight allowance (%d percentage point%s).",
+                                  remaining, if (remaining == 1L) "" else "s")))
+  list(ok = TRUE, points = points, remaining = remaining, message = "")
+}
 
 gradebook_item_specs <- function(cat_row, inames_df = data.frame()) {
   # cat_row should be one row, but scalarize defensively because DBI/data-frame
@@ -2755,6 +2770,27 @@ reveal_timings_for_scope <- function(scope) {
   if (identical(scope, "all")) c("start", "end")
   else if (identical(scope, "end")) "end"
   else "start"
+}
+
+# Timing is snapshotted on an assignment when it is drawn. This normalizer
+# keeps older rows and instructor-entered aliases compatible with the two
+# reveal controls.
+assignment_reveal_timing <- function(timing) {
+  timing <- norm_key(timing %||% "start")
+  ifelse(timing %in% c("end", "post", "post class", "after class", "end of class or after class"),
+         "end", "start")
+}
+
+assignment_is_revealed <- function(section, selection_time, reveals,
+                                   round_id = NULL, is_admin = FALSE) {
+  if (isTRUE(is_admin)) return(TRUE)
+  if (is.null(reveals) || !nrow(reveals) || !nzchar(as.character(section %||% ""))) return(FALSE)
+  rows <- !is.na(reveals$section) & norm_key(reveals$section) == norm_key(section) &
+    assignment_reveal_timing(reveals$timing) == assignment_reveal_timing(selection_time) &
+    as.integer(reveals$revealed %||% 0L) == 1L
+  if (!is.null(round_id) && "round_id" %in% names(reveals))
+    rows <- rows & as.integer(reveals$round_id %||% NA_integer_) == as.integer(round_id)
+  any(rows)
 }
 
 job_description_details <- function(description, label = "What to do") {
@@ -4255,14 +4291,8 @@ server <- function(input, output, session) {
       sr <- if (!is.null(jp$section_reveals)) jp$section_reveals else data.frame()
       sec <- as.character(scoped_sections()[1] %||% "")
       visible <- vapply(seq_len(nrow(today_my_assign)), function(i) {
-        if (isTRUE(rv$is_admin)) return(TRUE)
-        if (!nrow(sr) || !nzchar(sec)) return(FALSE)
-        sr_timing <- ifelse(
-          norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
-          "end", "start")
-        any(!is.na(sr$section) & norm_key(sr$section) == norm_key(sec) &
-              sr_timing == today_my_assign$reveal_timing[i] &
-              as.integer(sr$revealed %||% 0L) == 1L)
+        assignment_is_revealed(sec, today_my_assign$selection_time[i], sr,
+                               is_admin = rv$is_admin)
       }, logical(1))
       visible_my_assign <- today_my_assign[visible, , drop = FALSE]
       hidden_my_assign_n <- sum(!visible)
@@ -4301,16 +4331,9 @@ server <- function(input, output, session) {
         "end", "start")
       sr <- if (!is.null(jp$section_reveals)) jp$section_reveals else data.frame()
       visible <- vapply(seq_len(nrow(revealed_jobs)), function(i) {
-        if (isTRUE(rv$is_admin)) return(TRUE)
-        if (!nrow(sr)) return(FALSE)
-        sr_timing <- ifelse(
-          norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
-          "end", "start")
-        any(
-          !is.na(sr$section) &
-          norm_key(sr$section) == norm_key(revealed_jobs$section[i]) &
-          sr_timing == revealed_jobs$reveal_timing[i] &
-          as.integer(sr$revealed %||% 0L) == 1L)
+        assignment_is_revealed(revealed_jobs$section[i],
+                               revealed_jobs$selection_time[i], sr,
+                               is_admin = rv$is_admin)
       }, logical(1))
       revealed_jobs <- revealed_jobs[visible, , drop = FALSE]
     }
@@ -4323,16 +4346,10 @@ server <- function(input, output, session) {
         "end", "start")
       sr <- if (!is.null(jp$last_class_reveals)) jp$last_class_reveals else data.frame()
       visible <- vapply(seq_len(nrow(last_class_jobs)), function(i) {
-        if (isTRUE(rv$is_admin)) return(TRUE)
-        if (!nrow(sr)) return(FALSE)
-        sr_timing <- ifelse(
-          norm_key(sr$timing) %in% c("end", "post", "post class", "after class", "end of class or after class"),
-          "end", "start")
-        any(as.integer(sr$round_id %||% NA_integer_) == as.integer(last_class_jobs$round_id[i]) &
-            !is.na(sr$section) &
-            norm_key(sr$section) == norm_key(last_class_jobs$section[i]) &
-            sr_timing == last_class_jobs$reveal_timing[i] &
-            as.integer(sr$revealed %||% 0L) == 1L)
+        assignment_is_revealed(last_class_jobs$section[i],
+                               last_class_jobs$selection_time[i], sr,
+                               round_id = last_class_jobs$round_id[i],
+                               is_admin = rv$is_admin)
       }, logical(1))
       last_class_jobs <- last_class_jobs[visible, , drop=FALSE]
     }
@@ -5268,20 +5285,29 @@ server <- function(input, output, session) {
 
     } else if (mode == "reweight") {
       max_pts <- get_rw_max_points()
+      remaining_pts <- rw_remaining_points(rv$user_id)
       div(class = "spend-form-box",
         tags$h6(style = "color:#951829;font-weight:700;", "⚖️ Grade Reweight"),
-        radioButtons("rw_level", NULL,
-          choices  = c("Between categories" = "category",
-                       "Between individual assignments" = "assignment"),
-          selected = "category", inline = TRUE),
-        uiOutput("rw_selectors"),
-        sliderInput("rw_points", "Percentage points to move:",
-                    min = 1, max = max_pts, value = 1, step = 1),
-        uiOutput("rw_cost_preview"),
-        uiOutput("rw_grade_preview"),
-        actionButton("submit_reweight", "Submit", class = "btn btn-warning"),
+        tags$p(style = "font-size:.84rem;color:#555;",
+               sprintf("You may redistribute up to %d percentage points in total. %d point%s remain.",
+                       max_pts, remaining_pts, if (remaining_pts == 1L) "" else "s")),
+        if (remaining_pts < 1L) {
+          div(class = "alert alert-info", style = "margin:0;",
+              "You have used your full grade-reweight allowance.")
+        } else tagList(
+          radioButtons("rw_level", NULL,
+            choices  = c("Between categories" = "category",
+                         "Between individual assignments" = "assignment"),
+            selected = "category", inline = TRUE),
+          uiOutput("rw_selectors"),
+          sliderInput("rw_points", "Percentage points to move:",
+                      min = 1, max = remaining_pts, value = min(1L, remaining_pts), step = 1),
+          uiOutput("rw_cost_preview"),
+          uiOutput("rw_grade_preview"),
+          actionButton("submit_reweight", "Submit", class = "btn btn-warning")
+        ),
         tags$p(style = "font-size:.8rem;color:#888;margin-top:.4rem;",
-               "Your instructor will review and apply approved requests.")
+               "The total includes pending and approved requests, across categories and individual assignments. Your instructor will review and apply approved requests.")
       )
 
     } else if (mode == "flex_question") {
@@ -5892,7 +5918,12 @@ server <- function(input, output, session) {
         else "From and to categories must differ.",
         type = "error"); return()
     }
-    pts  <- as.integer(input$rw_points %||% 1)
+    point_check <- validate_rw_request_points(rv$user_id, input$rw_points %||% 1)
+    if (!point_check$ok) {
+      showNotification(point_check$message, type = "error")
+      return()
+    }
+    pts <- point_check$points
     cost <- rw_cost_for_request(rv$user_id, pts) %||% 0
     if (is.na(cost)) cost <- 0
     bal  <- isolate(token_bal())
@@ -11428,7 +11459,7 @@ server <- function(input, output, session) {
                       value = rw_costs_str, width = "100%",
                       placeholder = "e.g. 1:2,2:5,3:9  or  2*n+n^2")),
           column(4,
-            numericInput("rw_max_points_input", "Max pts student can move:",
+            numericInput("rw_max_points_input", "Maximum total pts each student can move:",
                          value = rw_max_pts_cur, min = 1, step = 1, width = "100%"))
         ),
         tags$p(style = "color:#888;font-size:.82em;margin-top:-.3rem;",
@@ -11436,7 +11467,7 @@ server <- function(input, output, session) {
           " — moving 1 pt costs 2 tokens, 2 pts costs 5, etc.). ",
           tags$b("Expression:"), " any arithmetic formula in ", tags$code("n"),
           " where n = percentage points being moved (e.g. ", tags$code("2*n+n^2"), "). ",
-          "The cap controls the slider maximum shown to students."),
+          "The cap is each student's total allowance across all pending and approved requests, whether they redistribute within one category or across several."),
         # Preview table for current formula
         {
           n_preview <- seq_len(rw_max_pts_cur)
