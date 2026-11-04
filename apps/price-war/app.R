@@ -16,6 +16,14 @@ x <- function(sql, p=list()) {
 }
 `%||%` <- function(a,b) if (is.null(a) || !length(a) || is.na(a[1])) b else a
 key <- function(course, section) paste0(tolower(trimws(course)), "::", tolower(trimws(section)))
+pair_code_counts <- function(actions) {
+  actions <- as.character(actions)
+  actions <- actions[actions %in% c("High", "Low")]
+  actions <- actions[seq_len(length(actions) - length(actions) %% 2L)]
+  codes <- if (length(actions)) paste0(substr(actions[seq(1L, length(actions), by=2L)], 1L, 1L), substr(actions[seq(2L, length(actions), by=2L)], 1L, 1L)) else character()
+  totals <- table(factor(codes, levels=c("HH", "HL", "LH", "LL")))
+  data.frame(pair=names(totals), count=as.integer(totals), stringsAsFactors=FALSE)
+}
 
 # Clean-slate schema: its records do not read or write the legacy coordination
 # game tables used by Bonus Pot.
@@ -82,14 +90,6 @@ server <- function(input, output, session) {
   choose_env <- function(course, section) { e <- environments(); hit <- which(tolower(e$course)==tolower(course) & tolower(e$section)==tolower(section)); if(!length(hit)) return(FALSE); rv$course<-e$course[hit[1]];rv$section<-e$section[hit[1]];TRUE }
   active <- reactive({ poll(); z <- tryCatch(q("SELECT active_game FROM scope_arcade_state WHERE scope_key=?;",list(key(rv$course,rv$section))),error=function(e)data.frame()); nrow(z)&&identical(z$active_game[1],"price_war") })
   round_row <- reactive({ poll(); if(!nzchar(rv$course)||!nzchar(rv$section)) return(data.frame()); q("SELECT * FROM price_war_rounds WHERE course=? AND section=? ORDER BY round DESC LIMIT 1;",list(rv$course,rv$section)) })
-  pair_code_counts <- function(actions) {
-    actions <- as.character(actions)
-    actions <- actions[actions %in% c("High", "Low")]
-    actions <- actions[seq_len(length(actions) - length(actions) %% 2L)]
-    codes <- if (length(actions)) paste0(substr(actions[seq(1L, length(actions), by=2L)], 1L, 1L), substr(actions[seq(2L, length(actions), by=2L)], 1L, 1L)) else character()
-    totals <- table(factor(codes, levels=c("HH", "HL", "LH", "LL")))
-    data.frame(pair=names(totals), count=as.integer(totals), stringsAsFactors=FALSE)
-  }
   pair_counts <- reactive({
     poll()
     r <- round_row()

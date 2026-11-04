@@ -10,6 +10,7 @@ price_path <- file.path(app_root, "price-war", "app.R")
 
 if (!file.exists(price_path)) stop("Price War must have its own deployable app route.")
 price <- paste(readLines(price_path, warn=FALSE), collapse="\n")
+source(price_path, local=TRUE)
 
 required_hub <- c(
   'label = "Bonus Pot",     embedded = TRUE, url = "/bonus-pot/"',
@@ -34,6 +35,10 @@ for (needle in c("Shiny.setInputValue('auth_cookie'", "observeEvent(input$auth_c
 }
 for (needle in c("pair_code_counts <- function(actions)", "levels=c(\"HH\", \"HL\", \"LH\", \"LL\")", "tabPanel(\"Play\"", "tabPanel(\"Results\"", "if (rv$admin) tabs <- c(tabs,list(tabPanel(\"Settings\"")) {
   if (!grepl(needle, price, fixed=TRUE)) stop("Price War must provide student play, aggregate results, and an admin-only Settings tab: ", needle)
+}
+expected_pairs <- data.frame(pair=c("HH", "HL", "LH", "LL"), count=c(1L, 1L, 1L, 1L))
+if (!identical(pair_code_counts(c("High", "High", "High", "Low", "Low", "High", "Low", "Low", "High")), expected_pairs)) {
+  stop("Price War pair counts must group completed submissions as HH, HL, LH, and LL.")
 }
 if (grepl("choose_env(input$course,input$section)", price, fixed=TRUE)) stop("Price War setup must not reference nonexistent course/section inputs.")
 if (grepl("olig_settings", price, fixed=TRUE) || grepl("olig_submissions", price, fixed=TRUE) || grepl("olig_payouts", price, fixed=TRUE)) stop("Price War must not use Bonus Pot persistence.")
