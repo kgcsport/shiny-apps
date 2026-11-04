@@ -7,8 +7,12 @@ source(shared)
 DB_PATH <- shared_db_path()
 con <- NULL
 db <- function() { if (is.null(con) || !dbIsValid(con)) con <<- connect_sqlite(DB_PATH); con }
-q <- function(sql, p=list()) dbGetQuery(db(), sql, params=p)
-x <- function(sql, p=list()) dbExecute(db(), sql, params=p)
+q <- function(sql, p=list()) {
+  if (length(p)) dbGetQuery(db(), sql, params=p) else dbGetQuery(db(), sql)
+}
+x <- function(sql, p=list()) {
+  if (length(p)) dbExecute(db(), sql, params=p) else dbExecute(db(), sql)
+}
 `%||%` <- function(a,b) if (is.null(a) || !length(a) || is.na(a[1])) b else a
 key <- function(course, section) paste0(tolower(trimws(course)), "::", tolower(trimws(section)))
 

@@ -26,6 +26,9 @@ if (grepl('list(id = "prisoners_dilemma"', hub, fixed=TRUE)) stop("Price War mus
 for (needle in c("CREATE TABLE IF NOT EXISTS price_war_rounds", "CREATE TABLE IF NOT EXISTS price_war_submissions", "CREATE TABLE IF NOT EXISTS price_war_payouts", "PRIMARY KEY(course,section,round)", "price_war_payout")) {
   if (!grepl(needle, price, fixed=TRUE)) stop("Price War standalone persistence is missing: ", needle)
 }
+for (needle in c("if (length(p)) dbGetQuery(db(), sql, params=p) else dbGetQuery(db(), sql)", "if (length(p)) dbExecute(db(), sql, params=p) else dbExecute(db(), sql)")) {
+  if (!grepl(needle, price, fixed=TRUE)) stop("Price War startup helper must omit empty SQLite parameter lists.")
+}
 if (grepl("olig_settings", price, fixed=TRUE) || grepl("olig_submissions", price, fixed=TRUE) || grepl("olig_payouts", price, fixed=TRUE)) stop("Price War must not use Bonus Pot persistence.")
 if (grepl("current_game='pd'", hub, fixed=TRUE)) stop("Activating Price War must not alter Bonus Pot settings.")
 

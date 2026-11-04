@@ -452,6 +452,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-03** (Codex) — Repaired Price War startup: its SQLite wrappers passed an empty parameter list to statements with no placeholders, which made initialization exit before the UI rendered. The wrappers now omit parameters when none are supplied; direct local app startup and the focused navigation regression pass.
+
 - **2026-11-03** (Codex) — Added the Club Choice Bonus Pot mode: open/commitment/exit selection, private balance validation, optional commitment minimum, contribution-plus-membership debit, close-time rule snapshots, separate club pooling/payouts, and an aggregate revealed comparison. Existing shared-pot tests continue to pass.
 
 - **2026-11-03** (Codex) — Fully detached Price War from the unused Bonus Pot/legacy coordination state. `/price-war/` now owns course-section-round keyed round, submission, and payout tables, including per-student payout idempotency; it keeps the shared authentication and token ledger only. Class Job Market no longer changes `olig_settings` when activating Price War and directs setup/tracking to the standalone route. Focused navigation, parser, Bonus Pot-unification, and public-good payout checks pass.
