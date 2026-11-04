@@ -29,7 +29,7 @@ for (needle in c("CREATE TABLE IF NOT EXISTS price_war_rounds", "CREATE TABLE IF
 for (needle in c("if (length(p)) dbGetQuery(db(), sql, params=p) else dbGetQuery(db(), sql)", "if (length(p)) dbExecute(db(), sql, params=p) else dbExecute(db(), sql)")) {
   if (!grepl(needle, price, fixed=TRUE)) stop("Price War startup helper must omit empty SQLite parameter lists.")
 }
-for (needle in c("Shiny.setInputValue('auth_cookie'", "observeEvent(input$auth_cookie", "arcade_sessions s JOIN users u", "req(rv$admin,nzchar(rv$course),nzchar(rv$section))")) {
+for (needle in c("Shiny.setInputValue('auth_cookie'", "observeEvent(input$auth_cookie", "arcade_sessions s JOIN users u", "issue_shared_cookie <- function", "set_arcade_cookie", "actionButton(\"login_btn\"", "req(rv$admin,nzchar(rv$course),nzchar(rv$section))")) {
   if (!grepl(needle, price, fixed=TRUE)) stop("Price War must use the existing Class Job Market session and selected environment: ", needle)
 }
 if (grepl("choose_env(input$course,input$section)", price, fixed=TRUE)) stop("Price War setup must not reference nonexistent course/section inputs.")
