@@ -43,8 +43,11 @@ if (grepl("uiOutput(\"bonus_pot_admin_controls\")", settings_parts[2], fixed=TRU
 if (!grepl("Choose (none) and save to turn the game off.", source_text, fixed=TRUE)) {
   stop("Settings must provide a way to turn off the active game.")
 }
-for (needle in c("Demo sandbox (separate database)", "open_demo_sandbox", "?demo_db=1&demo_as=teacher")) {
-  if (!grepl(needle, source_text, fixed=TRUE)) stop("Instructor course selector must provide isolated Demo sandbox entry: ", needle)
+for (needle in c("bootstrap_normal_demo_course <- function()", "demo-instructor", "course_admin", "DEMO 101")) {
+  if (!grepl(needle, source_text, fixed=TRUE)) stop("Class Job Market must seed the normal Demo course and its scoped instructor: ", needle)
+}
+if (grepl("open_demo_sandbox", source_text, fixed=TRUE)) {
+  stop("The course selector must use the normal Demo course, not a URL-based sandbox switch.")
 }
 scope_required <- c(
   "pin_admin_session_scope <- function()",

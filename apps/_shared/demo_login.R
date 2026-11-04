@@ -145,12 +145,10 @@ demo_settings_panel <- function(is_demo) {
   } else {
     div(
       style = "background:#f1f8e9;border:1px solid #aed581;border-radius:4px;padding:12px;margin-bottom:12px;",
-      tags$p(tags$strong("Live mode."),
-        " Enter Demo Mode to test everything safely in a sandbox without touching real data.",
-        style = "margin:0 0 10px;"),
-      tags$button("Enter Demo Mode",
-        onclick = "window.location.href = '?demo_db=1';",
-        class   = "btn btn-warning btn-sm")
+      tags$p(tags$strong("Demo course."),
+        " Select DEMO 101 in the Class / section picker to rehearse the normal course workflow. ",
+        "The demo instructor is a course admin only for DEMO 101.",
+        style = "margin:0;")
     )
   }
 

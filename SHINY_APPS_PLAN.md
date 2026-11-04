@@ -454,7 +454,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
-- **2026-11-04** (Codex) — Added **Demo sandbox (separate database)** to the live instructor course selector. Choosing it opens the isolated Demo 101 session with the sandbox instructor auto-login, rather than trying to treat demo records as a live course. The Demo 101 selector remains available within that isolated session.
+- **2026-11-04** (Codex) — Replaced the URL-based sandbox switch with a normal **DEMO 101** course and S01/S02 demo roster. Existing super-admins select it in the ordinary Class / section picker; `demo-instructor` / `admin123` is a course admin for **DEMO 101 only**, while demo students use their own accounts. This preserves ordinary course-scoped interactions without granting the demo instructor access to any live course.
 
 - **2026-11-04** (Codex) — Repaired the isolated sandbox platform: bootstrap now gives the sandbox instructor its required super-admin role and assigns every sandbox account to the Demo course/section environments, so selecting **DEMO 101** exposes the normal instructor Settings workflow. The container entrypoint now forwards `DEMO_MODE` into Shiny’s R environment, ensuring the dedicated demo service routes Class Job Market and game apps to `*-demo.sqlite`, never the live database. The sandbox bootstrap regression verifies the role and all Demo environments.
 

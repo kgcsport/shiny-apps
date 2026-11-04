@@ -1399,6 +1399,34 @@ bootstrap_admin_emails <- function() {
   }
 }
 bootstrap_admin_emails()
+
+# A normal, intentionally separate course for rehearsing the full classroom
+# workflow.  It is course/section scoped like any other class; the demo
+# instructor is deliberately limited to this course and never receives a
+# super-admin assignment.
+bootstrap_normal_demo_course <- function() {
+  demo_course <- "DEMO 101"
+  accounts <- list(
+    list(user_id="demo-instructor", display_name="Demo Instructor", password="admin123", section="S01"),
+    list(user_id="demo-alice", display_name="Demo Alice", password="test123", section="S01"),
+    list(user_id="demo-bob", display_name="Demo Bob", password="test123", section="S01"),
+    list(user_id="demo-carol", display_name="Demo Carol", password="test123", section="S01"),
+    list(user_id="demo-dan", display_name="Demo Dan", password="test123", section="S02"),
+    list(user_id="demo-eve", display_name="Demo Eve", password="test123", section="S02")
+  )
+  for (account in accounts) {
+    db_exec(
+      "INSERT OR IGNORE INTO users(user_id,display_name,pw_hash,is_admin,course,section,active,is_demo)
+       VALUES(?,?,?,?,?,?,1,0);",
+      list(account$user_id,account$display_name,bcrypt::hashpw(account$password),0,demo_course,account$section))
+    db_exec(
+      "INSERT OR IGNORE INTO user_environments(user_id,course,section) VALUES(?,?,?);",
+      list(account$user_id,demo_course,account$section))
+  }
+  grant_admin_assignment("demo-instructor", "course_admin", course=demo_course,
+                         assigned_by="normal demo course bootstrap")
+}
+bootstrap_normal_demo_course()
 store_token <- function(token, user_id) {
   db_exec(
     "INSERT INTO arcade_sessions(token, user_id, expires_at)
@@ -2705,9 +2733,6 @@ COOKIE_JS <- HTML("
     var target = safeCourseReturnPath(msg && msg.url);
     window.setTimeout(function() { window.location.replace(target); }, 100);
   });
-  Shiny.addCustomMessageHandler('open_demo_sandbox', function(msg) {
-    window.location.replace((msg && msg.url) || '/class-job-market/?demo_db=1&demo_as=teacher');
-  });
   Shiny.addCustomMessageHandler('clean_url', function(msg) {
     if (window.history && window.history.replaceState)
       window.history.replaceState({}, document.title, location.pathname);
@@ -3387,9 +3412,6 @@ server <- function(input, output, session) {
     bal <- token_bal()
     env <- session_environment_rows()
     courses <- unique_ci(env$course %||% character(0))
-    course_choices <- setNames(courses, courses)
-    if (isTRUE(rv$is_admin) && !isTRUE(.sandbox))
-      course_choices <- c(course_choices, "Demo sandbox (separate database)"="__demo_sandbox__")
     active_course <- scoped_course()
     if (!active_course %in% courses && length(courses)) active_course <- courses[1]
     section_rows <- env[norm_key(env$course) == norm_key(active_course), , drop=FALSE]
@@ -3398,12 +3420,12 @@ server <- function(input, output, session) {
     if (!active_section %in% sections && length(sections)) active_section <- sections[1]
     tagList(
       span(class = "arc-name", rv$name),
-      if (nrow(env) > 1L || (isTRUE(rv$is_admin) && !isTRUE(.sandbox)))
+      if (nrow(env) > 1L)
         tags$details(class="arc-env-picker",
           tags$summary("Class / section"),
           div(class="arc-env-menu",
             div(class="arc-env-field", tags$span("Class"),
-              selectInput("environment_course_sel", NULL, choices=course_choices,
+              selectInput("environment_course_sel", NULL, choices=setNames(courses, courses),
                           selected=active_course, width="100%")),
             div(class="arc-env-field", tags$span("Section"),
               selectInput("environment_section_sel", NULL, choices=setNames(sections, sections),
@@ -3462,10 +3484,6 @@ server <- function(input, output, session) {
   observeEvent(input$environment_course_sel, {
     req(rv$authed)
     course <- as.character(input$environment_course_sel %||% "")
-    if (identical(course, "__demo_sandbox__") && isTRUE(rv$is_admin) && !isTRUE(.sandbox)) {
-      session$sendCustomMessage("open_demo_sandbox", list(url="/class-job-market/?demo_db=1&demo_as=teacher"))
-      return()
-    }
     env <- session_environment_rows()
     rows <- env[norm_key(env$course) == norm_key(course), , drop=FALSE]
     if (!nrow(rows)) return()
