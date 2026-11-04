@@ -452,6 +452,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** (Codex) — Added the Classroom Economy header to Price War, with the authenticated user and a scoped class/section picker matching the Bonus Pot pattern. The picker exposes only environments authorized for that user and refreshes the selected game state.
+
 - **2026-11-04** (Codex) — Preserved the selected Price War tab across its live refreshes, so instructors can remain on Results or Settings while submission and status polling continues.
 
 - **2026-11-04** (Codex) — Added an executable Price War pair-count regression for HH, HL, LH, and LL results, including an unpaired submission that must be excluded until matched.
