@@ -429,7 +429,12 @@ apply_payouts <- function(round, game) {
       snapshot <- club_choice_snapshot(olig, round, sec)
       results <- club_choice_results(snapshot, subs)
       for (club in c("open", "commitment")) {
-        rows <- subs[tolower(as.character(subs$club_choice %||% "open")) == club, , drop=FALSE]
+        # `club_choice` has one value per submission.  `%||%` is deliberately
+        # scalar-only, so normalize this complete vector before selecting the
+        # club's members (otherwise a multi-student payout crashes on Reveal).
+        choices <- if ("club_choice" %in% names(subs)) as.character(subs$club_choice) else rep("open", nrow(subs))
+        choices[is.na(choices) | !nzchar(trimws(choices))] <- "open"
+        rows <- subs[tolower(trimws(choices)) == club, , drop=FALSE]
         share <- results$return_per_member[results$club == club]
         if (!length(share) || !is.finite(share)) next
         for (i in seq_len(nrow(rows))) {

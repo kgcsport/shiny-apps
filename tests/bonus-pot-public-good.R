@@ -21,7 +21,11 @@ db_exec <- function(sql, params=NULL) {
   if (grepl("token_ledger", sql, fixed=TRUE) && grepl("round_id", sql, fixed=TRUE)) {
     stop("Standalone Bonus Pot must use shared token_ledger.source_id, not a nonexistent round_id column.")
   }
-  if (grepl("coordination_grant", sql, fixed=TRUE)) ledger[[length(ledger)+1L]] <<- list(user_id=params[[4]], amount=params[[2]])
+  if (grepl("token_ledger", sql, fixed=TRUE)) {
+    # Shared-pot SQL embeds source_type; Club Choice binds it as a parameter.
+    if (length(params) == 5L) ledger[[length(ledger)+1L]] <<- list(user_id=params[[5]], amount=params[[3]])
+    else ledger[[length(ledger)+1L]] <<- list(user_id=params[[4]], amount=params[[2]])
+  }
   invisible(1L)
 }
 
@@ -31,6 +35,7 @@ app <- parse(file.path(app_root, "bonus-pot", "app.R"))
 for (ex in app) {
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "bonus_shares") eval(ex, envir=globalenv())
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "apply_payouts") eval(ex, envir=globalenv())
+  if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "club_choice_snapshot") eval(ex, envir=globalenv())
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "club_choice_results") eval(ex, envir=globalenv())
 }
 result <- apply_payouts(1L, "bonus")
@@ -66,6 +71,18 @@ club_results <- club_choice_results(club_snapshot, club_subs)
 stopifnot(identical(club_results$members, c(1L, 1L)))
 stopifnot(identical(club_results$total_contributed, c(2, 7)))
 stopifnot(identical(club_results$return_per_member, c(3, 14)))
+# The payout path itself receives the whole submissions data frame.  It must
+# select each club using a vector, not the scalar `%||%` helper.
+olig <- data.frame(bonus_multiplier=1.5, use_section_size=1L, section="S01",
+                   pool_structure="club_choice", open_multiplier=1.5,
+                   commitment_multiplier=2, stringsAsFactors=FALSE)
+subs <- tibble(round=3L, user_id=c("contributor", "zero-a", "zero-b"),
+               display_name=c("Contributor", "Zero A", "Zero B"), section="S01",
+               game="bonus", club_choice=c("open", "commitment", "exit"),
+               contribute=c(2, 4, 0), entry_cost=c(0, 3, 0), starting_balance=c(10, 10, 10))
+ledger <- list()
+club_payout <- apply_payouts(3L, "bonus")
+stopifnot(club_payout$ok, length(ledger) == 2L)
 # No submissions is a valid reveal state (for example after a demo reset); the
 # projector renderer handles the empty result set rather than constructing
 # incompatible zero-length table columns.
@@ -96,4 +113,5 @@ stopifnot(!grepl("starting_balance) VALUES(?,?,?,'bonus',NULL,?,?,?,?,?,?)", app
 stopifnot(grepl('uiOutput("admin_live_diagnostics")', app_text, fixed=TRUE))
 stopifnot(grepl('bids_visible <- identical(status, "revealed")', app_text, fixed=TRUE))
 stopifnot(grepl('!identical(as.character(o$round_status[1] %||% ""), "revealed")', app_text, fixed=TRUE))
+stopifnot(!grepl('subs$club_choice %||% "open"', app_text, fixed=TRUE))
 cat("Bonus Pot public-good payout: OK\n")
