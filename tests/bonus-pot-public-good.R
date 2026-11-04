@@ -31,6 +31,7 @@ app <- parse(file.path(app_root, "bonus-pot", "app.R"))
 for (ex in app) {
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "bonus_shares") eval(ex, envir=globalenv())
   if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "apply_payouts") eval(ex, envir=globalenv())
+  if (is.call(ex) && identical(as.character(ex[[1]]), "<-") && is.name(ex[[2]]) && as.character(ex[[2]]) == "club_choice_results") eval(ex, envir=globalenv())
 }
 result <- apply_payouts(1L, "bonus")
 stopifnot(result$ok, length(ledger) == 3L)
@@ -54,6 +55,17 @@ olig$denominator_mode <- "section"
 olig$denominator_threshold <- 99
 shares <- bonus_shares(olig, subs)
 stopifnot(identical(shares$n_denom[1], 3L), identical(shares$share_each[1], 2.5))
+
+# Revealed Club Choice results are computed from all submissions at once for
+# the projector. This must work for multiple entries, including an exit.
+club_snapshot <- data.frame(open_multiplier=1.5, commitment_multiplier=2,
+                            stringsAsFactors=FALSE)
+club_subs <- tibble(club_choice=c("open", "commitment", "exit"),
+                    contribute=c(2, 4, 0), entry_cost=c(0, 3, 0))
+club_results <- club_choice_results(club_snapshot, club_subs)
+stopifnot(identical(club_results$members, c(1L, 1L)))
+stopifnot(identical(club_results$total_contributed, c(2, 7)))
+stopifnot(identical(club_results$return_per_member, c(3, 14)))
 cjm <- paste(readLines(file.path(app_root, "class-job-market", "app.R"), warn=FALSE), collapse="\n")
 stopifnot(!grepl("token_ledger(user_id, display_name, round_id", app_text, fixed=TRUE))
 stopifnot(grepl("for (uid in as.character(recipients$user_id))", cjm, fixed=TRUE))
@@ -69,4 +81,9 @@ stopifnot(grepl('course <- as.character(input$adm_course %||% rv$active_course)'
 stopifnot(grepl('norm_key(allowed_env$course) == norm_key(course)' , app_text, fixed=TRUE))
 stopifnot(grepl('switch_bonus_environment(course, sec)' , app_text, fixed=TRUE))
 stopifnot(!grepl('norm_key(allowed_env$course) == norm_key(rv$active_course) & norm_key(allowed_env$section)' , app_text, fixed=TRUE))
+# Price War is standalone. Bonus Pot settings must not expose or save its
+# retired scale/payoff matrix controls.
+stopifnot(!grepl('numericInput("adm_pd_scale"', app_text, fixed=TRUE))
+stopifnot(!grepl('h5("PD payoff matrix (A, B)")', app_text, fixed=TRUE))
+stopifnot(!grepl('input$adm_pd_scale', app_text, fixed=TRUE))
 cat("Bonus Pot public-good payout: OK\n")

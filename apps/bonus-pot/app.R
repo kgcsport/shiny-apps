@@ -388,10 +388,18 @@ club_choice_snapshot <- function(olig, round, section) {
 
 club_choice_results <- function(snapshot, subs) {
   if (!nrow(subs)) return(data.frame())
-  subs$club_choice <- tolower(trimws(as.character(subs$club_choice %||% "open")))
+  # These are submission columns, so they contain one value per player.  Do
+  # not use the scalar `%||%` helper here: on Reveal the projector passes all
+  # club entries at once, and a multi-row column must remain a vector.
+  choices <- if ("club_choice" %in% names(subs)) as.character(subs$club_choice) else rep("open", nrow(subs))
+  contributions <- if ("contribute" %in% names(subs)) suppressWarnings(as.numeric(subs$contribute)) else rep(0, nrow(subs))
+  entry_costs <- if ("entry_cost" %in% names(subs)) suppressWarnings(as.numeric(subs$entry_cost)) else rep(0, nrow(subs))
+  subs$club_choice <- tolower(trimws(choices))
   subs$club_choice[!subs$club_choice %in% c("open","commitment","exit")] <- "open"
-  subs$contribute <- pmax(0, as.numeric(subs$contribute %||% 0))
-  subs$entry_cost <- pmax(0, as.numeric(subs$entry_cost %||% 0))
+  contributions[!is.finite(contributions)] <- 0
+  entry_costs[!is.finite(entry_costs)] <- 0
+  subs$contribute <- pmax(0, contributions)
+  subs$entry_cost <- pmax(0, entry_costs)
   out <- lapply(c("open","commitment"), function(club) {
     rows <- subs[subs$club_choice == club, , drop=FALSE]; n <- nrow(rows)
     multiplier <- if (club == "open") as.numeric(snapshot$open_multiplier[1]) else as.numeric(snapshot$commitment_multiplier[1])
@@ -1406,33 +1414,13 @@ server <- function(input, output, session) {
         )
       ),
 
-      # --- Game Parameters ---
+      # --- Bonus Pot Parameters ---
       wellPanel(
-        h5("Game Parameters"),
+        h5("Bonus Pot parameters"),
         numericInput("adm_m", "Bonus multiplier m",
                      value = as.numeric(o$bonus_multiplier[1]), min = 1, step = 0.1),
         numericInput("adm_contrib_cap", "Max participation tokens students can wager (0 = no cap)",
                      value = as.numeric(o$contrib_cap[1] %||% 0), min = 0, step = 0.5),
-        numericInput("adm_pd_scale", "PD scale (participation tokens per payoff point)",
-                     value = as.numeric(o$pd_scale[1]), min = 0, step = 0.01),
-        tags$hr(),
-        h5("PD payoff matrix (A, B)"),
-        fluidRow(
-          column(6, numericInput("pd_HH_A", "HH: A", value = as.numeric(o$pd_HH_A[1]))),
-          column(6, numericInput("pd_HH_B", "HH: B", value = as.numeric(o$pd_HH_B[1])))
-        ),
-        fluidRow(
-          column(6, numericInput("pd_HL_A", "HL: A", value = as.numeric(o$pd_HL_A[1]))),
-          column(6, numericInput("pd_HL_B", "HL: B", value = as.numeric(o$pd_HL_B[1])))
-        ),
-        fluidRow(
-          column(6, numericInput("pd_LH_A", "LH: A", value = as.numeric(o$pd_LH_A[1]))),
-          column(6, numericInput("pd_LH_B", "LH: B", value = as.numeric(o$pd_LH_B[1])))
-        ),
-        fluidRow(
-          column(6, numericInput("pd_LL_A", "LL: A", value = as.numeric(o$pd_LL_A[1]))),
-          column(6, numericInput("pd_LL_B", "LL: B", value = as.numeric(o$pd_LL_B[1])))
-        ),
         actionButton("adm_save_params", "Save parameters", class = "btn-secondary")
       ),
 
@@ -1573,19 +1561,11 @@ server <- function(input, output, session) {
     req(is_admin())
     db_exec("
       UPDATE olig_settings SET
-        bonus_multiplier=?, contrib_cap=?, pd_scale=?,
-        pd_HH_A=?, pd_HH_B=?,
-        pd_HL_A=?, pd_HL_B=?,
-        pd_LH_A=?, pd_LH_B=?,
-        pd_LL_A=?, pd_LL_B=?,
+        bonus_multiplier=?, contrib_cap=?,
         updated_at=CURRENT_TIMESTAMP
       WHERE id=1;
     ", list(
-      as.numeric(input$adm_m),     as.numeric(input$adm_contrib_cap), as.numeric(input$adm_pd_scale),
-      as.numeric(input$pd_HH_A),   as.numeric(input$pd_HH_B),
-      as.numeric(input$pd_HL_A),   as.numeric(input$pd_HL_B),
-      as.numeric(input$pd_LH_A),   as.numeric(input$pd_LH_B),
-      as.numeric(input$pd_LL_A),   as.numeric(input$pd_LL_B)
+      as.numeric(input$adm_m), as.numeric(input$adm_contrib_cap)
     ))
     showNotification("Parameters saved.", type = "message")
   })

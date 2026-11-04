@@ -454,6 +454,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** (Codex) — Removed the retired Prisoner’s Dilemma scale and payoff-matrix controls from Bonus Pot Settings. Its parameter save now updates only the Bonus Pot multiplier and contribution cap; legacy PD columns remain untouched for historical compatibility.
+
+- **2026-11-04** (Codex) — Fixed the revealed Club Choice projector failure: its aggregate-results helper treated multi-student submission columns as scalar values, causing the revealed-only render error. It now normalizes full vectors for club, contribution, and entry-cost fields; the focused Bonus Pot regression covers Open, Commitment, and Exit entries in the same revealed round.
+
 - **2026-11-04** (Codex) — Replaced the URL-based sandbox switch with a normal **DEMO 101** course and S01/S02 demo roster. Existing super-admins select it in the ordinary Class / section picker; `demo-instructor` / `admin123` is a course admin for **DEMO 101 only**, while demo students use their own accounts. This preserves ordinary course-scoped interactions without granting the demo instructor access to any live course.
 
 - **2026-11-04** (Codex) — Repaired the isolated sandbox platform: bootstrap now gives the sandbox instructor its required super-admin role and assigns every sandbox account to the Demo course/section environments, so selecting **DEMO 101** exposes the normal instructor Settings workflow. The container entrypoint now forwards `DEMO_MODE` into Shiny’s R environment, ensuring the dedicated demo service routes Class Job Market and game apps to `*-demo.sqlite`, never the live database. The sandbox bootstrap regression verifies the role and all Demo environments.
