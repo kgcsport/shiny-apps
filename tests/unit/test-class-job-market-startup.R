@@ -398,6 +398,17 @@ test_that("demo bootstrap upgrades an old users schema and repairs credentials",
     expect_true(bcrypt::checkpw("admin123", repaired$pw_hash[repaired$user_id == "instructor"]))
     expect_true(all(repaired$course == "DEMO 101"))
     expect_true(all(repaired$active == 1L))
+    demo_admin <- DBI::dbGetQuery(demo_con, "
+      SELECT role,course,section FROM admin_assignments
+      WHERE user_id='instructor' ORDER BY role;")
+    expect_equal(demo_admin$role, "super_admin")
+    demo_environments <- DBI::dbGetQuery(demo_con, "
+      SELECT user_id,course,section FROM user_environments
+      WHERE user_id IN ('instructor','alice','bob','carol','dan','eve')
+      ORDER BY user_id,section;")
+    expect_equal(nrow(demo_environments), 6L)
+    expect_true(all(demo_environments$course == "DEMO 101"))
+    expect_true(all(demo_environments$section %in% c("S01", "S02")))
 
     practice <- DBI::dbGetQuery(demo_con, "
       SELECT wr.id, wr.label, wr.assignment_mode, wr.bidding_enabled,

@@ -425,6 +425,22 @@ demo_db_bootstrap <- function(demo_con, prod_path) {
            is_demo=0;",
         list(u$id, u$name, u$admin, hash_pw(u$pw), u$course, u$sec))
     }
+    # Demo accounts are ordinary active students inside the sandbox so every
+    # roster, game, and class selector behaves like the live platform.  The
+    # demo instructor still needs an explicit role assignment: class-market
+    # authorization intentionally no longer trusts users.is_admin alone.
+    for (u in test_users) {
+      DBI::dbExecute(demo_con,
+        "INSERT INTO user_environments(user_id,course,section)
+         VALUES(?,?,?)
+         ON CONFLICT(user_id,course,section) DO NOTHING;",
+        list(u$id, u$course, u$sec))
+    }
+    DBI::dbExecute(demo_con,
+      "INSERT INTO admin_assignments(user_id,role,course,section,assigned_by)
+       VALUES('instructor','super_admin','','','sandbox bootstrap')
+       ON CONFLICT(user_id,role,course,section)
+       DO UPDATE SET assigned_by=excluded.assigned_by,updated_at=CURRENT_TIMESTAMP;")
 
   }, error = function(e) message("demo_db_bootstrap: ", e$message))
   invisible(demo_con)

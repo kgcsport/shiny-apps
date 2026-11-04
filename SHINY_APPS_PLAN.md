@@ -454,6 +454,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** (Codex) — Repaired the isolated sandbox platform: bootstrap now gives the sandbox instructor its required super-admin role and assigns every sandbox account to the Demo course/section environments, so selecting **DEMO 101** exposes the normal instructor Settings workflow. The container entrypoint now forwards `DEMO_MODE` into Shiny’s R environment, ensuring the dedicated demo service routes Class Job Market and game apps to `*-demo.sqlite`, never the live database. The sandbox bootstrap regression verifies the role and all Demo environments.
+
 - **2026-11-04** (Codex) — Clarified Club Choice labels in Bonus Pot: each club radio option now states its current multiplier, including the Commitment Club multiplier beside its membership cost; Exit now reads **“no loss, no gain.”**
 
 - **2026-11-04** (Codex) — Price War’s student surface now uses explicit **High**, **Low**, and **Withdraw** buttons. It displays the authenticated player’s saved choice (or that they have not yet played), permits changing or withdrawing only while the scoped round is open, and keeps that player-specific refresh independent of classmates’ simultaneous submissions. The scratch-SQLite workflow regression now verifies saved-choice status and withdrawal.
