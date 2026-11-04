@@ -2705,6 +2705,9 @@ COOKIE_JS <- HTML("
     var target = safeCourseReturnPath(msg && msg.url);
     window.setTimeout(function() { window.location.replace(target); }, 100);
   });
+  Shiny.addCustomMessageHandler('open_demo_sandbox', function(msg) {
+    window.location.replace((msg && msg.url) || '/class-job-market/?demo_db=1&demo_as=teacher');
+  });
   Shiny.addCustomMessageHandler('clean_url', function(msg) {
     if (window.history && window.history.replaceState)
       window.history.replaceState({}, document.title, location.pathname);
@@ -3384,6 +3387,9 @@ server <- function(input, output, session) {
     bal <- token_bal()
     env <- session_environment_rows()
     courses <- unique_ci(env$course %||% character(0))
+    course_choices <- setNames(courses, courses)
+    if (isTRUE(rv$is_admin) && !isTRUE(.sandbox))
+      course_choices <- c(course_choices, "Demo sandbox (separate database)"="__demo_sandbox__")
     active_course <- scoped_course()
     if (!active_course %in% courses && length(courses)) active_course <- courses[1]
     section_rows <- env[norm_key(env$course) == norm_key(active_course), , drop=FALSE]
@@ -3392,12 +3398,12 @@ server <- function(input, output, session) {
     if (!active_section %in% sections && length(sections)) active_section <- sections[1]
     tagList(
       span(class = "arc-name", rv$name),
-      if (nrow(env) > 1L)
+      if (nrow(env) > 1L || (isTRUE(rv$is_admin) && !isTRUE(.sandbox)))
         tags$details(class="arc-env-picker",
           tags$summary("Class / section"),
           div(class="arc-env-menu",
             div(class="arc-env-field", tags$span("Class"),
-              selectInput("environment_course_sel", NULL, choices=setNames(courses, courses),
+              selectInput("environment_course_sel", NULL, choices=course_choices,
                           selected=active_course, width="100%")),
             div(class="arc-env-field", tags$span("Section"),
               selectInput("environment_section_sel", NULL, choices=setNames(sections, sections),
@@ -3456,6 +3462,10 @@ server <- function(input, output, session) {
   observeEvent(input$environment_course_sel, {
     req(rv$authed)
     course <- as.character(input$environment_course_sel %||% "")
+    if (identical(course, "__demo_sandbox__") && isTRUE(rv$is_admin) && !isTRUE(.sandbox)) {
+      session$sendCustomMessage("open_demo_sandbox", list(url="/class-job-market/?demo_db=1&demo_as=teacher"))
+      return()
+    }
     env <- session_environment_rows()
     rows <- env[norm_key(env$course) == norm_key(course), , drop=FALSE]
     if (!nrow(rows)) return()

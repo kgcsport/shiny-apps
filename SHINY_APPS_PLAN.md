@@ -454,6 +454,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** (Codex) — Added **Demo sandbox (separate database)** to the live instructor course selector. Choosing it opens the isolated Demo 101 session with the sandbox instructor auto-login, rather than trying to treat demo records as a live course. The Demo 101 selector remains available within that isolated session.
+
 - **2026-11-04** (Codex) — Repaired the isolated sandbox platform: bootstrap now gives the sandbox instructor its required super-admin role and assigns every sandbox account to the Demo course/section environments, so selecting **DEMO 101** exposes the normal instructor Settings workflow. The container entrypoint now forwards `DEMO_MODE` into Shiny’s R environment, ensuring the dedicated demo service routes Class Job Market and game apps to `*-demo.sqlite`, never the live database. The sandbox bootstrap regression verifies the role and all Demo environments.
 
 - **2026-11-04** (Codex) — Clarified Club Choice labels in Bonus Pot: each club radio option now states its current multiplier, including the Commitment Club multiplier beside its membership cost; Exit now reads **“no loss, no gain.”**
