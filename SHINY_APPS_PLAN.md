@@ -452,6 +452,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** (Codex) — Preserved the selected Price War tab across its live refreshes, so instructors can remain on Results or Settings while submission and status polling continues.
+
 - **2026-11-04** (Codex) — Added an executable Price War pair-count regression for HH, HL, LH, and LL results, including an unpaired submission that must be excluded until matched.
 
 - **2026-11-04** (Codex) — Restored Price War’s classroom layout: all users have separate Play and aggregate Results tabs, while the round configuration and payout controls are behind an admin-only Settings tab. Results report completed HH, HL, LH, and LL pair counts without exposing student identities.

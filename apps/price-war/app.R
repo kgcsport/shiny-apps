@@ -69,7 +69,7 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  rv <- reactiveValues(user=NULL, name=NULL, admin=FALSE, course="", section="", message=NULL)
+  rv <- reactiveValues(user=NULL, name=NULL, admin=FALSE, course="", section="", message=NULL, active_tab="Play")
   poll <- reactiveTimer(1500, session)
   logged_in <- reactive(!is.null(rv$user))
   environments <- reactive({
@@ -116,8 +116,10 @@ server <- function(input, output, session) {
     admin_ui <- div(class="card",h3("Round settings"),p("These controls are visible only to instructors."),numericInput("round","Round",value=if(nrow(r))r$round[1]else 1,min=1),selectInput("status","Status",c("pending","open","closed","revealed"),selected=if(nrow(r))r$status[1]else"pending"),numericInput("scale","Tokens per payoff point",value=if(nrow(r))r$pd_scale[1]else .1),fluidRow(column(6,numericInput("hh_a","High / High: A",value=if(nrow(r))r$hh_a[1]else 3),numericInput("hl_a","High / Low: A",value=if(nrow(r))r$hl_a[1]else 0),numericInput("lh_a","Low / High: A",value=if(nrow(r))r$lh_a[1]else 5),numericInput("ll_a","Low / Low: A",value=if(nrow(r))r$ll_a[1]else 1)),column(6,numericInput("hh_b","High / High: B",value=if(nrow(r))r$hh_b[1]else 3),numericInput("hl_b","High / Low: B",value=if(nrow(r))r$hl_b[1]else 5),numericInput("lh_b","Low / High: B",value=if(nrow(r))r$lh_b[1]else 0),numericInput("ll_b","Low / Low: B",value=if(nrow(r))r$ll_b[1]else 1))),actionButton("save_round","Save round",class="btn-primary"),actionButton("payout","Apply revealed payouts",class="btn-success"))
     tabs <- list(tabPanel("Play", play_ui), tabPanel("Results", results_ui))
     if (rv$admin) tabs <- c(tabs,list(tabPanel("Settings", admin_ui)))
-    div(class="pw",div(class="card",h2("Price War"),p("A High/Low-price Prisoner's-Dilemma game."),selectInput("env","Class / section",choices,selected=paste(rv$course,rv$section,sep="||"))),do.call(tabsetPanel,tabs))
+    if (!rv$active_tab %in% vapply(tabs, function(tab) tab$attribs$title, character(1))) rv$active_tab <- "Play"
+    div(class="pw",div(class="card",h2("Price War"),p("A High/Low-price Prisoner's-Dilemma game."),selectInput("env","Class / section",choices,selected=paste(rv$course,rv$section,sep="||"))),do.call(tabsetPanel,c(list(id="price_war_tab", selected=rv$active_tab),tabs)))
   })
+  observeEvent(input$price_war_tab, { rv$active_tab <- input$price_war_tab %||% "Play" }, ignoreInit=TRUE)
   observeEvent(input$env,{ p<-strsplit(input$env,"||",fixed=TRUE)[[1]];if(length(p)==2)choose_env(p[1],p[2]) })
   session$onSessionEnded(function(){if(!is.null(con)&&dbIsValid(con))dbDisconnect(con)})
 }
