@@ -30,7 +30,7 @@ for (needle in c("CREATE TABLE IF NOT EXISTS price_war_rounds", "CREATE TABLE IF
 for (needle in c("if (length(p)) dbGetQuery(db(), sql, params=p) else dbGetQuery(db(), sql)", "if (length(p)) dbExecute(db(), sql, params=p) else dbExecute(db(), sql)")) {
   if (!grepl(needle, price, fixed=TRUE)) stop("Price War startup helper must omit empty SQLite parameter lists.")
 }
-for (needle in c("Shiny.setInputValue('auth_cookie'", "observeEvent(input$auth_cookie", "arcade_sessions s JOIN users u", "issue_shared_cookie <- function", "set_arcade_cookie", "actionButton(\"login_btn\"", "req(rv$admin,nzchar(rv$course),nzchar(rv$section))")) {
+for (needle in c("Shiny.setInputValue('auth_cookie'", "observeEvent(input$auth_cookie", "arcade_sessions s JOIN users u", "issue_shared_cookie <- function", "set_arcade_cookie", "actionButton(\"login_btn\"", "req(rv$admin, !rv$impersonating,nzchar(rv$course),nzchar(rv$section))")) {
   if (!grepl(needle, price, fixed=TRUE)) stop("Price War must use the existing Class Job Market session and selected environment: ", needle)
 }
 for (needle in c("pair_code_counts <- function(actions)", "levels=c(\"HH\", \"HL\", \"LH\", \"LL\")", "tabPanel(\"Play\"", "tabPanel(\"Results\"", "if(rv$admin && !rv$impersonating) tabs <- c(tabs,list(tabPanel(\"Settings\"", "output$play_ui <- renderUI", "output$results_ui <- renderUI", "output$settings_ui <- renderUI", "output$settings_diagnostics <- renderUI", "Live submission diagnostic", "request$impersonate", "player_user", "game_poll <- reactivePoll", "submission_poll <- reactivePoll", "pw-header", "environment_course_sel", "environment_section_sel")) {
