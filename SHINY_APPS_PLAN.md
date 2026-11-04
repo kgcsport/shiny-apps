@@ -454,6 +454,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** (Codex) — Rebuilt Price War’s reactive boundaries to match Bonus Pot: the Play form listens only to round/status changes, Results alone polls submissions, and Settings is a separate admin surface. Added a scratch-SQLite workflow fixture covering two simultaneous student submissions plus an instructor setting update.
+
 - **2026-11-04** (Codex) — Added the Classroom Economy header to Price War, with the authenticated user and a scoped class/section picker matching the Bonus Pot pattern. The picker exposes only environments authorized for that user and refreshes the selected game state.
 
 - **2026-11-04** (Codex) — Enforced the Grade Reweight percentage cap as a cumulative allowance across pending and approved category/assignment requests, with remaining allowance shown to students and server-side validation for stale forms. Centralized class-job reveal filtering by class date, section, and start/end timing so selected Start, End, and All reveal groups are independent. Extended the Class Job Market SQLite smoke fixture for both regressions; smoke test and parser check pass.

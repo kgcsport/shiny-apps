@@ -22,6 +22,7 @@ RUN Rscript --vanilla /srv/shiny-server/tests/critical-assignment-wage-award.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-gradebook-ux.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-bonus-pot-unification.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-game-navigation.R
+RUN Rscript --vanilla /srv/shiny-server/tests/price-war-student-play.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-bonus-pot-private-names.R
 RUN Rscript --vanilla /srv/shiny-server/tests/admin-roles.R
 RUN Rscript --vanilla /srv/shiny-server/tests/bonus-pot-public-good.R
