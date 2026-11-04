@@ -452,6 +452,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-03** (Codex) — Consolidated Bonus Pot administration into its game panel. Class Job Market Settings now retains only the active-game selector and links instructors to Bonus Pot for round setup, lifecycle, and Club Choice rules, preventing the formerly divergent duplicate forms from overwriting each other.
+
 - **2026-11-03** (Codex) — Repaired Price War startup: its SQLite wrappers passed an empty parameter list to statements with no placeholders, which made initialization exit before the UI rendered. The wrappers now omit parameters when none are supplied; direct local app startup and the focused navigation regression pass.
 
 - **2026-11-03** (Codex) — Added the Club Choice Bonus Pot mode: open/commitment/exit selection, private balance validation, optional commitment minimum, contribution-plus-membership debit, close-time rule snapshots, separate club pooling/payouts, and an aggregate revealed comparison. Existing shared-pot tests continue to pass.

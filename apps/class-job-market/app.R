@@ -11485,7 +11485,11 @@ server <- function(input, output, session) {
         uiOutput("olig_status_display"),
         if (nrow(s)) {
           if (identical(active, "bonus_pot")) {
-            uiOutput("bonus_pot_admin_controls")
+            div(class="alert alert-info",
+                tags$strong("Bonus Pot setup lives in the Bonus Pot game panel. "),
+                "This page only selects the active game so the two control surfaces cannot drift.",
+                tags$br(),
+                tags$a(href="/bonus-pot/", target="_blank", class="btn btn-sm btn-primary", style="margin-top:.5rem;", "Open Bonus Pot controls →"))
           } else if (identical(active, "price_war")) {
             div(class="alert alert-info", "Price War has independent course/section/round setup. ", tags$a(href="/price-war/", target="_blank", "Open Price War controls →"))
           } else {
