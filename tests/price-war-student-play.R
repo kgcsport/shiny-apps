@@ -30,8 +30,10 @@ play <- function(token, action) {
   testServer(server, {
     session$setInputs(auth_cookie=token)
     session$flushReact()
-    session$setInputs(action=action, submit=1)
+    if (identical(action, "High")) session$setInputs(play_high=1) else session$setInputs(play_low=1)
     session$flushReact()
+    play_ui <- paste(as.character(output$play_ui), collapse="\n")
+    if (!grepl(paste("You have played", action), play_ui, fixed=TRUE)) stop("A player must see their currently saved Price War choice.")
   })
 }
 play("token-a", "High")
@@ -40,6 +42,16 @@ submissions <- dbGetQuery(setup, "SELECT user_id,action FROM price_war_submissio
 if (!identical(submissions$action, c("High", "Low"))) stop("Both students must retain their own Price War submissions.")
 round_state <- dbGetQuery(setup, "SELECT status FROM price_war_rounds WHERE course='Econ' AND section='01' AND round=1")
 if (!identical(round_state$status[1], "open")) stop("Student submissions must not mutate Price War round state.")
+testServer(server, {
+  session$setInputs(auth_cookie="token-a")
+  session$flushReact()
+  session$setInputs(withdraw=1)
+  session$flushReact()
+  play_ui <- paste(as.character(output$play_ui), collapse="\n")
+  if (!grepl("You have not yet played.", play_ui, fixed=TRUE)) stop("A player must see that their Price War choice was withdrawn.")
+})
+if (dbGetQuery(setup, "SELECT COUNT(*) AS n FROM price_war_submissions WHERE user_id='student-a'")$n[1] != 0L) stop("Withdraw must delete only the player's current Price War entry.")
+play("token-a", "High")
 testServer(server, {
   session$setInputs(auth_cookie="token-admin")
   session$flushReact()

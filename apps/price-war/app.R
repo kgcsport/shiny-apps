@@ -60,7 +60,7 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  rv <- reactiveValues(user=NULL, name=NULL, admin=FALSE, course="", section="", message=NULL, player_user=NULL, player_name=NULL, impersonating=FALSE)
+  rv <- reactiveValues(user=NULL, name=NULL, admin=FALSE, course="", section="", message=NULL, player_user=NULL, player_name=NULL, impersonating=FALSE, my_submission_version=0L)
   logged_in <- reactive(!is.null(rv$user))
   requested_embed <- reactive({
     params <- tryCatch(parseQueryString(sub("^\\?", "", session$clientData$url_search %||% "")), error=function(e) list())
@@ -118,6 +118,15 @@ server <- function(input, output, session) {
       pair_code_counts(actions)
     }
   )
+  # Keep the player's saved choice separate from the class-wide submission
+  # poll.  Other students entering the round must not redraw these controls.
+  my_submission <- reactive({
+    rv$my_submission_version
+    state <- game_poll(); r <- state$round
+    if (!nrow(r) || !nzchar(rv$player_user)) return("")
+    saved <- q("SELECT action FROM price_war_submissions WHERE course=? AND section=? AND round=? AND user_id=? LIMIT 1;",list(rv$course,rv$section,r$round[1],rv$player_user))
+    if (nrow(saved)) as.character(saved$action[1]) else ""
+  })
   finish <- function(row) { rv$user<-row$user_id[1];rv$name<-row$display_name[1];rv$admin<-isTRUE(as.integer(row$is_admin[1])==1);rv$player_user<-rv$user;rv$player_name<-rv$name;rv$impersonating<-FALSE;e<-environments();if(nrow(e)){rv$course<-e$course[1];rv$section<-e$section[1]};rv$message<-NULL }
   observe({
     req(logged_in())
@@ -142,13 +151,23 @@ req(rv$admin, !rv$impersonating,nzchar(rv$course),nzchar(rv$section))
     x("INSERT INTO price_war_rounds(course,section,round,status,pd_scale,hh_a,hh_b,hl_a,hl_b,lh_a,lh_b,ll_a,ll_b,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(course,section,round) DO UPDATE SET status=excluded.status,pd_scale=excluded.pd_scale,hh_a=excluded.hh_a,hh_b=excluded.hh_b,hl_a=excluded.hl_a,hl_b=excluded.hl_b,lh_a=excluded.lh_a,lh_b=excluded.lh_b,ll_a=excluded.ll_a,ll_b=excluded.ll_b,updated_at=CURRENT_TIMESTAMP;",as.list(c(rv$course,rv$section,as.integer(input$round),input$status,vals)))
     showNotification("Price War round saved.")
   })
-  observeEvent(input$submit, {
+  save_player_choice <- function(action) {
     req(logged_in())
     state <- current_game_state(); r <- state$round
     if(!state$active || !nrow(r) || r$status[1]!="open") return()
-    a <- input$action%||%""; if(!a%in%c("High","Low")) return()
-    x("INSERT INTO price_war_submissions(course,section,round,user_id,display_name,action,submitted_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(course,section,round,user_id) DO UPDATE SET action=excluded.action,submitted_at=CURRENT_TIMESTAMP;",list(rv$course,rv$section,r$round[1],rv$player_user,rv$player_name,a))
-    showNotification("Choice saved. You can change it until the round closes.")
+    x("INSERT INTO price_war_submissions(course,section,round,user_id,display_name,action,submitted_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(course,section,round,user_id) DO UPDATE SET action=excluded.action,submitted_at=CURRENT_TIMESTAMP;",list(rv$course,rv$section,r$round[1],rv$player_user,rv$player_name,action))
+    rv$my_submission_version <- rv$my_submission_version + 1L
+    showNotification(paste0("You have played ", action, ". You can change or withdraw until the round closes."))
+  }
+  observeEvent(input$play_high, save_player_choice("High"))
+  observeEvent(input$play_low, save_player_choice("Low"))
+  observeEvent(input$withdraw, {
+    req(logged_in())
+    state <- current_game_state(); r <- state$round
+    if(!state$active || !nrow(r) || r$status[1]!="open") return()
+    removed <- x("DELETE FROM price_war_submissions WHERE course=? AND section=? AND round=? AND user_id=?;",list(rv$course,rv$section,r$round[1],rv$player_user))
+    rv$my_submission_version <- rv$my_submission_version + 1L
+    showNotification(if (removed) "Your choice has been withdrawn." else "You have not yet played.")
   })
   observeEvent(input$payout, {
     req(rv$admin, !rv$impersonating)
@@ -164,7 +183,9 @@ req(rv$admin, !rv$impersonating,nzchar(rv$course),nzchar(rv$section))
     state <- game_poll(); r <- state$round
     if (!state$active) return(div(class="card muted","No Price War round is active for this class / section."))
     if (!nrow(r)) return(div(class="card muted","Your instructor has not set up a Price War round yet."))
-    div(class="card",h3(paste("Round",r$round[1])),p(class=if(r$status[1]=="open")"live" else "muted",toupper(r$status[1])),if(r$status[1]=="open")tagList(p("Choose your price. Your choice is paired with another student after the round closes."),radioButtons("action","Your price",c("High price"="High","Low price"="Low"),inline=TRUE),actionButton("submit","Save choice",class="btn-primary")) else p("Choices are no longer being accepted."))
+    saved <- my_submission()
+    status_message <- if (nzchar(saved)) paste0("You have played ", saved, ".") else "You have not yet played."
+    div(class="card",h3(paste("Round",r$round[1])),p(class=if(r$status[1]=="open")"live" else "muted",toupper(r$status[1])),p(class=if(nzchar(saved))"live" else "muted",status_message),if(r$status[1]=="open")tagList(p("Choose, change, or withdraw your price. Your choice is paired with another student after the round closes."),div(class="btn-group",role="group",actionButton("play_high","High",class="btn-primary"),actionButton("play_low","Low",class="btn-warning"),actionButton("withdraw","Withdraw",class="btn-danger"))) else p("Choices are no longer being accepted."))
   })
   output$results_ui <- renderUI({
     state <- game_poll(); r <- state$round

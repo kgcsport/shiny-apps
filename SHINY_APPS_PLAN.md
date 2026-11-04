@@ -454,6 +454,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** (Codex) — Price War’s student surface now uses explicit **High**, **Low**, and **Withdraw** buttons. It displays the authenticated player’s saved choice (or that they have not yet played), permits changing or withdrawing only while the scoped round is open, and keeps that player-specific refresh independent of classmates’ simultaneous submissions. The scratch-SQLite workflow regression now verifies saved-choice status and withdrawal.
+
 - **2026-11-04** (Codex) — Embedded Price War now takes its selected course/section from Class Job Market and suppresses its standalone banner/switcher there. The active-panel iframe forwards the existing admin impersonation target as a validated student-player context. Settings now shows an instructor-only, pre-reveal diagnostic with each saved entry, HH/HL/LH/LL counts, and unpaired-entry count; the workflow regression asserts that diagnostic after two student submissions.
 
 - **2026-11-04** (Codex) — Rebuilt Price War’s reactive boundaries to match Bonus Pot: the Play form listens only to round/status changes, Results alone polls submissions, and Settings is a separate admin surface. Added a scratch-SQLite workflow fixture covering two simultaneous student submissions plus an instructor setting update.
