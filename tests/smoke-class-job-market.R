@@ -23,7 +23,7 @@ wanted <- c("seed_class_job_defaults", "get_setting", "bid_lock_status",
             "volunteer_clearing_wage", "class_wage_snapshot", "freeze_class_wages",
             "close_bidding_after_draw", "overdue_pending_jobs", "assignment_round_for_timing",
             "reveal_timings_for_scope", "assignment_reveal_timing", "assignment_is_revealed",
-            "rw_points_requested", "get_rw_max_points", "rw_remaining_points", "validate_rw_request_points", "norm_key",
+            "rw_points_requested", "rw_pending_request", "get_rw_max_points", "rw_remaining_points", "validate_rw_request_points", "norm_key",
             "round_bid_datetime_value",
             "round_bid_window_values", "round_bid_window_status",
             "validate_ticket_allocation", "order_job_posts_for_clearing",
@@ -233,6 +233,12 @@ stopifnot(rw_remaining_points("student-with-no-requests") == 5L)
 stopifnot(validate_rw_request_points("reweight-student", 1L)$ok)
 stopifnot(!validate_rw_request_points("reweight-student", 2L)$ok)
 stopifnot(!validate_rw_request_points("reweight-student", 0L)$ok)
+stopifnot(nrow(rw_pending_request("reweight-student")) == 1L)
+# The database rule is the concurrent-submit backstop: UI validation may be
+# bypassed by a double click or second browser session, but a second pending
+# request must still be rejected.
+stopifnot(identical(db_exec("INSERT INTO grade_reweight_requests(user_id,from_category,to_category,points,status)
+                            VALUES('reweight-student','Homework','Final',1,'pending');"), -1L))
 
 set_setting("bid_lock_enabled", "0")
 stopifnot(isFALSE(bid_lock_status()$locked))

@@ -454,6 +454,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-04** — Grade reweight requests are now limited to one pending request per student with both server-side validation and a SQLite trigger to stop concurrent submissions. Instructor rejection requires a student-visible note and records an idempotent token refund; Settings also now has an explicit **Turn off active game** button that clears only the selected environment’s active-game slot.
+
 - **2026-11-04** — Sealed unrevealed game diagnostics from student/projector Results: Price War pair counts and Bonus Pot submission totals/contributions now appear only in each game’s administrator Settings diagnostic. Public results remain blank until the instructor marks the round revealed.
 
 - **2026-11-04** — Repaired stale demo-sandbox compatibility for Bonus Pot Club Choice: bootstrap now migrates the shared game tables and columns used by submissions and snapshots. The Club Choice projector also renders a stable empty-results table instead of failing when a revealed round has no recorded entries.
