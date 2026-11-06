@@ -30,6 +30,14 @@ source(shared_sqlite, local = TRUE)
 source(file.path(dirname(shared_sqlite), "demo_login.R"), local = TRUE)
 source(file.path(this_dir, "insurance.R"), local = TRUE)
 
+TOKEN_SPEND_STEP <- 0.01
+round_token_spend <- function(x) round(as.numeric(x) + 1e-9, 2)
+clamp_token_spend <- function(requested, balance, remaining = Inf) {
+  values <- suppressWarnings(as.numeric(c(requested, balance, remaining)))
+  if (any(is.na(values)) || values[1] <= 0 || !is.finite(values[2]) || values[2] <= 0 || values[3] <= 0) return(0)
+  round_token_spend(max(0, min(values)))
+}
+
 `%||%` <- function(a, b) {
   if (is.null(a) || !length(a)) return(b)
   # Only scalar NA is missing; preserve data frames and multi-value vectors.
@@ -5533,10 +5541,10 @@ server <- function(input, output, session) {
       rv$flex_ver
       fq <- flex_poll()
       pct <- if (fq$target > 0) min(100, 100 * fq$funded / fq$target) else 100
-      max_contribution <- max(0L, min(as.integer(floor(bal)), as.integer(ceiling(fq$remaining))))
-      typed <- suppressWarnings(as.integer(rv$flex_contrib_val %||% 1L))
-      if (!is.finite(typed) || typed < 1L) typed <- 1L
-      contribution_value <- if (max_contribution > 0L) min(typed, max_contribution) else 1L
+      max_contribution <- clamp_token_spend(Inf, bal, fq$remaining)
+      typed <- suppressWarnings(round_token_spend(rv$flex_contrib_val %||% min(1, max_contribution)))
+      if (!is.finite(typed) || typed < TOKEN_SPEND_STEP) typed <- min(1, max_contribution)
+      contribution_value <- if (max_contribution >= TOKEN_SPEND_STEP) min(typed, max_contribution) else TOKEN_SPEND_STEP
       div(class = "spend-form-box",
         tags$h6(style = "color:#951829;font-weight:700;", "📚 Candidate Question Fund"),
         if (!flex_cost_schedule_hidden_for_scope()) {
@@ -5564,22 +5572,23 @@ server <- function(input, output, session) {
                 sprintf("%d of %d drawn (%.0f%% chance)",draw_n,pool_n,100*draw_n/pool_n)
                 else "draw probability not specified"
               tags$p(style = "font-weight:600;margin-bottom:.35rem;",
-                     sprintf("Question #%d · Pool %s · %s: %d of %d tokens funded",
+                     sprintf("Question #%d · Pool %s · %s: %s of %s tokens funded",
                              as.integer(fq$unlocked_n + 1L),
                              next_q$draw_group %||% "—",chance,
-                             as.integer(fq$funded),as.integer(fq$target)))
+                             fmt_token_amount(fq$funded),fmt_token_amount(fq$target)))
             },
             div(class = "progress", style = "height:18px;margin-bottom:.65rem;",
                 div(class = "progress-bar", role = "progressbar",
                     style = sprintf("width:%.1f%%;", pct),
                     sprintf("%.0f%%", pct))),
             tags$p(style = "color:#666;font-size:.82rem;",
-                   sprintf("Class size N = %d · %d tokens remain · your balance is %s.",
-                           as.integer(fq$class_size), as.integer(ceiling(fq$remaining)),
+                   sprintf("Class size N = %d · %s tokens remain · your balance is %s.",
+                           as.integer(fq$class_size), fmt_token_amount(fq$remaining),
                            fmt_token_amount(bal))),
-            if (max_contribution > 0L) tagList(
+            if (max_contribution >= TOKEN_SPEND_STEP) tagList(
               numericInput("flex_contribution", "Tokens to contribute:",
-                           value=contribution_value, min=1, max=max_contribution, step=1),
+                           value=contribution_value, min=TOKEN_SPEND_STEP,
+                           max=max_contribution, step=TOKEN_SPEND_STEP),
               actionButton("submit_flex_contribution", "Contribute",
                            class = "btn btn-warning", title = "Contribute tokens to this class reveal")
             ) else {
@@ -6213,10 +6222,10 @@ server <- function(input, output, session) {
     if (rv$is_demo) {
       showNotification("Demo mode — contributions are not saved.", type = "warning"); return()
     }
-    requested <- suppressWarnings(as.integer(input$flex_contribution %||% 0L))
+    requested <- suppressWarnings(round_token_spend(input$flex_contribution %||% 0))
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
-    if (!is.finite(requested) || requested < 1L) {
-      showNotification("Enter a positive whole number of tokens.", type = "error"); return()
+    if (!is.finite(requested) || requested < TOKEN_SPEND_STEP) {
+      showNotification("Enter a positive token amount.", type = "error"); return()
     }
 
     # Re-read shared state at commit time so a stale browser cannot fund an
@@ -6243,8 +6252,8 @@ server <- function(input, output, session) {
        FROM flex_question_contributions WHERE question_id=? AND scope_key=?;",
       list(qid, scope_key))$total[1] %||% 0),
       error=function(e) 0)
-    remaining <- max(0, target-funded)
-    if (remaining <= 0) {
+    remaining <- round_token_spend(max(0, target-funded))
+    if (remaining < TOKEN_SPEND_STEP) {
       db_exec(
         "INSERT INTO flex_question_scope_state(question_id,scope_key,unlock_cost,unlocked_at)
          VALUES(?,?,?,CURRENT_TIMESTAMP)
@@ -6259,8 +6268,8 @@ server <- function(input, output, session) {
     bal <- tryCatch(as.numeric(db_query(
       "SELECT COALESCE(SUM(amount),0) t FROM token_ledger WHERE user_id=?;",
       list(rv$user_id))$t[1] %||% 0), error=function(e) 0)
-    amount <- min(requested, as.integer(ceiling(remaining)), as.integer(floor(max(0, bal))))
-    if (amount < 1L) {
+    amount <- clamp_token_spend(requested, bal, remaining)
+    if (amount < TOKEN_SPEND_STEP) {
       showNotification("Not enough spendable tokens.", type = "error"); return()
     }
 
@@ -6270,8 +6279,8 @@ server <- function(input, output, session) {
       "INSERT INTO flex_question_contributions(question_id,user_id,amount,ledger_id,scope_key)
        VALUES(?,?,?,?,?);",
       list(qid, rv$user_id, amount, as.integer(lid %||% NA_integer_), scope_key))
-    new_total <- funded + amount
-    unlocked_now <- new_total >= target
+    new_total <- round_token_spend(funded + amount)
+    unlocked_now <- new_total + TOKEN_SPEND_STEP / 2 >= target
     if (unlocked_now)
       db_exec(
         "INSERT INTO flex_question_scope_state(question_id,scope_key,unlock_cost,unlocked_at)
@@ -6284,9 +6293,10 @@ server <- function(input, output, session) {
     rv$flex_ver <- rv$flex_ver + 1L
     showNotification(
       if (unlocked_now)
-        sprintf("You contributed %d tokens. Question #%d is now public!", amount, fq$unlocked_n + 1L)
+        sprintf("You contributed %s tokens. Question #%d is now public!", fmt_token_amount(amount), fq$unlocked_n + 1L)
       else
-        sprintf("You contributed %d tokens. %d remain.", amount, as.integer(ceiling(target-new_total))),
+        sprintf("You contributed %s tokens. %s remain.", fmt_token_amount(amount),
+                fmt_token_amount(max(0, target-new_total))),
       type = "message")
   })
 

@@ -134,6 +134,8 @@ touch_olig <- function() db_exec("UPDATE olig_settings SET updated_at=CURRENT_TI
 get_olig <- function() db_query("SELECT * FROM olig_settings WHERE id=1;")
 
 round_to_half <- function(x) round(x * 2) / 2
+round_token_cents <- function(x) round(as.numeric(x) + 1e-9, 2)
+fmt_token_cents <- function(x) sub("\\.?0+$", "", sprintf("%.2f", round_token_cents(x)))
 
 # Current section id stored in settings (empty string = none selected)
 olig_section <- function(olig) as.character(olig$section[1] %||% "")
@@ -937,7 +939,7 @@ server <- function(input, output, session) {
     denom_threshold <- max(0, as.numeric(o$denominator_threshold[1] %||% 0))
     cs_note <- if (identical(denom_mode, "threshold")) sprintf("The pot is shared only with students who submit at least %.1f tokens.", denom_threshold) else if (!is.na(cs)) sprintf("The pot is shared with all %d enrolled students in this section.", cs) else "The pot is shared among students who submit."
     cap <- as.numeric(o$contrib_cap[1] %||% 0)
-    eff_max <- if (is.finite(cap) && cap > 0) min(bal, cap) else bal
+    eff_max <- round_token_cents(if (is.finite(cap) && cap > 0) min(bal, cap) else bal)
 
     tagList(
       div(class = "bp-card",
@@ -945,7 +947,7 @@ server <- function(input, output, session) {
         div(class = "bp-meta",
           span(class = "bp-pill", sprintf("Round %d", as.integer(o$current_round[1]))),
           span(class = "bp-pill", sprintf("Section %s", sec)),
-          span(class = "bp-pill", sprintf("%.1f participation tokens available", bal)),
+          span(class = "bp-pill", sprintf("%s participation tokens available", fmt_token_cents(bal))),
           span(class = status_class, toupper(status))
         ),
         if (isTRUE(rv$impersonate)) div(class = "alert alert-warning", strong(sprintf("IMPERSONATING: %s — submissions are recorded for this student.", rv$impersonate_name)))
@@ -961,13 +963,15 @@ server <- function(input, output, session) {
         } else if (identical(as.character(o$pool_structure[1] %||% "shared_pot"), "club_choice")) {
           tagList(
             radioButtons("club_choice", "Choose one", choices=c(setNames("open",sprintf("Open Club: free to join (%.2f× multiplier).",as.numeric(o$open_multiplier[1] %||% o$bonus_multiplier[1] %||% 1.5))), setNames("commitment",sprintf("Commitment Club: requires a %.1f-token membership contribution (%.2f× multiplier).",as.numeric(o$commitment_entry_cost[1] %||% 3),as.numeric(o$commitment_multiplier[1] %||% o$bonus_multiplier[1] %||% 1.5))), "Exit: no loss, no gain."="exit"), inline=FALSE),
-            numericInput("club_contribution", "Contribution to your chosen club", value=0,min=0,max=max(0,bal),step=.5),
+            numericInput("club_contribution", "Contribution to your chosen club", value=0,
+                         min=0,max=round_token_cents(max(0,bal)),step=.01),
             if(status=="open") actionButton("submit_club","Save final club choice",class="btn-primary bp-submit"),
             p(class="bp-note", "Your token balance is private. The membership contribution is included in the Commitment Club pot and shared with that club.")
           )
         } else {
           tagList(
-            sliderInput("bonus_c", "Contribution (participation tokens)", min = 0, max = max(0, floor(eff_max * 2) / 2), value = 0, step = 0.5),
+            numericInput("bonus_c", "Contribution (participation tokens)",
+                         min = 0, max = max(0, eff_max), value = 0, step = 0.01),
             if (status == "open") div(class="bp-actions",
               actionButton("submit_bonus", "Save contribution", class = "btn-primary bp-submit",
                            title = "Save or replace your contribution"),
@@ -1032,7 +1036,7 @@ server <- function(input, output, session) {
       showNotification("Current game is not Bonus Pot.", type = "error"); return()
     }
 
-    c_val <- round_to_half(as.numeric(input$bonus_c %||% 0))
+    c_val <- round_token_cents(input$bonus_c %||% 0)
     if (!is.finite(c_val) || c_val < 0) c_val <- 0
     bal <- token_balance(user_id())
     if (c_val > bal + 1e-9) {
@@ -1053,7 +1057,7 @@ server <- function(input, output, session) {
            as.character(name()), c_val, sec)
     )
     showNotification(
-      sprintf("Saved %.1f participation token(s) as your contribution. You can replace or reset it until the round closes.", c_val),
+      sprintf("Saved %s participation token(s) as your contribution. You can replace or reset it until the round closes.", fmt_token_cents(c_val)),
       type = "message"
     )
   })
@@ -1061,7 +1065,7 @@ server <- function(input, output, session) {
   observeEvent(input$submit_club, {
     req(authed()); o <- get_olig(); sec <- olig_section(o)
     if (!identical(GAME_MODE,"bonus") || !bonus_game_in_selected_environment(o) || as.character(o$round_status[1])!="open" || !identical(as.character(o$pool_structure[1] %||% ""),"club_choice")) { showNotification("Club Choice is not open for this section.",type="error");return() }
-    club <- input$club_choice %||% ""; contribution <- round_to_half(as.numeric(input$club_contribution %||% NA_real_)); entry <- if(identical(club,"commitment")) max(0,as.numeric(o$commitment_entry_cost[1] %||% 3)) else 0
+    club <- input$club_choice %||% ""; contribution <- round_token_cents(input$club_contribution %||% NA_real_); entry <- if(identical(club,"commitment")) max(0,as.numeric(o$commitment_entry_cost[1] %||% 3)) else 0
     if(!club %in% c("open","commitment","exit") || (!isTRUE(as.integer(o$allow_exit[1] %||% 1L)==1L) && identical(club,"exit")) || !is.finite(contribution) || contribution<0 || (identical(club,"exit") && contribution!=0) || (identical(club,"commitment") && contribution < max(0,as.numeric(o$commitment_min_contribution[1] %||% 0)))) { showNotification("Choose a permitted club and valid contribution.",type="error");return() }
     starting <- token_balance(user_id()); if(entry+contribution > starting+1e-9){showNotification("Membership contribution plus contribution exceeds your private token balance.",type="error");return()}
     db_exec("INSERT INTO olig_submissions(round,user_id,display_name,game,action,contribute,section,club_choice,entry_cost,starting_balance) VALUES(?,?,?,'bonus',NULL,?,?,?,?,?) ON CONFLICT(round,user_id) DO UPDATE SET display_name=excluded.display_name,contribute=excluded.contribute,section=excluded.section,club_choice=excluded.club_choice,entry_cost=excluded.entry_cost,starting_balance=excluded.starting_balance,created_at=CURRENT_TIMESTAMP;",list(as.integer(o$current_round[1]),as.character(user_id()),as.character(name()),contribution,sec,club,entry,starting))
@@ -1087,7 +1091,7 @@ server <- function(input, output, session) {
       list(as.integer(o$current_round[1]), as.character(user_id()),
            as.character(name()), sec)
     )
-    updateSliderInput(session, "bonus_c", value=0)
+    updateNumericInput(session, "bonus_c", value=0)
     showNotification("Contribution reset to 0. You can still replace it until the round closes.", type="message")
   })
 
@@ -1104,7 +1108,7 @@ server <- function(input, output, session) {
         c_saved <- if (is.finite(c_saved)) c_saved else 0
         return(tagList(
           p(strong(if (c_saved > 0)
-            sprintf("Saved contribution: %.1f participation token(s).", c_saved)
+            sprintf("Saved contribution: %s participation token(s).", fmt_token_cents(c_saved))
             else "Your contribution is set to 0.")),
           p(if (status == "open")
               "You can update your contribution until the round closes."
@@ -1164,7 +1168,7 @@ server <- function(input, output, session) {
       transmute(
         Student = ifelse(!is.na(display_name) & nzchar(trimws(as.character(display_name))),
                          as.character(display_name), "Student"),
-        Contribution = sprintf("%.1f", suppressWarnings(as.numeric(contribute)))
+        Contribution = fmt_token_cents(suppressWarnings(as.numeric(contribute)))
       ) %>%
       arrange(Student)
     if (!nrow(rows)) {
@@ -1464,7 +1468,7 @@ server <- function(input, output, session) {
         Student=ifelse(!is.na(display_name) & nzchar(trimws(as.character(display_name))), as.character(display_name), as.character(user_id)),
         Choice=ifelse(identical(as.character(o$pool_structure[1] %||% ""), "club_choice"),
                       tools::toTitleCase(as.character(club_choice %||% "open")), "Bonus Pot"),
-        Contribution=sprintf("%.1f", suppressWarnings(as.numeric(contribute))),
+        Contribution=fmt_token_cents(suppressWarnings(as.numeric(contribute))),
         `Membership contribution`=sprintf("%.1f", suppressWarnings(as.numeric(entry_cost %||% 0)))
       )
     if (!nrow(entries)) return(p(class="bp-note", "No submissions yet."))
