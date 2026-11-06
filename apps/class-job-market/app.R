@@ -2361,8 +2361,8 @@ GAMES <- list(
        label = "Airplanes",     embedded = FALSE, url = "/airplanes-game/",
        desc = "Enter production data in a live classroom experiment on division of labour."),
   list(id = "club-insurance-game", type = "session",
-       label = "Clubs & Insurance", embedded = FALSE, url = "/club-insurance-game/",
-       desc = "Choose your insurance level in a group risk pool and explore adverse selection.")
+       label = "Risk & Insurance", embedded = TRUE, url = "/club-insurance-game/",
+       desc = "Choose what full insurance is worth, face a percent or fixed token loss, and compare implied risk aversion across balances.")
 )
 
 game_info <- function(id) Find(function(g) g$id == id, GAMES)
@@ -2795,6 +2795,7 @@ COOKIE_JS <- HTML("
       if (targetPath === '/review-quiz') return '/review-quiz/';
       if (targetPath === '/bonus-pot') return '/bonus-pot/';
       if (targetPath === '/price-war') return '/price-war/';
+      if (targetPath === '/club-insurance-game') return '/club-insurance-game/';
       if (targetPath === '/class-job-market' &&
           target.searchParams.get('view') === 'cold-call-slide') {
         return '/class-job-market/?view=cold-call-slide';
@@ -3361,6 +3362,7 @@ server <- function(input, output, session) {
     if (target %in% c("/review-quiz", "/review-quiz/")) return("/review-quiz/")
     if (target %in% c("/bonus-pot", "/bonus-pot/")) return("/bonus-pot/")
     if (target %in% c("/price-war", "/price-war/")) return("/price-war/")
+    if (target %in% c("/club-insurance-game", "/club-insurance-game/")) return("/club-insurance-game/")
     if (target %in% c("/class-job-market/?view=cold-call-slide",
                        "/class-job-market?view=cold-call-slide")) {
       return("/class-job-market/?view=cold-call-slide")
@@ -5256,6 +5258,7 @@ server <- function(input, output, session) {
       switch(active,
         bonus_pot         = uiOutput("embedded_bonus_pot"),
         price_war         = uiOutput("embedded_price_war"),
+        `club-insurance-game` = uiOutput("embedded_risk_insurance"),
         div(class = "no-game", "Embedded UI coming soon.")
       )
     } else {
@@ -5276,6 +5279,17 @@ server <- function(input, output, session) {
     impersonate <- if (isTRUE(rv$impersonating)) utils::URLencode(as.character(rv$user_id %||% ""), reserved=TRUE) else ""
     tags$iframe(src=paste0("/price-war/?embedded=1&course=", course, "&section=", section, "&impersonate=", impersonate), title="Price War",
       style="width:100%;height:720px;border:0;border-radius:6px;background:#fff;")
+  })
+
+  output$embedded_risk_insurance <- renderUI({
+    req(rv$authed)
+    course <- utils::URLencode(as.character(rv$active_course %||% ""), reserved=TRUE)
+    section <- utils::URLencode(as.character(rv$active_section %||% ""), reserved=TRUE)
+    impersonate <- if (isTRUE(rv$impersonating)) utils::URLencode(as.character(rv$user_id %||% ""), reserved=TRUE) else ""
+    tags$iframe(src=paste0("/club-insurance-game/?embedded=1&course=", course,
+                           "&section=", section, "&impersonate=", impersonate),
+                title="Risk & Insurance",
+                style="width:100%;height:820px;border:0;border-radius:6px;background:#fff;")
   })
 
   # ── Embedded: Prisoner's Dilemma + Price War ──────────────────────────────────
@@ -12003,6 +12017,8 @@ server <- function(input, output, session) {
                 tags$a(href="/bonus-pot/", target="_blank", class="btn btn-sm btn-primary", style="margin-top:.5rem;", "Open Bonus Pot controls →"))
           } else if (identical(active, "price_war")) {
             div(class="alert alert-info", "Price War has independent course/section/round setup. ", tags$a(href="/price-war/", target="_blank", "Open Price War controls →"))
+          } else if (identical(active, "club-insurance-game")) {
+            div(class="alert alert-info", "Risk & Insurance has independent course/section/round setup. ", tags$a(href="/club-insurance-game/", target="_blank", "Open Risk & Insurance controls →"))
           } else {
             fluidRow(
               column(4, actionButton("adm_open", "Open", class = "btn btn-success btn-sm btn-block")),
