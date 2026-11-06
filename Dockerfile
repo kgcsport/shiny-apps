@@ -18,6 +18,7 @@ RUN Rscript --vanilla -e "parse(file='/srv/shiny-server/bonus-pot/app.R'); cat('
 RUN Rscript --vanilla -e "parse(file='/srv/shiny-server/price-war/app.R'); cat('price-war parse OK\n')"
 RUN Rscript --vanilla -e "parse(file='/srv/shiny-server/coordination-games/app.R'); cat('coordination-games redirect parse OK\n')"
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-live-score-audit.R
+RUN Rscript --vanilla /srv/shiny-server/tests/critical-insurance-market.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-assignment-wage-award.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-gradebook-ux.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-bonus-pot-unification.R

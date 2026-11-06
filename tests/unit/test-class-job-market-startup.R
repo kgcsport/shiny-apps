@@ -69,6 +69,13 @@ test_that("class-job-market starts against a fresh DB with required tables and c
     expect_true(all(c("cloudflare_assignment_id", "extension_target") %in% cols(con, "problem_sets")))
     expect_true("job_name" %in% cols(con, "job_posts"))
     expect_true(all(c("sync_status", "sync_error", "synced_at") %in% cols(con, "extension_purchases")))
+    expect_true(all(c("scope_key","round_id","benefit","premium","status","price_step",
+                      "policies_sold","claims_paid_count","premium_revenue","claim_cost",
+                      "realized_profit","dividend_each","dividend_recipients","dividends_paid",
+                      "net_profit","suggested_next_premium") %in% cols(con,"insurance_products")))
+    expect_true(all(c("product_id","user_id","premium","ledger_id") %in% cols(con,"insurance_purchases")))
+    expect_true(all(c("product_id","user_id","benefit","pass_event_id","ledger_id") %in% cols(con,"insurance_claims")))
+    expect_true(all(c("product_id","user_id","amount","ledger_id") %in% cols(con,"insurance_dividends")))
     expect_true(all(c("round_id", "snapshot_key", "job_post_id", "category_id", "wage", "source") %in%
                       cols(con, "class_wage_snapshots")))
     expect_true(all(c("tokens_awarded", "tokens_credited", "status", "job_post_id",
