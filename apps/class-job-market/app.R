@@ -10274,7 +10274,12 @@ server <- function(input, output, session) {
       wellPanel(tags$strong("Active scope: "), paste(c(scoped_course(), scoped_sections()), collapse=" / "), tags$p(style="color:#666;font-size:.82rem;margin:.25rem 0 .4rem;", "Roster, jobs, market controls, tracker choices, exports, Flex funding, and spending options use this scope."), actionButton("open_scope_picker_btn", "Change scope", class="btn btn-sm btn-outline-primary")),
       tutorial_note("How to configure the app", c("Jobs: edit reusable templates, instructions, wages, timing, and posts for the selected class date.", "Job Market Controls: choose the class date and adjust allocation or bidding at any time.", "Spending Options: enable or disable token purchases for the active class / section environment.", "Students: add, archive, restore, or impersonate roster members.", "Token Admin and Grades: make audited corrections and import course records.")),
       wellPanel(selectInput("config_action", "Settings section:", width = "100%", choices = c(
-        "Jobs"="jobs", "Job Market Controls"="round_setup", "Insurance"="insurance", "Students"="students", "Token Admin"="token_admin", "Spending Options"="spending", "Policy Rubrics"="policy_rubrics", "Grades & Gradebook"="gradebook", "Exports"="exports", "Extensions"="extensions", "Flex Questions"="flex_questions", "Game Controls"="game_controls", "App Settings"="app_settings", "Demo / Testing"="sandbox_demo"), selected="jobs"), uiOutput("config_panel"))
+        "Jobs"="jobs", "Job Market Controls"="round_setup", "Students"="students",
+        "Token Admin"="token_admin", "Spending Options"="spending",
+        "Policy Rubrics"="policy_rubrics", "Grades & Gradebook"="gradebook",
+        "Exports"="exports", "Game Controls"="game_controls",
+        "App Settings"="app_settings", "Demo / Testing"="sandbox_demo"), selected="jobs"),
+        uiOutput("config_panel"))
     )
   })
 
@@ -10397,10 +10402,34 @@ server <- function(input, output, session) {
   output$config_panel <- renderUI({
     req(rv$is_admin)
     rv$jobs_ver; rv$extensions_ver; rv$flex_ver; rv$students_ver; rv$insurance_ver
-    act <- input$config_action %||% "jobs"
-    if (act == "spending") {
+    top_act <- input$config_action %||% "jobs"
+    spending_nav <- NULL
+    act <- top_act
+    if (identical(top_act, "spending")) {
+      spending_choices <- c(
+        "Overview & availability"="spending_overview",
+        "Pass insurance"="insurance",
+        "Assignment extensions"="extensions",
+        "Exam questions"="flex_questions",
+        "Grade reweighting"="reweight")
+      selected_spending <- input$spending_config_action %||% "spending_overview"
+      if (!selected_spending %in% unname(spending_choices)) selected_spending <- "spending_overview"
+      spending_nav <- tags$details(
+        open=NA,
+        style="margin-bottom:.8rem;background:#f8f9fa;border:1px solid #e2e5e8;border-radius:8px;padding:.55rem .7rem;",
+        tags$summary(style="cursor:pointer;color:#951829;font-weight:700;", "Spending controls"),
+        tags$p(style="color:#666;font-size:.82rem;margin:.45rem 0 .25rem;",
+               "Choose the spending system to configure. The active class / section scope stays fixed."),
+        selectInput("spending_config_action", NULL, choices=spending_choices,
+                    selected=selected_spending, width="100%"))
+      act <- selected_spending
+    }
+    wrap_spending <- function(content) {
+      if (identical(top_act, "spending")) tagList(spending_nav, content) else content
+    }
+    if (act == "spending_overview") {
       enabled <- spending_enabled_for_scope()
-      tagList(tags$h5("Spending options"), tags$p(style="color:#555;font-size:.88rem;", "This setting applies only to the active class / section environment. Existing purchases and token history are preserved. It covers insurance, extensions, grade reweights, and question funding."), checkboxInput("spending_enabled_input", "Enable student spending", value=enabled), actionButton("save_spending_options_btn", "Save spending", class="btn btn-primary"), if (!enabled) div(class="alert alert-warning", style="margin-top:.75rem;", "Student spending is currently disabled for this environment."))
+      wrap_spending(tagList(tags$h5("Spending options"), tags$p(style="color:#555;font-size:.88rem;", "This setting applies only to the active class / section environment. Existing purchases and token history are preserved. It covers insurance, extensions, grade reweights, and question funding."), checkboxInput("spending_enabled_input", "Enable student spending", value=enabled), actionButton("save_spending_options_btn", "Save spending", class="btn btn-primary"), if (!enabled) div(class="alert alert-warning", style="margin-top:.75rem;", "Student spending is currently disabled for this environment.")))
     } else if (act == "insurance") {
       round <- tryCatch(active_round_row(), error=function(e)data.frame())
       product <- if (nrow(round)) insurance_product_for_round(as.integer(round$id[1])) else data.frame()
@@ -10418,7 +10447,7 @@ server <- function(input, output, session) {
          LEFT JOIN insurance_claims ic ON ic.product_id=ip.product_id AND LOWER(ic.user_id)=LOWER(ip.user_id)
          WHERE ip.product_id=? ORDER BY student;", list(as.integer(product$id[1]))),
         error=function(e)data.frame()) else data.frame()
-      tagList(
+      wrap_spending(tagList(
         tags$h5("Pass Insurance Market"),
         tags$p(style="color:#555;font-size:.88rem;",
           "Students buy one dated policy from Spend before class. An insured live pass pays once. Positive realized profit is divided equally among every active student in this scope; insurance cash flows do not count as participation earnings."),
@@ -10460,7 +10489,7 @@ server <- function(input, output, session) {
               })))) else div(style="color:#999;font-size:.88rem;margin-top:.6rem;", "No policies purchased yet.")
           )
         )
-      )
+      ))
     } else if (act == "jobs") {
       rid_row <- tryCatch(active_round_row(),
                           error = function(e) data.frame())
@@ -10969,9 +10998,13 @@ server <- function(input, output, session) {
       rv$students_ver
       hide_archived <- isTRUE(as.integer(get_setting("hide_archived_students", "0")) == 1L)
       students <- tryCatch(db_query(
-        paste0("SELECT user_id, display_name, course, section,
+        paste0("SELECT u.user_id, u.display_name, u.course, u.section,
                 COALESCE(active,1) AS active, COALESCE(is_admin,0) AS is_admin
-         FROM users WHERE COALESCE(is_demo,0)=0
+                ,COALESCE((SELECT SUM(tl.amount) FROM token_ledger tl
+                           WHERE LOWER(tl.user_id)=LOWER(u.user_id)),0) AS tokens_on_hand
+                ,COALESCE((SELECT SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END)
+                           FROM token_ledger tl WHERE LOWER(tl.user_id)=LOWER(u.user_id)),0) AS gross_tokens
+         FROM users u WHERE COALESCE(u.is_demo,0)=0
          ", if (hide_archived) "AND COALESCE(active,1)=1 " else "",
          "ORDER BY course, section, display_name;")),
         error = function(e) data.frame())
@@ -10999,6 +11032,10 @@ server <- function(input, output, session) {
               tags$tr(
                 style = if (!is_act) "color:#aaa;" else "",
                 tags$td(r$display_name %||% r$user_id,
+                        tags$small(style="color:#666;margin-left:.35rem;white-space:nowrap;",
+                                   sprintf("%s on hand · %s gross",
+                                     fmt_token_amount(r$tokens_on_hand),
+                                     fmt_token_amount(r$gross_tokens))),
                         if (!is_act) tags$small(style = "color:#ccc;margin-left:.3rem;", "(archived)")),
                 tags$td(style = "color:#888;font-size:.85em;", r$user_id),
                 tags$td(style = "color:#888;font-size:.85em;", r$course %||% ""),
@@ -11051,9 +11088,9 @@ server <- function(input, output, session) {
             })))
           )
         } else div(style = "color:#999;font-size:.9em;margin-bottom:.5rem;", "No students."),
-        if (is_super_admin()) tagList(
-          tags$hr(),
-          tags$h6(style="font-weight:700;color:#951829;", "Administrator Access"),
+        if (is_super_admin()) tags$details(
+          style="margin-top:.65rem;border-top:1px solid #eee;padding-top:.55rem;",
+          tags$summary(style="cursor:pointer;color:#951829;font-weight:700;", "Administrator access"),
           tags$p(style="color:#555;font-size:.85rem;", "Grant a scoped role. Super-admins manage every course; course administrators manage all sections of one course; section administrators manage one section. Existing super-admin accounts cannot be changed by CSV uploads."),
           fluidRow(
             column(4, selectizeInput("admin_role_user", "User:", choices=setNames(students$user_id, paste0(students$display_name, " (", students$user_id, ")")))),
@@ -11063,71 +11100,69 @@ server <- function(input, output, session) {
           ),
           actionButton("save_admin_role_btn", "Grant role", class="btn btn-sm btn-warning")
         ),
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Add Student"),
-        tags$p(style = "color:#555;font-size:.85rem;",
-               "Use the student's Vassar email as username. Password is optional for Google-only accounts."),
-        fluidRow(
-          column(3, textInput("new_stu_uid", "Username:")),
-          column(3, textInput("new_stu_name", "Display name:")),
-          column(2, textInput("new_stu_course", "Class:")),
-          column(2, textInput("new_stu_section", "Section:")),
-          column(1, passwordInput("new_stu_pw", "Password:")),
-          column(1, tags$br(),
-                 actionButton("create_student_btn", "Add", class = "btn btn-sm btn-primary"))
+        tags$details(
+          style="margin-top:.65rem;border-top:1px solid #eee;padding-top:.55rem;",
+          tags$summary(style="cursor:pointer;color:#951829;font-weight:700;", "Add student"),
+          tags$p(style = "color:#555;font-size:.85rem;",
+                 "Use the student's Vassar email as username. Password is optional for Google-only accounts."),
+          fluidRow(
+            column(3, textInput("new_stu_uid", "Username:")),
+            column(3, textInput("new_stu_name", "Display name:")),
+            column(2, textInput("new_stu_course", "Class:")),
+            column(2, textInput("new_stu_section", "Section:")),
+            column(1, passwordInput("new_stu_pw", "Password:")),
+            column(1, tags$br(),
+                   actionButton("create_student_btn", "Add", class = "btn btn-sm btn-primary"))
+          )
         ),
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Reset Password"),
-        fluidRow(
-          column(4, textInput("reset_pw_uid", "Username:")),
-          column(4, passwordInput("reset_pw_new", "New password:")),
-          column(4, tags$br(),
-                 actionButton("reset_pw_btn", "Reset", class = "btn btn-sm btn-warning"))
+        tags$details(
+          style="margin-top:.65rem;border-top:1px solid #eee;padding-top:.55rem;",
+          tags$summary(style="cursor:pointer;color:#951829;font-weight:700;", "Reset password"),
+          fluidRow(
+            column(4, textInput("reset_pw_uid", "Username:")),
+            column(4, passwordInput("reset_pw_new", "New password:")),
+            column(4, tags$br(),
+                   actionButton("reset_pw_btn", "Reset", class = "btn btn-sm btn-warning"))
+          )
         ),
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Bulk Upload Students"),
-        tags$p(style = "color:#555;font-size:.85rem;",
-               "Upload a CSV, then map its columns to username/email, display name, class, section, and optional password. ",
-               "Leave password unmapped for Google-only student accounts."),
-        downloadButton("dl_student_template", "CSV template",
-                       class = "btn btn-sm btn-outline-secondary"),
-        tags$br(), tags$br(),
-        fileInput("upload_students_csv", NULL, accept = ".csv",
-                  buttonLabel = "Browse…", placeholder = "No file chosen"),
-        uiOutput("student_csv_mapper"),
-        checkboxInput("upload_stu_update",
-                      "Update existing students (display name + class + section; password only if provided in CSV)",
-                      value = FALSE),
-        actionButton("bulk_upload_students_btn", "Upload",
-                     class = "btn btn-sm btn-primary"),
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Policy Group Assignments"),
-        tags$p(style = "color:#555;font-size:.85rem;",
-               "Manually add or update one student, or import the final CSV from the PubEcon policy-group allocation Action. Assignments appear immediately on student Account profiles."),
-        {
-          policy_students <- if (nrow(students))
-            students[as.integer(students$is_admin %||% 0L) == 0L, , drop=FALSE] else data.frame()
-          if (nrow(policy_students)) {
-            selected_uid <- isolate(input$manual_policy_user %||% policy_students$user_id[1])
-            if (!selected_uid %in% policy_students$user_id) selected_uid <- policy_students$user_id[1]
-            tagList(
-              tags$h6(style="font-weight:600;margin-top:.65rem;", "Manual update"),
-              selectInput("manual_policy_user", "Student:",
-                choices=setNames(policy_students$user_id,
-                  sprintf("%s (%s)", policy_students$display_name, policy_students$user_id)),
-                selected=selected_uid),
-              uiOutput("manual_policy_group_editor")
-            )
-          } else div(style="color:#999;font-size:.85rem;", "Add students before assigning policy groups.")
-        },
-        tags$hr(style="margin:.8rem 0;"),
-        tags$h6(style="font-weight:600;", "Bulk import"),
-        tags$p(style="color:#555;font-size:.82rem;",
-               "Required CSV columns: user_id, policy_team, presentation_date, and course_unit."),
-        fileInput("upload_policy_groups_csv", NULL, accept = ".csv",
-                  buttonLabel = "Browse…", placeholder = "No file chosen"),
-        actionButton("upload_policy_groups_btn", "Import CSV",
-                     class = "btn btn-sm btn-primary")
+        tags$details(
+          style="margin-top:.65rem;border-top:1px solid #eee;padding-top:.55rem;",
+          tags$summary(style="cursor:pointer;color:#951829;font-weight:700;", "Bulk upload students"),
+          tags$p(style = "color:#555;font-size:.85rem;",
+                 "Upload a CSV, then map its columns to username/email, display name, class, section, and optional password. Leave password unmapped for Google-only accounts."),
+          downloadButton("dl_student_template", "CSV template", class = "btn btn-sm btn-outline-secondary"),
+          tags$br(), tags$br(),
+          fileInput("upload_students_csv", NULL, accept = ".csv",
+                    buttonLabel = "Browse…", placeholder = "No file chosen"),
+          uiOutput("student_csv_mapper"),
+          checkboxInput("upload_stu_update",
+                        "Update existing students (display name + class + section; password only if provided in CSV)",
+                        value = FALSE),
+          actionButton("bulk_upload_students_btn", "Upload", class = "btn btn-sm btn-primary")
+        ),
+        tags$details(
+          style="margin-top:.65rem;border-top:1px solid #eee;padding-top:.55rem;",
+          tags$summary(style="cursor:pointer;color:#951829;font-weight:700;", "Policy group assignments"),
+          tags$p(style = "color:#555;font-size:.85rem;",
+                 "Manually update one student or import the final allocation CSV. Assignments appear immediately on student Account profiles."),
+          {
+            policy_students <- if (nrow(students)) students[as.integer(students$is_admin %||% 0L) == 0L, , drop=FALSE] else data.frame()
+            if (nrow(policy_students)) {
+              selected_uid <- isolate(input$manual_policy_user %||% policy_students$user_id[1])
+              if (!selected_uid %in% policy_students$user_id) selected_uid <- policy_students$user_id[1]
+              tagList(
+                tags$h6(style="font-weight:600;margin-top:.65rem;", "Manual update"),
+                selectInput("manual_policy_user", "Student:",
+                  choices=setNames(policy_students$user_id, sprintf("%s (%s)", policy_students$display_name, policy_students$user_id)),
+                  selected=selected_uid),
+                uiOutput("manual_policy_group_editor"))
+            } else div(style="color:#999;font-size:.85rem;", "Add students before assigning policy groups.")
+          },
+          tags$h6(style="font-weight:600;", "Bulk import"),
+          tags$p(style="color:#555;font-size:.82rem;", "Required CSV columns: user_id, policy_team, presentation_date, and course_unit."),
+          fileInput("upload_policy_groups_csv", NULL, accept = ".csv", buttonLabel = "Browse…", placeholder = "No file chosen"),
+          actionButton("upload_policy_groups_btn", "Import CSV", class = "btn btn-sm btn-primary")
+        )
       )
 
     } else if (act == "exports") {
@@ -11151,7 +11186,7 @@ server <- function(input, output, session) {
          ORDER BY submitted_at DESC, student, job;",
         list(as.integer(bid_round$id[1]), as.integer(bid_round$id[1]))),
         error = function(e) data.frame()) else data.frame()
-      tagList(
+      wrap_spending(tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Export Data"),
         tags$h6(style = "font-weight:700;color:#951829;margin-top:1rem;", "Live Wage Bids — Selected Class"),
         if (nrow(bid_round)) tags$p(style = "color:#555;font-size:.84rem;",
@@ -11184,7 +11219,7 @@ server <- function(input, output, session) {
           downloadButton("dl_flex_purchases",       "Question Contributions",     class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_students",             "Students",             class = "btn btn-sm btn-outline-secondary")
         )
-      )
+      ))
 
     } else if (act == "extensions") {
       rv$extensions_ver
@@ -11192,7 +11227,7 @@ server <- function(input, output, session) {
                        error = function(e) data.frame())
       pricing <- extension_pricing_settings()
       purchases <- tryCatch(db_query("SELECT ep.id,ep.user_id,COALESCE(u.display_name,ep.user_id) student,ps.name problem_set,COALESCE(ps.extension_target,'submission') extension_target,ep.hours,ep.purchased_at,COALESCE(ep.approval_status,'approved') approval_status,COALESCE(ep.sync_status,'pending') sync_status,COALESCE(ep.sync_error,'') sync_error,COALESCE(ep.refund_status,'not_refunded') refund_status FROM extension_purchases ep LEFT JOIN users u ON u.user_id=ep.user_id LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id ORDER BY ep.purchased_at DESC;"), error=function(e) data.frame())
-      tagList(
+      wrap_spending(tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;",
                 "Extension Pricing"),
         tags$p(style = "color:#555;font-size:.85rem;",
@@ -11280,7 +11315,42 @@ server <- function(input, output, session) {
             tags$td(tagList(if (!identical(r$sync_status, "synced") && !identical(r$sync_status, "refunded") && !identical(r$refund_status, "refunded") && !identical(r$approval_status, "pending")) tags$button(class="btn btn-xs btn-outline-primary", style="padding:.1rem .35rem;font-size:.72rem;", onclick=sprintf("Shiny.setInputValue('retry_extension_sync',%d,{priority:'event'});", as.integer(r$id)), "Retry") else NULL,
               if (identical(r$sync_status, "synced") && !identical(r$refund_status, "refunded") && !identical(r$approval_status, "pending")) tags$button(class="btn btn-xs btn-outline-warning", style="padding:.1rem .35rem;font-size:.72rem;", onclick=sprintf("if(confirm('Refund this extension for this student?')) Shiny.setInputValue('admin_refund_extension_purchase',%d,{priority:'event'});", as.integer(r$id)), "Refund") else NULL))
           )}))) else div(style="color:#999;", "No extension purchases yet.")
-      )
+      ))
+
+    } else if (act == "reweight") {
+      rw_costs_str <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
+                               error=function(e) "1:2,2:5,3:9,4:14,5:20")
+      rw_max_pts_cur <- get_rw_max_points()
+      wrap_spending(tagList(
+        tags$h6(style="font-weight:700;color:#951829;margin-top:.5rem;", "Grade Reweighting"),
+        tags$p(style="color:#555;font-size:.85rem;",
+               "Students spend tokens to shift grade weight between configured categories. Requests remain subject to instructor review."),
+        fluidRow(
+          column(8, textInput("rw_costs_input", "Cost formula / schedule:",
+                              value=rw_costs_str, width="100%",
+                              placeholder="e.g. 1:2,2:5,3:9  or  2*n+n^2")),
+          column(4, numericInput("rw_max_points_input", "Maximum total pts each student can move:",
+                                 value=rw_max_pts_cur, min=1, step=1, width="100%"))
+        ),
+        tags$p(style="color:#888;font-size:.82em;margin-top:-.3rem;",
+               tags$b("Table:"), " pairs of points:tokens, or ", tags$b("Expression:"),
+               " arithmetic in ", tags$code("n"), ", where n is the number of percentage points moved."),
+        {
+          n_preview <- seq_len(rw_max_pts_cur)
+          costs_preview <- sapply(n_preview, rw_cost_for_n)
+          div(style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.5rem 0 .6rem;",
+              lapply(n_preview, function(i) {
+                cv <- costs_preview[i]
+                div(style="background:#f0f4f8;border-radius:5px;padding:.2rem .5rem;font-size:.82rem;text-align:center;min-width:3.5rem;",
+                    div(style="color:#888;font-size:.72rem;", sprintf("%d pt%s", i, if(i==1)"" else "s")),
+                    div(style="font-weight:600;", if (!is.na(cv)) as.integer(cv) else tags$span(style="color:#c00;", "?")))
+              }))
+        },
+        actionButton("save_rw_setup_btn", "Save setup", class="btn btn-sm btn-primary"),
+        tags$hr(),
+        tags$h6(style="font-weight:700;", "Recent requests"),
+        uiOutput("rw_requests_panel")
+      ))
 
     } else if (act == "flex_questions") {
       scope_key <- current_scope_key()
@@ -11301,7 +11371,7 @@ server <- function(input, output, session) {
         error = function(e) data.frame())
       cur_schedule <- tryCatch(flex_cost_schedule_for_scope(),
                                error=function(e)"2,4,6,8,10")
-      tagList(
+      wrap_spending(tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Flex Questions"),
         tags$p(style = "color:#555;font-size:.85rem;",
                sprintf("Question text is shared within %s; funding and reveals apply only to the selected section scope: %s.",
@@ -11452,7 +11522,7 @@ server <- function(input, output, session) {
                   placeholder = "e.g. Final — overridden by CSV's exam_tag column"),
         checkboxInput("fq_replace_all", "Replace all existing questions", value = FALSE),
         actionButton("upload_flex_questions_btn", "Upload", class = "btn btn-sm btn-primary")
-      )
+      ))
 
     } else if (act == "policy_rubrics") {
       rv$rubric_ver
@@ -12140,46 +12210,8 @@ server <- function(input, output, session) {
           )
         },
 
-        tags$hr(),
-
-        # ── 4. Reweighting Setup ────────────────────────────────────────────────
-        sec_hdr(4L, "Grade Reweighting Setup"),
-        tags$p(style = "color:#555;font-size:.85rem;",
-          "Students can spend tokens (in the Spend tab) to shift grade weight between categories defined in Section 1."),
-        fluidRow(
-          column(8,
-            textInput("rw_costs_input", "Cost formula / schedule:",
-                      value = rw_costs_str, width = "100%",
-                      placeholder = "e.g. 1:2,2:5,3:9  or  2*n+n^2")),
-          column(4,
-            numericInput("rw_max_points_input", "Maximum total pts each student can move:",
-                         value = rw_max_pts_cur, min = 1, step = 1, width = "100%"))
-        ),
-        tags$p(style = "color:#888;font-size:.82em;margin-top:-.3rem;",
-          tags$b("Table:"), " pairs of points:tokens (e.g. ", tags$code("1:2,2:5,3:9"),
-          " — moving 1 pt costs 2 tokens, 2 pts costs 5, etc.). ",
-          tags$b("Expression:"), " any arithmetic formula in ", tags$code("n"),
-          " where n = percentage points being moved (e.g. ", tags$code("2*n+n^2"), "). ",
-          "The cap is each student's total allowance across all pending and approved requests, whether they redistribute within one category or across several."),
-        # Preview table for current formula
-        {
-          n_preview <- seq_len(rw_max_pts_cur)
-          costs_preview <- sapply(n_preview, rw_cost_for_n)
-          tags$div(style = "margin-top:.5rem;margin-bottom:.6rem;",
-            tags$p(style = "font-size:.82em;color:#555;margin-bottom:.2rem;font-weight:600;",
-                   "Cost preview:"),
-            div(style = "display:flex;gap:.4rem;flex-wrap:wrap;",
-              lapply(n_preview, function(i) {
-                cv <- costs_preview[i]
-                div(style = "background:#f0f4f8;border-radius:5px;padding:.2rem .5rem;font-size:.82rem;text-align:center;min-width:3.5rem;",
-                  div(style = "color:#888;font-size:.72rem;", sprintf("%d pt%s", i, if(i==1)""else"s")),
-                  div(style = "font-weight:600;", if (!is.na(cv)) as.integer(cv) else tags$span(style="color:#c00;","?"))
-                )
-              })
-            )
-          )
-        },
-        actionButton("save_rw_setup_btn", "Save setup", class = "btn btn-sm btn-primary")
+        tags$p(style="color:#666;font-size:.82rem;margin-top:.8rem;",
+               "Grade-reweight pricing and limits are configured under Settings → Spending Options.")
       )
 
     } else if (act == "game_controls") {

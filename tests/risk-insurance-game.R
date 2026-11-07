@@ -67,9 +67,17 @@ live <- DBI::dbConnect(RSQLite::SQLite(),db_path)
 DBI::dbExecute(live,"CREATE TABLE users(user_id TEXT PRIMARY KEY,display_name TEXT,is_admin INTEGER,active INTEGER,course TEXT,section TEXT,is_demo INTEGER,pw_hash TEXT)")
 DBI::dbExecute(live,"CREATE TABLE token_ledger(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT,display_name TEXT,source_type TEXT,source_id INTEGER,amount REAL,earning INTEGER,note TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
 DBI::dbExecute(live,"CREATE TABLE scope_arcade_state(scope_key TEXT PRIMARY KEY,active_game TEXT,updated_at TEXT DEFAULT CURRENT_TIMESTAMP)")
-DBI::dbExecute(live,"INSERT INTO users VALUES('admin','Instructor',1,1,'ECON 342','01',0,''),('student-a','Student A',0,1,'ECON 342','01',0,'')")
-DBI::dbExecute(live,"INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning) VALUES('student-a','Student A','seed',20,1)")
-DBI::dbExecute(live,"INSERT INTO scope_arcade_state(scope_key,active_game) VALUES('econ 342::01','club-insurance-game')")
+DBI::dbExecute(live,"INSERT INTO users VALUES
+  ('admin','Instructor',1,1,'ECON 342','01',0,''),
+  ('student-a','Student A',0,1,'ECON 342','01',0,''),
+  ('student-b','Student B',0,1,'ECON 342','01',0,''),
+  ('outsider','Other Section',0,1,'ECON 342','02',0,'')")
+DBI::dbExecute(live,"INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning) VALUES
+  ('student-a','Student A','seed',20,1),
+  ('student-b','Student B','seed',6,1),
+  ('outsider','Other Section','seed',20,1)")
+DBI::dbExecute(live,"INSERT INTO scope_arcade_state(scope_key,active_game) VALUES
+  ('econ 342::01','club-insurance-game'),('econ 342::02',NULL)")
 DBI::dbDisconnect(live)
 
 app_env <- new.env(parent=globalenv());source(app_path,local=app_env)
@@ -87,20 +95,69 @@ shiny::testServer(app_env$server,{
   rv$user<-"student-a";rv$name<-"Student A";rv$admin<-FALSE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"student-a";rv$player_name<-"Student A"
   session$setInputs(max_premium=2.5,save_choice=1);session$flushReact()
 })
+# A fresh browser session may safely retry the same save without creating a
+# second choice. A second in-scope student can choose not to buy.
+shiny::testServer(app_env$server,{
+  rv$user<-"student-a";rv$name<-"Student A";rv$admin<-FALSE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"student-a";rv$player_name<-"Student A"
+  session$setInputs(max_premium=2.5,save_choice=1);session$flushReact()
+})
+shiny::testServer(app_env$server,{
+  rv$user<-"student-b";rv$name<-"Student B";rv$admin<-FALSE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"student-b";rv$player_name<-"Student B"
+  session$setInputs(max_premium=.25,save_choice=1);session$flushReact()
+})
+# An authenticated student in another section cannot submit into this round.
+shiny::testServer(app_env$server,{
+  rv$user<-"outsider";rv$name<-"Other Section";rv$admin<-FALSE;rv$course<-"ECON 342";rv$section<-"02";rv$player_user<-"outsider";rv$player_name<-"Other Section"
+  session$setInputs(max_premium=2.5,save_choice=1);session$flushReact()
+})
 live <- DBI::dbConnect(RSQLite::SQLite(),db_path)
-choice <- DBI::dbGetQuery(live,"SELECT * FROM risk_insurance_choices")
-if(nrow(choice)!=1L||choice$starting_balance[1]!=20||choice$loss_amount[1]!=4||choice$posted_premium[1]!=2||choice$purchased[1]!=1L)stop("Student purchase workflow failed.")
+choices <- DBI::dbGetQuery(live,"SELECT * FROM risk_insurance_choices ORDER BY user_id")
+choice <- choices[choices$user_id=="student-a",,drop=FALSE]
+choice_b <- choices[choices$user_id=="student-b",,drop=FALSE]
+if(nrow(choices)!=2L||nrow(choice)!=1L||choice$starting_balance[1]!=20||choice$loss_amount[1]!=4||choice$posted_premium[1]!=2||choice$purchased[1]!=1L)stop("Student purchase or reconnect workflow failed.")
+if(nrow(choice_b)!=1L||choice_b$starting_balance[1]!=6||choice_b$loss_amount[1]!=1.2||choice_b$posted_premium[1]!=.6||choice_b$purchased[1]!=0L)stop("Second student choice workflow failed.")
 DBI::dbDisconnect(live)
 
 shiny::testServer(app_env$server,{
   rv$user<-"admin";rv$name<-"Instructor";rv$admin<-TRUE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"admin";rv$player_name<-"Instructor"
-  session$setInputs(close_round=1);session$flushReact();session$setInputs(settle_round=1);session$flushReact();session$setInputs(reveal_round=1);session$flushReact()
+  session$setInputs(close_round=1);session$flushReact()
+  session$setInputs(settle_round=1);session$flushReact()
+  session$setInputs(settle_round=2);session$flushReact()
+  session$setInputs(reveal_round=1);session$flushReact()
 })
 live <- DBI::dbConnect(RSQLite::SQLite(),db_path)
 final_round <- DBI::dbGetQuery(live,"SELECT status FROM risk_insurance_rounds")$status[1]
 real_outcome <- DBI::dbGetQuery(live,"SELECT * FROM risk_insurance_outcomes")
 cashflows <- DBI::dbGetQuery(live,"SELECT amount,earning FROM token_ledger WHERE source_type LIKE 'risk_insurance_%'")
-if(final_round!="revealed"||nrow(real_outcome)!=1L||real_outcome$net_change[1]!=-2)stop("Close/settle/reveal workflow failed.")
-if(sum(cashflows$amount)!=-2||any(cashflows$earning!=0L))stop("Real token settlement is incorrect or counted as earnings.")
+student_a_outcome <- real_outcome[real_outcome$user_id=="student-a",,drop=FALSE]
+if(final_round!="revealed"||nrow(real_outcome)!=2L||nrow(student_a_outcome)!=1L||student_a_outcome$net_change[1]!=-2)stop("Close/settle/reveal or settlement idempotency failed.")
+if(abs(sum(cashflows$amount)-sum(real_outcome$net_change))>1e-8||any(cashflows$earning!=0L))stop("Real token settlement is incorrect or counted as earnings.")
+ledger_rows_after_round_1 <- nrow(cashflows)
+DBI::dbDisconnect(live)
+
+# A fixed-loss practice round still records outcomes and analytics when the
+# instructor explicitly turns real-token settlement off.
+shiny::testServer(app_env$server,{
+  rv$user<-"admin";rv$name<-"Instructor";rv$admin<-TRUE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"admin";rv$player_name<-"Instructor"
+  session$setInputs(round_no=2,loss_type="fixed",loss_tokens=4,probability=50,
+                    premium_rate=50,settle_seed=2,apply_tokens=FALSE,open_round=1)
+  session$flushReact()
+})
+shiny::testServer(app_env$server,{
+  rv$user<-"student-a";rv$name<-"Student A";rv$admin<-FALSE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"student-a";rv$player_name<-"Student A"
+  session$setInputs(max_premium=2.5,save_choice=1);session$flushReact()
+})
+shiny::testServer(app_env$server,{
+  rv$user<-"admin";rv$name<-"Instructor";rv$admin<-TRUE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"admin";rv$player_name<-"Instructor"
+  session$setInputs(close_round=1);session$flushReact()
+  session$setInputs(settle_round=1);session$flushReact()
+  session$setInputs(reveal_round=1);session$flushReact()
+})
+live <- DBI::dbConnect(RSQLite::SQLite(),db_path)
+practice_round <- DBI::dbGetQuery(live,"SELECT * FROM risk_insurance_rounds WHERE round=2")
+practice_outcome <- DBI::dbGetQuery(live,"SELECT * FROM risk_insurance_outcomes WHERE round=2")
+practice_ledger_n <- DBI::dbGetQuery(live,"SELECT COUNT(*) n FROM token_ledger WHERE source_type LIKE 'risk_insurance_%'")$n[1]
+if(nrow(practice_round)!=1L||practice_round$status[1]!="revealed"||practice_round$apply_tokens[1]!=0L||nrow(practice_outcome)!=1L)stop("No-token practice round workflow failed.")
+if(practice_ledger_n!=ledger_rows_after_round_1)stop("Practice-only round changed the real token ledger.")
 DBI::dbDisconnect(live)
 cat("risk insurance game: PASS\n")

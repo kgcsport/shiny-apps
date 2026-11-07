@@ -66,6 +66,8 @@ stopifnot(dbExecute(con, "INSERT OR IGNORE INTO insurance_claims(product_id,user
 
 accounting <- insurance_round_accounting(4, 1, 2, 4)
 stopifnot(accounting$profit == 2, accounting$dividend_each == 0.5)
+loss_accounting <- insurance_round_accounting(1, 1, 2, 4)
+stopifnot(loss_accounting$profit == -1, loss_accounting$dividend_each == 0)
 for (i in seq_len(nrow(students))) {
   dbExecute(con, "INSERT INTO insurance_dividends(product_id,user_id,amount) VALUES(1,?,?);", params = list(students$user_id[i], accounting$dividend_each))
   dividend_id <- dbGetQuery(con, "SELECT last_insert_rowid() id;")$id[1]
@@ -76,5 +78,153 @@ cashflows <- dbGetQuery(con, "SELECT COALESCE(SUM(amount),0) x FROM token_ledger
 gross_earnings <- dbGetQuery(con, "SELECT COALESCE(SUM(amount),0) x FROM token_ledger WHERE earning=1;")$x[1]
 stopifnot(abs(cashflows) < 1e-9, gross_earnings == 20)
 stopifnot(insurance_zero_profit_premium(2, 4, step = 0.5) == 0.5)
+stopifnot(insurance_zero_profit_premium(10, 0, fallback = 1.2, step = 0.5) == 1)
+
+# Exercise the production Shiny observers and shared SQLite persistence. This
+# is deliberately multi-session: classroom failures usually happen at the
+# browser/database boundary, not in the accounting helpers above.
+if (requireNamespace("shiny", quietly = TRUE)) {
+  scratch <- tempfile("pass-insurance-")
+  dir.create(file.path(scratch, "data"), recursive = TRUE)
+  old_content <- Sys.getenv("CONNECT_CONTENT_DIR", unset = NA_character_)
+  Sys.setenv(CONNECT_CONTENT_DIR = scratch)
+  on.exit({
+    if (is.na(old_content)) Sys.unsetenv("CONNECT_CONTENT_DIR") else Sys.setenv(CONNECT_CONTENT_DIR = old_content)
+    unlink(scratch, recursive = TRUE)
+  }, add = TRUE)
+
+  app <- new.env(parent = globalenv())
+  source(app_path, local = app)
+  app$db_exec("DELETE FROM insurance_dividends;")
+  app$db_exec("DELETE FROM insurance_claims;")
+  app$db_exec("DELETE FROM insurance_purchases;")
+  app$db_exec("DELETE FROM insurance_products;")
+  app$db_exec("DELETE FROM scope_active_rounds;")
+  app$db_exec("DELETE FROM section_scope_memberships;")
+  app$db_exec("DELETE FROM weekly_rounds;")
+  app$db_exec("DELETE FROM token_ledger;")
+
+  people <- list(
+    c("admin@test.edu", "Instructor", 1L, "01"),
+    c("s1@test.edu", "Student 1", 0L, "01"),
+    c("s2@test.edu", "Student 2", 0L, "01"),
+    c("s3@test.edu", "Student 3", 0L, "01"),
+    c("outsider@test.edu", "Other Section", 0L, "02")
+  )
+  for (person in people) {
+    app$db_exec(
+      "INSERT OR REPLACE INTO users(user_id,display_name,pw_hash,is_admin,course,section,active,is_demo)
+       VALUES(?,?,?,?,?,?,1,0);",
+      list(person[1], person[2], as.character(""), as.integer(person[3]), "ECON 342", person[4]))
+    app$db_exec("INSERT OR IGNORE INTO user_environments(user_id,course,section) VALUES(?,?,?);",
+                list(person[1], "ECON 342", person[4]))
+  }
+  for (uid in c("s1@test.edu", "s2@test.edu", "s3@test.edu", "outsider@test.edu")) {
+    app$db_exec(
+      "INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning,note)
+       SELECT user_id,display_name,'test_seed',10,1,'classroom resilience fixture'
+       FROM users WHERE user_id=?;", list(uid))
+  }
+  app$db_exec("INSERT INTO weekly_rounds(label,class_date,assignment_mode,bidding_enabled) VALUES('Insurance class','2026-11-09','wage_bidding',1);")
+  round_id <- as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1])
+  app$db_exec("INSERT INTO scope_active_rounds(scope_key,course,sections,round_id) VALUES('econ 342::01','ECON 342','01',?);", list(round_id))
+  app$db_exec("INSERT INTO section_scope_memberships(course_key,section_key,scope_key) VALUES('econ 342','01','econ 342::01');")
+
+  set_admin <- function(rv) {
+    rv$authed <- TRUE; rv$user_id <- "admin@test.edu"; rv$name <- "Instructor"
+    rv$course <- "ECON 342"; rv$section <- "01"; rv$is_admin <- TRUE
+    rv$admin_role <- "super_admin"; rv$active_course <- "ECON 342"
+    rv$active_section <- "01"; rv$active_sections <- "01"; rv$impersonating <- FALSE
+  }
+  set_student <- function(rv, uid, name, section = "01") {
+    rv$authed <- TRUE; rv$user_id <- uid; rv$name <- name
+    rv$course <- "ECON 342"; rv$section <- section; rv$is_admin <- FALSE
+    rv$active_course <- "ECON 342"; rv$active_section <- section
+    rv$active_sections <- section; rv$is_demo <- FALSE
+  }
+
+  # Open through the real instructor control.
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    session$setInputs(insurance_benefit_input = 2, insurance_premium_input = 2,
+                      insurance_price_step_input = 0.5,
+                      insurance_deadline_input = "2099-01-01 00:00:00",
+                      save_insurance_product_btn = 1)
+    session$flushReact()
+  })
+  product <- app$db_query("SELECT * FROM insurance_products;")
+  stopifnot(nrow(product) == 1L, product$status[1] == "open",
+            product$scope_key[1] == "econ 342::01")
+  product_id <- as.integer(product$id[1])
+
+  buy_policy <- function(uid, name, click = 1L) shiny::testServer(app$server, {
+    set_student(rv, uid, name)
+    session$setInputs(submit_insurance_purchase = click)
+    session$flushReact()
+  })
+  buy_policy("s1@test.edu", "Student 1")
+  buy_policy("s1@test.edu", "Student 1", 2L) # browser double-click/retry
+  buy_policy("s2@test.edu", "Student 2")
+  purchases <- app$db_query("SELECT * FROM insurance_purchases ORDER BY user_id;")
+  premium_ledger <- app$db_query("SELECT * FROM token_ledger WHERE source_type='insurance_premium';")
+  stopifnot(nrow(purchases) == 2L, nrow(premium_ledger) == 2L,
+            sum(premium_ledger$amount) == -4, all(premium_ledger$earning == 0L))
+
+  # Once anyone buys, a later admin retry cannot rewrite their contract.
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    session$setInputs(insurance_benefit_input = 9, insurance_premium_input = 7,
+                      insurance_price_step_input = 0.5,
+                      insurance_deadline_input = "2099-01-01 00:00:00",
+                      save_insurance_product_btn = 1)
+    session$flushReact()
+  })
+  frozen <- app$db_query("SELECT premium,benefit FROM insurance_products WHERE id=?;", list(product_id))
+  stopifnot(frozen$premium[1] == 2, frozen$benefit[1] == 2)
+
+  # Close sales, reject a late buyer, then record two passes for the same
+  # insured student. Both passes remain in the audit log; the policy pays once.
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    session$setInputs(close_insurance_sales_btn = 1)
+    session$flushReact()
+  })
+  buy_policy("s3@test.edu", "Student 3")
+  stopifnot(nrow(app$db_query("SELECT * FROM insurance_purchases;")) == 2L)
+
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    rv$cold_call_draw <- list(user_id = "s1@test.edu", display_name = "Student 1", section = "01")
+    session$setInputs(cold_call_pass_btn = 1); session$flushReact()
+    rv$cold_call_draw <- list(user_id = "s1@test.edu", display_name = "Student 1", section = "01")
+    session$setInputs(cold_call_pass_btn = 2); session$flushReact()
+  })
+  claims <- app$db_query("SELECT * FROM insurance_claims;")
+  pass_events <- app$db_query("SELECT * FROM live_score_events WHERE event_kind='cold_call' AND outcome='pass';")
+  claim_ledger <- app$db_query("SELECT * FROM token_ledger WHERE source_type='insurance_claim';")
+  stopifnot(nrow(claims) == 1L, nrow(pass_events) == 2L, nrow(claim_ledger) == 1L,
+            claim_ledger$amount[1] == 2, claim_ledger$earning[1] == 0L)
+
+  # Settle twice. Profit is returned to all three in-scope students, including
+  # the nonbuyer, while the other section receives nothing.
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    session$setInputs(settle_insurance_market_btn = 1); session$flushReact()
+    session$setInputs(settle_insurance_market_btn = 2); session$flushReact()
+  })
+  settled <- app$db_query("SELECT * FROM insurance_products WHERE id=?;", list(product_id))
+  dividends <- app$db_query("SELECT * FROM insurance_dividends WHERE product_id=? ORDER BY user_id;", list(product_id))
+  dividend_ledger <- app$db_query("SELECT * FROM token_ledger WHERE source_type='insurance_dividend';")
+  stopifnot(settled$status[1] == "settled", settled$policies_sold[1] == 2L,
+            settled$claims_paid_count[1] == 1L, settled$realized_profit[1] == 2,
+            settled$dividend_recipients[1] == 3L, nrow(dividends) == 3L,
+            nrow(dividend_ledger) == 3L,
+            !"outsider@test.edu" %in% dividends$user_id,
+            all(dividend_ledger$earning == 0L),
+            abs(sum(dividend_ledger$amount) - 2) < 1e-8)
+  all_insurance_cash <- app$db_query(
+    "SELECT COALESCE(SUM(amount),0) x FROM token_ledger WHERE source_type LIKE 'insurance_%';")$x[1]
+  stopifnot(abs(all_insurance_cash) < 1e-8)
+}
 
 cat("critical insurance market: PASS\n")
