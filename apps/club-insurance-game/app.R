@@ -47,6 +47,18 @@ risk_comparison_table <- function(rows, facets = "round") {
   })
   do.call(rbind,out)
 }
+risk_distribution_data <- function(rows, metric = "max_premium", facets = "round") {
+  metrics <- c(max_premium="Willingness to pay (tokens)",cara="Implied CARA",crra="Implied CRRA")
+  metric <- as.character(metric %||% "max_premium")[1]
+  if(!metric%in%names(metrics)||!nrow(rows)||!metric%in%names(rows))return(data.frame())
+  available<-c("round","loss_rule","loss_size","probability","premium_rate","apply_tokens","band")
+  facets<-intersect(as.character(facets%||%character()),available)
+  values<-suppressWarnings(as.numeric(rows[[metric]]));keep<-is.finite(values)
+  if(!any(keep))return(data.frame())
+  rows<-rows[keep,,drop=FALSE];values<-values[keep]
+  facet<-if(!length(facets))rep("All revealed choices",nrow(rows))else apply(rows[facets],1,function(z)paste(z,collapse=" · "))
+  data.frame(value=values,facet=facet,metric=unname(metrics[metric]),stringsAsFactors=FALSE)
+}
 
 x("CREATE TABLE IF NOT EXISTS risk_insurance_rounds(
  course TEXT NOT NULL, section TEXT NOT NULL, round INTEGER NOT NULL,
@@ -297,12 +309,28 @@ server <- function(input,output,session) {
       h4("Compare revealed results"),
       selectizeInput("comparison_facets","Group comparison by",multiple=TRUE,
         choices=c("Round"="round","Loss rule"="loss_rule","Loss size"="loss_size","Bad-state probability"="probability","Premium rate"="premium_rate","Changes real balances"="apply_tokens","Starting endowment band"="band"),selected="round",width="100%"),
-      div(class="table-wrap",tableOutput("history_table")))
+      div(class="table-wrap",tableOutput("history_table")),
+      h4("Distribution explorer"),p(class="muted","These anonymous market distributions are identical for students and instructors. Individual outcomes remain on Play."),
+      fluidRow(column(4,selectInput("distribution_metric","Measure",choices=c("Willingness to pay"="max_premium","Implied CARA"="cara","Implied CRRA"="crra"),selected="max_premium",width="100%")),
+        column(8,selectizeInput("distribution_facets","Split histograms by",multiple=TRUE,
+          choices=c("Round"="round","Loss rule"="loss_rule","Loss size"="loss_size","Bad-state probability"="probability","Premium rate"="premium_rate","Changes real balances"="apply_tokens","Starting endowment band"="band"),selected="round",width="100%"))),
+      plotOutput("distribution_plot",height="520px"))
   })
   output$band_table<-renderTable({r<-selected_result_round();req(nrow(r));aggregate_table(analytics(r,selected_result_choices()))},sanitize.text.function=function(x)x)
   output$history_table<-renderTable({
     rows<-all_revealed_analytics();req(nrow(rows));risk_comparison_table(rows,input$comparison_facets%||%"round")
   },sanitize.text.function=function(x)x)
+  output$distribution_plot<-renderPlot({
+    d<-risk_distribution_data(all_revealed_analytics(),input$distribution_metric%||%"max_premium",input$distribution_facets%||%"round")
+    validate(need(nrow(d),"No finite values are available for this measure."))
+    panels<-split(d$value,factor(d$facet,levels=unique(d$facet)));n<-length(panels)
+    validate(need(n<=16,"Choose fewer grouping dimensions to keep the histograms readable."))
+    nc<-ceiling(sqrt(n));nr<-ceiling(n/nc);old<-par(mfrow=c(nr,nc),mar=c(4,3.5,3,1),oma=c(0,0,1,0));on.exit(par(old),add=TRUE)
+    for(lbl in names(panels)){
+      z<-panels[[lbl]];hist(z,breaks=max(1,min(10,ceiling(sqrt(length(z))))),col="#951829",border="white",main=lbl,xlab=d$metric[1],ylab="Students")
+      if(length(z)>1)rug(z,col="#333333")
+    }
+  },res=110)
 
   output$settings_ui<-renderUI({req(rv$admin,!rv$impersonating);r<-state()$round;choices<-submission_data();current<-if(nrow(r))r else data.frame(round=1,status="draft",loss_type="percent",loss_value=.2,probability=.5,premium_rate=.5,apply_tokens=1,settle_seed=1)
     a<-if(nrow(choices))analytics(current,choices)else choices

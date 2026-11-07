@@ -34,7 +34,8 @@ required_app <- c("risk_insurance_rounds","risk_insurance_choices","risk_insuran
   "endowment_band(","implied_cara","implied_crra","Naïve rank","Results sealed",
   "req(rv$admin,!rv$impersonating)","earning,note) VALUES(?,?,?,?,?,0,?)",
   "risk_impersonate_user","risk_stop_impersonating","results_round_sel",
-  "comparison_facets","risk_comparison_table")
+  "comparison_facets","risk_comparison_table","distribution_metric",
+  "distribution_facets","distribution_plot","risk_distribution_data")
 missing <- required_app[!vapply(required_app,grepl,logical(1),x=app,fixed=TRUE)]
 if(length(missing))stop("Risk & Insurance app contract missing: ",paste(missing,collapse=" | "))
 required_hub <- c('label = "Risk & Insurance", embedded = TRUE, url = "/club-insurance-game/"',
@@ -178,10 +179,28 @@ shiny::testServer(app_env$server,{
   rv$user<-"admin";rv$name<-"Instructor";rv$admin<-TRUE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"admin";rv$player_name<-"Instructor"
   session$setInputs(results_round_sel="1",comparison_facets=c("loss_rule","loss_size"));session$flushReact()
   html<-paste(as.character(output$results_ui),collapse="")
-  if(!grepl("Round 1 results",html,fixed=TRUE)||!grepl("Group comparison by",html,fixed=TRUE))stop("Round-specific comparison controls failed.")
+  if(!grepl("Round 1 results",html,fixed=TRUE)||!grepl("Group comparison by",html,fixed=TRUE)||!grepl("Distribution explorer",html,fixed=TRUE))stop("Round-specific comparison controls failed.")
   comparison<-app_env$risk_comparison_table(all_revealed_analytics(),c("loss_rule","loss_size"))
   if(!all(c("Loss rule","Loss size","Purchased")%in%names(comparison)))stop("Setting-faceted comparison failed.")
+  for(metric in c("max_premium","cara","crra")){
+    distribution<-app_env$risk_distribution_data(all_revealed_analytics(),metric,c("loss_rule","loss_size"))
+    if(!nrow(distribution)||!all(c("value","facet","metric")%in%names(distribution)))stop("Distribution data failed for ",metric,".")
+  }
+  session$setInputs(distribution_metric="max_premium",distribution_facets=c("loss_rule","loss_size"));session$flushReact()
   invisible(output$history_table)
+  invisible(output$distribution_plot)
+})
+
+# Results are one anonymous market dashboard for both roles. A student's own
+# realized outcome belongs only on Play.
+shiny::testServer(app_env$server,{
+  rv$user<-"student-a";rv$name<-"Student A";rv$admin<-FALSE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"student-a";rv$player_name<-"Student A"
+  session$setInputs(results_round_sel="1",distribution_metric="crra",distribution_facets="round");session$flushReact()
+  results_html<-paste(as.character(output$results_ui),collapse="")
+  play_html<-paste(as.character(output$play_ui),collapse="")
+  if(!grepl("Distribution explorer",results_html,fixed=TRUE)||grepl("Net token change",results_html,fixed=TRUE))stop("Student Results is not the anonymous market dashboard.")
+  if(!grepl("my_outcome",play_html,fixed=TRUE))stop("Student-specific revealed outcome is missing from Play.")
+  invisible(output$distribution_plot)
 })
 
 # Revealed student outcomes must still render when an instructor enters the
