@@ -2366,6 +2366,18 @@ GAMES <- list(
 )
 
 game_info <- function(id) Find(function(g) g$id == id, GAMES)
+game_activation_choices <- function() {
+  make_group <- function(type_id, heading) {
+    games <- Filter(function(g) identical(g$type, type_id), GAMES)
+    if (!length(games)) return(NULL)
+    stats::setNames(vapply(games, `[[`, character(1), "id"),
+                    paste0(vapply(games, `[[`, character(1), "label"),
+                           " [", heading, "]"))
+  }
+  c(list("No active game"=""),
+    make_group("either", "either/or"),
+    make_group("session", "session"))
+}
 
 # ── Demos catalog ─────────────────────────────────────────────────────────────
 DEMOS <- list(
@@ -3167,6 +3179,7 @@ server <- function(input, output, session) {
     rubric_ver     = 0L,    # bumped after policy-rubric drafts or releases
     extensions_ver = 0L,    # bumped after extension pricing or assignment mutation
     insurance_ver  = 0L,    # bumped after insurance purchases, claims, or settlement
+    game_ver       = 0L,    # bumped after this session changes the active game
     flex_ver       = 0L,    # bumped after shared question funding/config changes
     policy_ver     = 0L,    # bumped after policy-group assignment import
     policy_grader_team = NULL,
@@ -3409,8 +3422,8 @@ server <- function(input, output, session) {
   set_active_game_for_scope <- function(game = "") {
     game <- trimws(as.character(game %||% ""))
     db_exec(
-      "INSERT INTO scope_arcade_state(scope_key,active_game,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
-       ON CONFLICT(scope_key) DO UPDATE SET active_game=excluded.active_game,updated_at=CURRENT_TIMESTAMP;",
+      "INSERT INTO scope_arcade_state(scope_key,active_game,updated_at) VALUES(?,?,strftime('%Y-%m-%d %H:%M:%f','now'))
+       ON CONFLICT(scope_key) DO UPDATE SET active_game=excluded.active_game,updated_at=strftime('%Y-%m-%d %H:%M:%f','now');",
       list(current_scope_key(), if (nzchar(game)) game else NA_character_))
   }
   get_scoped_setting <- function(key,default=NULL)
@@ -3864,6 +3877,7 @@ server <- function(input, output, session) {
   arcade_poll <- reactivePoll(3000, session,
     checkFunc = function() {
       if (!tab_is_active("Today", "Games & Demos", "Settings")) return("")
+      rv$game_ver
       state <- active_game_state_for_scope()
       paste(current_scope_key(), state$updated_at[1] %||% "", sep="|")
     },
@@ -5372,18 +5386,29 @@ server <- function(input, output, session) {
           "Your instructor activates a game for class; you can also play any game electively. Demos are always available — no active session needed. Click a game row to read how it works."
       ),
 
+      if (isTRUE(rv$is_admin) && is_super_admin() && !isTRUE(rv$impersonating))
+        div(class="slot-card",
+          div(class="slot-header", "Instructor · Active game"),
+          tags$p(style="color:#666;font-size:.85rem;margin:.2rem 0 .55rem;",
+                 "This changes the active game only for the selected class / section."),
+          fluidRow(
+            column(8, selectInput("games_active_game_sel", NULL,
+                                  choices=game_activation_choices(), selected=active,
+                                  width="100%")),
+            column(4, actionButton("games_set_active_btn",
+                                   if (nzchar(active)) "Apply / turn off" else "Apply",
+                                   class="btn btn-sm btn-warning",
+                                   style="margin-top:.15rem;"))
+          )
+        ),
+
       # Active slot
       if (nzchar(active)) {
         div(class = "slot-card",
           div(class = "slot-header", "▶ Active Now", span(class = "badge-live", "LIVE")),
           uiOutput("active_slot_inner")
         )
-      } else {
-        div(class = "slot-card",
-          div(class = "slot-header", "▶ Active Game Slot"),
-          div(class = "no-game", "No game is active right now.")
-        )
-      },
+      } else NULL,
 
       # Full game catalog
       div(class = "sec-label", "Games"),
@@ -12218,21 +12243,10 @@ server <- function(input, output, session) {
       active <- arcade_poll()$active_game[1] %||% ""
       s      <- isolate(olig_poll())$settings
       if (!is_super_admin()) return(div(class="alert alert-info", "Game activation and setup are managed by the course instructor."))
-      make_group <- function(type_id, heading) {
-        gs <- Filter(function(g) g$type == type_id, GAMES)
-        if (!length(gs)) return(NULL)
-        setNames(sapply(gs, `[[`, "id"),
-                 paste0(sapply(gs, `[[`, "label"), " [", heading, "]"))
-      }
-      all_game_choices <- c(
-        list("(none)" = ""),
-        make_group("either",  "either/or"),
-        make_group("session", "session")
-      )
       tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Active Game Slot"),
         selectInput("admin_game_sel", "Active game",
-                    choices = all_game_choices, selected = active, width = "100%"),
+                    choices = game_activation_choices(), selected = active, width = "100%"),
         div(style="display:flex;gap:.45rem;align-items:center;",
           actionButton("set_active_btn", "Set active", class = "btn btn-warning btn-sm"),
           actionButton("clear_active_game_btn", "Turn off active game", class = "btn btn-outline-danger btn-sm")
@@ -12892,23 +12906,30 @@ server <- function(input, output, session) {
   )
 
   # Admin action observers
-  observeEvent(input$clear_active_game_btn, {
+  apply_active_game_selection <- function(game) {
     req(rv$is_admin, is_super_admin(), !rv$impersonating)
-    set_active_game_for_scope("")
-    showNotification("Active game cleared.", type = "message")
+    game <- as.character(game %||% "")
+    valid <- c("", vapply(GAMES, `[[`, character(1), "id"))
+    if (!game %in% valid) {
+      showNotification("Choose a valid game.", type="error")
+      return(invisible(FALSE))
+    }
+    set_active_game_for_scope(game)
+    if (identical(game, "bonus_pot"))
+      db_exec("UPDATE olig_settings SET current_game='bonus', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    rv$game_ver <- rv$game_ver + 1L
+    showNotification(if (nzchar(game)) paste("Active game:", game) else "Active game turned off.",
+                     type="message")
+    invisible(TRUE)
+  }
+  observeEvent(input$clear_active_game_btn, {
+    apply_active_game_selection("")
   })
   observeEvent(input$set_active_btn, {
-    req(rv$is_admin, is_super_admin())
-    g <- input$admin_game_sel %||% ""
-    if (nzchar(g)) {
-      set_active_game_for_scope(g)
-      if (identical(g, "bonus_pot")) {
-        db_exec("UPDATE olig_settings SET current_game='bonus', updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-      }
-    } else {
-      set_active_game_for_scope("")
-    }
-    showNotification(paste("Active game:", if (nzchar(g)) g else "cleared"), type = "message")
+    apply_active_game_selection(input$admin_game_sel %||% "")
+  })
+  observeEvent(input$games_set_active_btn, {
+    apply_active_game_selection(input$games_active_game_sel %||% "")
   })
 
   save_bonus_pot_setup <- function(status_override = NULL) {

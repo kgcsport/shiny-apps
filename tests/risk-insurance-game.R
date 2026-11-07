@@ -32,7 +32,9 @@ hub <- paste(readLines(hub_path,warn=FALSE),collapse="\n")
 required_app <- c("risk_insurance_rounds","risk_insurance_choices","risk_insurance_outcomes",
   "PRIMARY KEY(course,section,round,user_id)","apply_tokens","insurance_outcome(",
   "endowment_band(","implied_cara","implied_crra","Naïve rank","Results sealed",
-  "req(rv$admin,!rv$impersonating)","earning,note) VALUES(?,?,?,?,?,0,?)")
+  "req(rv$admin,!rv$impersonating)","earning,note) VALUES(?,?,?,?,?,0,?)",
+  "risk_impersonate_user","risk_stop_impersonating","results_round_sel",
+  "comparison_facets","risk_comparison_table")
 missing <- required_app[!vapply(required_app,grepl,logical(1),x=app,fixed=TRUE)]
 if(length(missing))stop("Risk & Insurance app contract missing: ",paste(missing,collapse=" | "))
 required_hub <- c('label = "Risk & Insurance", embedded = TRUE, url = "/club-insurance-game/"',
@@ -81,6 +83,15 @@ DBI::dbExecute(live,"INSERT INTO scope_arcade_state(scope_key,active_game) VALUE
 DBI::dbDisconnect(live)
 
 app_env <- new.env(parent=globalenv());source(app_path,local=app_env)
+# Instructor can impersonate and return without leaving Risk & Insurance.
+shiny::testServer(app_env$server,{
+  rv$user<-"admin";rv$name<-"Instructor";rv$admin<-TRUE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"admin";rv$player_name<-"Instructor"
+  session$setInputs(risk_impersonate_user="student-a",risk_impersonate_btn=1);session$flushReact()
+  if(!isTRUE(rv$impersonating)||rv$player_user!="student-a")stop("In-game impersonation failed.")
+  session$setInputs(risk_stop_impersonating=1);session$flushReact()
+  if(isTRUE(rv$impersonating)||rv$player_user!="admin")stop("Stopping in-game impersonation failed.")
+})
+
 shiny::testServer(app_env$server,{
   rv$user<-"admin";rv$name<-"Instructor";rv$admin<-TRUE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"admin";rv$player_name<-"Instructor"
   session$setInputs(round_no=1,loss_type="percent",loss_percent=20,probability=50,premium_rate=50,settle_seed=1,apply_tokens=TRUE,open_round=1)
@@ -160,4 +171,26 @@ practice_ledger_n <- DBI::dbGetQuery(live,"SELECT COUNT(*) n FROM token_ledger W
 if(nrow(practice_round)!=1L||practice_round$status[1]!="revealed"||practice_round$apply_tokens[1]!=0L||nrow(practice_outcome)!=1L)stop("No-token practice round workflow failed.")
 if(practice_ledger_n!=ledger_rows_after_round_1)stop("Practice-only round changed the real token ledger.")
 DBI::dbDisconnect(live)
+
+# Revealed results can be drilled into by round and regrouped by experiment
+# settings without recomputing or exposing a sealed round.
+shiny::testServer(app_env$server,{
+  rv$user<-"admin";rv$name<-"Instructor";rv$admin<-TRUE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"admin";rv$player_name<-"Instructor"
+  session$setInputs(results_round_sel="1",comparison_facets=c("loss_rule","loss_size"));session$flushReact()
+  html<-paste(as.character(output$results_ui),collapse="")
+  if(!grepl("Round 1 results",html,fixed=TRUE)||!grepl("Group comparison by",html,fixed=TRUE))stop("Round-specific comparison controls failed.")
+  comparison<-app_env$risk_comparison_table(all_revealed_analytics(),c("loss_rule","loss_size"))
+  if(!all(c("Loss rule","Loss size","Purchased")%in%names(comparison)))stop("Setting-faceted comparison failed.")
+  invisible(output$history_table)
+})
+
+# Revealed student outcomes must still render when an instructor enters the
+# student view from inside the game (the Demo Alice classroom path).
+shiny::testServer(app_env$server,{
+  rv$user<-"admin";rv$name<-"Instructor";rv$admin<-TRUE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"admin";rv$player_name<-"Instructor"
+  session$setInputs(risk_impersonate_user="student-a",risk_impersonate_btn=1);session$flushReact()
+  play_html<-paste(as.character(output$play_ui),collapse="")
+  outcome_html<-paste(as.character(output$my_outcome),collapse="")
+  if(!grepl("Starting balance",play_html,fixed=TRUE)||!grepl("Net token change",outcome_html,fixed=TRUE))stop("Revealed impersonated student view failed to render.")
+})
 cat("risk insurance game: PASS\n")

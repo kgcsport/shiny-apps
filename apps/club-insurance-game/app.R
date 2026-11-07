@@ -23,6 +23,30 @@ q <- function(sql,p=list()) if(length(p)) dbGetQuery(db(),sql,params=p) else dbG
 x <- function(sql,p=list()) if(length(p)) dbExecute(db(),sql,params=p) else dbExecute(db(),sql)
 key <- function(course,section) paste0(norm(course),"::",norm(section))
 fmt <- function(z) sub("\\.?0+$","",sprintf("%.2f",round_tokens(z)))
+risk_comparison_table <- function(rows, facets = "round") {
+  if (!nrow(rows)) return(data.frame())
+  available <- c("round","loss_rule","loss_size","probability","premium_rate",
+                 "apply_tokens","band")
+  facets <- intersect(as.character(facets %||% "round"), available)
+  if (!length(facets)) facets <- "round"
+  labels <- c(round="Round",loss_rule="Loss rule",loss_size="Loss size",
+              probability="Bad-state chance",premium_rate="Premium rate",
+              apply_tokens="Changes balances",band="Starting endowment")
+  group_key <- do.call(interaction,c(rows[facets],list(drop=TRUE,lex.order=TRUE)))
+  groups <- split(seq_len(nrow(rows)),group_key)
+  out <- lapply(groups,function(idx){
+    z <- rows[idx,,drop=FALSE]
+    keys <- z[1,facets,drop=FALSE]
+    names(keys) <- unname(labels[facets])
+    data.frame(keys, N=nrow(z), Purchased=sprintf("%.0f%%",100*mean(z$purchased)),
+      `Mean max premium`=fmt(mean(z$max_premium)),
+      `Median risk-premium share`=if(all(is.na(z$risk_score)))"—"else sprintf("%.1f%%",100*median(z$risk_score,na.rm=TRUE)),
+      `Median CARA`=if(all(is.na(z$cara)))"—"else sprintf("%.3f",median(z$cara,na.rm=TRUE)),
+      `Median CRRA`=if(all(is.na(z$crra)))"—"else sprintf("%.2f",median(z$crra,na.rm=TRUE)),
+      check.names=FALSE,stringsAsFactors=FALSE)
+  })
+  do.call(rbind,out)
+}
 
 x("CREATE TABLE IF NOT EXISTS risk_insurance_rounds(
  course TEXT NOT NULL, section TEXT NOT NULL, round INTEGER NOT NULL,
@@ -115,6 +139,30 @@ server <- function(input,output,session) {
     }
   })
 
+  output$risk_impersonation_controls<-renderUI({
+    req(rv$admin)
+    students<-tryCatch(q("SELECT user_id,display_name FROM users WHERE lower(course)=lower(?) AND lower(section)=lower(?) AND COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 ORDER BY display_name,user_id;",list(rv$course,rv$section)),error=function(e)data.frame())
+    if(rv$impersonating)return(div(class="choice-box",
+      span("Viewing as ",strong(rv$player_name))," ",
+      actionButton("risk_stop_impersonating","Stop viewing as student",class="btn btn-sm btn-outline-secondary")))
+    if(!nrow(students))return(p(class="muted","No active students in this class / section."))
+    div(class="choice-box",
+      fluidRow(column(8,selectInput("risk_impersonate_user","View the game as a student",
+        choices=setNames(students$user_id,paste0(students$display_name," (",students$user_id,")")),width="100%")),
+        column(4,actionButton("risk_impersonate_btn","View as student",class="btn btn-sm btn-primary",style="margin-top:1.55rem;"))))
+  })
+  observeEvent(input$risk_impersonate_btn,{
+    req(rv$admin)
+    uid<-as.character(input$risk_impersonate_user%||%"")
+    z<-tryCatch(q("SELECT user_id,display_name FROM users WHERE lower(user_id)=lower(?) AND lower(course)=lower(?) AND lower(section)=lower(?) AND COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 LIMIT 1;",list(uid,rv$course,rv$section)),error=function(e)data.frame())
+    if(!nrow(z)){showNotification("Choose an active student in this class / section.",type="error");return()}
+    rv$player_user<-z$user_id[1];rv$player_name<-z$display_name[1];rv$impersonating<-TRUE
+  },ignoreNULL=TRUE)
+  observeEvent(input$risk_stop_impersonating,{
+    req(rv$admin)
+    rv$player_user<-rv$user;rv$player_name<-rv$name;rv$impersonating<-FALSE
+  },ignoreNULL=TRUE)
+
   latest_round <- function() if(nzchar(rv$course)&&nzchar(rv$section)) q("SELECT * FROM risk_insurance_rounds WHERE lower(course)=lower(?) AND lower(section)=lower(?) ORDER BY round DESC LIMIT 1;",list(rv$course,rv$section)) else data.frame()
   is_active <- function() {z<-tryCatch(q("SELECT active_game FROM scope_arcade_state WHERE scope_key=?;",list(key(rv$course,rv$section))),error=function(e)data.frame());nrow(z)&&identical(z$active_game[1],"club-insurance-game")}
   state <- reactivePoll(1500,session,
@@ -140,6 +188,37 @@ server <- function(input,output,session) {
     choices$risk_rank<-rank(-choices$risk_score,ties.method="min",na.last="keep")
     choices
   }
+  revealed_rounds <- reactive({
+    if(!nzchar(rv$course)||!nzchar(rv$section))return(data.frame())
+    q("SELECT * FROM risk_insurance_rounds WHERE lower(course)=lower(?) AND lower(section)=lower(?) AND status='revealed' ORDER BY round;",list(rv$course,rv$section))
+  })
+  selected_result_round <- reactive({
+    rounds<-revealed_rounds();if(!nrow(rounds))return(data.frame())
+    selected<-suppressWarnings(as.integer(input$results_round_sel%||%tail(rounds$round,1)))
+    hit<-rounds[rounds$round==selected,,drop=FALSE]
+    if(nrow(hit))hit else rounds[nrow(rounds),,drop=FALSE]
+  })
+  selected_result_choices <- reactive({
+    r<-selected_result_round();if(!nrow(r))return(data.frame())
+    q("SELECT * FROM risk_insurance_choices WHERE lower(course)=lower(?) AND lower(section)=lower(?) AND round=? ORDER BY user_id;",list(rv$course,rv$section,r$round[1]))
+  })
+  all_revealed_analytics <- reactive({
+    rounds<-revealed_rounds();if(!nrow(rounds))return(data.frame())
+    pieces<-lapply(seq_len(nrow(rounds)),function(i){
+      r<-rounds[i,,drop=FALSE]
+      choices<-q("SELECT * FROM risk_insurance_choices WHERE lower(course)=lower(?) AND lower(section)=lower(?) AND round=?;",list(rv$course,rv$section,r$round[1]))
+      if(!nrow(choices))return(NULL)
+      a<-analytics(r,choices)
+      a$round<-paste("Round",r$round[1])
+      a$loss_rule<-if(r$loss_type[1]=="percent")"Percent of balance"else"Fixed tokens"
+      a$loss_size<-if(r$loss_type[1]=="percent")paste0(fmt(100*r$loss_value[1]),"%")else paste0(fmt(r$loss_value[1])," tokens")
+      a$probability<-paste0(fmt(100*r$probability[1]),"%")
+      a$premium_rate<-paste0(fmt(100*r$premium_rate[1]),"% of loss")
+      a$apply_tokens<-if(as.integer(r$apply_tokens[1])==1L)"Yes"else"No"
+      a
+    })
+    pieces<-Filter(Negate(is.null),pieces);if(!length(pieces))data.frame()else do.call(rbind,pieces)
+  })
 
   observeEvent(input$save_choice,{
     req(logged_in());if(rv$admin&&!rv$impersonating){showNotification("Administrators are not student players.",type="warning");return()}
@@ -193,7 +272,7 @@ server <- function(input,output,session) {
     b<-balance(rv$player_user);loss<-insurance_loss(b,r$loss_type[1],r$loss_value[1]);premium<-insurance_premium(loss,r$premium_rate[1]);saved<-my_choice()
     round_desc<-if(r$loss_type[1]=="percent")paste0(fmt(100*r$loss_value[1]),"% of your starting balance")else paste0(fmt(r$loss_value[1])," tokens")
     div(class="card",h3(paste("Round",r$round[1])),p(class=if(r$status[1]=="open")"live"else"muted",toupper(r$status[1])),
-      div(class="metric-grid",div(class="metric","Starting balance",b(fmt(b)," tokens")),div(class="metric","Loss if unlucky",b(paste0(fmt(loss)," tokens"))),div(class="metric","Chance of loss",b(paste0(fmt(100*r$probability[1]),"%"))),div(class="metric","Full-insurance price",b(paste0(fmt(premium)," tokens")))),
+      div(class="metric-grid",div(class="metric","Starting balance",tags$b(fmt(b)," tokens")),div(class="metric","Loss if unlucky",tags$b(paste0(fmt(loss)," tokens"))),div(class="metric","Chance of loss",tags$b(paste0(fmt(100*r$probability[1]),"%"))),div(class="metric","Full-insurance price",tags$b(paste0(fmt(premium)," tokens")))),
       p("This round's loss is ",strong(round_desc),". Full insurance pays the entire loss. The premium is paid in either state."),
       if(r$status[1]=="open")tagList(div(class="choice-box",numericInput("max_premium","Highest premium you would pay for full insurance",value=if(nrow(saved))saved$max_premium[1]else premium,min=0,max=loss,step=.01),p(class="muted",paste0("At the posted price of ",fmt(premium),", you buy if your maximum is at least the price.")),actionButton("save_choice","Save choice",class="btn-primary")),if(nrow(saved))p(class="live",if(saved$purchased[1]==1)paste0("Saved: insured at ",fmt(saved$posted_premium[1])," tokens.")else"Saved: uninsured at this price.")) else if(r$status[1]=="revealed")uiOutput("my_outcome") else p("Choices are closed. Results have not yet been revealed."))
   })
@@ -203,15 +282,26 @@ server <- function(input,output,session) {
     bands<-levels(endowment_band(1));out<-lapply(bands,function(b){z<-a[a$band==b,,drop=FALSE];if(!nrow(z))return(NULL);data.frame(`Starting endowment`=b,N=nrow(z),Purchased=sum(z$purchased),`Purchase rate`=sprintf("%.0f%%",100*mean(z$purchased)),`Mean max premium`=fmt(mean(z$max_premium)),`Median CARA`=if(all(is.na(z$cara)))"—"else sprintf("%.3f",median(z$cara,na.rm=TRUE)),`Median CRRA`=if(all(is.na(z$crra)))"—"else sprintf("%.2f",median(z$crra,na.rm=TRUE)),check.names=FALSE)});do.call(rbind,out)
   }
   output$results_ui<-renderUI({
-    r<-state()$round;if(!nrow(r))return(div(class="card muted","No round yet."));choices<-submission_data()
-    if(r$status[1]!="revealed")return(div(class="card",h3("Results sealed"),p(sprintf("%d choice%s submitted.",nrow(choices),if(nrow(choices)==1)""else"s")),p("Purchase and risk-preference results appear after settlement and reveal.")))
-    a<-analytics(r,choices);o<-q("SELECT * FROM risk_insurance_outcomes WHERE course=? AND section=? AND round=?;",list(rv$course,rv$section,r$round[1]));profit<-sum(o$premium_debit)-sum(o$indemnity_credit)
-    div(class="card",h3(paste("Round",r$round[1],"results")),div(class="metric-grid",div(class="metric","Choices",b(nrow(a))),div(class="metric","Purchased",b(sprintf("%.0f%%",100*mean(a$purchased)))),div(class="metric","Losses realized",b(sum(o$shocked))),div(class="metric","Insurer result",b(paste0(fmt(profit)," tokens")))),h4("Purchases by starting endowment"),div(class="table-wrap",tableOutput("band_table")),h4("Preference measures"),p("Naïve rank compares the risk premium as a share of the possible loss and deliberately ignores assets. CARA uses WTP and loss size. CRRA also uses the starting balance; it is undefined when the bad state leaves zero token wealth."),div(class="metric-grid",div(class="metric","Median risk-premium share",b(if(all(is.na(a$risk_score)))"—"else sprintf("%.1f%%",100*median(a$risk_score,na.rm=TRUE)))),div(class="metric","Median CARA α",b(if(all(is.na(a$cara)))"—"else sprintf("%.3f",median(a$cara,na.rm=TRUE)))),div(class="metric","Median CRRA γ",b(if(all(is.na(a$crra)))"—"else sprintf("%.2f",median(a$crra,na.rm=TRUE))))),h4("Revealed round comparison"),div(class="table-wrap",tableOutput("history_table")))
+    current<-state()$round;rounds<-revealed_rounds()
+    if(!nrow(rounds)){
+      choices<-submission_data()
+      return(div(class="card",h3("Results sealed"),p(sprintf("%d choice%s submitted.",nrow(choices),if(nrow(choices)==1)""else"s")),p("Purchase and risk-preference results appear after settlement and reveal.")))
+    }
+    r<-selected_result_round();choices<-selected_result_choices();a<-analytics(r,choices)
+    o<-q("SELECT * FROM risk_insurance_outcomes WHERE course=? AND section=? AND round=?;",list(rv$course,rv$section,r$round[1]));profit<-sum(o$premium_debit)-sum(o$indemnity_credit)
+    round_labels<-vapply(seq_len(nrow(rounds)),function(i){rr<-rounds[i,];rule<-if(rr$loss_type=="percent")paste0(fmt(100*rr$loss_value),"%")else paste0(fmt(rr$loss_value)," tokens");paste0("Round ",rr$round," · ",rule," · p=",fmt(100*rr$probability),"% · premium=",fmt(100*rr$premium_rate),"%")},character(1))
+    div(class="card",
+      if(nrow(current)&&current$status[1]!="revealed")div(class="choice-box",strong(paste("Round",current$round[1],"is still sealed."))," Prior revealed rounds remain available below."),
+      selectInput("results_round_sel","Show revealed round",choices=setNames(rounds$round,round_labels),selected=r$round[1],width="100%"),
+      h3(paste("Round",r$round[1],"results")),div(class="metric-grid",div(class="metric","Choices",tags$b(nrow(a))),div(class="metric","Purchased",tags$b(sprintf("%.0f%%",100*mean(a$purchased)))),div(class="metric","Losses realized",tags$b(sum(o$shocked))),div(class="metric","Insurer result",tags$b(paste0(fmt(profit)," tokens")))),h4("Purchases by starting endowment"),div(class="table-wrap",tableOutput("band_table")),h4("Preference measures"),p("Naïve rank compares the risk premium as a share of the possible loss and deliberately ignores assets. CARA uses WTP and loss size. CRRA also uses the starting balance; it is undefined when the bad state leaves zero token wealth."),div(class="metric-grid",div(class="metric","Median risk-premium share",tags$b(if(all(is.na(a$risk_score)))"—"else sprintf("%.1f%%",100*median(a$risk_score,na.rm=TRUE)))),div(class="metric","Median CARA α",tags$b(if(all(is.na(a$cara)))"—"else sprintf("%.3f",median(a$cara,na.rm=TRUE)))),div(class="metric","Median CRRA γ",tags$b(if(all(is.na(a$crra)))"—"else sprintf("%.2f",median(a$crra,na.rm=TRUE))))),
+      h4("Compare revealed results"),
+      selectizeInput("comparison_facets","Group comparison by",multiple=TRUE,
+        choices=c("Round"="round","Loss rule"="loss_rule","Loss size"="loss_size","Bad-state probability"="probability","Premium rate"="premium_rate","Changes real balances"="apply_tokens","Starting endowment band"="band"),selected="round",width="100%"),
+      div(class="table-wrap",tableOutput("history_table")))
   })
-  output$band_table<-renderTable({r<-state()$round;req(nrow(r),r$status[1]=="revealed");aggregate_table(analytics(r,submission_data()))},sanitize.text.function=function(x)x)
+  output$band_table<-renderTable({r<-selected_result_round();req(nrow(r));aggregate_table(analytics(r,selected_result_choices()))},sanitize.text.function=function(x)x)
   output$history_table<-renderTable({
-    rounds<-q("SELECT * FROM risk_insurance_rounds WHERE lower(course)=lower(?) AND lower(section)=lower(?) AND status='revealed' ORDER BY round;",list(rv$course,rv$section));req(nrow(rounds))
-    rows<-lapply(seq_len(nrow(rounds)),function(i){r<-rounds[i,,drop=FALSE];choices<-q("SELECT * FROM risk_insurance_choices WHERE lower(course)=lower(?) AND lower(section)=lower(?) AND round=?;",list(rv$course,rv$section,r$round[1]));if(!nrow(choices))return(NULL);a<-analytics(r,choices);data.frame(Round=r$round[1],Rule=if(r$loss_type[1]=="percent")paste0(fmt(100*r$loss_value[1]),"%")else paste0(fmt(r$loss_value[1])," tokens"),N=nrow(a),Purchased=sprintf("%.0f%%",100*mean(a$purchased)),`Median risk-premium share`=if(all(is.na(a$risk_score)))"—"else sprintf("%.1f%%",100*median(a$risk_score,na.rm=TRUE)),`Median CARA`=if(all(is.na(a$cara)))"—"else sprintf("%.3f",median(a$cara,na.rm=TRUE)),`Median CRRA`=if(all(is.na(a$crra)))"—"else sprintf("%.2f",median(a$crra,na.rm=TRUE)),check.names=FALSE)});do.call(rbind,rows)
+    rows<-all_revealed_analytics();req(nrow(rows));risk_comparison_table(rows,input$comparison_facets%||%"round")
   },sanitize.text.function=function(x)x)
 
   output$settings_ui<-renderUI({req(rv$admin,!rv$impersonating);r<-state()$round;choices<-submission_data();current<-if(nrow(r))r else data.frame(round=1,status="draft",loss_type="percent",loss_value=.2,probability=.5,premium_rate=.5,apply_tokens=1,settle_seed=1)
@@ -225,7 +315,7 @@ server <- function(input,output,session) {
     e<-environments();courses<-unique(as.character(e$course));course<-if(rv$course%in%courses)rv$course else courses[1];sections<-unique(as.character(e$section[norm(e$course)==norm(course)]));section<-if(rv$section%in%sections)rv$section else sections[1]
     tabs<-list(tabPanel("Play",uiOutput("play_ui")),tabPanel("Results",uiOutput("results_ui")));if(rv$admin&&!rv$impersonating)tabs<-c(tabs,list(tabPanel("Settings",uiOutput("settings_ui"))))
     header<-if(request()$embedded||request()$results)NULL else div(class="ri-header",div(class="ri-title","🎓 Classroom Economy · Risk & Insurance"),span(rv$name),if(nrow(e)>1)div(class="ri-env",div(tags$label("Class"),selectInput("env_course",NULL,courses,course)),div(tags$label("Section"),selectInput("env_section",NULL,sections,section)))else span(paste(course,"·",section)))
-    selected<-if(request()$results)"Results"else"Play";tagList(header,div(class="ri",div(class="card",h2("Risk & Insurance"),p("Choose what full insurance is worth before the app draws a token loss."),if(rv$impersonating)p(class="live",paste("Viewing as",rv$player_name))),do.call(tabsetPanel,c(list(id="risk_tabs",selected=selected),tabs))))
+    selected<-if(request()$results)"Results"else"Play";tagList(header,div(class="ri",div(class="card",h2("Risk & Insurance"),p("Choose what full insurance is worth before the app draws a token loss."),if(rv$admin)uiOutput("risk_impersonation_controls")),do.call(tabsetPanel,c(list(id="risk_tabs",selected=selected),tabs))))
   })
   observeEvent(input$env_course,{e<-environments();rows<-e[norm(e$course)==norm(input$env_course),,drop=FALSE];if(nrow(rows))choose_env(input$env_course,rows$section[1])},ignoreInit=TRUE)
   observeEvent(input$env_section,choose_env(input$env_course%||%rv$course,input$env_section%||%""),ignoreInit=TRUE)

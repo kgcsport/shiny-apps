@@ -28,6 +28,7 @@ RUN Rscript --vanilla /srv/shiny-server/tests/critical-account-accordion.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-settings-organization.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-bonus-pot-unification.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-game-navigation.R
+RUN Rscript --vanilla /srv/shiny-server/tests/critical-games-page-activation.R
 RUN Rscript --vanilla /srv/shiny-server/tests/price-war-student-play.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-bonus-pot-private-names.R
 RUN Rscript --vanilla /srv/shiny-server/tests/admin-roles.R
