@@ -2671,6 +2671,34 @@ body.tutorial-off .tab-howto, body.tutorial-off .tutorial-note { display:none !i
 .account-jobs-panel { border-left: 4px solid #951829; height: auto;
                       margin-bottom: 1rem; }
 .account-jobs-panel h4 { color: #951829; font-weight: 700; margin-top: 0; }
+.account-section { background:#fff; border:1px solid #dedede; border-radius:10px;
+                   margin:0 0 .7rem; overflow:hidden; }
+.account-section[open] { border-color:#c8aab0; box-shadow:0 1px 4px rgba(0,0,0,.04); }
+.account-section > summary { cursor:pointer; list-style:none; padding:.9rem 1rem;
+                             display:flex; align-items:center; gap:.75rem;
+                             background:#fafafa; user-select:none; }
+.account-section > summary::-webkit-details-marker { display:none; }
+.account-section > summary::before { content:'›'; color:#951829; font-size:1.45rem;
+                                     font-weight:700; line-height:1; transition:transform .15s; }
+.account-section[open] > summary::before { transform:rotate(90deg); }
+.account-section-title { font-weight:700; color:#333; flex:1; }
+.account-section-hint { color:#777; font-size:.8rem; text-align:right; }
+.account-section-body { padding:1rem; border-top:1px solid #eee; }
+.account-task-list { display:grid; gap:.55rem; }
+.account-task { border:1px solid #e5e5e5; border-left:4px solid #951829;
+                border-radius:8px; padding:.7rem .8rem; background:#fff; }
+.account-task-head { display:flex; align-items:flex-start; justify-content:space-between;
+                     gap:.65rem; }
+.account-task-title { font-weight:700; }
+.account-task-badge { background:#f7e9ec; color:#7c1424; border-radius:999px;
+                      padding:.16rem .48rem; font-size:.72rem; font-weight:700;
+                      white-space:nowrap; }
+.account-task-meta { color:#666; font-size:.82rem; margin-top:.22rem; }
+@media (max-width: 600px) {
+  .account-section-hint { display:none; }
+  .account-task-head { display:block; }
+  .account-task-badge { display:inline-block; margin-top:.3rem; }
+}
 .grade-section { margin: .25rem 0 1.25rem; }
 .grade-section .sec-label { margin-bottom: .6rem; }
 .grade-overall-row { display:flex; align-items:center; gap:1.25rem; margin-bottom:.85rem; flex-wrap:wrap; }
@@ -2966,6 +2994,132 @@ assignment_history_state <- function(outcome = "", assignment_status = "assigned
   list(code = "outstanding", label = "Outstanding", finalized = FALSE)
 }
 
+account_clean_text <- function(x) {
+  out <- as.character(x %||% "")
+  out[is.na(out)] <- ""
+  out
+}
+
+account_assignment_key <- function(x) {
+  gsub("[^a-z0-9]", "", tolower(trimws(account_clean_text(x))))
+}
+
+account_rows_df <- function(x) {
+  if (is.data.frame(x)) return(x)
+  if (is.null(x) || !length(x)) return(data.frame())
+  tryCatch(do.call(rbind, lapply(x, as.data.frame, stringsAsFactors=FALSE)),
+           error=function(e)data.frame())
+}
+
+account_worker_progress <- function(export, user_id, display_name = "") {
+  rows <- account_rows_df(export$rows %||% data.frame())
+  if (!nrow(rows)) return(data.frame())
+  for (nm in c("externalId","studentEmail","studentName","assignmentId",
+               "assignmentTitle","gradebookKey","status","scanVerifiedAt",
+               "submittedAt","updatedAt")) {
+    if (!nm %in% names(rows)) rows[[nm]] <- ""
+  }
+  uid <- account_assignment_key(user_id)
+  name_key <- account_assignment_key(display_name)
+  direct <- account_assignment_key(rows$externalId) == uid |
+    account_assignment_key(rows$studentEmail) == uid
+  name_match <- nzchar(name_key) & account_assignment_key(rows$studentName) == name_key
+  rows <- rows[direct | (!any(direct) & name_match), , drop=FALSE]
+  if (!nrow(rows)) return(data.frame())
+  data.frame(
+    assignment_id=account_clean_text(rows$assignmentId),
+    assignment_title=account_clean_text(rows$assignmentTitle),
+    gradebook_key=account_clean_text(rows$gradebookKey),
+    pdf_received=nzchar(account_clean_text(rows$scanVerifiedAt)),
+    final_submitted=tolower(account_clean_text(rows$status)) == "submitted" &
+      nzchar(account_clean_text(rows$submittedAt)),
+    updated_at=account_clean_text(rows$updatedAt),
+    stringsAsFactors=FALSE
+  )
+}
+
+account_worker_schedules <- function(assignments) {
+  rows <- account_rows_df(assignments)
+  if (!nrow(rows)) return(data.frame())
+  for (nm in c("id","title","gradebookKey","dueAt","solutionsAt","gradingDueAt")) {
+    if (!nm %in% names(rows)) rows[[nm]] <- ""
+  }
+  data.frame(
+    assignment_id=account_clean_text(rows$id), assignment_title=account_clean_text(rows$title),
+    gradebook_key=account_clean_text(rows$gradebookKey), due_at=account_clean_text(rows$dueAt),
+    solutions_at=account_clean_text(rows$solutionsAt), grading_due_at=account_clean_text(rows$gradingDueAt),
+    stringsAsFactors=FALSE
+  )
+}
+
+account_pending_problem_sets <- function(problem_sets, grade_rows=data.frame(),
+                                         progress=data.frame(), schedules=data.frame(),
+                                         worker_available=FALSE) {
+  if (!nrow(problem_sets)) return(problem_sets)
+  graded <- if (nrow(grade_rows) && "assignment_name" %in% names(grade_rows))
+    account_assignment_key(grade_rows$assignment_name) else character(0)
+  keep <- !account_assignment_key(problem_sets$name) %in% graded
+  problem_sets <- problem_sets[keep, , drop=FALSE]
+  if (!nrow(problem_sets)) return(problem_sets)
+  problem_sets$stage <- "problem_set"
+  problem_sets$due_at <- account_clean_text(problem_sets$original_deadline)
+  problem_sets$solutions_at <- account_clean_text(problem_sets$solutions_posted_at)
+  problem_sets$grading_due_at <- ""
+  if (!isTRUE(worker_available)) return(problem_sets)
+
+  matched_progress <- rep(NA_integer_, nrow(problem_sets))
+  matched_schedule <- rep(NA_integer_, nrow(problem_sets))
+  for (i in seq_len(nrow(problem_sets))) {
+    cloud_id <- account_assignment_key(problem_sets$cloudflare_assignment_id[i] %||% "")
+    label <- account_assignment_key(problem_sets$name[i] %||% "")
+    if (nrow(progress)) {
+      pkeys <- account_assignment_key(progress$assignment_id)
+      aliases <- cbind(account_assignment_key(progress$assignment_title),
+                       account_assignment_key(progress$gradebook_key))
+      hit <- if (nzchar(cloud_id)) which(pkeys == cloud_id) else integer(0)
+      if (!length(hit)) hit <- which(aliases[,1] == label | aliases[,2] == label)
+      if (length(hit)) matched_progress[i] <- hit[1]
+    }
+    if (nrow(schedules)) {
+      skeys <- account_assignment_key(schedules$assignment_id)
+      aliases <- cbind(account_assignment_key(schedules$assignment_title),
+                       account_assignment_key(schedules$gradebook_key))
+      hit <- if (nzchar(cloud_id)) which(skeys == cloud_id) else integer(0)
+      if (!length(hit)) hit <- which(aliases[,1] == label | aliases[,2] == label)
+      if (length(hit)) matched_schedule[i] <- hit[1]
+    }
+  }
+  completed <- rep(FALSE, nrow(problem_sets))
+  progress_hits <- which(!is.na(matched_progress))
+  if (length(progress_hits))
+    completed[progress_hits] <- as.logical(progress$final_submitted[matched_progress[progress_hits]])
+  completed[is.na(completed)] <- FALSE
+  problem_sets <- problem_sets[!completed, , drop=FALSE]
+  matched_progress <- matched_progress[!completed]
+  matched_schedule <- matched_schedule[!completed]
+  if (!nrow(problem_sets)) return(problem_sets)
+  pdf_done <- rep(FALSE, nrow(problem_sets))
+  progress_hits <- which(!is.na(matched_progress))
+  if (length(progress_hits))
+    pdf_done[progress_hits] <- as.logical(progress$pdf_received[matched_progress[progress_hits]])
+  pdf_done[is.na(pdf_done)] <- FALSE
+  problem_sets$stage[pdf_done] <- "self_grading"
+  for (i in seq_len(nrow(problem_sets))) if (!is.na(matched_schedule[i])) {
+    schedule <- schedules[matched_schedule[i], , drop=FALSE]
+    if (nzchar(schedule$due_at[1] %||% "")) problem_sets$due_at[i] <- schedule$due_at[1]
+    if (nzchar(schedule$solutions_at[1] %||% "")) problem_sets$solutions_at[i] <- schedule$solutions_at[1]
+    if (nzchar(schedule$grading_due_at[1] %||% "")) problem_sets$grading_due_at[i] <- schedule$grading_due_at[1]
+  }
+  problem_sets
+}
+
+account_section <- function(title, hint, ..., open=FALSE) {
+  tags$details(class="account-section", open=if (isTRUE(open)) NA else NULL,
+    tags$summary(span(class="account-section-title", title),
+                 span(class="account-section-hint", hint)),
+    div(class="account-section-body", ...))
+}
+
 # ── Server ────────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
 
@@ -3015,7 +3169,12 @@ server <- function(input, output, session) {
     insurance_ver  = 0L,    # bumped after insurance purchases, claims, or settlement
     flex_ver       = 0L,    # bumped after shared question funding/config changes
     policy_ver     = 0L,    # bumped after policy-group assignment import
-    policy_grader_team = NULL
+    policy_grader_team = NULL,
+    assignment_progress = data.frame(),
+    assignment_schedules = data.frame(),
+    assignment_worker_available = FALSE,
+    assignment_status_note = "Assignment status has not been checked yet.",
+    assignment_status_checked_at = ""
   )
 
   # Rubric anchors prefill suggested points; the numeric inputs remain editable.
@@ -3544,6 +3703,11 @@ server <- function(input, output, session) {
     rv$admin_role <- if (nrow(rv$admin_assignments)) as.character(rv$admin_assignments$role[1]) else "student"
     rv$is_admin <- !identical(rv$admin_role, "student")
     rv$is_demo  <- isTRUE(as.integer(row$is_demo[1]  %||% 0L) == 1L)
+    rv$assignment_progress <- data.frame()
+    rv$assignment_schedules <- data.frame()
+    rv$assignment_worker_available <- FALSE
+    rv$assignment_status_note <- "Assignment status has not been checked yet."
+    rv$assignment_status_checked_at <- ""
     pin_session_environment()
     if (isTRUE(rv$is_admin)) ensure_scope_round()
   }
@@ -3652,6 +3816,8 @@ server <- function(input, output, session) {
     rv$authed  <- FALSE; rv$user_id  <- NULL; rv$name    <- NULL
     rv$course <- NULL; rv$section <- NULL; rv$is_admin <- FALSE; rv$admin_role <- "student"; rv$admin_assignments <- data.frame(); rv$is_demo <- FALSE
     rv$game_detail_id <- NULL
+    rv$assignment_progress <- data.frame(); rv$assignment_schedules <- data.frame()
+    rv$assignment_worker_available <- FALSE; rv$assignment_status_checked_at <- ""
   })
 
   # Poll only the data needed by the visible tab. Event-driven saves still work
@@ -3661,6 +3827,38 @@ server <- function(input, output, session) {
     current <- as.character(input$arc_tabs %||% "Today")
     current %in% c(...)
   }
+
+  refresh_account_assignment_status <- function() {
+    if (!isTRUE(rv$authed) || (isTRUE(rv$is_admin) && !isTRUE(rv$impersonating))) return(invisible(FALSE))
+    if (!assignment_review_configured()) {
+      rv$assignment_worker_available <- FALSE
+      rv$assignment_status_note <- "Live assignment status is unavailable; showing the safe gradebook fallback."
+      return(invisible(FALSE))
+    }
+    result <- tryCatch({
+      schedules <- assignment_review_assignments()
+      export <- assignment_review_gradebook_export()
+      list(ok=TRUE,
+           progress=account_worker_progress(export, rv$user_id, rv$name),
+           schedules=account_worker_schedules(schedules))
+    }, error=function(e)list(ok=FALSE, error=conditionMessage(e)))
+    rv$assignment_status_checked_at <- format(Sys.time(), "%b %d at %I:%M %p")
+    if (!isTRUE(result$ok)) {
+      rv$assignment_worker_available <- FALSE
+      rv$assignment_status_note <- "Could not refresh the assignment portal; showing the safe gradebook fallback."
+      return(invisible(FALSE))
+    }
+    rv$assignment_progress <- result$progress
+    rv$assignment_schedules <- result$schedules
+    rv$assignment_worker_available <- TRUE
+    rv$assignment_status_note <- "Assignment portal status is current."
+    invisible(TRUE)
+  }
+
+  observeEvent(list(input$arc_tabs, input$refresh_account_assignments), {
+    if (isTRUE(rv$authed) && identical(as.character(input$arc_tabs %||% ""), "Account"))
+      refresh_account_assignment_status()
+  }, ignoreInit=FALSE)
 
   # ── Polls ─────────────────────────────────────────────────────────────────────
   arcade_poll <- reactivePoll(3000, session,
@@ -6776,50 +6974,62 @@ server <- function(input, output, session) {
        ORDER BY ja.round_id DESC, ja.created_at DESC LIMIT 20;",
       list(rv$user_id)), error = function(e) data.frame())
 
-    policy_row <- tryCatch(db_query(
-      "SELECT policy_team, presentation_date, course_unit, policy_topic, policy_question
-       FROM policy_group_assignments WHERE LOWER(user_id)=LOWER(?) LIMIT 1;",
-      list(rv$user_id)), error = function(e) data.frame())
-    policy_members <- if (nrow(policy_row)) tryCatch(db_query(
-      "SELECT COALESCE(u.display_name, p.user_id) AS display_name
-       FROM policy_group_assignments p
-       LEFT JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
-       WHERE p.policy_team=? ORDER BY COALESCE(u.display_name, p.user_id);",
-      list(policy_row$policy_team[1])), error = function(e) data.frame()) else data.frame()
-
     problem_sets <- tryCatch(db_query(
-      "SELECT ps.name, ps.original_deadline, ps.solutions_posted_at
+      "SELECT ps.name, ps.original_deadline, ps.solutions_posted_at,
+              COALESCE(ps.cloudflare_assignment_id,'') AS cloudflare_assignment_id
        FROM problem_sets ps
        WHERE COALESCE(ps.active,1)=1
-         AND NOT EXISTS (
-           SELECT 1 FROM student_grades sg
-           WHERE LOWER(sg.user_id)=LOWER(?)
-             AND LOWER(TRIM(COALESCE(sg.assignment_name,'')))=LOWER(TRIM(COALESCE(ps.name,'')))
-             AND sg.grade_pct IS NOT NULL
-         )
-       ORDER BY CASE WHEN ps.original_deadline IS NULL OR ps.original_deadline='' THEN 1 ELSE 0 END, ps.original_deadline ASC;",
-      list(rv$user_id)), error=function(e) data.frame())
+       ORDER BY CASE WHEN ps.original_deadline IS NULL OR ps.original_deadline='' THEN 1 ELSE 0 END,
+                ps.original_deadline ASC;"), error=function(e) data.frame())
+    grade_rows <- tryCatch(db_query(
+      "SELECT assignment_name FROM student_grades
+       WHERE LOWER(user_id)=LOWER(?) AND grade_pct IS NOT NULL;",
+      list(rv$user_id)), error=function(e)data.frame())
+    pending_problem_sets <- account_pending_problem_sets(
+      problem_sets, grade_rows, rv$assignment_progress, rv$assignment_schedules,
+      rv$assignment_worker_available)
     fmt_due <- function(x) {
-      d <- suppressWarnings(as.Date(x)); if (is.na(d)) as.character(x %||% "Not set")
-      else format(d, "%b %d, %Y")
+      raw <- trimws(as.character(x %||% ""))
+      if (!nzchar(raw)) return("not posted")
+      stamp <- suppressWarnings(as.POSIXct(raw, tz="UTC",
+        tryFormats=c("%Y-%m-%dT%H:%M:%OSZ", "%Y-%m-%dT%H:%M:%OS%z",
+                     "%Y-%m-%d %H:%M:%S", "%Y-%m-%d")))
+      if (!is.na(stamp) && (grepl("T| ", raw)))
+        return(format(stamp, "%b %d, %Y at %I:%M %p UTC"))
+      d <- suppressWarnings(as.Date(substr(raw,1,10)))
+      if (is.na(d)) raw else format(d, "%b %d, %Y")
     }
-    pending_assignments_ui <- div(class="today-card pending-assignments-card",
-      tags$h4("Pending assignments"),
-      tags$p(style="color:#777;font-size:.84rem;",
-             "Assignments with a recorded grade no longer appear here; upcoming deadlines and policy-brief milestones are collected here."),
-      if (nrow(problem_sets)) tags$table(class="table table-sm",
-        tags$thead(tags$tr(tags$th("Assignment"),tags$th("Due"),tags$th("Solutions"))),
-        tags$tbody(lapply(seq_len(nrow(problem_sets)), function(i) {
-          ps <- problem_sets[i,]
-          tags$tr(tags$td(ps$name %||% "Problem set"),
-                  tags$td(fmt_due(ps$original_deadline)),
-                  tags$td(if (nzchar(ps$solutions_posted_at %||% "")) fmt_due(ps$solutions_posted_at) else "—"))
-        }))
-      ) else tags$p(style="color:#999;", "No problem-set deadlines have been posted yet."),
-      if (nrow(policy_row)) tags$ul(style="margin:.45rem 0 0;padding-left:1.2rem;",
-        tags$li(paste("Policy presentation —", fmt_due(policy_row$presentation_date))),
-        tags$li("Policy brief progress report — submit after presentation feedback"),
-        tags$li("Final brief submission — official final-exam period"))
+    pending_assignments_ui <- tagList(
+      if (nrow(pending_problem_sets)) div(class="account-task-list",
+        lapply(seq_len(nrow(pending_problem_sets)), function(i) {
+          ps <- pending_problem_sets[i,,drop=FALSE]
+          self_grading <- identical(as.character(ps$stage[1]), "self_grading")
+          primary <- if (self_grading) {
+            if (nzchar(ps$grading_due_at[1] %||% ""))
+              paste("Self-grading due", fmt_due(ps$grading_due_at[1]))
+            else "PDF received; finish self-grading in the assignment portal"
+          } else paste("Problem set due", fmt_due(ps$due_at[1]))
+          secondary <- if (self_grading) {
+            "Your uploaded PDF is recorded. This reminder disappears after final self-grading submission."
+          } else if (nzchar(ps$solutions_at[1] %||% "")) {
+            paste("Solutions open", fmt_due(ps$solutions_at[1]))
+          } else "Upload the completed problem set in the assignment portal."
+          div(class="account-task",
+            div(class="account-task-head",
+              div(class="account-task-title", ps$name[1] %||% "Problem set"),
+              span(class="account-task-badge",
+                   if (self_grading) "Finish self-grading" else "Submit problem set")),
+            div(class="account-task-meta", tags$strong(primary)),
+            div(class="account-task-meta", secondary))
+        })
+      ) else div(style="color:#1a6e3c;font-weight:600;", "You are caught up on posted problem sets."),
+      div(style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-top:.75rem;",
+        actionButton("refresh_account_assignments", "Refresh assignment status",
+                     class="btn btn-sm btn-outline-secondary"),
+        span(style="color:#777;font-size:.78rem;",
+          paste0(rv$assignment_status_note,
+                 if (nzchar(rv$assignment_status_checked_at %||% ""))
+                   paste0(" Checked ", rv$assignment_status_checked_at, ".") else "")))
     )
 
     job_history_ui <- div(
@@ -6867,73 +7077,65 @@ server <- function(input, output, session) {
       }
     )
 
+    outstanding_jobs <- if (nrow(job_rows)) sum(vapply(seq_len(nrow(job_rows)), function(i) {
+      !assignment_history_state(job_rows$outcome[i] %||% "", job_rows$assignment_status[i] %||% "assigned",
+                                job_rows$pending_outcome[i] %||% "")$finalized
+    }, logical(1))) else 0L
+
     tagList(
-      pending_assignments_ui,
-      div(class = "tab-howto", "Your assigned jobs, token summary, transaction history, and profile."),
-
-      job_history_ui,
-
-      div(class = "bal-tiles",
-        div(class = "bal-tile bal-tile-toke",
-          div(class = "bal-tile-label", "Tokens Earned"),
-          div(class = "bal-tile-val",   as.integer(tp$tokens_earned %||% 0)),
-          div(class = "bal-tile-sub",   "gross · all time")
-        ),
-        div(class = "bal-tile bal-tile-toke2",
-          div(class = "bal-tile-label", "Tokens On Hand"),
-          div(class = "bal-tile-val",   fmt_token_amount(bal)),
-          div(class = "bal-tile-sub",   "after spending")
-        )
-      ),
-
-      fluidRow(
-        column(6,
-          div(class = "sec-label", "Token History"),
-          if (nrow(tp$ledger)) {
-            tags$table(class = "table table-sm",
-              tags$thead(tags$tr(
-                tags$th("Date"), tags$th("Type"), tags$th("Note"),
-                tags$th(style = "text-align:right;", "Tokens")
-              )),
-              tags$tbody(lapply(seq_len(nrow(tp$ledger)), function(i) {
-                r   <- tp$ledger[i, ]
-                cls <- if (as.numeric(r$amount) >= 0) "cr" else "dr"
-                tags$tr(class = cls,
-                  tags$td(tryCatch(format(as.POSIXct(r$created_at), "%b %d"), error = function(e) "")),
-                  tags$td(r$source_type %||% ""),
-                  tags$td(r$note %||% ""),
-                  tags$td(style = "text-align:right;font-weight:600;",
-                          sprintf("%+d", as.integer(r$amount)))
-                )
-              }))
-            )
-          } else {
-            div(style = "color:#999;font-size:.9rem;", "No transactions yet.")
-          }
-        ),
-
-        # ── Right column: profile ──
-        column(6,
-          div(class = "profile-panel",
-            tags$h6(style = "color:#951829;font-weight:700;", "Display Name"),
-            textInput("profile_name", NULL, value = rv$name, width = "100%"),
-            actionButton("save_name_btn", "Save", class = "btn btn-primary"),
-            tags$p(style = "color:#888;font-size:.82em;margin-top:.5rem;",
-                   "The name your instructor and classmates see."),
-            tags$hr(style = "margin:.75rem 0;"),
-            tags$p(tags$strong("Username: "), rv$user_id),
-            if (nzchar(scoped_course()))
-              tags$p(tags$strong("Class: "), scoped_course()),
-            if (length(scoped_sections()))
-              tags$p(tags$strong("Section: "), paste(scoped_sections(), collapse=", ")),
-          )
-        )
-      ),
-
-      uiOutput("account_grade_breakdown"),
-      uiOutput("account_assessment_breakdowns")
+      div(class="tab-howto",
+        "Open a section below to find what you need. Problem-set submission and policy-brief work live in ",
+        actionLink("account_open_assignments", "Assignments", style="font-weight:700;"), "."),
+      account_section("Needs your attention",
+        sprintf("%d pending problem set%s", nrow(pending_problem_sets), if (nrow(pending_problem_sets)==1) "" else "s"),
+        pending_assignments_ui, open=TRUE),
+      account_section("Jobs",
+        if (outstanding_jobs) sprintf("%d outstanding", outstanding_jobs) else "Assignments and outcomes",
+        job_history_ui),
+      account_section("Tokens", paste(fmt_token_amount(bal), "on hand"),
+        div(class = "bal-tiles",
+          div(class = "bal-tile bal-tile-toke",
+            div(class = "bal-tile-label", "Tokens Earned"),
+            div(class = "bal-tile-val", as.integer(tp$tokens_earned %||% 0)),
+            div(class = "bal-tile-sub", "gross · all time")),
+          div(class = "bal-tile bal-tile-toke2",
+            div(class = "bal-tile-label", "Tokens On Hand"),
+            div(class = "bal-tile-val", fmt_token_amount(bal)),
+            div(class = "bal-tile-sub", "after spending"))),
+        div(class = "sec-label", "Token History"),
+        if (nrow(tp$ledger)) {
+          tags$table(class = "table table-sm",
+            tags$thead(tags$tr(tags$th("Date"), tags$th("Type"), tags$th("Note"),
+                               tags$th(style="text-align:right;", "Tokens"))),
+            tags$tbody(lapply(seq_len(nrow(tp$ledger)), function(i) {
+              r <- tp$ledger[i, ]; cls <- if (as.numeric(r$amount) >= 0) "cr" else "dr"
+              tags$tr(class=cls,
+                tags$td(tryCatch(format(as.POSIXct(r$created_at), "%b %d"), error=function(e) "")),
+                tags$td(r$source_type %||% ""), tags$td(r$note %||% ""),
+                tags$td(style="text-align:right;font-weight:600;",
+                        paste0(if (as.numeric(r$amount) >= 0) "+" else "", fmt_token_amount(r$amount))))
+            })))
+        } else div(style="color:#999;font-size:.9rem;", "No transactions yet.")),
+      account_section("Grades & feedback", "Course grade and released assessments",
+        uiOutput("account_grade_breakdown"), uiOutput("account_assessment_breakdowns")),
+      account_section("Profile", "Name, username, class, and section",
+        tags$h6(style="color:#951829;font-weight:700;", "Display Name"),
+        textInput("profile_name", NULL, value=rv$name, width="100%"),
+        actionButton("save_name_btn", "Save", class="btn btn-primary"),
+        tags$p(style="color:#888;font-size:.82em;margin-top:.5rem;",
+               "The name your instructor and classmates see."),
+        tags$hr(style="margin:.75rem 0;"),
+        tags$p(tags$strong("Username: "), rv$user_id),
+        if (nzchar(scoped_course())) tags$p(tags$strong("Class: "), scoped_course()),
+        if (length(scoped_sections())) tags$p(tags$strong("Section: "), paste(scoped_sections(), collapse=", "))
+      )
     )
   })
+
+  observeEvent(input$account_open_assignments, {
+    req(rv$authed)
+    updateTabsetPanel(session, "arc_tabs", selected="Assignments")
+  }, ignoreInit=TRUE)
 
   observeEvent(input$save_name_btn, {
     req(rv$authed, rv$user_id)
