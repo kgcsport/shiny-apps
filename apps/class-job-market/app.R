@@ -428,6 +428,7 @@ db_exec("CREATE INDEX IF NOT EXISTS idx_insurance_claims_product
 ensure_column("insurance_products", "dividend_recipients INTEGER NOT NULL DEFAULT 0")
 ensure_column("insurance_products", "dividends_paid REAL NOT NULL DEFAULT 0")
 ensure_column("insurance_products", "net_profit REAL NOT NULL DEFAULT 0")
+ensure_column("insurance_products", "claim_reserve REAL NOT NULL DEFAULT 0")
 
 # The Worker uses stable canonical IDs (econ342-2026-ps01, ...). Older
 # Shiny databases were created before the mapping column existed, leaving
@@ -4210,8 +4211,8 @@ server <- function(input, output, session) {
     checkFunc = function() {
       if (is.null(rv$user_id)) return("")
       tryCatch(
-        db_query("SELECT MAX(created_at) ts FROM token_ledger WHERE user_id=?;",
-                 list(rv$user_id))$ts[1] %||% "",
+        db_query("SELECT MAX(created_at) ts, MAX(id) id FROM token_ledger WHERE user_id=?;",
+                 list(rv$user_id)),
         error = function(e) "")
     },
     valueFunc = function() {
@@ -4810,31 +4811,47 @@ server <- function(input, output, session) {
     scope_filter_rows(rows)
   }
 
-  issue_insurance_claim <- function(round_id, uid, dname, pass_event_id = NA_integer_) {
-    product <- insurance_product_for_round(round_id)
-    if (!nrow(product) || !as.character(product$status[1]) %in% c("open", "closed"))
-      return(list(paid = FALSE, reason = "No active pass insurance."))
-    purchase <- tryCatch(db_query(
-      "SELECT id FROM insurance_purchases WHERE product_id=? AND LOWER(user_id)=LOWER(?) LIMIT 1;",
-      list(as.integer(product$id[1]), uid)), error = function(e) data.frame())
-    if (!nrow(purchase)) return(list(paid = FALSE, reason = "Student was not insured."))
-    benefit <- as.numeric(product$benefit[1] %||% 0)
-    inserted <- tryCatch(db_exec(
-      "INSERT OR IGNORE INTO insurance_claims(product_id,user_id,benefit,pass_event_id)
-       VALUES(?,?,?,?);",
-      list(as.integer(product$id[1]), uid, benefit,
-           if (is.na(pass_event_id)) NA_integer_ else as.integer(pass_event_id))),
-      error = function(e) 0L)
-    if (!identical(as.integer(inserted), 1L))
-      return(list(paid = FALSE, reason = "The policy has already paid its one claim."))
-    claim_id <- as.integer(db_query("SELECT last_insert_rowid() id;")$id[1])
-    ledger_id <- token_credit(uid, dname, benefit, 0L, "insurance_claim", claim_id,
-                              note = sprintf("Pass-insurance benefit for class date %s",
-                                             product$round_id[1]))
-    db_exec("UPDATE insurance_claims SET ledger_id=? WHERE id=?;",
-            list(as.integer(ledger_id %||% NA_integer_), claim_id))
-    rv$insurance_ver <- rv$insurance_ver + 1L
-    list(paid = TRUE, benefit = benefit, product_id = as.integer(product$id[1]))
+  insurance_passes_on_hand <- function(uid, query = db_query) {
+    query(
+      "SELECT p.id AS product_id,p.benefit
+       FROM insurance_purchases ip JOIN insurance_products p ON p.id=ip.product_id
+       WHERE p.scope_key=? AND LOWER(ip.user_id)=LOWER(?)
+         AND NOT EXISTS (SELECT 1 FROM insurance_claims ic
+                         WHERE ic.product_id=ip.product_id AND LOWER(ic.user_id)=LOWER(ip.user_id))
+       ORDER BY ip.id;",
+      list(current_scope_key(), uid))
+  }
+
+  insurance_wallet <- reactive({
+    req(rv$user_id)
+    rv$insurance_ver
+    token_poll()
+    insurance_passes_on_hand(rv$user_id)
+  })
+
+  issue_insurance_claim <- function(connection, uid, dname, pass_event_id) {
+    passes <- insurance_passes_on_hand(uid, function(sql, params) {
+      DBI::dbGetQuery(connection, sql, params = params)
+    })
+    if (!nrow(passes)) return(list(paid = FALSE))
+
+    product_id <- passes$product_id[1]
+    benefit <- as.numeric(passes$benefit[1])
+    inserted <- DBI::dbExecute(connection,
+      "INSERT INTO insurance_claims(product_id,user_id,benefit,pass_event_id) VALUES(?,?,?,?);",
+      params = list(product_id, uid, benefit, pass_event_id))
+    if (inserted != 1L) stop("Could not record the insurance claim.")
+    claim_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
+    credited <- DBI::dbExecute(connection,
+      "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
+       VALUES(?,?,'insurance_claim',?,?,0,'Pass Insurance payout');",
+      params = list(uid, dname, claim_id, benefit))
+    if (credited != 1L) stop("Could not pay the insurance claim.")
+    ledger_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
+    linked <- DBI::dbExecute(connection, "UPDATE insurance_claims SET ledger_id=? WHERE id=?;",
+                            params = list(ledger_id, claim_id))
+    if (linked != 1L) stop("Could not link the payout to the claim.")
+    list(paid = TRUE, benefit = benefit)
   }
   # Preserve typed input values across poll-triggered re-renders.
   observe({ if (!is.null(input$bp_contrib)) rv$bp_contrib_val <- input$bp_contrib })
@@ -5829,14 +5846,12 @@ server <- function(input, output, session) {
         div(class = "spend-cards",
           {
             product <- insurance_product_for_round()
-            insured <- if (nrow(product)) tryCatch(db_query(
-              "SELECT id FROM insurance_purchases WHERE product_id=? AND LOWER(user_id)=LOWER(?) LIMIT 1;",
-              list(as.integer(product$id[1]), rv$user_id)), error=function(e)data.frame()) else data.frame()
-            meta <- if (!nrow(product)) "No policy offered for this class date" else if (nrow(insured)) "Purchased" else
+            passes <- nrow(insurance_wallet())
+            meta <- if (passes) sprintf("%d on hand", passes) else if (!insurance_purchase_is_open(product)) "Sales are closed" else
               sprintf("Premium %s · Benefit %s", fmt_token_amount(product$premium[1]), fmt_token_amount(product$benefit[1]))
             div(class = "spend-card", div(class = "spend-card-icon", "🛡️"),
                 div(class = "spend-card-label", "Pass Insurance"),
-                div(class = "spend-card-desc", "Buy coverage before class. If you are cold-called and live-pass, the policy pays once."),
+                div(class = "spend-card-desc", "Keep a pass on hand until you use it in a live cold call."),
                 div(class = "spend-card-meta", meta),
                 div(class = "spend-card-foot", actionButton("open_insurance", "Select →", class = "btn btn-sm btn-outline-primary")))
           },
@@ -5868,19 +5883,23 @@ server <- function(input, output, session) {
     if (mode == "insurance") {
       rv$insurance_ver
       product <- insurance_product_for_round()
-      if (!nrow(product)) return(div(class="spend-form-box", "No pass-insurance policy is offered for the selected class date."))
-      purchase <- tryCatch(db_query(
+      passes <- insurance_wallet()
+      purchase <- if (nrow(product)) db_query(
         "SELECT * FROM insurance_purchases WHERE product_id=? AND LOWER(user_id)=LOWER(?) LIMIT 1;",
-        list(as.integer(product$id[1]), rv$user_id)), error=function(e)data.frame())
+        list(as.integer(product$id[1]), rv$user_id)) else data.frame()
       div(class="spend-form-box",
         tags$h6(style="color:#951829;font-weight:700;", "🛡️ Pass Insurance"),
-        tags$p(style="font-size:.88rem;color:#555;",
-          sprintf("Coverage applies to this class date. Pay %s token%s now. If you are cold-called and live-pass, receive %s token%s once.",
+        if (nrow(passes)) div(class="alert alert-success",
+          sprintf("Passes on hand: %d. Your next live pass pays %s tokens.",
+                  nrow(passes), fmt_token_amount(passes$benefit[1]))),
+        if (nrow(product)) tags$p(style="font-size:.88rem;color:#555;",
+          sprintf("Pay %s token%s now. Your pass stays on hand until you use it for a one-time payout of %s token%s.",
             fmt_token_amount(product$premium[1]), if (isTRUE(as.numeric(product$premium[1]) == 1)) "" else "s",
             fmt_token_amount(product$benefit[1]), if (isTRUE(as.numeric(product$benefit[1]) == 1)) "" else "s")),
         tags$p(style="font-size:.82rem;color:#666;", if (insurance_purchase_is_open(product)) "You can buy during class until the instructor closes sales or settles the market. ",
           "Premiums, claims, and dividends change your spendable balance but not gross participation earnings."),
-        if (nrow(purchase)) div(class="alert alert-success", style="margin:0;", "You are insured for this class date.")
+        if (!nrow(product)) tags$p("No pass is offered for sale on this class date.")
+        else if (nrow(purchase)) tags$p("You already bought a pass from this offer.")
         else if (!insurance_purchase_is_open(product)) div(class="alert alert-secondary", style="margin:0;", "Purchases are closed.")
         else if (bal < as.numeric(product$premium[1])) div(class="alert alert-warning", style="margin:0;",
           sprintf("You need %s tokens; your balance is %s.", fmt_token_amount(product$premium[1]), fmt_token_amount(bal)))
@@ -7344,6 +7363,7 @@ server <- function(input, output, session) {
             div(class = "bal-tile-label", "Tokens On Hand"),
             div(class = "bal-tile-val", fmt_token_amount(bal)),
             div(class = "bal-tile-sub", "after spending"))),
+        tags$p(sprintf("Passes on hand in this class market: %d", nrow(insurance_wallet()))),
         div(class = "sec-label", "Token History"),
         if (nrow(tp$ledger)) {
           tags$table(class = "table table-sm",
@@ -8763,12 +8783,24 @@ server <- function(input, output, session) {
     rid <- as.integer(round$id[1])
     uid <- drawn$user_id
     dname <- drawn$display_name %||% uid
-    db_exec(
-      "INSERT INTO live_score_events(round_id,user_id,event_kind,outcome,tokens,logged_by,committed_at,tokens_credited)
-       VALUES(?,?,'cold_call','pass',0,?,datetime('now'),1);",
-      list(rid, uid, rv$user_id %||% "admin"))
-    pass_event_id <- as.integer(db_query("SELECT last_insert_rowid() id;")$id[1])
-    claim <- issue_insurance_claim(rid, uid, dname, pass_event_id)
+    claim <- tryCatch({
+      connection <- get_con()
+      DBI::dbWithTransaction(connection, {
+        recorded <- DBI::dbExecute(connection,
+          "INSERT INTO live_score_events(round_id,user_id,event_kind,outcome,tokens,logged_by,committed_at,tokens_credited)
+           VALUES(?,?,'cold_call','pass',0,?,datetime('now'),1);",
+          params = list(rid, uid, rv$user_id %||% "admin"))
+        if (recorded != 1L) stop("Could not record the live pass.")
+        pass_event_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
+        issue_insurance_claim(connection, uid, dname, pass_event_id)
+      })
+    }, error = function(e) {
+      message("Live pass failed: ", conditionMessage(e))
+      showNotification("Could not record the pass. Please try again.", type = "error")
+      NULL
+    })
+    if (is.null(claim)) return()
+    if (isTRUE(claim$paid)) rv$insurance_ver <- rv$insurance_ver + 1L
     rv$cold_call_last <- list(
       display_name = dname,
       kind = "pass",
@@ -10587,11 +10619,24 @@ server <- function(input, output, session) {
     }
     product_id <- as.integer(product$id[1])
     db_exec("UPDATE insurance_products SET status='closed',updated_at=CURRENT_TIMESTAMP WHERE id=?;", list(product_id))
-    policies <- as.integer(db_query("SELECT COUNT(*) n FROM insurance_purchases WHERE product_id=?;", list(product_id))$n[1] %||% 0L)
-    claims <- as.integer(db_query("SELECT COUNT(*) n FROM insurance_claims WHERE product_id=?;", list(product_id))$n[1] %||% 0L)
-    claim_cost <- as.numeric(db_query("SELECT COALESCE(SUM(benefit),0) x FROM insurance_claims WHERE product_id=?;", list(product_id))$x[1] %||% 0)
+    counts <- db_query(
+      "SELECT COUNT(ip.id) policies, COUNT(ic.id) claims, COALESCE(SUM(ic.benefit),0) claim_cost,
+              COALESCE(SUM(CASE WHEN ic.id IS NULL THEN ? ELSE 0 END),0) claim_reserve
+       FROM insurance_purchases ip LEFT JOIN insurance_claims ic
+         ON ic.product_id=ip.product_id AND LOWER(ic.user_id)=LOWER(ip.user_id)
+       WHERE ip.product_id=?;",
+      list(product$benefit[1], product_id))
+    if (!nrow(counts)) {
+      showNotification("Could not calculate insurance settlement. Please try again.", type = "error")
+      return()
+    }
+    policies <- counts$policies[1]
+    claims <- counts$claims[1]
+    claim_cost <- counts$claim_cost[1]
+    claim_reserve <- counts$claim_reserve[1]
     roster <- insurance_scope_roster()
-    accounting <- insurance_round_accounting(policies, as.numeric(product$premium[1]), claim_cost, nrow(roster))
+    accounting <- insurance_round_accounting(policies, as.numeric(product$premium[1]),
+                                              claim_cost, nrow(roster), claim_reserve)
     if (accounting$dividend_each > 0 && nrow(roster)) {
       for (i in seq_len(nrow(roster))) {
         uid <- roster$user_id[i]
@@ -10617,12 +10662,12 @@ server <- function(input, output, session) {
     suggested <- insurance_zero_profit_premium(
       totals$claim_cost[1] %||% 0, totals$policies[1] %||% 0,
       fallback=as.numeric(product$premium[1]), step=as.numeric(product$price_step[1] %||% 0.5))
-    db_exec("UPDATE insurance_products SET status='settled',policies_sold=?,claims_paid_count=?,premium_revenue=?,claim_cost=?,realized_profit=?,dividend_each=?,dividend_recipients=?,dividends_paid=?,net_profit=?,suggested_next_premium=?,settled_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?;",
-            list(policies, claims, accounting$revenue, claim_cost, accounting$profit,
-                 accounting$dividend_each, nrow(roster), accounting$dividend_each * nrow(roster), accounting$profit - accounting$dividend_each * nrow(roster), suggested, product_id))
+    db_exec("UPDATE insurance_products SET status='settled',policies_sold=?,claims_paid_count=?,premium_revenue=?,claim_cost=?,claim_reserve=?,realized_profit=?,dividend_each=?,dividend_recipients=?,dividends_paid=?,net_profit=?,suggested_next_premium=?,settled_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?;",
+            list(policies, claims, accounting$revenue, claim_cost, claim_reserve, accounting$profit,
+                 accounting$dividend_each, nrow(roster), accounting$dividend_each * nrow(roster), accounting$profit - claim_reserve - accounting$dividend_each * nrow(roster), suggested, product_id))
     rv$insurance_ver <- rv$insurance_ver + 1L
-    showNotification(sprintf("Settled: %d policies, %d claims, profit %s, dividend %s to each of %d students. Suggested next premium: %s.",
-      policies, claims, fmt_token_amount(accounting$profit), fmt_token_amount(accounting$dividend_each), nrow(roster), fmt_token_amount(suggested)),
+    showNotification(sprintf("Settled: %d policies, %d claims, %s reserved for unused passes, dividend %s to each of %d students. Suggested next premium: %s.",
+      policies, claims, fmt_token_amount(claim_reserve), fmt_token_amount(accounting$dividend_each), nrow(roster), fmt_token_amount(suggested)),
       type="message", duration=12)
   }, ignoreNULL=TRUE)
 
@@ -10685,7 +10730,7 @@ server <- function(input, output, session) {
       wrap_spending(tagList(
         tags$h5("Pass Insurance Market"),
         tags$p(style="color:#555;font-size:.88rem;",
-          "Students buy one dated policy from Spend before class. An insured live pass pays once. Positive realized profit is divided equally among every active student in this scope; insurance cash flows do not count as participation earnings."),
+          "Students can buy one pass per offer from Spend and keep it until they use it in a live cold call. Settlement reserves the full value of unused passes before paying equal dividends. Insurance cash flows do not count as participation earnings."),
         if (!nrow(round)) div(class="alert alert-warning", "Choose a class date under Job Market Controls first.") else tagList(
           tags$p(tags$strong("Selected class: "), round$label[1] %||% "", " · ", round$class_date[1] %||% ""),
           fluidRow(
@@ -10699,7 +10744,7 @@ server <- function(input, output, session) {
               actionButton("close_insurance_sales_btn", "Close Sales", class="btn btn-sm btn-outline-warning"),
             if (nrow(product) && !identical(as.character(product$status[1]), "settled"))
               actionButton("settle_insurance_market_btn", "Settle, Dividend & Reprice", class="btn btn-sm btn-success",
-                           onclick="return confirm('Settle this market, pay all claims and class dividends, and freeze the result?');")
+                           onclick="return confirm('Close sales, reserve payouts for unused passes, and distribute any remaining profit?');")
           ),
           if (nrow(product)) tagList(
             tags$hr(),
@@ -10708,9 +10753,9 @@ server <- function(input, output, session) {
                    tags$strong("Claims: "), if (nrow(policy_rows)) sum(policy_rows$claimed) else 0),
             if (identical(as.character(product$status[1]), "settled"))
               div(class="alert alert-info",
-                sprintf("Revenue %s · claims %s · profit before dividend %s · dividends paid %s · net profit %s · dividend per student %s · suggested next premium %s",
+                sprintf("At settlement: revenue %s · claims paid %s · reserved for unused passes %s · profit before reserves and dividends %s · dividends paid %s · net profit %s · dividend per student %s · suggested next premium %s",
                   fmt_token_amount(product$premium_revenue[1]), fmt_token_amount(product$claim_cost[1]),
-                  fmt_token_amount(product$realized_profit[1]), fmt_token_amount(product$dividends_paid[1]),
+                  fmt_token_amount(product$claim_reserve[1]), fmt_token_amount(product$realized_profit[1]), fmt_token_amount(product$dividends_paid[1]),
                   fmt_token_amount(product$net_profit[1]), fmt_token_amount(product$dividend_each[1]),
                   fmt_token_amount(product$suggested_next_premium[1]))),
             if (nrow(policy_rows)) div(style="overflow-x:auto;", tags$table(class="table table-sm",

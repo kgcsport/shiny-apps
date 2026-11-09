@@ -26,7 +26,6 @@ required_contract <- c(
   "issue_insurance_claim",
   "insurance_dividend",
   "suggested_next_premium",
-  "token_credit(uid, dname, benefit, 0L, \"insurance_claim\"",
   "accounting$dividend_each, 0L,"
 )
 missing <- required_contract[!vapply(required_contract, grepl, logical(1),
@@ -95,6 +94,8 @@ if (requireNamespace("shiny", quietly = TRUE)) {
 
   app <- new.env(parent = globalenv())
   source(app_path, local = app)
+  # Keep the explicitly selected lecture independent of the host clock.
+  app$set_setting("class_days", "")
   app$db_exec("DELETE FROM insurance_dividends;")
   app$db_exec("DELETE FROM insurance_claims;")
   app$db_exec("DELETE FROM insurance_purchases;")
@@ -146,7 +147,7 @@ if (requireNamespace("shiny", quietly = TRUE)) {
   # Open through the real instructor control.
   shiny::testServer(app$server, {
     set_admin(rv)
-    session$setInputs(insurance_benefit_input = 2, insurance_premium_input = 2,
+    session$setInputs(insurance_benefit_input = 2, insurance_premium_input = 3,
                       insurance_price_step_input = 0.5,
                       save_insurance_product_btn = 1)
     session$flushReact()
@@ -164,7 +165,7 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     session$setInputs(submit_insurance_purchase = click)
     session$flushReact()
     if (any(app$db_query("SELECT user_id FROM insurance_purchases;")$user_id == uid))
-      stopifnot(grepl("You are insured", output$spend_form$html, fixed = TRUE))
+      stopifnot(grepl("Passes on hand: 1", output$spend_form$html, fixed = TRUE))
   })
   buy_policy("s1@test.edu", "Student 1")
   buy_policy("s1@test.edu", "Student 1", 2L) # browser double-click/retry
@@ -182,7 +183,7 @@ if (requireNamespace("shiny", quietly = TRUE)) {
   purchases <- app$db_query("SELECT * FROM insurance_purchases ORDER BY user_id;")
   premium_ledger <- app$db_query("SELECT * FROM token_ledger WHERE source_type='insurance_premium';")
   stopifnot(nrow(purchases) == 2L, nrow(premium_ledger) == 2L,
-            sum(premium_ledger$amount) == -4, all(premium_ledger$earning == 0L),
+            sum(premium_ledger$amount) == -6, all(premium_ledger$earning == 0L),
             all(purchases$ledger_id == premium_ledger$id[match(purchases$id, premium_ledger$source_id)]))
 
   # Once anyone buys, a later admin retry cannot rewrite their contract.
@@ -194,7 +195,7 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     session$flushReact()
   })
   frozen <- app$db_query("SELECT premium,benefit FROM insurance_products WHERE id=?;", list(product_id))
-  stopifnot(frozen$premium[1] == 2, frozen$benefit[1] == 2)
+  stopifnot(frozen$premium[1] == 3, frozen$benefit[1] == 2)
 
   # The first live pass pays immediately while sales are still open.
   # A repeated pass remains in the audit but cannot pay twice.
@@ -233,12 +234,60 @@ if (requireNamespace("shiny", quietly = TRUE)) {
   dividends <- app$db_query("SELECT * FROM insurance_dividends WHERE product_id=? ORDER BY user_id;", list(product_id))
   dividend_ledger <- app$db_query("SELECT * FROM token_ledger WHERE source_type='insurance_dividend';")
   stopifnot(settled$status[1] == "settled", settled$policies_sold[1] == 2L,
-            settled$claims_paid_count[1] == 1L, settled$realized_profit[1] == 2,
+            settled$claims_paid_count[1] == 1L, settled$realized_profit[1] == 4,
+            settled$claim_reserve[1] == 2, abs(settled$net_profit[1]) < 1e-8,
             settled$dividend_recipients[1] == 3L, nrow(dividends) == 3L,
             nrow(dividend_ledger) == 3L,
             !"outsider@test.edu" %in% dividends$user_id,
             all(dividend_ledger$earning == 0L),
             abs(sum(dividend_ledger$amount) - 2) < 1e-8)
+  # The other buyer's pass is still available on a new class date with no
+  # offer. A rejected payout rolls back the pass and leaves the draw in place.
+  DBI::dbExecute(app$get_con(), "INSERT INTO weekly_rounds(label,class_date,assignment_mode,bidding_enabled)
+     VALUES('Next class','2026-11-11','wage_bidding',1);")
+  next_round <- app$db_query("SELECT last_insert_rowid() id;")$id[1]
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    session$setInputs(active_round_select = next_round)
+    stopifnot(active_round_id() == next_round)
+  })
+  shiny::testServer(app$server, {
+    set_student(rv, "s2@test.edu", "Student 2")
+    session$setInputs(open_insurance = 1L)
+    stopifnot(grepl("Passes on hand: 1", output$spend_form$html, fixed = TRUE),
+              grepl("No pass is offered", output$spend_form$html, fixed = TRUE),
+              grepl("Passes on hand in this class market: 1", output$account_tab$html, fixed = TRUE))
+  })
+  DBI::dbExecute(app$get_con(), "CREATE TRIGGER reject_insurance_payout BEFORE INSERT ON token_ledger
+    WHEN NEW.source_type='insurance_claim' BEGIN SELECT RAISE(ABORT, 'test payout failure'); END;")
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    stopifnot(active_round_id() == next_round)
+    drawn <- list(user_id = "s2@test.edu", display_name = "Student 2", section = "01")
+    rv$cold_call_draw <- drawn
+    session$setInputs(slide_cold_call_pass_btn = 1L)
+    stopifnot(identical(rv$cold_call_draw, drawn),
+              nrow(app$db_query("SELECT id FROM live_score_events WHERE round_id=?;", list(next_round))) == 0L,
+              nrow(app$db_query("SELECT id FROM insurance_claims;")) == 1L)
+    DBI::dbExecute(app$get_con(), "DROP TRIGGER reject_insurance_payout;")
+    session$setInputs(slide_cold_call_pass_btn = 2L)
+    redeemed <- app$db_query(
+      "SELECT ic.product_id,ic.benefit,lse.round_id,tl.amount,tl.earning
+       FROM insurance_claims ic JOIN live_score_events lse ON lse.id=ic.pass_event_id
+       JOIN token_ledger tl ON tl.id=ic.ledger_id WHERE ic.user_id='s2@test.edu';")
+    stopifnot(nrow(redeemed) == 1L, redeemed$product_id[1] == product_id,
+              redeemed$round_id[1] == next_round, redeemed$benefit[1] == 2,
+              redeemed$amount[1] == 2, redeemed$earning[1] == 0L)
+    rv$cold_call_draw <- drawn
+    session$setInputs(slide_cold_call_pass_btn = 3L)
+    stopifnot(nrow(app$db_query("SELECT id FROM insurance_claims;")) == 2L)
+  })
+  shiny::testServer(app$server, {
+    set_student(rv, "s2@test.edu", "Student 2")
+    session$setInputs(open_insurance = 1L)
+    stopifnot(!grepl("Passes on hand: 1", output$spend_form$html, fixed = TRUE),
+              grepl("Passes on hand in this class market: 0", output$account_tab$html, fixed = TRUE))
+  })
   all_insurance_cash <- app$db_query(
     "SELECT COALESCE(SUM(amount),0) x FROM token_ledger WHERE source_type LIKE 'insurance_%';")$x[1]
   stopifnot(abs(all_insurance_cash) < 1e-8)
