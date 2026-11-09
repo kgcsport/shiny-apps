@@ -35,7 +35,10 @@ required_app <- c("risk_insurance_rounds","risk_insurance_choices","risk_insuran
   "req(rv$admin,!rv$impersonating)","earning,note) VALUES(?,?,?,?,?,0,?)",
   "risk_impersonate_user","risk_stop_impersonating","results_round_sel",
   "comparison_facets","risk_comparison_table","distribution_metric",
-  "distribution_facets","distribution_plot","risk_distribution_data")
+  "distribution_facets","distribution_plot","risk_distribution_data",
+  'student_view_controls<-uiOutput("risk_impersonation_controls")',
+  'if(rv$admin)tabs<-c(tabs,list(tabPanel("Settings",uiOutput("settings_ui"))))',
+  'updateTabsetPanel(session,"risk_tabs",selected="Play")',"Round settings are locked")
 missing <- required_app[!vapply(required_app,grepl,logical(1),x=app,fixed=TRUE)]
 if(length(missing))stop("Risk & Insurance app contract missing: ",paste(missing,collapse=" | "))
 required_hub <- c('label = "Risk & Insurance", embedded = TRUE, url = "/club-insurance-game/"',
@@ -87,10 +90,18 @@ app_env <- new.env(parent=globalenv());source(app_path,local=app_env)
 # Instructor can impersonate and return without leaving Risk & Insurance.
 shiny::testServer(app_env$server,{
   rv$user<-"admin";rv$name<-"Instructor";rv$admin<-TRUE;rv$course<-"ECON 342";rv$section<-"01";rv$player_user<-"admin";rv$player_name<-"Instructor"
+  settings_html<-paste(as.character(output$settings_ui),collapse="")
+  if(!grepl("risk_impersonation_controls",settings_html,fixed=TRUE)||!grepl("Round settings",settings_html,fixed=TRUE))stop("Student-view controls are not under instructor Settings.")
   session$setInputs(risk_impersonate_user="student-a",risk_impersonate_btn=1);session$flushReact()
   if(!isTRUE(rv$impersonating)||rv$player_user!="student-a")stop("In-game impersonation failed.")
+  settings_html<-paste(as.character(output$settings_ui),collapse="")
+  controls_html<-paste(as.character(output$risk_impersonation_controls),collapse="")
+  page_html<-paste(as.character(output$page),collapse="")
+  if(!grepl("Round settings are locked",settings_html,fixed=TRUE)||!grepl("Viewing as",controls_html,fixed=TRUE)||!grepl("Settings",page_html,fixed=TRUE))stop("Instructor cannot manage an active student view from Settings.")
   session$setInputs(risk_stop_impersonating=1);session$flushReact()
   if(isTRUE(rv$impersonating)||rv$player_user!="admin")stop("Stopping in-game impersonation failed.")
+  settings_html<-paste(as.character(output$settings_ui),collapse="")
+  if(!grepl("Round settings",settings_html,fixed=TRUE))stop("Round settings did not return after student view stopped.")
 })
 
 shiny::testServer(app_env$server,{
