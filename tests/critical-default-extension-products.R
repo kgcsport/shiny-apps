@@ -25,7 +25,7 @@ db_exec("CREATE TABLE problem_sets(
 
 app_path <- if (file.exists("apps/class-job-market/app.R")) "apps/class-job-market/app.R" else "/srv/shiny-server/class-job-market/app.R"
 app <- parse(app_path)
-needed <- c("default_extension_worker_assignments", "problem_set_number", "ensure_default_extension_products")
+needed <- c("default_extension_worker_assignments", "problem_set_number", "ensure_default_extension_products", "repair_correction_extension_targets")
 loaded <- character()
 for (expr in app) {
   if (is.call(expr) && identical(as.character(expr[[1]]), "<-") && is.name(expr[[2]]) &&
@@ -40,10 +40,13 @@ stopifnot(setequal(loaded, needed))
 # product from the solutions date and the same Worker assignment ID.
 db_exec("INSERT INTO problem_sets(name,original_deadline,solutions_posted_at,active,cloudflare_assignment_id,extension_target)
          VALUES('PS4','2026-11-01','2026-11-04',1,'econ342-2026-ps04','submission');")
+db_exec("INSERT INTO problem_sets(name,original_deadline,solutions_posted_at,active,cloudflare_assignment_id,extension_target)
+         VALUES('Problem Set 1 Corrections','2026-09-18',NULL,1,'econ342-2026-ps01','submission');")
 ensure_default_extension_products()
+repair_correction_extension_targets()
 first <- db_query("SELECT name,original_deadline,solutions_posted_at,active,cloudflare_assignment_id,extension_target
                    FROM problem_sets ORDER BY id;")
-stopifnot(nrow(first) == 6L)
+stopifnot(nrow(first) == 7L)
 for (number in 4:6) {
   rows <- first[vapply(first$name, problem_set_number, integer(1)) == number, , drop = FALSE]
   stopifnot(nrow(rows) == 2L)
@@ -52,11 +55,13 @@ for (number in 4:6) {
 }
 ps4 <- first[vapply(first$name, problem_set_number, integer(1)) == 4L, , drop = FALSE]
 stopifnot(ps4$original_deadline[ps4$extension_target == "submission"] == "2026-11-01")
+legacy_correction <- first[tolower(first$name) == 'problem set 1 corrections', , drop = FALSE]
+stopifnot(nrow(legacy_correction) == 1L, legacy_correction$extension_target == 'self_grading')
 stopifnot(ps4$original_deadline[ps4$extension_target == "self_grading"] == "2026-11-04")
 stopifnot(all(first$active[vapply(first$name, problem_set_number, integer(1)) %in% 4:5] == 1L))
 stopifnot(all(first$active[vapply(first$name, problem_set_number, integer(1)) == 6L] == 0L))
 
 ensure_default_extension_products()
 second <- db_query("SELECT id FROM problem_sets;")
-stopifnot(nrow(second) == 6L)
+stopifnot(nrow(second) == 7L)
 cat("critical default extension products: OK\n")

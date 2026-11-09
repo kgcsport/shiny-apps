@@ -175,6 +175,46 @@ db_exec <- function(sql, params = NULL) {
     error = function(e) { message("db_exec: ", e$message); -1L }
   )
 }
+# An extension checkout changes two records that must agree: the student's
+# token ledger and the extension purchase sent to the Worker. Do not use the
+# deliberately forgiving db_exec() wrapper here: checkout must either create
+# both records or create neither, and its failure needs to reach the student.
+record_extension_purchase <- function(user_id, display_name, problem_set_id,
+                                      hours, cost, approval_status, note = "") {
+  user_id <- as.character(user_id)
+  display_name <- as.character(display_name)
+  problem_set_id <- as.integer(problem_set_id)
+  hours <- as.numeric(hours)
+  cost <- as.numeric(cost)
+  approval_status <- as.character(approval_status)
+  if (!nzchar(user_id) || !is.finite(problem_set_id) || problem_set_id <= 0L ||
+      !is.finite(hours) || hours <= 0 || !is.finite(cost) || cost <= 0 ||
+      !approval_status %in% c("approved", "pending"))
+    stop("Invalid extension checkout details.")
+
+  DBI::dbWithTransaction(get_con(), {
+    wrote_ledger <- DBI::dbExecute(get_con(),
+      "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
+       VALUES(?,?,?,?,?,?,?);",
+      params = list(user_id, display_name, "extension", problem_set_id,
+                    -abs(cost), 0L, note))
+    if (!identical(as.integer(wrote_ledger), 1L))
+      stop("Could not record the token debit.")
+    ledger_id <- DBI::dbGetQuery(get_con(), "SELECT last_insert_rowid() AS id;")$id[1]
+
+    wrote_purchase <- DBI::dbExecute(get_con(),
+      "INSERT INTO extension_purchases(problem_set_id,user_id,hours,cost,ledger_id,approval_status)
+       VALUES(?,?,?,?,?,?);",
+      params = list(problem_set_id, user_id, hours, cost,
+                    as.integer(ledger_id), approval_status))
+    if (!identical(as.integer(wrote_purchase), 1L))
+      stop("Could not create the extension purchase record.")
+    purchase_id <- DBI::dbGetQuery(get_con(), "SELECT last_insert_rowid() AS id;")$id[1]
+    if (!is.finite(purchase_id) || purchase_id <= 0L)
+      stop("Could not identify the saved extension purchase.")
+    list(purchase_id = as.integer(purchase_id), ledger_id = as.integer(ledger_id))
+  })
+}
 ensure_column <- function(table, column_def) {
   column_name <- strsplit(trimws(column_def), "\\s+")[[1]][1]
   cols <- tryCatch(db_query(sprintf("PRAGMA table_info(%s);", table))$name,
@@ -450,6 +490,20 @@ ensure_default_extension_products <- function() {
   }
 }
 ensure_default_extension_products()
+# A corrections extension is for the post-solutions self-grading window. Some
+# early products were inadvertently labelled as submission extensions, which
+# would also shift the original submission/solutions timing in the Worker.
+repair_correction_extension_targets <- function() {
+  rows <- db_query("SELECT id,name,COALESCE(extension_target,'submission') AS extension_target FROM problem_sets;")
+  if (!nrow(rows)) return(invisible(NULL))
+  correction_rows <- grepl("correction", as.character(rows$name), ignore.case = TRUE) &
+    !is.na(vapply(rows$name, problem_set_number, integer(1))) &
+    tolower(as.character(rows$extension_target)) != "self_grading"
+  for (id in rows$id[correction_rows])
+    db_exec("UPDATE problem_sets SET extension_target='self_grading' WHERE id=?;", list(as.integer(id)))
+  invisible(NULL)
+}
+repair_correction_extension_targets()
 
 source(file.path(dirname(shared_sqlite), "assignment_extensions.R"), local = TRUE)
 extension_refund_claim <- function(purchase_id, user_id = NULL,
@@ -6473,12 +6527,18 @@ server <- function(input, output, session) {
       if (grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", deadline_raw)) paste(deadline_raw, "23:59:59") else deadline_raw,
       tz="UTC"))
     approval_status <- if (!is.na(deadline) && deadline <= Sys.time()) "pending" else "approved"
-    lid <- token_debit(rv$user_id, rv$name, cost, "extension", ps_id,
-                       note = sprintf("%g-hour extension for %s%s", hrs, ps$name[1],
-                                      if (approval_status == "pending") " (awaiting instructor approval)" else ""))
-    db_exec("INSERT INTO extension_purchases(problem_set_id,user_id,hours,cost,ledger_id,approval_status) VALUES(?,?,?,?,?,?);",
-            list(ps_id, rv$user_id, hrs, cost, as.integer(lid %||% NA_integer_), approval_status))
-    purchase_id <- as.integer(db_query("SELECT last_insert_rowid() id;")$id[1])
+    checkout <- tryCatch(record_extension_purchase(
+      user_id = rv$user_id, display_name = rv$name, problem_set_id = ps_id,
+      hours = hrs, cost = cost, approval_status = approval_status,
+      note = sprintf("%g-hour extension for %s%s", hrs, ps$name[1],
+                     if (approval_status == "pending") " (awaiting instructor approval)" else "")),
+      error = function(e) e)
+    if (inherits(checkout, "error")) {
+      showNotification(paste0("Extension was not purchased: ", conditionMessage(checkout)),
+                       type = "error", duration = 12)
+      return()
+    }
+    purchase_id <- checkout$purchase_id
     rv$extensions_ver <- rv$extensions_ver + 1L
     if (approval_status == "pending") {
       showNotification(sprintf("Purchase recorded for %d tokens and sent for instructor approval because the original deadline has passed.", as.integer(cost)), type="message", duration=10)
