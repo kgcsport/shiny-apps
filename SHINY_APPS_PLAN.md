@@ -84,7 +84,7 @@ Sandbox mode is for testing the live class experience without touching student r
 
 - [x] Add a reusable persistent live-word-cloud question manager for slide-embedded classroom polling. *(2026-09-13: questions are created and edited in the instructor screen, routed by stable URL key, and require no app-code or slide-source change after embedding.)*
 - [x] Stabilize the class-job-market hub around live teaching workflows. *(2026-08-26: round setup, template auto-copy, and settings-panel reactivity fixed; see Work Log.)*
-- [x] Carry unused Pass Insurance across class dates and reserve full payouts at settlement.
+- [x] Apply Pass Insurance only to the original class period, including existing purchases.
 - [x] Repair Pass Insurance checkout and allow live purchases until the instructor closes sales or settles the market.
 - [x] Add a four-class Pass Insurance market to Class Job Market with advance purchase, one live-pass claim, pooled zero-profit repricing, equal class dividends, and an instructor run sheet. *(2026-11-06: implementation and focused regressions complete; immutable-image staging remains required before production promotion.)*
 - [x] Make job setup easier to maintain: fewer defaults, clearer timing, clean in-draw/voluntary controls, and sensible demo mirroring. *(2026-08-26: simplified 4-category / 11-template catalog with one-time migration; template-level timing/voluntary/in-draw/auto-copy controls.)*
@@ -165,6 +165,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 `tests/smoke-class-job-market.R` (run `Rscript tests/smoke-class-job-market.R` from repo root; needs DBI + RSQLite) exercises the seed migration, template auto-copy, idempotence across restarts, bid-lock windows, and all three clearing-wage rules against a scratch SQLite DB by extracting the relevant functions from `app.R`. The testthat suite in `tests/unit/` has 20 pre-existing failures unrelated to this work (regex/locale issues in the test environment).
 
 ## Decision Log
+
+- **2026-11-09** — Limit Pass Insurance to the class period associated with the purchased offer, including existing purchases. Keep open and closed sales eligible for redemption in the original period, end coverage at settlement, and preserve prior purchase, payout, and dividend history. New settlements distribute any positive profit after paid claims. Verify same-period redemption, rejected redemption in a different period and after settlement, and atomic payout rollback through Shiny and SQLite.
 
 - **2026-11-09** — Carry unused Pass Insurance across class dates in the same market. Keep existing sales and purchase limits, scoped balances, the purchased benefit, and the live pass and redraw workflow. A saved pass survives closing or settling its offer and pays at most once, from the oldest unused purchase. Reserve full outstanding payouts before distributing dividends. Verify a purchase, settlement, date switch with no new offer, first redemption, repeat pass, and a failed payout through the real Shiny observers and SQLite.
 
@@ -475,6 +477,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-11-09** (Codex) — Limited all Pass Insurance purchases to the original class period. Closing sales preserves coverage for that period and settlement ends it. Settlement and dividend payouts now commit together with the settled status. Extended the Shiny regression to check both pass buttons, class-period and settlement boundaries, and payout and dividend rollback.
 
 - **2026-11-09** (Codex) — Added a Pass Insurance balance to Account and Spend. An unused purchase survives class-date changes and settlement in its class market. The live pass and any payout commit together. Settlement records full reserves for unused passes before calculating dividends. The workflow regression covers redemption from a settled offer on a later date, payout rollback, and one-time use.
 
@@ -907,7 +911,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-1. Stage the next immutable image. Rehearse Pass Insurance purchase, settlement with a reserve, and the first **Pass & Redraw** on a later date, then smoke Risk & Insurance Settings → View as student → Play → Settings → Stop before production promotion.
+1. Stage the next immutable image. Rehearse Pass Insurance purchase and **Pass & Redraw** in the original period, then verify expiry at settlement and on a later date, then smoke Risk & Insurance Settings → View as student → Play → Settings → Stop before production promotion.
 2. Publish the PS6 Cloudflare Worker assignment, then enable the preconfigured PS6 and PS6 corrections extension products in Settings → Spending Options → Assignment Extensions.
 3. After instructor approval, promote Account image `8bcf808ef995` and live-smoke one real student’s **Needs your attention**, **Grades & feedback**, and Profile save paths without changing course data.
 

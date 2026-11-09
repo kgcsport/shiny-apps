@@ -20,14 +20,14 @@ insurance_zero_profit_premium <- function(total_claim_cost, policies_sold,
 }
 
 insurance_round_accounting <- function(policies_sold, premium, claims_paid,
-                                       dividend_recipients, claim_reserve = 0) {
+                                       dividend_recipients) {
   policies_sold <- max(0, suppressWarnings(as.numeric(policies_sold)))
   premium <- max(0, suppressWarnings(as.numeric(premium)))
   claims_paid <- max(0, suppressWarnings(as.numeric(claims_paid)))
   dividend_recipients <- max(0, suppressWarnings(as.integer(dividend_recipients)))
   revenue <- policies_sold * premium
   profit <- revenue - claims_paid
-  distributable_profit <- max(0, profit - claim_reserve)
+  distributable_profit <- max(0, profit)
   dividend_each <- if (dividend_recipients > 0) {
     distributable_profit / dividend_recipients
   } else 0
