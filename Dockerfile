@@ -25,6 +25,7 @@ RUN Rscript --vanilla /srv/shiny-server/tests/risk-insurance-game.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-assignment-wage-award.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-gradebook-ux.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-default-extension-products.R
+RUN Rscript --vanilla /srv/shiny-server/tests/critical-extension-refund-workflow.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-account-accordion.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-settings-organization.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-bonus-pot-unification.R

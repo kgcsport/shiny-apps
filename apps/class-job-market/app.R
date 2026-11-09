@@ -452,6 +452,50 @@ ensure_default_extension_products <- function() {
 ensure_default_extension_products()
 
 source(file.path(dirname(shared_sqlite), "assignment_extensions.R"), local = TRUE)
+extension_refund_claim <- function(purchase_id, user_id = NULL,
+                                   eligible_statuses = c("not_refunded")) {
+  eligible_statuses <- unique(as.character(eligible_statuses))
+  placeholders <- paste(rep("?", length(eligible_statuses)), collapse = ",")
+  where_user <- if (is.null(user_id)) "" else " AND user_id=?"
+  params <- c(list(as.integer(purchase_id)),
+              if (is.null(user_id)) list() else list(as.character(user_id)),
+              as.list(eligible_statuses))
+  db_exec(sprintf(
+    "UPDATE extension_purchases SET refund_status='processing',refund_error='' WHERE id=?%s AND COALESCE(refund_status,'not_refunded') IN (%s);",
+    where_user, placeholders), params)
+}
+extension_refund_finalize <- function(purchase_id, ledger_id, approval_rejected = FALSE) {
+  db_exec(
+    "UPDATE extension_purchases
+       SET refund_status='refunded',
+           approval_status=CASE WHEN ? THEN 'rejected' ELSE approval_status END,
+           refunded_at=CURRENT_TIMESTAMP,refund_ledger_id=?,refund_error='',
+           sync_status=CASE WHEN COALESCE(sync_status,'pending')='synced' THEN 'refunded' ELSE COALESCE(sync_status,'pending') END
+     WHERE id=? AND refund_status='processing';",
+    list(as.integer(isTRUE(approval_rejected)), as.integer(ledger_id %||% NA_integer_),
+         as.integer(purchase_id)))
+}
+recover_completed_extension_refunds <- function() {
+  # Older builds claimed the refund before token credit but then tried to update
+  # the stale not_refunded state, leaving an already credited purchase stuck in
+  # processing. Recover only records with a matching immutable ledger credit.
+  db_exec(
+    "UPDATE extension_purchases
+       SET refund_status='refunded',refunded_at=COALESCE(refunded_at,CURRENT_TIMESTAMP),
+           refund_ledger_id=(SELECT tl.id FROM token_ledger tl
+                             WHERE tl.source_type='extension_refund'
+                               AND tl.source_id=extension_purchases.id
+                               AND tl.user_id=extension_purchases.user_id
+                             ORDER BY tl.id DESC LIMIT 1),
+           refund_error='',
+           sync_status=CASE WHEN COALESCE(sync_status,'pending')='synced' THEN 'refunded' ELSE COALESCE(sync_status,'pending') END
+     WHERE COALESCE(refund_status,'not_refunded')='processing'
+       AND EXISTS(SELECT 1 FROM token_ledger tl
+                  WHERE tl.source_type='extension_refund'
+                    AND tl.source_id=extension_purchases.id
+                    AND tl.user_id=extension_purchases.user_id);"
+  )
+}
 db_exec("CREATE TABLE IF NOT EXISTS grade_reweight_requests(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT,
@@ -590,6 +634,7 @@ db_exec("CREATE TABLE IF NOT EXISTS token_ledger(
   note TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+recover_completed_extension_refunds()
 
 # Seed fake data for demo account (only if token_ledger is empty for demo)
 if (!db_query("SELECT COUNT(*) n FROM token_ledger WHERE user_id='demo';")$n[1]) {
@@ -6336,8 +6381,7 @@ server <- function(input, output, session) {
     if (is.na(deadline) || deadline <= Sys.time()) {
       showNotification("Extensions can only be refunded before the original assignment deadline.", type="warning"); return()
     }
-    claimed <- db_exec("UPDATE extension_purchases SET refund_status='processing',refund_error='' WHERE id=? AND user_id=? AND COALESCE(refund_status,'not_refunded')='not_refunded';",
-                       list(purchase_id, rv$user_id))
+    claimed <- extension_refund_claim(purchase_id, rv$user_id)
     if (!identical(as.integer(claimed), 1L)) {
       showNotification("That extension has already been refunded or is being processed.", type="warning"); return()
     }
@@ -6353,8 +6397,12 @@ server <- function(input, output, session) {
     refund_lid <- token_credit(rv$user_id, rv$name, as.numeric(row$cost[1]), 0L,
                                "extension_refund", purchase_id,
                                note=sprintf("Refund for %s extension", row$problem_set[1] %||% "assignment"))
-    db_exec("UPDATE extension_purchases SET refund_status='refunded',refunded_at=CURRENT_TIMESTAMP,refund_ledger_id=?,refund_error='' WHERE id=? AND COALESCE(refund_status,'not_refunded')='not_refunded';",
-            list(as.integer(refund_lid %||% NA_integer_), purchase_id))
+    finalized <- extension_refund_finalize(purchase_id, refund_lid)
+    if (!identical(as.integer(finalized), 1L)) {
+      showNotification("Refund credit was recorded but the purchase status needs review.", type="error", duration=12)
+      rv$extensions_ver <- rv$extensions_ver + 1L
+      return()
+    }
     rv$extensions_ver <- rv$extensions_ver + 1L
     showNotification(sprintf("Refunded %d tokens for %s.", as.integer(row$cost[1]), row$problem_set[1] %||% "the extension"), type="message", duration=8)
   }, ignoreNULL=TRUE)
@@ -13129,15 +13177,21 @@ server <- function(input, output, session) {
     req(rv$is_admin, !rv$impersonating)
     purchase_id <- suppressWarnings(as.integer(input$admin_refund_extension_purchase %||% 0L))
     row <- tryCatch(db_query("SELECT ep.id,ep.user_id,ep.cost,COALESCE(ep.approval_status,'approved') approval_status,COALESCE(ep.refund_status,'not_refunded') refund_status,COALESCE(ep.sync_status,'pending') sync_status FROM extension_purchases ep WHERE ep.id=? LIMIT 1;", list(purchase_id)), error=function(e)data.frame())
-    if (!nrow(row) || !(identical(as.character(row$refund_status[1]), "not_refunded") || identical(as.character(row$refund_status[1]), "requested")) || !(identical(as.character(row$sync_status[1]), "synced") || identical(as.character(row$approval_status[1]), "pending"))) { showNotification("That purchase is not eligible for an instructor refund.", type="warning"); return() }
-    claimed <- db_exec("UPDATE extension_purchases SET refund_status='processing',refund_error='' WHERE id=? AND COALESCE(refund_status,'not_refunded')='not_refunded';", list(purchase_id))
+    if (!nrow(row) || !as.character(row$refund_status[1]) %in% c("not_refunded", "requested", "failed")) { showNotification("That purchase is not eligible for an instructor refund.", type="warning"); return() }
+    claimed <- extension_refund_claim(purchase_id, eligible_statuses=c("not_refunded", "requested", "failed"))
     if (!identical(as.integer(claimed), 1L)) { showNotification("That refund is already being processed.", type="warning"); return() }
     if (identical(as.character(row$sync_status[1]), "synced")) {
       revoke <- revoke_extension_purchase(purchase_id)
       if (!isTRUE(revoke$ok)) { db_exec("UPDATE extension_purchases SET refund_status='failed',refund_error=? WHERE id=?;", list(revoke$error %||% "Worker entitlement could not be revoked", purchase_id)); showNotification(paste("Refund failed:", revoke$error), type="error", duration=10); return() }
     }
     lid <- token_credit(row$user_id[1], "", as.numeric(row$cost[1]), 0L, "extension_refund", purchase_id, if (identical(as.character(row$approval_status[1]), "pending")) "Rejected post-deadline extension purchase" else "Instructor-approved extension refund")
-    db_exec("UPDATE extension_purchases SET refund_status='refunded',approval_status=CASE WHEN approval_status='pending' THEN 'rejected' ELSE approval_status END,refunded_at=CURRENT_TIMESTAMP,refund_ledger_id=?,refund_error='' WHERE id=?;", list(as.integer(lid %||% NA_integer_), purchase_id))
+    finalized <- extension_refund_finalize(purchase_id, lid,
+                                           approval_rejected=identical(as.character(row$approval_status[1]), "pending"))
+    if (!identical(as.integer(finalized), 1L)) {
+      showNotification("Refund credit was recorded but the purchase status needs review.", type="error", duration=12)
+      rv$extensions_ver <- rv$extensions_ver + 1L
+      return()
+    }
     rv$extensions_ver <- rv$extensions_ver + 1L
     showNotification("Extension refunded and tokens restored.", type="message", duration=8)
   }, ignoreNULL=TRUE)
