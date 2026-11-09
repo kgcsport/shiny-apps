@@ -4821,21 +4821,41 @@ server <- function(input, output, session) {
       list(current_scope_key(), round_id, uid))
   }
 
-  student_insurance_offer <- reactivePoll(6000, session,
+  next_insurance_offer <- function(query = db_query) {
+    key <- current_scope_key()
+    today <- format(Sys.time(), "%Y-%m-%d", tz = get_setting("class_tz", "America/New_York"))
+    query(
+      "SELECT p.*,wr.class_date
+       FROM weekly_rounds wr
+       LEFT JOIN insurance_products p ON p.round_id=wr.id AND p.scope_key=?
+       WHERE wr.class_date>=?
+         AND (p.id IS NOT NULL
+           OR EXISTS (SELECT 1 FROM scope_rounds sr WHERE sr.round_id=wr.id AND sr.scope_key=?)
+           OR EXISTS (SELECT 1 FROM scope_active_rounds sr WHERE sr.round_id=wr.id AND sr.scope_key=?))
+         AND (wr.class_date>? OR COALESCE(p.status,'')<>'settled')
+       ORDER BY wr.class_date,wr.id LIMIT 1;",
+      list(key, today, key, key, today))
+  }
+
+  read_student_insurance_market <- function() {
+    list(period = insurance_product_for_round(), sale = next_insurance_offer())
+  }
+
+  student_insurance_market <- reactivePoll(6000, session,
     checkFunc = function() {
       if (is.null(rv$user_id) || !tab_is_active("Spend", "Account")) return(NULL)
-      insurance_product_for_round()
+      read_student_insurance_market()
     },
     valueFunc = function() {
       rv$insurance_ver
-      insurance_product_for_round()
+      read_student_insurance_market()
     }
   )
 
   insurance_wallet <- reactive({
     req(rv$user_id)
     token_poll()
-    offer <- student_insurance_offer()
+    offer <- student_insurance_market()$period
     if (!nrow(offer)) return(data.frame())
     insurance_passes_on_hand(offer$round_id[1], rv$user_id)
   })
@@ -5856,13 +5876,13 @@ server <- function(input, output, session) {
         div(class = "tab-howto", sprintf("Spend your tokens on academic benefits. Spendable balance: %s tokens.", fmt_token_amount(bal)), tags$p(style = "margin:.4rem 0 0;font-size:.85rem;color:#555;", tags$b("Note:"), " Spending tokens does not reduce your participation grade.", " Your participation grade is based on total tokens earned during the semester, not your current balance.")),
         div(class = "spend-cards",
           {
-            product <- student_insurance_offer()
+            product <- student_insurance_market()$sale
             passes <- nrow(insurance_wallet())
             meta <- if (passes) sprintf("%d on hand", passes) else if (!insurance_purchase_is_open(product)) "Sales are closed" else
               sprintf("Premium %s · Benefit %s", fmt_token_amount(product$premium[1]), fmt_token_amount(product$benefit[1]))
             div(class = "spend-card", div(class = "spend-card-icon", "🛡️"),
                 div(class = "spend-card-label", "Pass Insurance"),
-                div(class = "spend-card-desc", "Buy a pass for a live cold call in the selected class period."),
+                div(class = "spend-card-desc", "Buy one pass for the next class."),
                 div(class = "spend-card-meta", meta),
                 div(class = "spend-card-foot", actionButton("open_insurance", "Select →", class = "btn btn-sm btn-outline-primary")))
           },
@@ -5893,9 +5913,11 @@ server <- function(input, output, session) {
 
     if (mode == "insurance") {
       rv$insurance_ver
-      product <- student_insurance_offer()
+      market <- student_insurance_market()
+      product <- market$sale
+      offered <- nrow(product) > 0L && !is.na(product$id[1])
       passes <- insurance_wallet()
-      purchase <- if (nrow(product)) db_query(
+      purchase <- if (offered) db_query(
         "SELECT * FROM insurance_purchases WHERE product_id=? AND LOWER(user_id)=LOWER(?) LIMIT 1;",
         list(as.integer(product$id[1]), rv$user_id)) else data.frame()
       div(class="spend-form-box",
@@ -5903,22 +5925,26 @@ server <- function(input, output, session) {
         if (nrow(passes)) div(class="alert alert-success",
           sprintf("Passes on hand for this class period: %d. Your next live pass pays %s tokens.",
                   nrow(passes), fmt_token_amount(passes$benefit[1]))),
-        if (nrow(product)) tags$p(style="font-size:.88rem;color:#555;",
+        if (nrow(market$period) && identical(market$period$status[1], "settled"))
+          tags$p("The selected class period is settled. Coverage has ended."),
+        if (nrow(product)) tags$p(tags$strong(paste("Next class for purchases", product$class_date[1]))),
+        if (offered) tags$p(style="font-size:.88rem;color:#555;",
           sprintf("Pay %s token%s now. Your first live pass in this class period pays %s token%s.",
             fmt_token_amount(product$premium[1]), if (isTRUE(as.numeric(product$premium[1]) == 1)) "" else "s",
             fmt_token_amount(product$benefit[1]), if (isTRUE(as.numeric(product$benefit[1]) == 1)) "" else "s")),
         tags$p(style="font-size:.82rem;color:#666;", if (insurance_purchase_is_open(product)) "You can buy during class until the instructor closes sales or settles the market. ",
           "Premiums, claims, and dividends change your spendable balance but not gross participation earnings."),
-        if (!nrow(product)) tags$p("No pass is offered for sale on this class date.")
-        else if (identical(product$status[1], "settled")) tags$p("This class period is settled. Coverage has ended.")
+        if (!offered) tags$p("No pass is offered for sale for the next class.")
         else if (nrow(purchase)) tags$p("You already bought a pass for this class period.")
         else if (!insurance_purchase_is_open(product)) div(class="alert alert-secondary", style="margin:0;", "Purchases are closed.")
         else if (bal < as.numeric(product$premium[1])) div(class="alert alert-warning", style="margin:0;",
           sprintf("You need %s tokens; your balance is %s.", fmt_token_amount(product$premium[1]), fmt_token_amount(bal)))
         else tagList(
           tags$p(style="font-size:.84rem;color:#555;", sprintf("Balance after purchase: %s tokens.", fmt_token_amount(bal - as.numeric(product$premium[1])))),
-          actionButton("submit_insurance_purchase", "Buy policy", class="btn btn-warning",
-                       onclick="return confirm('Buy this pass-insurance policy? The premium is not refundable.');")
+          tags$button(type="button", class="btn btn-warning", "Buy policy",
+            onclick=sprintf(
+              "if(confirm('Buy this pass-insurance policy? The premium is not refundable.')) Shiny.setInputValue('submit_insurance_purchase',%d,{priority:'event'});",
+              as.integer(product$id[1])))
         )
       )
 
@@ -6535,8 +6561,11 @@ server <- function(input, output, session) {
   }, ignoreNULL=TRUE)
 
   record_insurance_purchase <- function(connection, product_id, uid, dname) {
-    product <- DBI::dbGetQuery(connection, "SELECT * FROM insurance_products WHERE id=?;",
-                              params = list(product_id))
+    product <- next_insurance_offer(function(sql, params) {
+      DBI::dbGetQuery(connection, sql, params = params)
+    })
+    if (!nrow(product) || is.na(product$id[1]) || product$id[1] != product_id)
+      return(list(message = "You can only buy a pass for the next class.", type = "warning"))
     if (!insurance_purchase_is_open(product))
       return(list(message = "Insurance purchases are closed for this class date.", type = "warning"))
     premium <- as.numeric(product$premium[1])
@@ -6579,14 +6608,12 @@ server <- function(input, output, session) {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type="warning"); return() }
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type="warning"); return() }
-    product <- insurance_product_for_round()
-    if (!nrow(product)) {
-      showNotification("Insurance purchases are closed for this class date.", type="warning"); return()
-    }
+    product_id <- input$submit_insurance_purchase
+    req(is.numeric(product_id), length(product_id) == 1L, is.finite(product_id), product_id > 0)
     checkout <- tryCatch({
       connection <- get_con()
       DBI::dbWithTransaction(connection,
-        record_insurance_purchase(connection, product$id[1], rv$user_id, rv$name))
+        record_insurance_purchase(connection, product_id, rv$user_id, rv$name))
     }, error = function(e) {
       message("Pass Insurance checkout failed: ", conditionMessage(e))
       list(message = "Could not complete the insurance purchase. Please try again.", type = "error")
@@ -10756,7 +10783,7 @@ server <- function(input, output, session) {
       wrap_spending(tagList(
         tags$h5("Pass Insurance Market"),
         tags$p(style="color:#555;font-size:.88rem;",
-          "Students can buy one pass for the selected class period. Closing sales leaves existing coverage active for that period. Settlement ends coverage and pays equal dividends from any positive profit. Insurance cash flows do not count as participation earnings."),
+          "Students can buy one pass for the next scheduled class, including during that class. Closing sales leaves existing coverage active for that period. Settlement ends coverage and pays equal dividends from any positive profit. Insurance cash flows do not count as participation earnings."),
         if (!nrow(round)) div(class="alert alert-warning", "Choose a class date under Job Market Controls first.") else tagList(
           tags$p(tags$strong("Selected class: "), round$label[1] %||% "", " · ", round$class_date[1] %||% ""),
           fluidRow(

@@ -4,7 +4,7 @@ Pass Insurance adds single-use passes to the existing job market. It does not ch
 
 ## Contract
 
-- A student buys at most one policy for the selected class date through **Spend → Pass Insurance**.
+- A student buys at most one policy for the next scheduled class, including while that class is underway through **Spend → Pass Insurance**.
 - Students can buy during class while sales are open. Close sales manually or settle the market to end purchases.
 - If an insured student is cold-called and chooses **Pass & Redraw**, the policy pays its stated benefit immediately. A policy pays at most once.
 - Passing without insurance remains allowed and pays zero.
@@ -17,7 +17,7 @@ Pass Insurance adds single-use passes to the existing job market. It does not ch
 1. Select the course, section, and class date as usual.
 2. In **Settings → Spending Options**, make sure student spending is enabled.
 3. In **Settings → Spending Options → Pass Insurance**, choose the benefit, starting premium, and repricing increment. Click **Create / Open Sales**.
-4. Students buy from **Spend → Pass Insurance** while sales are open. The pass appears immediately in Account and Spend and applies only to the selected class period.
+4. Students buy from **Spend → Pass Insurance** while sales are open. Spend confirms the purchase for the next class. Account shows passes for the selected class period.
 5. Run cold calls normally. When a called student passes, click **Pass & Redraw** in either Live Tracker or the slide panel. The pass is recorded, any eligible claim is paid, and a different student is drawn when possible.
 6. After class, click **Settle, Dividend & Reprice**. The result is frozen, profit after paid claims is returned as equal class dividends, and the next zero-profit pooled premium is displayed.
 

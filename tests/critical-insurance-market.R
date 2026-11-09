@@ -125,7 +125,9 @@ if (requireNamespace("shiny", quietly = TRUE)) {
        SELECT user_id,display_name,'test_seed',10,1,'classroom resilience fixture'
        FROM users WHERE user_id=?;", list(uid))
   }
-  app$db_exec("INSERT INTO weekly_rounds(label,class_date,assignment_mode,bidding_enabled) VALUES('Insurance class','2026-11-09','wage_bidding',1);")
+  class_day <- as.Date(format(Sys.time(), "%Y-%m-%d", tz = app$get_setting("class_tz", "America/New_York")))
+  app$db_exec("INSERT INTO weekly_rounds(label,class_date,assignment_mode,bidding_enabled) VALUES('Insurance class',?,'wage_bidding',1);",
+             list(as.character(class_day)))
   round_id <- as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1])
   app$db_exec("INSERT INTO scope_active_rounds(scope_key,course,sections,round_id) VALUES('econ 342::01','ECON 342','01',?);", list(round_id))
   app$db_exec("INSERT INTO section_scope_memberships(course_key,section_key,scope_key) VALUES('econ 342','01','econ 342::01');")
@@ -155,17 +157,26 @@ if (requireNamespace("shiny", quietly = TRUE)) {
   stopifnot(nrow(product) == 1L, product$status[1] == "open",
             product$scope_key[1] == "econ 342::01")
   product_id <- as.integer(product$id[1])
+  DBI::dbExecute(app$get_con(), "INSERT INTO weekly_rounds(label,class_date,assignment_mode,bidding_enabled)
+    VALUES('Farther class',?,'wage_bidding',1);", params = list(as.character(class_day + 7)))
+  farther_round <- app$db_query("SELECT last_insert_rowid() id;")$id[1]
+  DBI::dbExecute(app$get_con(), "INSERT INTO insurance_products(scope_key,round_id,benefit,premium,status)
+    VALUES('econ 342::01',?,2,5,'open');", params = list(farther_round))
+  farther_offer <- app$db_query("SELECT last_insert_rowid() id;")$id[1]
 
-  buy_policy <- function(uid, name, click = 1L) shiny::testServer(app$server, {
+  buy_policy <- function(uid, name, click = 1L, offer_id = product_id) shiny::testServer(app$server, {
     set_student(rv, uid, name)
     session$setInputs(open_insurance = 1L)
     if (identical(click, 1L) && identical(uid, "s1@test.edu"))
       stopifnot(grepl("Buy policy", output$spend_form$html, fixed = TRUE))
-    session$setInputs(submit_insurance_purchase = click)
+    session$setInputs(submit_insurance_purchase = offer_id)
     session$flushReact()
     if (any(app$db_query("SELECT user_id FROM insurance_purchases;")$user_id == uid))
       stopifnot(grepl("Passes on hand for this class period: 1", output$spend_form$html, fixed = TRUE))
   })
+  buy_policy("s3@test.edu", "Student 3", offer_id = farther_offer)
+  stopifnot(nrow(app$db_query("SELECT id FROM insurance_purchases;")) == 0L,
+            nrow(app$db_query("SELECT id FROM token_ledger WHERE source_type='insurance_premium';")) == 0L)
   buy_policy("s1@test.edu", "Student 1")
   buy_policy("s1@test.edu", "Student 1", 2L) # browser double-click/retry
   # A legacy deadline cannot close an open market.
@@ -237,7 +248,7 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     stopifnot(grepl("Passes on hand for this class period: 1", output$spend_form$html, fixed = TRUE))
   })
   DBI::dbExecute(app$get_con(), "INSERT INTO weekly_rounds(label,class_date,assignment_mode,bidding_enabled)
-     VALUES('Next class','2026-11-11','wage_bidding',1);")
+     VALUES('Next class',?,'wage_bidding',1);", params = list(as.character(class_day + 2)))
   next_round <- app$db_query("SELECT last_insert_rowid() id;")$id[1]
   shiny::testServer(app$server, {
     set_admin(rv)
@@ -253,7 +264,8 @@ if (requireNamespace("shiny", quietly = TRUE)) {
   shiny::testServer(app$server, {
     set_student(rv, "s2@test.edu", "Student 2")
     session$setInputs(open_insurance = 1L)
-    stopifnot(grepl("No pass is offered", output$spend_form$html, fixed = TRUE),
+    stopifnot(grepl(paste("Next class for purchases", class_day), output$spend_form$html, fixed = TRUE),
+              !grepl("Buy policy", output$spend_form$html, fixed = TRUE),
               grepl("Passes on hand for the selected class period: 0", output$account_tab$html, fixed = TRUE))
   })
 
@@ -295,6 +307,29 @@ if (requireNamespace("shiny", quietly = TRUE)) {
   all_insurance_cash <- app$db_query(
     "SELECT COALESCE(SUM(amount),0) x FROM token_ledger WHERE source_type LIKE 'insurance_%';")$x[1]
   stopifnot(abs(all_insurance_cash) < 1e-8)
+
+  # Settlement makes the next scheduled class eligible. A farther open offer
+  # cannot be purchased even when the intervening class has no offer yet.
+  buy_policy("s3@test.edu", "Student 3", offer_id = farther_offer)
+  stopifnot(nrow(app$db_query("SELECT id FROM insurance_purchases;")) == 2L)
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    session$setInputs(active_round_select = next_round)
+    session$setInputs(insurance_benefit_input = 2, insurance_premium_input = 1,
+                      insurance_price_step_input = 0.5, save_insurance_product_btn = 1L)
+    session$setInputs(active_round_select = round_id)
+    stopifnot(active_round_id() == round_id)
+  })
+  next_offer <- app$db_query("SELECT id FROM insurance_products WHERE round_id=?;", list(next_round))$id[1]
+  shiny::testServer(app$server, {
+    set_student(rv, "s3@test.edu", "Student 3")
+    session$setInputs(open_insurance = 1L)
+    stopifnot(grepl(paste("Next class for purchases", class_day + 2), output$spend_form$html, fixed = TRUE),
+              grepl("Buy policy", output$spend_form$html, fixed = TRUE))
+    session$setInputs(submit_insurance_purchase = next_offer)
+  })
+  next_purchase <- app$db_query("SELECT user_id,premium FROM insurance_purchases WHERE product_id=?;", list(next_offer))
+  stopifnot(identical(next_purchase$user_id, "s3@test.edu"), next_purchase$premium[1] == 1)
 }
 
 cat("critical insurance market: PASS\n")
