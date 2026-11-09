@@ -411,6 +411,46 @@ if (nrow(canonical_problem_set_rows)) {
     }
   }
 }
+# Each extension product has one Worker target. Ensure upcoming numbered problem
+# sets have distinct products for the assignment deadline and for corrections.
+# PS6 is preconfigured but deliberately inactive until its corresponding Worker
+# assignment is published; an active purchase must never target a 404 route.
+default_extension_worker_assignments <- list(
+  `4` = list(id = "econ342-2026-ps04", active = TRUE),
+  `5` = list(id = "econ342-2026-ps05", active = TRUE),
+  `6` = list(id = "econ342-2026-ps06", active = FALSE)
+)
+problem_set_number <- function(label) {
+  hit <- regexec("(?:problem\\s*set|ps)\\s*([0-9]+)", as.character(label %||% ""), ignore.case=TRUE, perl=TRUE)
+  parts <- regmatches(as.character(label %||% ""), hit)[[1]]
+  if (length(parts) > 1L) suppressWarnings(as.integer(parts[2])) else NA_integer_
+}
+ensure_default_extension_products <- function() {
+  for (number in as.integer(names(default_extension_worker_assignments))) {
+    worker_assignment <- default_extension_worker_assignments[[as.character(number)]]
+    available <- as.integer(isTRUE(worker_assignment$active))
+    rows <- tryCatch(db_query("SELECT id,name,original_deadline,solutions_posted_at,cloudflare_assignment_id,COALESCE(extension_target,'submission') AS extension_target,active FROM problem_sets;"), error=function(e)data.frame())
+    hits <- if (nrow(rows)) which(vapply(rows$name, problem_set_number, integer(1)) == number) else integer(0)
+    sub_hits <- hits[tolower(as.character(rows$extension_target[hits] %||% character(0))) == "submission"]
+    if (!length(sub_hits)) {
+      db_exec("INSERT INTO problem_sets(name,original_deadline,solutions_posted_at,active,cloudflare_assignment_id,extension_target) VALUES(?,?,?,?,?,'submission');", list(paste0("PS", number), NA_character_, NA_character_, available, worker_assignment$id))
+      rows <- db_query("SELECT id,name,original_deadline,solutions_posted_at,cloudflare_assignment_id,COALESCE(extension_target,'submission') AS extension_target,active FROM problem_sets;")
+      hits <- which(vapply(rows$name, problem_set_number, integer(1)) == number)
+      sub_hits <- hits[tolower(as.character(rows$extension_target[hits] %||% character(0))) == "submission"]
+    }
+    correction_hits <- hits[tolower(as.character(rows$extension_target[hits] %||% character(0))) == "self_grading"]
+    if (!length(correction_hits)) {
+      source_row <- rows[sub_hits[1],,drop=FALSE]
+      correction_deadline <- as.character(source_row$solutions_posted_at[1] %||% "")
+      if (!nzchar(correction_deadline)) correction_deadline <- as.character(source_row$original_deadline[1] %||% "")
+      cloudflare_id <- trimws(as.character(source_row$cloudflare_assignment_id[1] %||% ""))
+      if (!nzchar(cloudflare_id)) cloudflare_id <- worker_assignment$id
+      db_exec("INSERT INTO problem_sets(name,original_deadline,solutions_posted_at,active,cloudflare_assignment_id,extension_target) VALUES(?,?,?,?,?,'self_grading');", list(paste0("PS", number, " corrections"), if (nzchar(correction_deadline)) correction_deadline else NA_character_, source_row$solutions_posted_at[1] %||% NA_character_, available, cloudflare_id))
+    }
+  }
+}
+ensure_default_extension_products()
+
 source(file.path(dirname(shared_sqlite), "assignment_extensions.R"), local = TRUE)
 db_exec("CREATE TABLE IF NOT EXISTS grade_reweight_requests(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
