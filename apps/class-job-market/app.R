@@ -3203,6 +3203,52 @@ account_worker_schedules <- function(assignments) {
   )
 }
 
+worker_schedule_date <- function(value) {
+  text <- trimws(as.character(value %||% ""))
+  if (!length(text) || is.na(text[1]) || !nzchar(text[1])) return("")
+  hit <- regmatches(text[1], regexpr("^[0-9]{4}-[0-9]{2}-[0-9]{2}", text[1]))
+  if (length(hit) && nzchar(hit)) hit else ""
+}
+
+problem_set_schedule_updates <- function(products, schedules) {
+  if (!nrow(products) || !nrow(schedules)) return(data.frame())
+  for (nm in c("id", "cloudflare_assignment_id", "extension_target")) {
+    if (!nm %in% names(products)) products[[nm]] <- ""
+  }
+  for (nm in c("assignment_id", "due_at", "solutions_at", "grading_due_at")) {
+    if (!nm %in% names(schedules)) schedules[[nm]] <- ""
+  }
+  product_key <- tolower(trimws(as.character(products$cloudflare_assignment_id)))
+  schedule_key <- tolower(trimws(as.character(schedules$assignment_id)))
+  matched <- match(product_key, schedule_key)
+  keep <- !is.na(matched) & nzchar(product_key)
+  if (!any(keep)) return(data.frame())
+  out <- products[keep, c("id", "extension_target"), drop=FALSE]
+  schedule <- schedules[matched[keep], , drop=FALSE]
+  self_grading <- tolower(trimws(as.character(out$extension_target))) == "self_grading"
+  out$original_deadline <- ifelse(self_grading,
+    vapply(schedule$grading_due_at, worker_schedule_date, character(1)),
+    vapply(schedule$due_at, worker_schedule_date, character(1)))
+  out$solutions_posted_at <- vapply(schedule$solutions_at, worker_schedule_date, character(1))
+  out <- out[nzchar(out$original_deadline), , drop=FALSE]
+  rownames(out) <- NULL
+  out
+}
+
+refresh_problem_set_schedules <- function() {
+  if (!assignment_review_configured())
+    stop("The assignment portal token is not configured.")
+  schedules <- account_worker_schedules(assignment_review_assignments())
+  products <- db_query("SELECT id,cloudflare_assignment_id,COALESCE(extension_target,'submission') AS extension_target FROM problem_sets;")
+  updates <- problem_set_schedule_updates(products, schedules)
+  if (nrow(updates)) for (i in seq_len(nrow(updates))) {
+    db_exec("UPDATE problem_sets SET original_deadline=?,solutions_posted_at=? WHERE id=?;",
+            list(updates$original_deadline[i], updates$solutions_posted_at[i],
+                 as.integer(updates$id[i])))
+  }
+  list(updated=nrow(updates), worker_assignments=nrow(schedules))
+}
+
 account_pending_problem_sets <- function(problem_sets, grade_rows=data.frame(),
                                          progress=data.frame(), schedules=data.frame(),
                                          worker_available=FALSE) {
@@ -11426,6 +11472,13 @@ server <- function(input, output, session) {
         uiOutput("extension_formula_preview"),
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Assignments"),
+        div(style="margin:.25rem 0 .5rem;",
+          actionButton("refresh_problem_set_dates_btn", "Refresh dates from assignment portal",
+                       class="btn btn-sm btn-outline-primary",
+                       title="Use the mapped Cloudflare assignment's current due, solutions, and self-grading dates."),
+          tags$span(style="margin-left:.5rem;color:#666;font-size:.8rem;",
+                    "Updates only mapped assignments; no purchase records are changed.")
+        ),
         div(style = "margin-top:.25rem;",
           if (nrow(ps)) {
             tags$table(class = "table table-sm",
@@ -13200,6 +13253,21 @@ server <- function(input, output, session) {
     result <- sync_extension_purchase(purchase_id)
     rv$extensions_ver <- rv$extensions_ver + 1L
     showNotification(if (isTRUE(result$ok)) "Extension synced to the assignment portal." else paste("Sync failed:", result$error), type=if (isTRUE(result$ok)) "message" else "error", duration=10)
+  }, ignoreNULL=TRUE)
+
+  observeEvent(input$refresh_problem_set_dates_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    result <- tryCatch(refresh_problem_set_schedules(), error=function(e)e)
+    if (inherits(result, "error")) {
+      showNotification(paste("Could not refresh assignment dates:", conditionMessage(result)),
+                       type="error", duration=12)
+      return()
+    }
+    rv$extensions_ver <- rv$extensions_ver + 1L
+    showNotification(sprintf("Refreshed dates for %d extension product%s from %d assignment-portal record%s.",
+                             result$updated, if (result$updated == 1L) "" else "s",
+                             result$worker_assignments, if (result$worker_assignments == 1L) "" else "s"),
+                     type="message", duration=10)
   }, ignoreNULL=TRUE)
 
   observeEvent(input$repair_extension_sync_btn, {
