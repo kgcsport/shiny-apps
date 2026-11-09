@@ -4799,9 +4799,7 @@ server <- function(input, output, session) {
   }
 
   insurance_purchase_is_open <- function(product) {
-    if (!nrow(product) || !identical(as.character(product$status[1]), "open")) return(FALSE)
-    deadline <- suppressWarnings(as.POSIXct(product$purchase_deadline[1] %||% "", tz = "UTC"))
-    is.na(deadline) || deadline > Sys.time()
+    nrow(product) > 0L && identical(as.character(product$status[1]), "open")
   }
 
   insurance_scope_roster <- function() {
@@ -5874,16 +5872,14 @@ server <- function(input, output, session) {
       purchase <- tryCatch(db_query(
         "SELECT * FROM insurance_purchases WHERE product_id=? AND LOWER(user_id)=LOWER(?) LIMIT 1;",
         list(as.integer(product$id[1]), rv$user_id)), error=function(e)data.frame())
-      deadline <- suppressWarnings(as.POSIXct(product$purchase_deadline[1] %||% "", tz="UTC"))
-      deadline_text <- if (is.na(deadline)) "until the instructor closes sales" else
-        paste("until", format(deadline, "%b %d at %I:%M %p UTC"))
       div(class="spend-form-box",
         tags$h6(style="color:#951829;font-weight:700;", "🛡️ Pass Insurance"),
         tags$p(style="font-size:.88rem;color:#555;",
           sprintf("Coverage applies to this class date. Pay %s token%s now. If you are cold-called and live-pass, receive %s token%s once.",
             fmt_token_amount(product$premium[1]), if (isTRUE(as.numeric(product$premium[1]) == 1)) "" else "s",
             fmt_token_amount(product$benefit[1]), if (isTRUE(as.numeric(product$benefit[1]) == 1)) "" else "s")),
-        tags$p(style="font-size:.82rem;color:#666;", paste("Purchases are open", deadline_text, ". Premiums, claims, and dividends change your spendable balance but not gross participation earnings.", sep="")),
+        tags$p(style="font-size:.82rem;color:#666;", if (insurance_purchase_is_open(product)) "You can buy during class until the instructor closes sales or settles the market. ",
+          "Premiums, claims, and dividends change your spendable balance but not gross participation earnings."),
         if (nrow(purchase)) div(class="alert alert-success", style="margin:0;", "You are insured for this class date.")
         else if (!insurance_purchase_is_open(product)) div(class="alert alert-secondary", style="margin:0;", "Purchases are closed.")
         else if (bal < as.numeric(product$premium[1])) div(class="alert alert-warning", style="margin:0;",
@@ -6507,39 +6503,66 @@ server <- function(input, output, session) {
     showNotification(sprintf("Refunded %d tokens for %s.", as.integer(row$cost[1]), row$problem_set[1] %||% "the extension"), type="message", duration=8)
   }, ignoreNULL=TRUE)
 
+  record_insurance_purchase <- function(connection, product_id, uid, dname) {
+    product <- DBI::dbGetQuery(connection, "SELECT * FROM insurance_products WHERE id=?;",
+                              params = list(product_id))
+    if (!insurance_purchase_is_open(product))
+      return(list(message = "Insurance purchases are closed for this class date.", type = "warning"))
+    premium <- as.numeric(product$premium[1])
+    if (!is.finite(premium) || premium < 0)
+      return(list(message = "The insurance premium is not configured correctly.", type = "error"))
+    existing <- DBI::dbGetQuery(connection,
+      "SELECT id FROM insurance_purchases WHERE product_id=? AND LOWER(user_id)=LOWER(?) LIMIT 1;",
+      params = list(product_id, uid))
+    if (nrow(existing))
+      return(list(message = "You already purchased this policy.", type = "warning"))
+    balance <- DBI::dbGetQuery(connection,
+      "SELECT COALESCE(SUM(amount),0) AS balance FROM token_ledger WHERE user_id=?;",
+      params = list(uid))$balance[1]
+    if (balance < premium)
+      return(list(message = sprintf("Not enough tokens (need %s, have %s).",
+                                    fmt_token_amount(premium), fmt_token_amount(balance)), type = "error"))
+
+    inserted <- DBI::dbExecute(connection,
+      "INSERT INTO insurance_purchases(product_id,user_id,premium) VALUES(?,?,?);",
+      params = list(product_id, uid, premium))
+    if (inserted != 1L) stop("Could not save the policy.")
+    if (premium > 0) {
+      purchase_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
+      debited <- DBI::dbExecute(connection,
+        "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
+         VALUES(?,?,'insurance_premium',?,?,0,?);",
+        params = list(uid, dname, purchase_id, -premium,
+                      sprintf("Pass-insurance premium for class date %s", product$round_id[1])))
+      if (debited != 1L) stop("Could not record the premium debit.")
+      ledger_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
+      linked <- DBI::dbExecute(connection, "UPDATE insurance_purchases SET ledger_id=? WHERE id=?;",
+                               params = list(ledger_id, purchase_id))
+      if (linked != 1L) stop("Could not link the premium debit to the policy.")
+    }
+    list(message = sprintf("Policy purchased for %s token%s.", fmt_token_amount(premium),
+                           if (premium == 1) "" else "s"), type = "message")
+  }
+
   observeEvent(input$submit_insurance_purchase, {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type="warning"); return() }
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type="warning"); return() }
     product <- insurance_product_for_round()
-    if (!insurance_purchase_is_open(product)) {
+    if (!nrow(product)) {
       showNotification("Insurance purchases are closed for this class date.", type="warning"); return()
     }
-    premium <- as.numeric(product$premium[1] %||% 0)
-    if (!is.finite(premium) || premium < 0) {
-      showNotification("The insurance premium is not configured correctly.", type="error"); return()
-    }
-    bal <- isolate(token_bal())
-    if (bal < premium) {
-      showNotification(sprintf("Not enough tokens (need %s, have %s).",
-                               fmt_token_amount(premium), fmt_token_amount(bal)), type="error"); return()
-    }
-    inserted <- tryCatch(db_exec(
-      "INSERT OR IGNORE INTO insurance_purchases(product_id,user_id,premium)
-       VALUES(?,?,?);",
-      list(as.integer(product$id[1]), rv$user_id, premium)), error=function(e) 0L)
-    if (!identical(as.integer(inserted), 1L)) {
-      showNotification("You already purchased this policy.", type="warning"); return()
-    }
-    purchase_id <- as.integer(db_query("SELECT last_insert_rowid() id;")$id[1])
-    ledger_id <- if (premium > 0) token_debit(
-      rv$user_id, rv$name, premium, "insurance_premium", purchase_id,
-      note=sprintf("Pass-insurance premium for class date %s", product$round_id[1])) else NA_integer_
-    db_exec("UPDATE insurance_purchases SET ledger_id=? WHERE id=?;",
-            list(as.integer(ledger_id %||% NA_integer_), purchase_id))
-    rv$insurance_ver <- rv$insurance_ver + 1L
-    showNotification(sprintf("Policy purchased for %s token%s.", fmt_token_amount(premium),
-                             if (isTRUE(premium == 1)) "" else "s"), type="message")
+    checkout <- tryCatch({
+      connection <- get_con()
+      DBI::dbWithTransaction(connection,
+        record_insurance_purchase(connection, product$id[1], rv$user_id, rv$name))
+    }, error = function(e) {
+      message("Pass Insurance checkout failed: ", conditionMessage(e))
+      list(message = "Could not complete the insurance purchase. Please try again.", type = "error")
+    })
+    if (identical(checkout$type, "message"))
+      rv$insurance_ver <- rv$insurance_ver + 1L
+    showNotification(checkout$message, type = checkout$type)
   }, ignoreNULL=TRUE)
 
   observeEvent(input$submit_extension, {
@@ -10523,11 +10546,6 @@ server <- function(input, output, session) {
         !is.finite(step) || step <= 0) {
       showNotification("Enter a positive benefit and price step and a nonnegative premium.", type="error"); return()
     }
-    deadline <- trimws(input$insurance_deadline_input %||% "")
-    parsed_deadline <- if (nzchar(deadline)) suppressWarnings(as.POSIXct(deadline, tz="UTC")) else as.POSIXct(NA)
-    if (nzchar(deadline) && is.na(parsed_deadline)) {
-      showNotification("Use a deadline like 2026-11-09 16:00:00 (UTC), or leave it blank.", type="error"); return()
-    }
     existing <- insurance_product_for_round(rid)
     if (nrow(existing)) {
       purchases <- as.integer(db_query("SELECT COUNT(*) n FROM insurance_purchases WHERE product_id=?;",
@@ -10539,13 +10557,12 @@ server <- function(input, output, session) {
       if (identical(as.character(existing$status[1]), "settled")) {
         showNotification("A settled insurance market cannot be reopened.", type="warning"); return()
       }
-      db_exec("UPDATE insurance_products SET benefit=?,premium=?,purchase_deadline=?,price_step=?,status='open',updated_at=CURRENT_TIMESTAMP WHERE id=?;",
-              list(benefit, premium, if (nzchar(deadline)) format(parsed_deadline, "%Y-%m-%d %H:%M:%S", tz="UTC") else NA_character_, step, as.integer(existing$id[1])))
+      db_exec("UPDATE insurance_products SET benefit=?,premium=?,price_step=?,status='open',updated_at=CURRENT_TIMESTAMP WHERE id=?;",
+              list(benefit, premium, step, as.integer(existing$id[1])))
     } else {
-      db_exec("INSERT INTO insurance_products(scope_key,round_id,benefit,premium,purchase_deadline,status,price_step)
-               VALUES(?,?,?,?,?,'open',?);",
-              list(current_scope_key(), rid, benefit, premium,
-                   if (nzchar(deadline)) format(parsed_deadline, "%Y-%m-%d %H:%M:%S", tz="UTC") else NA_character_, step))
+      db_exec("INSERT INTO insurance_products(scope_key,round_id,benefit,premium,status,price_step)
+               VALUES(?,?,?,?,'open',?);",
+              list(current_scope_key(), rid, benefit, premium, step))
     }
     rv$insurance_ver <- rv$insurance_ver + 1L
     showNotification("Insurance sales are open for the selected class date.", type="message")
@@ -10658,7 +10675,6 @@ server <- function(input, output, session) {
       default_premium <- if (nrow(product)) as.numeric(product$premium[1]) else if (nrow(latest)) as.numeric(latest$suggested_next_premium[1]) else 1
       default_benefit <- if (nrow(product)) as.numeric(product$benefit[1]) else 2
       default_step <- if (nrow(product)) as.numeric(product$price_step[1] %||% 0.5) else 0.5
-      deadline_value <- if (nrow(product)) as.character(product$purchase_deadline[1] %||% "") else ""
       policy_rows <- if (nrow(product)) tryCatch(db_query(
         "SELECT ip.user_id,COALESCE(u.display_name,ip.user_id) student,ip.premium,ip.purchased_at,
                 CASE WHEN ic.id IS NULL THEN 0 ELSE 1 END claimed,COALESCE(ic.benefit,0) benefit
@@ -10673,10 +10689,9 @@ server <- function(input, output, session) {
         if (!nrow(round)) div(class="alert alert-warning", "Choose a class date under Job Market Controls first.") else tagList(
           tags$p(tags$strong("Selected class: "), round$label[1] %||% "", " · ", round$class_date[1] %||% ""),
           fluidRow(
-            column(3, numericInput("insurance_benefit_input", "Pass benefit:", value=default_benefit, min=0.01, step=0.5)),
-            column(3, numericInput("insurance_premium_input", "Premium:", value=default_premium, min=0, step=0.5)),
-            column(3, numericInput("insurance_price_step_input", "Repricing increment:", value=default_step, min=0.01, step=0.25)),
-            column(3, textInput("insurance_deadline_input", "Purchase deadline (UTC; blank=manual):", value=deadline_value))
+            column(4, numericInput("insurance_benefit_input", "Pass benefit:", value=default_benefit, min=0.01, step=0.5)),
+            column(4, numericInput("insurance_premium_input", "Premium:", value=default_premium, min=0, step=0.5)),
+            column(4, numericInput("insurance_price_step_input", "Repricing increment:", value=default_step, min=0.01, step=0.25))
           ),
           div(style="display:flex;gap:.4rem;flex-wrap:wrap;",
             actionButton("save_insurance_product_btn", if (nrow(product)) "Save / Open Sales" else "Create / Open Sales", class="btn btn-sm btn-primary"),

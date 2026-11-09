@@ -148,7 +148,6 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     set_admin(rv)
     session$setInputs(insurance_benefit_input = 2, insurance_premium_input = 2,
                       insurance_price_step_input = 0.5,
-                      insurance_deadline_input = "2099-01-01 00:00:00",
                       save_insurance_product_btn = 1)
     session$flushReact()
   })
@@ -159,43 +158,52 @@ if (requireNamespace("shiny", quietly = TRUE)) {
 
   buy_policy <- function(uid, name, click = 1L) shiny::testServer(app$server, {
     set_student(rv, uid, name)
+    session$setInputs(open_insurance = 1L)
+    if (identical(click, 1L) && identical(uid, "s1@test.edu"))
+      stopifnot(grepl("Buy policy", output$spend_form$html, fixed = TRUE))
     session$setInputs(submit_insurance_purchase = click)
     session$flushReact()
+    if (any(app$db_query("SELECT user_id FROM insurance_purchases;")$user_id == uid))
+      stopifnot(grepl("You are insured", output$spend_form$html, fixed = TRUE))
   })
   buy_policy("s1@test.edu", "Student 1")
   buy_policy("s1@test.edu", "Student 1", 2L) # browser double-click/retry
+  # A legacy deadline cannot close an open market.
+  stopifnot(DBI::dbExecute(app$get_con(), "UPDATE insurance_products SET purchase_deadline='2000-01-01 00:00:00' WHERE id=?;",
+                           params = list(product_id)) == 1L)
+  # A failed debit must roll back coverage so the same student can retry.
+  DBI::dbExecute(app$get_con(), "CREATE TRIGGER reject_insurance_debit BEFORE INSERT ON token_ledger
+    WHEN NEW.source_type='insurance_premium' BEGIN SELECT RAISE(ABORT, 'test debit failure'); END;")
+  buy_policy("s2@test.edu", "Student 2")
+  stopifnot(nrow(app$db_query("SELECT * FROM insurance_purchases;")) == 1L,
+            nrow(app$db_query("SELECT id FROM token_ledger WHERE source_type='insurance_premium';")) == 1L)
+  DBI::dbExecute(app$get_con(), "DROP TRIGGER reject_insurance_debit;")
   buy_policy("s2@test.edu", "Student 2")
   purchases <- app$db_query("SELECT * FROM insurance_purchases ORDER BY user_id;")
   premium_ledger <- app$db_query("SELECT * FROM token_ledger WHERE source_type='insurance_premium';")
   stopifnot(nrow(purchases) == 2L, nrow(premium_ledger) == 2L,
-            sum(premium_ledger$amount) == -4, all(premium_ledger$earning == 0L))
+            sum(premium_ledger$amount) == -4, all(premium_ledger$earning == 0L),
+            all(purchases$ledger_id == premium_ledger$id[match(purchases$id, premium_ledger$source_id)]))
 
   # Once anyone buys, a later admin retry cannot rewrite their contract.
   shiny::testServer(app$server, {
     set_admin(rv)
     session$setInputs(insurance_benefit_input = 9, insurance_premium_input = 7,
                       insurance_price_step_input = 0.5,
-                      insurance_deadline_input = "2099-01-01 00:00:00",
                       save_insurance_product_btn = 1)
     session$flushReact()
   })
   frozen <- app$db_query("SELECT premium,benefit FROM insurance_products WHERE id=?;", list(product_id))
   stopifnot(frozen$premium[1] == 2, frozen$benefit[1] == 2)
 
-  # Close sales, reject a late buyer, then record two passes for the same
-  # insured student. Both passes remain in the audit log; the policy pays once.
-  shiny::testServer(app$server, {
-    set_admin(rv)
-    session$setInputs(close_insurance_sales_btn = 1)
-    session$flushReact()
-  })
-  buy_policy("s3@test.edu", "Student 3")
-  stopifnot(nrow(app$db_query("SELECT * FROM insurance_purchases;")) == 2L)
-
+  # The first live pass pays immediately while sales are still open.
+  # A repeated pass remains in the audit but cannot pay twice.
   shiny::testServer(app$server, {
     set_admin(rv)
     rv$cold_call_draw <- list(user_id = "s1@test.edu", display_name = "Student 1", section = "01")
     session$setInputs(cold_call_pass_btn = 1); session$flushReact()
+    first_payout <- app$db_query("SELECT amount FROM token_ledger WHERE source_type='insurance_claim';")
+    stopifnot(identical(as.numeric(first_payout$amount), 2))
     rv$cold_call_draw <- list(user_id = "s1@test.edu", display_name = "Student 1", section = "01")
     session$setInputs(cold_call_pass_btn = 2); session$flushReact()
   })
@@ -204,6 +212,15 @@ if (requireNamespace("shiny", quietly = TRUE)) {
   claim_ledger <- app$db_query("SELECT * FROM token_ledger WHERE source_type='insurance_claim';")
   stopifnot(nrow(claims) == 1L, nrow(pass_events) == 2L, nrow(claim_ledger) == 1L,
             claim_ledger$amount[1] == 2, claim_ledger$earning[1] == 0L)
+
+  # Closing sales rejects a new purchase.
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    session$setInputs(close_insurance_sales_btn = 1)
+    session$flushReact()
+  })
+  buy_policy("s3@test.edu", "Student 3")
+  stopifnot(nrow(app$db_query("SELECT * FROM insurance_purchases;")) == 2L)
 
   # Settle twice. Profit is returned to all three in-scope students, including
   # the nonbuyer, while the other section receives nothing.

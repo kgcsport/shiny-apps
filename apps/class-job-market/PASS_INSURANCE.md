@@ -5,7 +5,7 @@ Pass Insurance is a dated token policy layered onto the existing job market. It 
 ## Contract
 
 - A student buys at most one policy for the selected class date through **Spend → Pass Insurance**.
-- Purchase should close before students prepare for that class. Set a UTC deadline or close sales manually.
+- Students can buy during class while sales are open. Close sales manually or settle the market to end purchases.
 - If an insured student is cold-called and chooses **Pass & Redraw**, the policy pays its stated benefit immediately. A policy pays at most once.
 - Passing without insurance remains allowed and pays zero.
 - Premiums, claims, and dividends change spendable token balances but never gross participation earnings.
@@ -16,8 +16,8 @@ Pass Insurance is a dated token policy layered onto the existing job market. It 
 
 1. Select the course, section, and class date as usual.
 2. In **Settings → Spending Options**, make sure student spending is enabled.
-3. In **Settings → Insurance**, choose the benefit, starting premium, repricing increment, and purchase deadline. Click **Create / Open Sales**.
-4. Students buy from **Spend → Pass Insurance** before the prep cutoff.
+3. In **Settings → Spending Options → Pass Insurance**, choose the benefit, starting premium, and repricing increment. Click **Create / Open Sales**.
+4. Students buy from **Spend → Pass Insurance** while sales are open. Coverage starts as soon as the purchase succeeds.
 5. Run cold calls normally. When a called student passes, click **Pass & Redraw** in either Live Tracker or the slide panel. The pass is recorded, any eligible claim is paid, and a different student is drawn when possible.
 6. After class, click **Settle, Dividend & Reprice**. The result is frozen, positive profit is returned as equal class dividends, and the next zero-profit pooled premium is displayed.
 
