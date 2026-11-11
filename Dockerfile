@@ -24,6 +24,7 @@ RUN Rscript --vanilla /srv/shiny-server/tests/critical-token-spend-precision.R
 RUN Rscript --vanilla /srv/shiny-server/tests/risk-insurance-game.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-assignment-wage-award.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-gradebook-ux.R
+RUN Rscript --vanilla /srv/shiny-server/tests/critical-grade-reweighting.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-default-extension-products.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-extension-checkout.R
 RUN Rscript --vanilla /srv/shiny-server/tests/critical-extension-schedule-refresh.R

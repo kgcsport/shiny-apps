@@ -2204,7 +2204,60 @@ parse_grade_categories <- function() {
   }, error = function(e) data.frame(name=character(0), weight=numeric(0)))
 }
 
-compute_student_grade <- function(uid, exclude_assignments = character(0)) {
+apply_grade_reweight_requests <- function(cats, all_items, requests = data.frame()) {
+  if (!nrow(cats) || !nrow(all_items) || !nrow(requests))
+    return(list(cats = cats, items = all_items))
+  key <- function(x) tolower(trimws(as.character(x %||% "")))
+  for (request_idx in seq_len(nrow(requests))) {
+    request <- requests[request_idx, , drop = FALSE]
+    points <- suppressWarnings(as.numeric(request$points[1] %||% 0))
+    if (!is.finite(points) || points <= 0) next
+    from_key <- key(request$from_category[1])
+    to_key <- key(request$to_category[1])
+    if (!nzchar(from_key) || !nzchar(to_key) || identical(from_key, to_key)) next
+    level <- key(request$level[1] %||% "category")
+
+    if (identical(level, "assignment")) {
+      from_idx <- which(key(all_items$item_name) == from_key)
+      to_idx <- which(key(all_items$item_name) == to_key)
+      if (length(from_idx) != 1L || length(to_idx) != 1L || from_idx == to_idx) next
+      moved <- min(points, max(0, as.numeric(all_items$item_weight[from_idx] %||% 0)))
+      if (!is.finite(moved) || moved <= 0) next
+      all_items$item_weight[from_idx] <- all_items$item_weight[from_idx] - moved
+      all_items$item_weight[to_idx] <- all_items$item_weight[to_idx] + moved
+    } else {
+      from_cat <- which(key(cats$name) == from_key)
+      to_cat <- which(key(cats$name) == to_key)
+      if (length(from_cat) != 1L || length(to_cat) != 1L || from_cat == to_cat) next
+      from_items <- which(all_items$cat_idx == from_cat)
+      to_items <- which(all_items$cat_idx == to_cat)
+      if (!length(from_items) || !length(to_items)) next
+      from_total <- sum(all_items$item_weight[from_items], na.rm = TRUE)
+      moved <- min(points, max(0, from_total))
+      if (!is.finite(moved) || moved <= 0) next
+      all_items$item_weight[from_items] <-
+        all_items$item_weight[from_items] * ((from_total - moved) / from_total)
+      to_total <- sum(all_items$item_weight[to_items], na.rm = TRUE)
+      if (is.finite(to_total) && to_total > 0) {
+        all_items$item_weight[to_items] <-
+          all_items$item_weight[to_items] + moved * all_items$item_weight[to_items] / to_total
+      } else {
+        all_items$item_weight[to_items] <- moved / length(to_items)
+      }
+    }
+  }
+
+  # Item-level requests can move weight across categories, so the effective
+  # category weights shown to this student must follow the adjusted items.
+  for (cat_idx in seq_len(nrow(cats))) {
+    effective_weight <- sum(all_items$item_weight[all_items$cat_idx == cat_idx], na.rm = TRUE)
+    cats$weight[cat_idx] <- effective_weight
+    all_items$weight[all_items$cat_idx == cat_idx] <- effective_weight
+  }
+  list(cats = cats, items = all_items)
+}
+compute_student_grade <- function(uid, exclude_assignments = character(0),
+                                  preview_reweight = data.frame()) {
   cats      <- tryCatch(db_query(
     "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
     error = function(e) data.frame())
@@ -2251,6 +2304,16 @@ compute_student_grade <- function(uid, exclude_assignments = character(0)) {
       ))
     }
   }
+
+  approved_reweights <- tryCatch(db_query(
+    "SELECT id, COALESCE(level,'category') AS level, from_category, to_category, points
+     FROM grade_reweight_requests
+     WHERE LOWER(user_id)=LOWER(?) AND COALESCE(status,'pending')='approved'
+     ORDER BY id;", list(uid)), error = function(e) data.frame())
+  requests <- if (nrow(preview_reweight)) rbind(approved_reweights, preview_reweight) else approved_reweights
+  adjusted <- apply_grade_reweight_requests(cats, all_items, requests)
+  cats <- adjusted$cats
+  all_items <- adjusted$items
 
   # A documented individual exam drop removes only that item and transfers its
   # configured weight to the selected final item. The original grade remains stored.
@@ -6166,36 +6229,13 @@ server <- function(input, output, session) {
     cats_df <- gb$cats
     if (!nrow(cats_df)) return(NULL)
 
-    # Build revised weights: adjust at category level (for both category and assignment level)
-    # For assignment level, the from/to are item names — map them to categories
-    if (level == "assignment") {
-      items_df <- gb$items
-      from_cat <- if (nrow(items_df)) {
-        r <- items_df[items_df$item_name == from, , drop=FALSE]
-        if (nrow(r)) r$category_name[1] else from
-      } else from
-      to_cat   <- if (nrow(items_df)) {
-        r <- items_df[items_df$item_name == to, , drop=FALSE]
-        if (nrow(r)) r$category_name[1] else to
-      } else to
-    } else {
-      from_cat <- from
-      to_cat   <- to
-    }
-
-    rev_cats <- cats_df
-    rev_cats$weight[rev_cats$category == from_cat] <-
-      pmax(0, rev_cats$weight[rev_cats$category == from_cat] - pts)
-    rev_cats$weight[rev_cats$category == to_cat] <-
-      rev_cats$weight[rev_cats$category == to_cat] + pts
-
-    # Compute revised overall
-    rev_graded_wt   <- sum(rev_cats$weight[!is.na(cats_df$cat_avg)], na.rm = TRUE)
-    rev_graded_cont <- sum(
-      rev_cats$weight * ifelse(is.na(cats_df$cat_avg), 0, cats_df$cat_avg) / 100,
-      na.rm = TRUE)
-    rev_overall <- if (rev_graded_wt > 0) rev_graded_cont / rev_graded_wt * 100 else NA_real_
-
+    preview_request <- data.frame(
+      id = NA_integer_, level = level, from_category = from,
+      to_category = to, points = pts, stringsAsFactors = FALSE)
+    revised_gb <- compute_student_grade(rv$user_id, preview_reweight = preview_request)
+    rev_cats <- revised_gb$cats
+    rev_graded_wt <- revised_gb$graded_weight
+    rev_overall <- revised_gb$overall
     fmt_pct <- function(x) if (is.na(x)) span(class="grade-na", "—")
                            else sprintf("%.1f%%", x)
 
@@ -6945,6 +6985,20 @@ server <- function(input, output, session) {
   observeEvent(input$release_policy_rubric_btn,
     save_policy_rubric("released"),ignoreInit=TRUE)
 
+  observeEvent(input$save_policy_due_dates_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    progress_due <- as.character(input$policy_progress_due_input %||% "")
+    final_due <- as.character(input$policy_final_brief_due_input %||% "")
+    if (is.na(suppressWarnings(as.Date(progress_due))) ||
+        is.na(suppressWarnings(as.Date(final_due)))) {
+      showNotification("Choose valid dates for both policy milestones.", type="error")
+      return()
+    }
+    set_scoped_setting("policy_progress_due", progress_due)
+    set_scoped_setting("policy_final_brief_due", final_due)
+    rv$rubric_ver <- rv$rubric_ver + 1L
+    showNotification("Policy project due dates saved for this class scope.", type="message")
+  }, ignoreNULL=TRUE)
   save_policy_progress <- function(status=c("draft", "submitted")) {
     status <- match.arg(status)
     req(rv$authed, !isTRUE(rv$is_admin), rv$user_id)
@@ -7005,6 +7059,9 @@ server <- function(input, output, session) {
   output$account_policy_feedback <- renderUI({
     req(rv$authed)
     rv$policy_ver
+    rv$rubric_ver
+    progress_due <- suppressWarnings(as.Date(get_scoped_setting("policy_progress_due", "2026-11-23")))
+    progress_due_label <- if (is.na(progress_due)) "November 23, 2026" else format(progress_due, "%A, %B %d, %Y")
     feedback_data <- policy_feedback_poll()
     assessments <- feedback_data$assessments
     report <- feedback_data$report %||% data.frame()
@@ -7055,7 +7112,8 @@ server <- function(input, output, session) {
           div(class="policy-rubric-card",
             tags$h5("Progress Report / Revision Memo"),
             tags$p(style="color:#777;font-size:.84rem;",
-              "Complete this shared team report within one week of your presentation. Your responses are saved for the whole team."),
+              sprintf("Due %s, before your Zoom meeting with the instructor. Your responses are saved for the whole team.",
+                      progress_due_label)),
             if (!nrow(assessments)) tags$p(style="color:#996515;font-size:.84rem;",
               "Your presentation feedback has not been released yet; you can still draft the report below."),
             textAreaInput("policy_progress_feedback",
@@ -7105,6 +7163,9 @@ server <- function(input, output, session) {
       d <- suppressWarnings(as.Date(x)); if (is.na(d)) as.character(x %||% "")
       else format(d, "%A, %B %d, %Y")
     }
+    rv$rubric_ver
+    progress_due_label <- fmt_date(get_scoped_setting("policy_progress_due", "2026-11-23"))
+    final_brief_due_label <- fmt_date(get_scoped_setting("policy_final_brief_due", "2026-12-15"))
     if (isTRUE(rv$is_admin) && !isTRUE(rv$impersonating)) {
       team_rows <- tryCatch(db_query(
         "SELECT DISTINCT p.policy_team, u.course, u.section
@@ -7152,8 +7213,8 @@ server <- function(input, output, session) {
         ),
         tags$h4("Milestones"),
         tags$ul(tags$li(paste("Presentation —", fmt_date(tr$presentation_date))),
-                tags$li("Progress report / revision memo — after presentation feedback"),
-                tags$li("Final brief submission — official final-exam period"))
+                tags$li(paste("Progress report / revision memo —", progress_due_label)),
+                tags$li(paste("Final brief submission —", final_brief_due_label)))
       ))
     }
     if (!nrow(policy_row))
@@ -7184,7 +7245,7 @@ server <- function(input, output, session) {
         tags$p(tags$strong("Presentation: "), fmt_date(r$presentation_date)),
         if (nrow(members)) tags$p(tags$strong("Group: "), paste(members$display_name, collapse=", ")),
         tags$p(style="color:#777;font-size:.84rem;margin-bottom:0;",
-               "Final brief submission is during the official final-exam period; your instructor will post the exact date.")),
+               paste("Final brief submission is due", final_brief_due_label, "."))),
       uiOutput("account_policy_feedback")
     )
   })
@@ -11886,9 +11947,24 @@ server <- function(input, output, session) {
          ORDER BY p.policy_team;"), error = function(e) data.frame())
       team_rows <- scope_filter_rows(team_rows)
       teams <- sort(unique(nonempty_values(team_rows$policy_team %||% character(0))))
+      policy_deadline_controls <- div(
+        class = "spend-form-box", style = "margin-bottom:.8rem;",
+        tags$h6(style="font-weight:700;color:#951829;", "Policy project due dates"),
+        tags$p(style="color:#666;font-size:.82rem;",
+               "These dates apply to the active class / section scope and appear in student and instructor policy milestones."),
+        fluidRow(
+          column(4, dateInput("policy_progress_due_input", "Progress report / revision memo:",
+                              value=get_scoped_setting("policy_progress_due", "2026-11-23"))),
+          column(4, dateInput("policy_final_brief_due_input", "Final written brief:",
+                              value=get_scoped_setting("policy_final_brief_due", "2026-12-15"))),
+          column(4, tags$br(), actionButton("save_policy_due_dates_btn", "Save due dates",
+                                            class="btn btn-primary"))
+        )
+      )
       if (!length(teams)) {
         tagList(
           tags$h6(style="font-weight:700;color:#951829;margin-top:.5rem;", "Policy Rubrics"),
+          policy_deadline_controls,
           tags$p(style="color:#999;", "No policy teams exist in the selected course/section scope. Import or assign policy groups under Settings → Students first.")
         )
       } else {
@@ -11963,6 +12039,7 @@ server <- function(input, output, session) {
           tags$h6(style="font-weight:700;color:#951829;margin-top:.5rem;", "Policy Rubrics"),
           tags$p(style="color:#555;font-size:.85rem;",
             "Choose a performance anchor to prefill points, then fine-tune the score and add criterion feedback. Save privately while grading; Release to team publishes one shared copy to every team member and optionally writes the final score to the gradebook."),
+          policy_deadline_controls,
           fluidRow(
             column(4, selectInput("policy_rubric_team", "Team:",
                                   choices=setNames(teams, teams), selected=selected_team)),
@@ -12125,6 +12202,7 @@ server <- function(input, output, session) {
                           ),
                           div(style = "display:flex;gap:.4rem;margin-bottom:.6rem;",
                             tags$button(
+                              type = "button",
                               class = "btn btn-xs btn-primary",
                               style = "padding:.2rem .6rem;font-size:.78rem;",
                               onclick = sprintf(paste0(
@@ -12166,13 +12244,14 @@ server <- function(input, output, session) {
                                          title="Weight percentage points of total grade; blank = equal split",
                                          style="font-size:.82rem;padding:.15rem .35rem;border:1px solid #ddd;border-radius:4px;width:5.8rem;"),
                               tags$button(
+                                type="button",
                                 class="btn btn-xs btn-outline-secondary",
                                 style="padding:.1rem .4rem;font-size:.72rem;",
                                 onclick=sprintf(paste0(
                                   "var v=document.getElementById('gbi_%d_%d').value;",
                                   "var w=document.getElementById('gbiw_%d_%d').value;",
                                   "Shiny.setInputValue('rename_gb_item_btn',",
-                                  "{cat_id:%d,idx:%d,name:v,weight:w},{priority:'event'});"),
+                                  "{cat_id:%d,idx:%d,name:v,weight:w},{priority:'event'});return false;"),
                                   cid_js, j, cid_js, j, cid_js, j),
                                 "Save"))
                           })
@@ -14546,9 +14625,41 @@ server <- function(input, output, session) {
     if (!is.na(wt) && wt < 0) {
       showNotification("Item weight must be 0 or higher.", type = "error"); return()
     }
-    db_exec(
+    category <- tryCatch(db_query("SELECT * FROM gradebook_categories WHERE id=? LIMIT 1;",
+                                  list(cid)), error=function(e)data.frame())
+    existing_names <- tryCatch(db_query("SELECT * FROM gradebook_item_names WHERE category_id=?;",
+                                        list(cid)), error=function(e)data.frame())
+    old_name <- if (nrow(category)) {
+      specs <- gradebook_item_specs(category[1,], existing_names)
+      if (idx <= nrow(specs)) as.character(specs$item_name[idx]) else ""
+    } else ""
+    saved <- db_exec(
       "INSERT OR REPLACE INTO gradebook_item_names(category_id,item_index,item_name,item_weight) VALUES(?,?,?,?);",
       list(cid, idx, nm, if (!is.na(wt)) wt else NA_real_))
+    if (!identical(as.integer(saved), 1L)) {
+      showNotification("Item settings could not be saved. Please try again.", type = "error")
+      return()
+    }
+    if (nzchar(old_name) && !identical(tolower(old_name), tolower(nm))) {
+      rename_columns <- list(
+        c("student_grades", "assignment_name"),
+        c("assessment_grade_imports", "gradebook_item"),
+        c("assignment_grade_sync_log", "gradebook_item"),
+        c("assignment_grade_sync_override", "assignment_name"),
+        c("policy_rubric_assessments", "gradebook_item")
+      )
+      for (target in rename_columns)
+        db_exec(sprintf("UPDATE OR IGNORE %s SET %s=? WHERE LOWER(%s)=LOWER(?);",
+                        target[1], target[2], target[2]), list(nm, old_name))
+      db_exec("UPDATE gradebook_exam_drops SET assignment_name=? WHERE LOWER(assignment_name)=LOWER(?);",
+              list(nm, old_name))
+      db_exec("UPDATE gradebook_exam_drops SET transfer_to=? WHERE LOWER(transfer_to)=LOWER(?);",
+              list(nm, old_name))
+      db_exec("UPDATE grade_reweight_requests SET from_category=? WHERE COALESCE(level,'category')='assignment' AND LOWER(from_category)=LOWER(?);",
+              list(nm, old_name))
+      db_exec("UPDATE grade_reweight_requests SET to_category=? WHERE COALESCE(level,'category')='assignment' AND LOWER(to_category)=LOWER(?);",
+              list(nm, old_name))
+    }
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification("Item settings saved.", type = "message")
   }, ignoreNULL = TRUE)
