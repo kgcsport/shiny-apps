@@ -2256,6 +2256,19 @@ apply_grade_reweight_requests <- function(cats, all_items, requests = data.frame
   }
   list(cats = cats, items = all_items)
 }
+gross_participation_tokens <- function(uid) {
+  earned <- db_query(
+    "SELECT COALESCE(SUM(amount),0) total FROM token_ledger
+     WHERE user_id=? AND earning=1 AND amount>0;",
+    list(uid))
+  as.numeric(earned$total[1] %||% 0)
+}
+
+participation_grade_pct <- function(earned, target) {
+  if (!is.finite(target) || target <= 0) return(NA_real_)
+  min(100, 100 * earned / target)
+}
+
 compute_student_grade <- function(uid, exclude_assignments = character(0),
                                   preview_reweight = data.frame()) {
   cats      <- tryCatch(db_query(
@@ -2275,6 +2288,7 @@ compute_student_grade <- function(uid, exclude_assignments = character(0),
   if (!nrow(cats)) return(list(cats = data.frame(), items = data.frame(), overall = NA_real_))
   excluded_keys <- tolower(trimws(as.character(exclude_assignments %||% character(0))))
   excluded_keys <- unique(excluded_keys[nzchar(excluded_keys)])
+  earned <- if (any(cats$source == "participation", na.rm = TRUE)) gross_participation_tokens(uid) else 0
 
   all_items <- data.frame(item_name=character(), cat_idx=integer(),
                           category_name=character(), weight=numeric(),
@@ -2290,6 +2304,18 @@ compute_student_grade <- function(uid, exclude_assignments = character(0),
       matched <- if (nrow(grades)) grades[grades$assignment_name == nm, , drop=FALSE]
                  else data.frame()
       is_excluded <- tolower(trimws(nm)) %in% excluded_keys
+      score <- max_score <- grade_pct <- NA_real_
+      if (!is_excluded) {
+        if (identical(r$source %||% "manual", "participation")) {
+          score <- earned
+          max_score <- as.numeric(r$max_points %||% 100)
+          grade_pct <- participation_grade_pct(score, max_score)
+        } else if (nrow(matched)) {
+          score <- as.numeric(matched$score[1])
+          max_score <- as.numeric(matched$max_score[1])
+          grade_pct <- as.numeric(matched$grade_pct[1])
+        }
+      }
       all_items <- rbind(all_items, data.frame(
         item_name     = nm,
         cat_idx       = i,
@@ -2297,9 +2323,9 @@ compute_student_grade <- function(uid, exclude_assignments = character(0),
         weight        = as.numeric(r$weight %||% 0),
         item_weight   = as.numeric(specs$item_weight[j] %||% 0),
         item_count    = n,
-        grade_pct     = if (nrow(matched) && !is_excluded) as.numeric(matched$grade_pct[1]) else NA_real_,
-        score         = if (nrow(matched) && !is_excluded) as.numeric(matched$score[1] %||% NA) else NA_real_,
-        max_score     = if (nrow(matched) && !is_excluded) as.numeric(matched$max_score[1] %||% NA) else NA_real_,
+        grade_pct     = grade_pct,
+        score         = score,
+        max_score     = max_score,
         stringsAsFactors = FALSE
       ))
     }
@@ -4285,15 +4311,22 @@ server <- function(input, output, session) {
         "SELECT amount, source_type, note, created_at, earning
          FROM token_ledger WHERE user_id=? ORDER BY created_at DESC LIMIT 60;",
         list(rv$user_id)), error = function(e) data.frame())
-      earned  <- tryCatch(as.numeric(db_query(
-        "SELECT COALESCE(SUM(amount),0) t FROM token_ledger
-         WHERE user_id=? AND earning=1 AND amount>0;",
-        list(rv$user_id))$t[1] %||% 0), error = function(e) 0)
+      earned <- gross_participation_tokens(rv$user_id)
       on_hand <- tryCatch(as.numeric(db_query(
         "SELECT COALESCE(SUM(amount),0) t FROM token_ledger WHERE user_id=?;",
         list(rv$user_id))$t[1] %||% 0), error = function(e) 0)
       list(ledger = ledger, tokens_earned = earned, tokens_on_hand = on_hand)
     }
+  )
+
+  gradebook_earnings_poll <- reactivePoll(6000, session,
+    checkFunc = function() {
+      if (!isTRUE(rv$is_admin) || !tab_is_active("Settings") ||
+          !identical(input$config_action, "gradebook")) return(NULL)
+      db_query("SELECT COUNT(*) n, MAX(id) latest, SUM(amount) total
+                FROM token_ledger WHERE earning=1 AND amount>0;")
+    },
+    valueFunc = function() NULL
   )
 
   flex_cost_schedule_for_scope <- function()
@@ -6378,6 +6411,7 @@ server <- function(input, output, session) {
   output$account_grade_breakdown <- renderUI({
     req(rv$authed)
     rv$gradebook_ver
+    token_poll()
     hidden <- tryCatch(db_query(
       "SELECT DISTINCT ai.id, ai.assessment_name, ai.gradebook_item
        FROM assessment_grade_imports ai JOIN assessment_grade_values av ON av.import_id=ai.id
@@ -12416,6 +12450,71 @@ server <- function(input, output, session) {
                        stringsAsFactors = FALSE)
           })) else data.frame()
 
+          output$gradebook_student_summary <- renderUI({
+            req(rv$is_admin)
+            roster_columns <- c("user_id", "display_name", "course", "section")
+            students <- unique(grade_rows[, intersect(roster_columns, names(grade_rows)), drop=FALSE])
+            if (any(cats$source == "participation", na.rm=TRUE)) {
+              gradebook_earnings_poll()
+              roster <- scope_filter_rows(db_query(
+                "SELECT user_id,display_name,course,section FROM users
+                 WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
+                 ORDER BY section,display_name;"))
+              students <- rbind(roster, students)
+            }
+            stu_ids <- unique(students$user_id)
+            if (!length(stu_ids)) return(NULL)
+            cat_names <- cats$name
+            tagList(
+              tags$p(style = "font-size:.85rem;color:#555;margin-bottom:.3rem;",
+                sprintf("%d students · %d grade rows · %d distinct assignments",
+                        length(stu_ids), nrow(grade_rows),
+                        length(unique(grade_rows$assignment_name)))),
+              div(style = "overflow-x:auto;",
+                tags$table(class = "table table-sm",
+                  tags$thead(tags$tr(tagList(
+                    tags$th("Student"), tags$th("Sec"),
+                    lapply(cat_names, function(cn) {
+                      w <- cats$weight[cats$name == cn][1] %||% 0
+                      tags$th(style = "text-align:right;",
+                              sprintf("%s (%.4g%%)", cn, as.numeric(w)))
+                    }),
+                    tags$th(style = "text-align:right;font-weight:700;", "Wtd Total")
+                  ))),
+                  tags$tbody(lapply(stu_ids, function(uid) {
+                    stu_nm  <- students$display_name[students$user_id == uid][1] %||% uid
+                    stu_sec <- students$section[students$user_id == uid][1] %||% ""
+                    gb_student <- compute_student_grade(uid)
+                    cat_cells <- lapply(cat_names, function(cn) {
+                      cr <- gb_student$cats[gb_student$cats$category == cn, , drop=FALSE]
+                      avg <- if (nrow(cr)) as.numeric(cr$cat_avg[1]) else NA_real_
+                      tags$td(style = "text-align:right;", if (!is.na(avg)) sprintf("%.1f%%", avg) else tags$span(style="color:#ccc;","—"))
+                    })
+                    wtd <- if (is.finite(gb_student$overall)) sprintf("%.1f%%", gb_student$overall) else "—"
+                    item_rows <- lapply(seq_len(nrow(gb_student$items)), function(ii) {
+                      it <- gb_student$items[ii,,drop=FALSE]
+                      tags$tr(tags$td(it$item_name[1]), tags$td(it$category_name[1]), tags$td(if (is.finite(it$grade_pct[1])) sprintf("%.1f%%", it$grade_pct[1]) else "—"), tags$td(sprintf("%.4g%%", it$item_weight[1])))
+                    })
+                    stu_drop <- if (exists("existing_drops") && nrow(existing_drops)) existing_drops[tolower(existing_drops$user_id) == tolower(uid),,drop=FALSE] else data.frame()
+                    student_detail <- tags$details(
+                      tags$summary(style="cursor:pointer;color:#951829;font-weight:600;", stu_nm),
+                      div(style="min-width:28rem;max-width:42rem;padding:.45rem 0;",
+                        if (nrow(stu_drop)) tags$p(style="color:#7c5b00;font-size:.8rem;", paste0("Exam drop: ", stu_drop$assignment_name[1], " → ", stu_drop$transfer_to[1], if (nzchar(stu_drop$note[1] %||% "")) paste0(" (", stu_drop$note[1], ")") else "")),
+                        tags$table(class="table table-condensed", style="font-size:.8rem;margin:0;", tags$thead(tags$tr(tags$th("Item"),tags$th("Category"),tags$th("Grade"),tags$th("Weight"))), tags$tbody(item_rows))
+                      )
+                    )
+                    tags$tr(
+                      tags$td(student_detail),
+                      tags$td(style="color:#888;font-size:.82em;", stu_sec),
+                      tagList(cat_cells),
+                      tags$td(style="text-align:right;font-weight:600;", wtd)
+                    )
+                  }))
+                )
+              )
+            )
+          })
+
           raw_assignment_choices <- sort(unique(nonempty_values(grade_rows$assignment_name)))
 
           tagList(
@@ -12478,67 +12577,13 @@ server <- function(input, output, session) {
               )
             },
 
-            # Online grade summary (if grades uploaded)
+            uiOutput("gradebook_student_summary"),
             if (!nrow(grade_rows)) {
-              tags$p(style = "color:#999;font-size:.9em;margin-top:.5rem;",
-                     "No grades uploaded yet. Use Upload Grades above.")
+              if (!any(cats$source == "participation", na.rm=TRUE))
+                tags$p(style = "color:#999;font-size:.9em;margin-top:.5rem;",
+                       "No grades uploaded yet. Use Upload Grades above.")
             } else {
-              # Map grades to categories
-              gr_mapped <- if (nrow(item_cat_map))
-                merge(grade_rows, item_cat_map, by.x = "assignment_name", by.y = "item_name", all.x = TRUE)
-              else grade_rows
-
-              # Unique students in grade data
-              stu_ids <- unique(grade_rows$user_id)
-              cat_names <- if (nrow(cats)) cats$name %||% character(0) else character(0)
-
               tagList(
-                tags$p(style = "font-size:.85rem;color:#555;margin-bottom:.3rem;",
-                  sprintf("%d students · %d grade rows · %d distinct assignments",
-                          length(stu_ids), nrow(grade_rows),
-                          length(unique(grade_rows$assignment_name)))),
-                div(style = "overflow-x:auto;",
-                  tags$table(class = "table table-sm",
-                    tags$thead(tags$tr(tagList(
-                      tags$th("Student"), tags$th("Sec"),
-                      lapply(cat_names, function(cn) {
-                        w <- cats$weight[cats$name == cn][1] %||% 0
-                        tags$th(style = "text-align:right;",
-                                sprintf("%s (%.4g%%)", cn, as.numeric(w)))
-                      }),
-                      tags$th(style = "text-align:right;font-weight:700;", "Wtd Total")
-                    ))),
-                    tags$tbody(lapply(stu_ids, function(uid) {
-                      stu_nm  <- grade_rows$display_name[grade_rows$user_id == uid][1] %||% uid
-                      stu_sec <- grade_rows$section[grade_rows$user_id == uid][1] %||% ""
-                      gb_student <- compute_student_grade(uid)
-                      cat_cells <- lapply(cat_names, function(cn) {
-                        cr <- gb_student$cats[gb_student$cats$category == cn, , drop=FALSE]
-                        avg <- if (nrow(cr)) as.numeric(cr$cat_avg[1]) else NA_real_
-                        tags$td(style = "text-align:right;", if (!is.na(avg)) sprintf("%.1f%%", avg) else tags$span(style="color:#ccc;","—"))
-                      })
-                      wtd <- if (is.finite(gb_student$overall)) sprintf("%.1f%%", gb_student$overall) else "—"
-                      item_rows <- lapply(seq_len(nrow(gb_student$items)), function(ii) {
-                        it <- gb_student$items[ii,,drop=FALSE]
-                        tags$tr(tags$td(it$item_name[1]), tags$td(it$category_name[1]), tags$td(if (is.finite(it$grade_pct[1])) sprintf("%.1f%%", it$grade_pct[1]) else "—"), tags$td(sprintf("%.4g%%", it$item_weight[1])))
-                      })
-                      stu_drop <- if (exists("existing_drops") && nrow(existing_drops)) existing_drops[tolower(existing_drops$user_id) == tolower(uid),,drop=FALSE] else data.frame()
-                      student_detail <- tags$details(
-                        tags$summary(style="cursor:pointer;color:#951829;font-weight:600;", stu_nm),
-                        div(style="min-width:28rem;max-width:42rem;padding:.45rem 0;",
-                          if (nrow(stu_drop)) tags$p(style="color:#7c5b00;font-size:.8rem;", paste0("Exam drop: ", stu_drop$assignment_name[1], " → ", stu_drop$transfer_to[1], if (nzchar(stu_drop$note[1] %||% "")) paste0(" (", stu_drop$note[1], ")") else "")),
-                          tags$table(class="table table-condensed", style="font-size:.8rem;margin:0;", tags$thead(tags$tr(tags$th("Item"),tags$th("Category"),tags$th("Grade"),tags$th("Weight"))), tags$tbody(item_rows))
-                        )
-                      )
-                      tags$tr(
-                        tags$td(student_detail),
-                        tags$td(style="color:#888;font-size:.82em;", stu_sec),
-                        tagList(cat_cells),
-                        tags$td(style="text-align:right;font-weight:600;", wtd)
-                      )
-                    }))
-                  )
-                ),
                 # Raw rows
                 tags$details(style = "margin-top:.4rem;",
                   tags$summary(style = "cursor:pointer;color:#951829;font-size:.88rem;",
@@ -13259,11 +13304,10 @@ server <- function(input, output, session) {
             item_wt <- as.numeric(specs$item_weight[j] %||% 0)
             col_idx <- cs + j - 1L
             if (is_part) {
-              tok_val <- as.character(as.integer(stu$tokens_earned %||% 0))
-              cells[col_idx] <- tok_val
-              maxpts <- as.numeric(r$max_points %||% 100)
-              if (!is.na(maxpts) && maxpts > 0) {
-                pct <- min(100, 100 * as.numeric(stu$tokens_earned %||% 0) / maxpts)
+              earned <- as.numeric(stu$tokens_earned %||% 0)
+              cells[col_idx] <- as.character(earned)
+              pct <- participation_grade_pct(earned, as.numeric(r$max_points %||% 100))
+              if (!is.na(pct)) {
                 item_pcts <- c(item_pcts, pct)
                 item_wts  <- c(item_wts, item_wt)
               }

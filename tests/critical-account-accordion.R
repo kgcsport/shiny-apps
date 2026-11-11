@@ -87,6 +87,14 @@ for (i in seq_len(nrow(sets))) app$db_exec(
   "INSERT INTO problem_sets(name,original_deadline,solutions_posted_at,active,cloudflare_assignment_id) VALUES(?,?,?,1,?);",
   unname(as.list(sets[i,c("name","original_deadline","solutions_posted_at","cloudflare_assignment_id")])))
 app$db_exec("INSERT INTO student_grades(user_id,assignment_name,score,max_score,grade_pct) VALUES('student@example.edu','PS4',100,100,100);")
+stopifnot(app$db_exec(
+  "INSERT INTO gradebook_categories(name,weight,item_count,max_points,source)
+   VALUES('Participation',15,1,25,'participation');") == 1L)
+stopifnot(app$db_exec(
+  "INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning)
+   VALUES('student@example.edu','Student A','participation',10,1),
+         ('student@example.edu','Student A','insurance_premium',-6,0),
+         ('student@example.edu','Student A','insurance_claim',2,0);") == 3L)
 app$assignment_review_configured <- function() TRUE
 app$assignment_review_assignments <- function() data.frame(
   id=sprintf("econ342-2026-ps%02d",1:4), title=paste("Problem Set",1:4),
@@ -106,6 +114,41 @@ shiny::testServer(app$server, {
     if (!grepl(label,html,fixed=TRUE)) stop("Rendered Account is missing: ",label)
   for (label in c(">PS1<",">PS4<")) if (grepl(label,html,fixed=TRUE))
     stop("Completed assignment leaked into rendered Account: ",label)
+
+  grade_html <- output$account_grade_breakdown$html
+  stopifnot(grepl("10 / 25", grade_html, fixed=TRUE),
+            grepl("40.0%", grade_html, fixed=TRUE),
+            grepl("6.0%", grade_html, fixed=TRUE))
+  stopifnot(app$db_exec(
+    "INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning)
+     VALUES('student@example.edu','Student A','participation',15,1);") == 1L)
+  session$elapse(6000)
+  grade_html <- output$account_grade_breakdown$html
+  stopifnot(grepl("25 / 25", grade_html, fixed=TRUE),
+            grepl("15.0%", grade_html, fixed=TRUE))
 })
 
-cat("critical Account accordion: PASS\n")
+# The instructor summary also shows students with no uploaded grades.
+app$db_exec("DELETE FROM student_grades;")
+stopifnot(app$db_exec("DELETE FROM token_ledger WHERE user_id='student@example.edu' AND earning=1 AND amount=15;") == 1L)
+shiny::testServer(app$server, {
+  rv$authed <- TRUE; rv$user_id <- "instructor@example.edu"; rv$name <- "Instructor"
+  rv$is_admin <- TRUE; rv$admin_role <- "super_admin"
+  rv$active_course <- "ECON 342"; rv$active_section <- "01"; rv$active_sections <- "01"
+  session$setInputs(arc_tabs="Settings", config_action="gradebook")
+  stopifnot(grepl("gradebook_student_summary", output$config_panel$html, fixed=TRUE))
+  summary_html <- output$gradebook_student_summary$html
+  stopifnot(grepl("Student A", summary_html, fixed=TRUE),
+            grepl("40.0%", summary_html, fixed=TRUE))
+  stopifnot(app$db_exec(
+    "INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning)
+     VALUES('student@example.edu','Student A','participation',20,1);") == 1L)
+  session$elapse(6000)
+  stopifnot(grepl("100.0%", output$gradebook_student_summary$html, fixed=TRUE))
+  grade <- app$compute_student_grade("student@example.edu")
+  stopifnot(grade$items$score[1] == 30, grade$items$grade_pct[1] == 100,
+            grade$cats$contribution[1] == 15)
+})
+
+cat("critical Account accordion: PASS
+")
