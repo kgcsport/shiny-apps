@@ -23,6 +23,8 @@ required_contract <- c(
   "submit_insurance_purchase",
   "cold_call_pass_btn",
   "slide_cold_call_pass_btn",
+  "cold_call_recession_btn",
+  "slide_cold_call_recession_btn",
   "issue_insurance_claim",
   "insurance_dividend",
   "suggested_next_premium"
@@ -109,6 +111,7 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     c("s1@test.edu", "Student 1", 0L, "01"),
     c("s2@test.edu", "Student 2", 0L, "01"),
     c("s3@test.edu", "Student 3", 0L, "01"),
+    c("s4@test.edu", "Student 4", 0L, "01"),
     c("outsider@test.edu", "Other Section", 0L, "02")
   )
   for (person in people) {
@@ -119,7 +122,7 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     app$db_exec("INSERT OR IGNORE INTO user_environments(user_id,course,section) VALUES(?,?,?);",
                 list(person[1], "ECON 342", person[4]))
   }
-  for (uid in c("s1@test.edu", "s2@test.edu", "s3@test.edu", "outsider@test.edu")) {
+  for (uid in c("s1@test.edu", "s2@test.edu", "s3@test.edu", "s4@test.edu", "outsider@test.edu")) {
     app$db_exec(
       "INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning,note)
        SELECT user_id,display_name,'test_seed',10,1,'classroom resilience fixture'
@@ -174,7 +177,7 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     if (any(app$db_query("SELECT user_id FROM insurance_purchases;")$user_id == uid))
       stopifnot(grepl("Passes on hand for this class period: 1", output$spend_form$html, fixed = TRUE))
   })
-  buy_policy("s3@test.edu", "Student 3", offer_id = farther_offer)
+  buy_policy("s4@test.edu", "Student 4", offer_id = farther_offer)
   stopifnot(nrow(app$db_query("SELECT id FROM insurance_purchases;")) == 0L,
             nrow(app$db_query("SELECT id FROM token_ledger WHERE source_type='insurance_premium';")) == 0L)
   buy_policy("s1@test.edu", "Student 1")
@@ -190,10 +193,11 @@ if (requireNamespace("shiny", quietly = TRUE)) {
             nrow(app$db_query("SELECT id FROM token_ledger WHERE source_type='insurance_premium';")) == 1L)
   DBI::dbExecute(app$get_con(), "DROP TRIGGER reject_insurance_debit;")
   buy_policy("s2@test.edu", "Student 2")
+  buy_policy("s3@test.edu", "Student 3")
   purchases <- app$db_query("SELECT * FROM insurance_purchases ORDER BY user_id;")
   premium_ledger <- app$db_query("SELECT * FROM token_ledger WHERE source_type='insurance_premium';")
-  stopifnot(nrow(purchases) == 2L, nrow(premium_ledger) == 2L,
-            sum(premium_ledger$amount) == -6, all(premium_ledger$earning == 0L),
+  stopifnot(nrow(purchases) == 3L, nrow(premium_ledger) == 3L,
+            sum(premium_ledger$amount) == -9, all(premium_ledger$earning == 0L),
             all(purchases$ledger_id == premium_ledger$id[match(purchases$id, premium_ledger$source_id)]))
 
   # Once anyone buys, a later admin retry cannot rewrite their contract.
@@ -225,12 +229,28 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     stopifnot(identical(as.numeric(first_payout$amount), 2))
     rv$cold_call_draw <- list(user_id = "s1@test.edu", display_name = "Student 1", section = "01")
     session$setInputs(cold_call_pass_btn = 3); session$flushReact()
+    rv$cold_call_draw <- list(user_id = "s1@test.edu", display_name = "Student 1", section = "01")
+    session$setInputs(cold_call_recession_btn = 1L)
+    stopifnot(nrow(app$db_query("SELECT id FROM insurance_claims;")) == 1L)
+    rv$cold_call_draw <- list(user_id = "s3@test.edu", display_name = "Student 3", section = "01")
+    session$setInputs(cold_call_recession_btn = 2L)
+    stopifnot(is.list(rv$cold_call_draw), rv$cold_call_draw$user_id != "s3@test.edu")
+    rv$cold_call_draw <- list(user_id = "s4@test.edu", display_name = "Student 4", section = "01")
+    session$setInputs(slide_cold_call_recession_btn = 1L)
+    stopifnot(is.list(rv$cold_call_draw), rv$cold_call_draw$user_id != "s4@test.edu")
   })
   claims <- app$db_query("SELECT * FROM insurance_claims;")
   pass_events <- app$db_query("SELECT * FROM live_score_events WHERE event_kind='cold_call' AND outcome='pass';")
   claim_ledger <- app$db_query("SELECT * FROM token_ledger WHERE source_type='insurance_claim';")
-  stopifnot(nrow(claims) == 1L, nrow(pass_events) == 2L, nrow(claim_ledger) == 1L,
-            claim_ledger$amount[1] == 2, claim_ledger$earning[1] == 0L)
+  firing_events <- app$db_query("SELECT * FROM live_score_events WHERE event_kind='cold_call' AND outcome='recession_firing';")
+  stopifnot(nrow(claims) == 2L, nrow(pass_events) == 2L, nrow(claim_ledger) == 2L,
+            all(claim_ledger$amount == 2), all(claim_ledger$earning == 0L),
+            nrow(firing_events) == 3L, all(firing_events$tokens == 0),
+            all(firing_events$tokens_credited == 1L),
+            identical(claims$pass_event_id[claims$user_id == "s3@test.edu"],
+                      firing_events$id[firing_events$user_id == "s3@test.edu"]),
+            grepl("recession firing", claim_ledger$note[claim_ledger$user_id == "s3@test.edu"], fixed = TRUE),
+            !"s4@test.edu" %in% claim_ledger$user_id)
 
   # Closing sales rejects a new purchase.
   shiny::testServer(app$server, {
@@ -238,8 +258,8 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     session$setInputs(close_insurance_sales_btn = 1)
     session$flushReact()
   })
-  buy_policy("s3@test.edu", "Student 3")
-  stopifnot(nrow(app$db_query("SELECT * FROM insurance_purchases;")) == 2L)
+  buy_policy("s4@test.edu", "Student 4")
+  stopifnot(nrow(app$db_query("SELECT * FROM insurance_purchases;")) == 3L)
 
   # An unused purchase remains on hand after sales close for its period.
   shiny::testServer(app$server, {
@@ -259,7 +279,7 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     later_pass <- app$db_query("SELECT tokens FROM live_score_events WHERE round_id=? AND outcome='pass';",
                                 list(next_round))
     stopifnot(nrow(later_pass) == 1L, later_pass$tokens[1] == 0,
-              nrow(app$db_query("SELECT id FROM insurance_claims;")) == 1L)
+              nrow(app$db_query("SELECT id FROM insurance_claims;")) == 2L)
   })
   shiny::testServer(app$server, {
     set_student(rv, "s2@test.edu", "Student 2")
@@ -286,18 +306,18 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     session$setInputs(settle_insurance_market_btn = 3L)
     rv$cold_call_draw <- list(user_id = "s2@test.edu", display_name = "Student 2", section = "01")
     session$setInputs(cold_call_pass_btn = 1L)
-    stopifnot(nrow(app$db_query("SELECT id FROM insurance_claims;")) == 1L)
+    stopifnot(nrow(app$db_query("SELECT id FROM insurance_claims;")) == 2L)
   })
   settled <- app$db_query("SELECT * FROM insurance_products WHERE id=?;", list(product_id))
   dividends <- app$db_query("SELECT * FROM insurance_dividends WHERE product_id=? ORDER BY user_id;", list(product_id))
   dividend_ledger <- app$db_query("SELECT * FROM token_ledger WHERE source_type='insurance_dividend';")
-  stopifnot(settled$status[1] == "settled", settled$policies_sold[1] == 2L,
-            settled$claims_paid_count[1] == 1L, settled$realized_profit[1] == 4,
+  stopifnot(settled$status[1] == "settled", settled$policies_sold[1] == 3L,
+            settled$claims_paid_count[1] == 2L, settled$realized_profit[1] == 5,
             settled$claim_reserve[1] == 0, abs(settled$net_profit[1]) < 1e-8,
-            settled$dividend_recipients[1] == 3L, nrow(dividends) == 3L,
-            nrow(dividend_ledger) == 3L, !"outsider@test.edu" %in% dividends$user_id,
+            settled$dividend_recipients[1] == 4L, nrow(dividends) == 4L,
+            nrow(dividend_ledger) == 4L, !"outsider@test.edu" %in% dividends$user_id,
             all(dividend_ledger$earning == 0L),
-            abs(sum(dividend_ledger$amount) - 4) < 1e-8)
+            abs(sum(dividend_ledger$amount) - 5) < 1e-8)
   shiny::testServer(app$server, {
     set_student(rv, "s2@test.edu", "Student 2")
     session$setInputs(open_insurance = 1L)
@@ -310,8 +330,8 @@ if (requireNamespace("shiny", quietly = TRUE)) {
 
   # Settlement makes the next scheduled class eligible. A farther open offer
   # cannot be purchased even when the intervening class has no offer yet.
-  buy_policy("s3@test.edu", "Student 3", offer_id = farther_offer)
-  stopifnot(nrow(app$db_query("SELECT id FROM insurance_purchases;")) == 2L)
+  buy_policy("s4@test.edu", "Student 4", offer_id = farther_offer)
+  stopifnot(nrow(app$db_query("SELECT id FROM insurance_purchases;")) == 3L)
   shiny::testServer(app$server, {
     set_admin(rv)
     session$setInputs(active_round_select = next_round)

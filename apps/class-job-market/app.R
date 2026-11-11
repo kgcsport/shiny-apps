@@ -4860,7 +4860,7 @@ server <- function(input, output, session) {
     insurance_passes_on_hand(offer$round_id[1], rv$user_id)
   })
 
-  issue_insurance_claim <- function(connection, round_id, uid, dname, pass_event_id) {
+  issue_insurance_claim <- function(connection, round_id, uid, dname, pass_event_id, event_label) {
     passes <- insurance_passes_on_hand(round_id, uid, function(sql, params) {
       DBI::dbGetQuery(connection, sql, params = params)
     })
@@ -4875,8 +4875,8 @@ server <- function(input, output, session) {
     claim_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
     credited <- DBI::dbExecute(connection,
       "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
-       VALUES(?,?,'insurance_claim',?,?,0,'Pass Insurance payout');",
-      params = list(uid, dname, claim_id, benefit))
+       VALUES(?,?,'insurance_claim',?,?,0,?);",
+      params = list(uid, dname, claim_id, benefit, paste("Pass Insurance payout after", event_label)))
     if (credited != 1L) stop("Could not pay the insurance claim.")
     ledger_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
     linked <- DBI::dbExecute(connection, "UPDATE insurance_claims SET ledger_id=? WHERE id=?;",
@@ -5923,13 +5923,13 @@ server <- function(input, output, session) {
       div(class="spend-form-box",
         tags$h6(style="color:#951829;font-weight:700;", "🛡️ Pass Insurance"),
         if (nrow(passes)) div(class="alert alert-success",
-          sprintf("Passes on hand for this class period: %d. Your next live pass pays %s tokens.",
+          sprintf("Passes on hand for this class period: %d. A live pass or recession firing pays %s tokens once.",
                   nrow(passes), fmt_token_amount(passes$benefit[1]))),
         if (nrow(market$period) && identical(market$period$status[1], "settled"))
           tags$p("The selected class period is settled. Coverage has ended."),
         if (nrow(product)) tags$p(tags$strong(paste("Next class for purchases", product$class_date[1]))),
         if (offered) tags$p(style="font-size:.88rem;color:#555;",
-          sprintf("Pay %s token%s now. Your first live pass in this class period pays %s token%s.",
+          sprintf("Pay %s token%s now. A live pass or recession firing in this class period pays %s token%s once.",
             fmt_token_amount(product$premium[1]), if (isTRUE(as.numeric(product$premium[1]) == 1)) "" else "s",
             fmt_token_amount(product$benefit[1]), if (isTRUE(as.numeric(product$benefit[1]) == 1)) "" else "s")),
         tags$p(style="font-size:.82rem;color:#666;", if (insurance_purchase_is_open(product)) "You can buy during class until the instructor closes sales or settles the market. ",
@@ -8810,7 +8810,8 @@ server <- function(input, output, session) {
   observeEvent(input$cold_call_absent_btn, mark_cold_call_absent(), ignoreNULL = TRUE)
   observeEvent(input$slide_cold_call_absent_btn, mark_cold_call_absent(), ignoreNULL = TRUE)
 
-  pass_cold_call <- function() {
+  pass_cold_call <- function(outcome = "pass") {
+    event_label <- if (outcome == "recession_firing") "recession firing" else "pass"
     req(rv$is_admin, !rv$impersonating)
     drawn <- rv$cold_call_draw
     if (!is.list(drawn) || !nzchar(drawn$user_id %||% "")) {
@@ -8827,22 +8828,22 @@ server <- function(input, output, session) {
       DBI::dbWithTransaction(connection, {
         recorded <- DBI::dbExecute(connection,
           "INSERT INTO live_score_events(round_id,user_id,event_kind,outcome,tokens,logged_by,committed_at,tokens_credited)
-           VALUES(?,?,'cold_call','pass',0,?,datetime('now'),1);",
-          params = list(rid, uid, rv$user_id %||% "admin"))
-        if (recorded != 1L) stop("Could not record the live pass.")
+           VALUES(?,?,'cold_call',?,0,?,datetime('now'),1);",
+          params = list(rid, uid, outcome, rv$user_id %||% "admin"))
+        if (recorded != 1L) stop(paste("Could not record the", event_label))
         pass_event_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
-        issue_insurance_claim(connection, rid, uid, dname, pass_event_id)
+        issue_insurance_claim(connection, rid, uid, dname, pass_event_id, event_label)
       })
     }, error = function(e) {
-      message("Live pass failed: ", conditionMessage(e))
-      showNotification("Could not record the pass. Please try again.", type = "error")
+      message("Cold-call ", event_label, " failed: ", conditionMessage(e))
+      showNotification(sprintf("Could not record the %s. Please try again.", event_label), type = "error")
       NULL
     })
     if (is.null(claim)) return()
     if (isTRUE(claim$paid)) rv$insurance_ver <- rv$insurance_ver + 1L
     rv$cold_call_last <- list(
       display_name = dname,
-      kind = "pass",
+      kind = outcome,
       tokens = if (isTRUE(claim$paid)) claim$benefit else 0,
       insured = isTRUE(claim$paid),
       recorded_at = format(Sys.time(), "%I:%M %p")
@@ -8850,17 +8851,20 @@ server <- function(input, output, session) {
     rv$cold_call_draw <- NULL
     draw_cold_call(exclude_uid = uid)
     if (isTRUE(claim$paid)) {
-      showNotification(sprintf("Recorded %s's pass and paid %s insurance token%s.",
-                               dname, fmt_token_amount(claim$benefit),
+      showNotification(sprintf("Recorded %s's %s and paid %s insurance token%s.",
+                               dname, event_label, fmt_token_amount(claim$benefit),
                                if (isTRUE(as.numeric(claim$benefit) == 1)) "" else "s"),
                        type = "message")
     } else {
-      showNotification(sprintf("Recorded %s's uninsured pass and redrew.", dname),
+      showNotification(sprintf("Recorded %s's uninsured %s and redrew.", dname, event_label),
                        type = "message")
     }
   }
   observeEvent(input$cold_call_pass_btn, pass_cold_call(), ignoreNULL = TRUE)
   observeEvent(input$slide_cold_call_pass_btn, pass_cold_call(), ignoreNULL = TRUE)
+
+  observeEvent(input$cold_call_recession_btn, pass_cold_call("recession_firing"), ignoreNULL = TRUE)
+  observeEvent(input$slide_cold_call_recession_btn, pass_cold_call("recession_firing"), ignoreNULL = TRUE)
 
   cold_call_wage <- function(round_id, kind = "answer") {
     post <- tryCatch(db_query(
@@ -8932,7 +8936,8 @@ server <- function(input, output, session) {
     drawn_name <- if (is.list(drawn)) drawn$display_name %||% drawn_uid else ""
     last <- rv$cold_call_last
     last_text <- if (is.list(last)) {
-      kind_label <- if (identical(last$kind, "board")) "board" else if (identical(last$kind, "pass")) "pass" else "answer"
+      kind_label <- switch(last$kind %||% "", board = "board", pass = "pass",
+                           recession_firing = "recession firing", "answer")
       sprintf("Last recorded: %s (%s, %s token%s)",
               last$display_name %||% "",
               kind_label,
@@ -8966,6 +8971,7 @@ server <- function(input, output, session) {
           actionButton("slide_record_cold_call_answer_btn", "Answer", class = "btn btn-sm btn-success"),
           actionButton("slide_record_cold_call_board_btn", "Board", class = "btn btn-sm btn-success"),
           actionButton("slide_cold_call_pass_btn", "Pass & Redraw", class = "btn btn-sm btn-warning"),
+          actionButton("slide_cold_call_recession_btn", "Recession — Fire & Redraw", class = "btn btn-sm btn-danger"),
           actionButton("slide_cold_call_absent_btn", "Absent & Redraw", class = "btn btn-sm btn-warning"),
           actionButton("slide_clear_cold_call_draw_btn", "Clear", class = "btn btn-sm btn-outline-secondary")
         )
@@ -9958,6 +9964,8 @@ server <- function(input, output, session) {
                              class = "btn btn-sm btn-outline-success"),
                 actionButton("cold_call_pass_btn", "Pass & Redraw",
                              class = "btn btn-sm btn-outline-warning"),
+                actionButton("cold_call_recession_btn", "Recession — Fire & Redraw",
+                             class = "btn btn-sm btn-outline-danger"),
                 actionButton("cold_call_absent_btn", "Absent & Redraw",
                              class = "btn btn-sm btn-outline-warning"),
                 actionButton("clear_cold_call_draw_btn", "Clear",
@@ -10783,7 +10791,7 @@ server <- function(input, output, session) {
       wrap_spending(tagList(
         tags$h5("Pass Insurance Market"),
         tags$p(style="color:#555;font-size:.88rem;",
-          "Students can buy one pass for the next scheduled class, including during that class. Closing sales leaves existing coverage active for that period. Settlement ends coverage and pays equal dividends from any positive profit. Insurance cash flows do not count as participation earnings."),
+          "Students can buy one pass for the next scheduled class, including during that class. Coverage pays once for a live pass or recession firing. Closing sales leaves existing coverage active for that period. Settlement ends coverage and pays equal dividends from any positive profit. Insurance cash flows do not count as participation earnings."),
         if (!nrow(round)) div(class="alert alert-warning", "Choose a class date under Job Market Controls first.") else tagList(
           tags$p(tags$strong("Selected class: "), round$label[1] %||% "", " · ", round$class_date[1] %||% ""),
           fluidRow(

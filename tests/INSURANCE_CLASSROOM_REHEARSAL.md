@@ -39,10 +39,13 @@ and token-ledger reconciliation.
 4. Draw Student A and choose **Pass & Redraw**. Expected: a 2-token insurance
    payment and a new cold-call draw. Force/draw Student A again and pass again.
    Expected: the second pass is recorded but the policy does not pay twice.
-5. Settle, then click settle again. Expected: one dividend per active in-scope
+5. Draw insured Student B and choose **Recession — Fire & Redraw**. Expected:
+   a 2-token insurance payment, a persisted zero-token recession firing, and an
+   immediate redraw that does not select Student B.
+6. Settle, then click settle again. Expected: one dividend per active in-scope
    student, including Student C if profit is positive; no other-section payment;
    no duplicate dividend; all premium, claim, and dividend rows are non-earning.
-6. Refresh the instructor and student browsers. Expected: settlement, balances,
+7. Refresh the instructor and student browsers. Expected: settlement, balances,
    and audit history survive the new sessions.
 
 ## Risk & Insurance
