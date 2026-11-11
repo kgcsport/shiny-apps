@@ -68,8 +68,10 @@ shiny::testServer(app$server, {
   stopifnot(abs(alice_grade$overall - 83.5) < 1e-8)
   stopifnot(all.equal(alice_grade$cats$weight, c(45,55), tolerance=1e-8) == TRUE)
 
+  gradebook_ver_before_item_save <- rv$gradebook_ver
   session$setInputs(rename_gb_item_btn=list(cat_id=102,idx=2,name="Final Policy Brief",weight="30"))
   session$flushReact()
+  stopifnot(identical(rv$gradebook_ver, gradebook_ver_before_item_save))
   saved_item <- app$db_query("SELECT item_name,item_weight FROM gradebook_item_names WHERE category_id=102 AND item_index=2;")
   stopifnot(identical(saved_item$item_name[1], "Final Policy Brief"))
   stopifnot(abs(saved_item$item_weight[1] - 30) < 1e-8)

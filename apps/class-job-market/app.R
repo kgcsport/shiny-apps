@@ -14704,7 +14704,8 @@ server <- function(input, output, session) {
       db_exec("UPDATE grade_reweight_requests SET to_category=? WHERE COALESCE(level,'category')='assignment' AND LOWER(to_category)=LOWER(?);",
               list(nm, old_name))
     }
-    rv$gradebook_ver <- rv$gradebook_ver + 1L
+    # Keep the open category and all sibling inputs in place for rapid subitem editing.
+    # Other gradebook views reload from SQLite when revisited.
     showNotification("Item settings saved.", type = "message")
   }, ignoreNULL = TRUE)
 
