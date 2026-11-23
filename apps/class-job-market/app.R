@@ -9377,7 +9377,32 @@ server <- function(input, output, session) {
       list(old$user_id[1],old$round_id[1],old$job_post_id[1])),
       error=function(e)data.frame())
     candidates <- scope_filter_rows(candidates)
+    # Random-wage dates: a replacement must also have bid at or below the drawn
+    # wage. With no such student the absence is recorded and the slot stays empty.
+    redraw_rule <- tryCatch(db_query("SELECT wage_pricing_rule, assignment_mode FROM weekly_rounds WHERE id=?;",
+                                     list(old$round_id[1])), error = function(e) data.frame())
+    random_wage_date <- nrow(redraw_rule) > 0 &&
+      identical(as.character(redraw_rule$assignment_mode[1] %||% ""), "wage_bidding") &&
+      identical(normalize_wage_pricing_rule(redraw_rule$wage_pricing_rule[1] %||% "pay_as_bid"), "random_wage")
+    if (random_wage_date && nrow(candidates)) {
+      eligible <- tryCatch(db_query(
+        "SELECT user_id FROM job_wage_bids WHERE round_id=? AND job_post_id=? AND min_wage <= ?;",
+        list(old$round_id[1], old$job_post_id[1], abs(as.numeric(old$assigned_wage[1] %||% 0)) + 1e-9))$user_id,
+        error = function(e) character(0))
+      candidates <- candidates[norm_key(candidates$user_id) %in% norm_key(eligible), , drop = FALSE]
+    }
     if(nrow(candidates)) candidates <- candidates[sample(nrow(candidates)),,drop=FALSE]
+    if (!nrow(candidates) && random_wage_date) {
+      db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;", list(aid))
+      db_exec("UPDATE job_assignments SET status='absent_redrawn', assigned_wage=-ABS(COALESCE(assigned_wage,0)),
+               updated_at=datetime('now') WHERE id=?;", list(aid))
+      db_exec("INSERT OR REPLACE INTO round_absences(round_id,user_id,marked_at) VALUES(?,?,CURRENT_TIMESTAMP);",
+              list(old$round_id[1], old$user_id[1]))
+      rv$jobs_ver <- rv$jobs_ver + 1L
+      showNotification(sprintf("Marked %s absent. No other student bid at or below the drawn wage, so the slot stays empty.",
+                               old$display_name[1] %||% old$user_id[1]), type = "warning")
+      return()
+    }
     if (!nrow(candidates)) {
       showNotification("No replacement student without this job was found.", type = "warning")
       return()

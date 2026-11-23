@@ -126,11 +126,36 @@ app$db_exec("UPDATE job_wage_bids SET min_wage=5000 WHERE round_id=?;", list(d$r
 run_draw()
 stopifnot(nrow(assignments(d$rid)) == 0L, snapshot(d)$wage[1] <= 4)
 
+# Absent redraw on a random-wage date: the replacement must be eligible and is
+# paid the same drawn wage; with nobody eligible the slot stays empty.
+repeat {
+  d <- new_date(21 + nrow(app$db_query("SELECT id FROM weekly_rounds;")), "random_wage", slots = 1L)
+  run_draw()
+  if (nrow(assignments(d$rid)) == 1L && snapshot(d)$wage[1] >= 2) break
+}
+wage <- snapshot(d)$wage[1]
+eligible <- students[seq_along(bid_values)][bid_values <= wage]
+first <- app$db_query("SELECT id,user_id FROM job_assignments WHERE round_id=?;", list(d$rid))
+shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_absent_btn = first$id[1]) })
+after <- app$db_query("SELECT user_id,status,assigned_wage FROM job_assignments WHERE round_id=? ORDER BY id;", list(d$rid))
+stopifnot(nrow(after) == 2L, identical(after$status[1], "absent_redrawn"), after$assigned_wage[1] == -wage,
+          after$user_id[2] %in% setdiff(eligible, first$user_id[1]), after$assigned_wage[2] == wage)
+# Make everyone else ineligible, then mark the replacement absent too.
+app$db_exec("UPDATE job_wage_bids SET min_wage=5000 WHERE round_id=?;", list(d$rid))
+second <- app$db_query("SELECT id FROM job_assignments WHERE round_id=? AND status='assigned';", list(d$rid))$id[1]
+shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_absent_btn = second) })
+final <- app$db_query("SELECT status FROM job_assignments WHERE round_id=?;", list(d$rid))
+stopifnot(nrow(final) == 2L, all(final$status == "absent_redrawn"),
+          nrow(app$db_query("SELECT user_id FROM round_absences WHERE round_id=?;", list(d$rid))) == 2L)
+
 # The existing pay-as-bid draw is unchanged: lowest bidders win and receive
 # their own bid, and an empty slot is still filled from the remaining students.
 d <- new_date(30, "pay_as_bid")
 run_draw()
 got <- assignments(d$rid)
 stopifnot(identical(got$user_id, students[1:2]), identical(got$assigned_wage, c(1, 2)))
+first <- app$db_query("SELECT id FROM job_assignments WHERE round_id=? AND user_id=?;", list(d$rid, students[1]))$id[1]
+shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_absent_btn = first) })
+stopifnot(nrow(app$db_query("SELECT id FROM job_assignments WHERE round_id=? AND status='assigned';", list(d$rid))) == 2L)
 
 cat("critical random wage draw: PASS\n")
