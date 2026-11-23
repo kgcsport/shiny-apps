@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Class Jobs</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --ink: #1d1c1a; --muted: #6a675f; --line: #e2dfd8;
+    --accent: #951829; --accent-ink: #ffffff; --ok: #1f6f43; --warn: #8a5a00; --warn-bg: #fff4d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17161a; --card: #211f25; --ink: #f0eee9; --muted: #a9a59c; --line: #35323b;
+      --accent: #e0667a; --accent-ink: #17161a; --ok: #7fd3a4; --warn: #f1c96b; --warn-bg: #3a3118;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 34rem; margin: 0 auto; padding: 1rem 1rem 6rem; }
+  h1 { font-size: 1.25rem; margin: .25rem 0 .1rem; }
+  h2 { font-size: .8rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 1.4rem 0 .5rem; }
+  .sub { color: var(--muted); font-size: .9rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: .9rem 1rem; }
+  .wallet { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+  .tile .num { font-size: 1.7rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .tile .lab { color: var(--muted); font-size: .82rem; }
+  .status { border-radius: 10px; padding: .6rem .8rem; font-size: .92rem; margin-bottom: .6rem;
+            border: 1px solid var(--line); background: var(--card); }
+  .status.open { border-color: var(--ok); color: var(--ok); }
+  .status.closed { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+  .job { display: grid; grid-template-columns: 1fr 6.5rem; gap: .75rem; align-items: center;
+         padding: .7rem 0; border-top: 1px solid var(--line); }
+  .job:first-child { border-top: 0; }
+  .job .name { font-weight: 600; }
+  .job .meta { color: var(--muted); font-size: .82rem; }
+  input { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+          border-radius: 8px; padding: .55rem .6rem; width: 100%; }
+  input[type=number] { text-align: right; font-variant-numeric: tabular-nums; }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input:disabled { opacity: .6; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin: .7rem 0 .25rem; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 10px; padding: .7rem 1rem;
+           background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  button.quiet { background: transparent; color: var(--muted); padding: .3rem .5rem; font-weight: 500; }
+  button:disabled { opacity: .5; cursor: default; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line);
+         padding: .7rem 1rem calc(.7rem + env(safe-area-inset-bottom)); }
+  .bar .inner { max-width: 34rem; margin: 0 auto; display: flex; gap: .75rem; align-items: center; }
+  .bar .msg { flex: 1; font-size: .88rem; color: var(--muted); }
+  .head { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
+  .error { color: var(--accent); font-size: .9rem; min-height: 1.3rem; margin-top: .5rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section id="login" hidden>
+    <h1>Class Jobs</h1>
+    <p class="sub">Sign in to see your points and enter your bids.</p>
+    <form id="login-form" class="card" autocomplete="on">
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <div class="error" id="login-error" role="alert"></div>
+      <button type="submit" id="login-btn">Sign in</button>
+    </form>
+  </section>
+
+  <section id="app" hidden>
+    <div class="head">
+      <div>
+        <h1 id="who"></h1>
+        <div class="sub" id="where"></div>
+      </div>
+      <button class="quiet" id="logout" type="button">Sign out</button>
+    </div>
+
+    <h2>Your points</h2>
+    <div class="wallet">
+      <div class="card tile"><div class="num" id="earned">–</div><div class="lab">Earned, counts toward participation</div></div>
+      <div class="card tile"><div class="num" id="on-hand">–</div><div class="lab">On hand to spend</div></div>
+    </div>
+
+    <h2 id="bids-title">Your bids</h2>
+    <div class="status" id="status" role="status"></div>
+    <p class="sub" id="bid-help" hidden>Enter the fewest points you would accept to do each job. Leave a job blank to place no bid on it.</p>
+    <form id="bids-form" class="card" hidden></form>
+  </section>
+</main>
+
+<div class="bar" id="bar" hidden>
+  <div class="inner">
+    <div class="msg" id="save-msg" role="status"></div>
+    <button type="submit" form="bids-form" id="save">Save bids</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var etag = null, dirty = false, timer = null, current = null;
+
+  function api(method, path, body, extraHeaders) {
+    var headers = { 'X-Requested-With': 'student-lite' };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    for (var key in (extraHeaders || {})) headers[key] = extraHeaders[key];
+    return fetch(path, { method: method, headers: headers, credentials: 'same-origin',
+                         body: body === undefined ? undefined : JSON.stringify(body) });
+  }
+  function points(x) {
+    var n = Number(x);
+    return isFinite(n) ? (Math.round(n * 100) / 100).toString() : '–';
+  }
+  function show(view) {
+    $('login').hidden = view !== 'login';
+    $('app').hidden = view !== 'app';
+    $('bar').hidden = view !== 'app' || !current || !current.bidding.open || !current.jobs.length;
+  }
+
+  function render(state) {
+    current = state;
+    $('who').textContent = state.student.name || '';
+    $('where').textContent = [state.student.course, state.student.section].filter(Boolean).join(' · ');
+    $('earned').textContent = points(state.wallet.earned);
+    $('on-hand').textContent = points(state.wallet.on_hand);
+    $('bids-title').textContent = state.round
+      ? 'Your bids · ' + (state.round.label || state.round.class_date) : 'Your bids';
+    var status = $('status');
+    status.textContent = state.bidding.message;
+    status.className = 'status ' + (state.bidding.open ? 'open' : 'closed');
+
+    var form = $('bids-form');
+    // Never rebuild the form over numbers the student is still typing.
+    if (!dirty) {
+      form.textContent = '';
+      state.jobs.forEach(function (job) {
+        var row = document.createElement('div'); row.className = 'job';
+        var text = document.createElement('div');
+        var name = document.createElement('div'); name.className = 'name'; name.textContent = job.job_name;
+        var meta = document.createElement('div'); meta.className = 'meta';
+        meta.textContent = [job.category, job.timing !== 'any' ? job.timing : '', job.description].filter(Boolean).join(' · ');
+        text.appendChild(name); text.appendChild(meta);
+        var input = document.createElement('input');
+        input.type = 'number'; input.min = '0'; input.step = '0.5'; input.inputMode = 'decimal';
+        input.name = String(job.job_post_id);
+        input.setAttribute('aria-label', 'Minimum points for ' + job.job_name);
+        if (job.my_bid !== null && job.my_bid !== undefined) input.value = points(job.my_bid);
+        else if (job.posted_wage !== null && job.posted_wage !== undefined) input.value = points(job.posted_wage);
+        input.disabled = !state.bidding.open;
+        row.appendChild(text); row.appendChild(input); form.appendChild(row);
+      });
+    }
+    form.hidden = !state.jobs.length;
+    $('bid-help').hidden = !state.jobs.length || !state.bidding.open;
+    show('app');
+  }
+
+  function refresh() {
+    return api('GET', '/api/state', undefined, etag ? { 'If-None-Match': etag } : {}).then(function (res) {
+      if (res.status === 304) return;
+      if (res.status === 401) { etag = null; current = null; show('login'); return; }
+      if (!res.ok) throw new Error('state ' + res.status);
+      etag = res.headers.get('ETag');
+      return res.json().then(render);
+    }).catch(function () { $('save-msg').textContent = 'Offline. Retrying…'; });
+  }
+  function schedule() {
+    clearInterval(timer);
+    timer = setInterval(function () { if (!document.hidden && !$('app').hidden) refresh(); }, 10000);
+  }
+
+  $('login-form').addEventListener('submit', function (event) {
+    event.preventDefault();
+    $('login-error').textContent = '';
+    $('login-btn').disabled = true;
+    api('POST', '/api/login', { username: $('username').value, password: $('password').value })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body }; }); })
+      .then(function (out) {
+        if (!out.ok) { $('login-error').textContent = out.body.error || 'Could not sign in.'; return; }
+        $('password').value = '';
+        return refresh();
+      })
+      .catch(function () { $('login-error').textContent = 'Could not reach the server.'; })
+      .then(function () { $('login-btn').disabled = false; });
+  });
+  $('logout').addEventListener('click', function () {
+    api('POST', '/api/logout', {}).then(function () { etag = null; current = null; dirty = false; show('login'); });
+  });
+  $('bids-form').addEventListener('input', function () { dirty = true; $('save-msg').textContent = 'Unsaved changes'; });
+  $('bids-form').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var bids = {};
+    Array.prototype.forEach.call($('bids-form').querySelectorAll('input'), function (input) {
+      bids[input.name] = input.value === '' ? null : Number(input.value);
+    });
+    $('save').disabled = true; $('save-msg').textContent = 'Saving…';
+    api('POST', '/api/bids', { bids: bids })
+      .then(function (res) { return res.json(); })
+      .then(function (body) {
+        dirty = false; etag = null;
+        if (body.state) render(body.state);
+        $('save-msg').textContent = body.message || body.error || '';
+      })
+      .catch(function () { $('save-msg').textContent = 'Could not save. Check your connection and try again.'; })
+      .then(function () { $('save').disabled = false; });
+  });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && !$('app').hidden) refresh(); });
+
+  refresh().then(function () { if ($('app').hidden) show('login'); schedule(); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+# Untested sketch: run the Student Lite demo beside the staging stack.
+#   docker compose -f docker-compose.staging.yml -f docker-compose.student-lite.yml up
+# It shares the staging database volume and is bound to localhost only.
+services:
+  student-lite:
+    image: ${SHINY_IMAGE:-ghcr.io/kgcsport/shiny-apps:latest}
+    restart: "no"
+    command: ["Rscript", "/srv/student-lite/server.R"]
+    ports:
+      - "127.0.0.1:${LITE_PORT:-8090}:8090"
+    volumes:
+      - ./student-lite:/srv/student-lite:ro
+      - ./staging-appdata:/srv/shiny-server/appdata
+    environment:
+      CONNECT_CONTENT_DIR: /srv/shiny-server/appdata
+      LITE_DIR: /srv/student-lite
+      LITE_HUB_APP: /srv/shiny-server/class-job-market/app.R
+      LITE_PORT: "8090"
