@@ -145,6 +145,44 @@ policy_rubric_score <- function(component, scores, adjustment = 0) {
        final_score = max(0, base + adjustment), max_score = sum(max_points))
 }
 
+policy_submission_context_ui <- function(topic_row=data.frame(), progress_row=data.frame()) {
+  value_or <- function(row, field, fallback="—") {
+    if (!nrow(row) || !field %in% names(row)) return(fallback)
+    value <- trimws(as.character(row[[field]][1] %||% ""))
+    if (length(value) && !is.na(value[1]) && nzchar(value[1])) value[1] else fallback
+  }
+  progress_fields <- c(
+    feedback="1. Most consequential feedback",
+    why_matters="Why that feedback matters",
+    diagnosis="2. What the feedback reveals",
+    revision_plan="3. Planned revisions and needed evidence/work",
+    uncertainty="4. Remaining uncertainty or implementation issue"
+  )
+  progress_status <- value_or(progress_row, "status", "Not saved")
+  progress_stamp <- if (identical(tolower(progress_status), "submitted"))
+    value_or(progress_row, "submitted_at", value_or(progress_row, "updated_at", ""))
+  else value_or(progress_row, "updated_at", "")
+  div(class="policy-rubric-card",
+    tags$h5("Student submission"),
+    tags$h6(style="font-weight:700;margin-top:.65rem;", "Proposed topic"),
+    tags$p(value_or(topic_row, "policy_topic", "No topic submitted yet.")),
+    tags$h6(style="font-weight:700;margin-top:.65rem;", "Proposed guiding question"),
+    tags$p(value_or(topic_row, "policy_question", "No guiding question submitted yet.")),
+    tags$hr(style="margin:.8rem 0;"),
+    tags$h6(style="font-weight:700;", "Progress report / revision memo"),
+    tags$p(style="color:#666;font-size:.82rem;",
+      paste0("Status: ", tools::toTitleCase(progress_status),
+             if (nzchar(progress_stamp)) paste0(" · ", progress_stamp) else "")),
+    if (!nrow(progress_row))
+      tags$p(style="color:#777;", "No progress report has been saved yet.")
+    else
+      tagList(lapply(names(progress_fields), function(field) tagList(
+        tags$h6(style="font-weight:700;margin-top:.65rem;", unname(progress_fields[[field]])),
+        tags$p(value_or(progress_row, field, "No response provided."))
+      )))
+  )
+}
+
 # ── Google OAuth config ───────────────────────────────────────────────────────
 GOOGLE_CLIENT_ID     <- Sys.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET <- Sys.getenv("GOOGLE_CLIENT_SECRET", "")
@@ -7388,8 +7426,15 @@ server <- function(input, output, session) {
         "SELECT policy_team, course_unit, presentation_date, COALESCE(policy_topic,'') AS policy_topic,
                 COALESCE(policy_question,'') AS policy_question, COALESCE(topic_status,'pending') AS topic_status,
                 COALESCE(topic_note,'') AS topic_note
-         FROM policy_group_assignments WHERE policy_team=? ORDER BY user_id LIMIT 1;", list(selected)),
+         FROM policy_group_assignments p
+         JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+         WHERE p.policy_team=? AND LOWER(COALESCE(u.course,''))=LOWER(?)
+         ORDER BY p.user_id LIMIT 1;", list(selected, scoped_course())),
         error=function(e) data.frame())
+      progress_report <- tryCatch(db_query(
+        "SELECT * FROM policy_progress_reports
+         WHERE LOWER(course)=LOWER(?) AND policy_team=? LIMIT 1;",
+        list(scoped_course(), selected)), error=function(e) data.frame())
       team_members <- tryCatch(db_query(
         "SELECT COALESCE(u.display_name,p.user_id) AS display_name
          FROM policy_group_assignments p LEFT JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
@@ -7402,9 +7447,7 @@ server <- function(input, output, session) {
           selectInput("policy_admin_team", "Team to review:", choices=teams, selected=selected),
           tags$p(tags$strong("Unit: "), tr$course_unit, " · ", tags$strong("Presentation: "), fmt_date(tr$presentation_date)),
           if (nrow(team_members)) tags$p(tags$strong("Group: "), paste(team_members$display_name, collapse=", ")),
-          tags$h5("Student-submitted topic and question"),
-          tags$p(if (nzchar(tr$policy_topic %||% "")) tr$policy_topic else "No topic submitted yet."),
-          tags$p(if (nzchar(tr$policy_question %||% "")) tr$policy_question else "No guiding question submitted yet."),
+          policy_submission_context_ui(tr, progress_report),
           selectInput("policy_topic_status", "Topic status:",
                       choices=c("Pending review"="pending", "Approved"="approved", "Needs revision"="needs_revision"),
                       selected=tr$topic_status %||% "pending"),
@@ -12239,6 +12282,20 @@ server <- function(input, output, session) {
         current_scores <- if (nrow(current)) tryCatch(db_query(
           "SELECT * FROM policy_rubric_scores WHERE assessment_id=?;",
           list(current$id[1])), error=function(e)data.frame()) else data.frame()
+        topic_row <- tryCatch(db_query(
+          "SELECT COALESCE(p.policy_topic,'') AS policy_topic,
+                  COALESCE(p.policy_question,'') AS policy_question
+           FROM policy_group_assignments p
+           JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+           WHERE p.policy_team=? AND LOWER(COALESCE(u.course,''))=LOWER(?)
+             AND COALESCE(u.active,1)=1 AND COALESCE(u.is_admin,0)=0
+             AND COALESCE(u.is_demo,0)=0
+           ORDER BY p.user_id LIMIT 1;",
+          list(selected_team, course)), error=function(e)data.frame())
+        progress_report <- tryCatch(db_query(
+          "SELECT * FROM policy_progress_reports
+           WHERE LOWER(course)=LOWER(?) AND policy_team=? LIMIT 1;",
+          list(course, selected_team)), error=function(e)data.frame())
         component <- catalog[[selected_component]]
         criteria <- component$criteria
         gradebook_choices <- c(list("Feedback only" = c("Do not write a gradebook score" = "")),
@@ -12300,6 +12357,7 @@ server <- function(input, output, session) {
             column(4, selectInput("policy_rubric_gradebook_item", "Gradebook item:",
                                   choices=gradebook_choices, selected=current_gradebook))
           ),
+          policy_submission_context_ui(topic_row, progress_report),
           status_ui,
           criterion_cards,
           fluidRow(

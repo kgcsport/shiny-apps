@@ -578,8 +578,20 @@ test_that("policy rubric drafts privately, releases to a team, and writes grades
          VALUES(?,?,0,'ECON 342','A',1,0);",
         list(uid, tools::toTitleCase(sub("rubric-","",uid))))
       app$upsert_policy_group_assignment(
-        uid, "Rubric Team", "2026-10-07", "Business and capital taxation")
+        uid, "Rubric Team", "2026-10-07", "Business and capital taxation",
+        policy_topic="Child tax credits",
+        policy_question="How should the child tax credit balance poverty reduction and work incentives?")
     }
+    app$db_exec(
+      "INSERT INTO policy_progress_reports(
+         course,policy_team,feedback,why_matters,diagnosis,revision_plan,uncertainty,
+         status,submitted_at,updated_by
+       ) VALUES('ECON 342','Rubric Team',?,?,?,?,?,'submitted',CURRENT_TIMESTAMP,'rubric-alice');",
+      list("Clarify the target population.",
+           "Eligibility changes the policy incidence.",
+           "Our evidence does not separate short- and long-run labor supply.",
+           "Add subgroup estimates and compare two phase-out designs.",
+           "Take-up under automatic enrollment remains uncertain."))
     app$db_exec(
       "INSERT INTO gradebook_categories(name,weight,item_count,item_prefix,max_points,source,display_order)
        VALUES('Policy project',100,1,'Policy Presentation',100,'manual',1);")
@@ -594,6 +606,7 @@ test_that("policy rubric drafts privately, releases to a team, and writes grades
       rv$is_admin <- TRUE
       rv$impersonating <- FALSE
       rv$user_id <- "rubric-admin"
+      rv$admin_role <- "super_admin"
       rv$active_course <- "ECON 342"
       rv$active_sections <- "A"
 
@@ -625,8 +638,22 @@ test_that("policy rubric drafts privately, releases to a team, and writes grades
         policy_rubric_next="Strengthen the evidence section."
       )
       session$flushReact()
+      rubric_panel <- as.character(output$config_panel)
+      expect_true(any(grepl("Policy Rubrics", rubric_panel, fixed=TRUE)))
       expect_true(any(grepl(
-        "Policy Rubrics", as.character(output$config_panel), fixed=TRUE)))
+        "How should the child tax credit balance poverty reduction and work incentives?",
+        rubric_panel, fixed=TRUE)))
+      expect_true(any(grepl("Clarify the target population.", rubric_panel, fixed=TRUE)))
+      expect_true(any(grepl("Eligibility changes the policy incidence.", rubric_panel, fixed=TRUE)))
+      expect_true(any(grepl(
+        "Our evidence does not separate short- and long-run labor supply.",
+        rubric_panel, fixed=TRUE)))
+      expect_true(any(grepl(
+        "Add subgroup estimates and compare two phase-out designs.",
+        rubric_panel, fixed=TRUE)))
+      expect_true(any(grepl(
+        "Take-up under automatic enrollment remains uncertain.",
+        rubric_panel, fixed=TRUE)))
 
       session$setInputs(save_policy_rubric_draft_btn=1)
       session$flushReact()
