@@ -48,44 +48,31 @@ lite_json <- function(body, status = 200L, headers = list()) list(
                    "Cache-Control" = "no-store"), headers),
   body = jsonlite::toJSON(body, auto_unbox = TRUE, null = "null", na = "null", digits = NA))
 
-lite_b64url <- function(x) gsub("=+$", "", chartr("+/", "-_", jsonlite::base64_enc(charToRaw(x))))
-lite_unb64url <- function(x) {
-  x <- chartr("-_", "+/", x)
-  pad <- (4L - nchar(x) %% 4L) %% 4L
-  tryCatch(rawToChar(jsonlite::base64_dec(paste0(x, strrep("=", pad)))), error = function(e) "")
-}
-
-lite_new_app <- function(hub, now = Sys.time, session_hours = 12, secure_cookie = FALSE) {
+lite_new_app <- function(hub, secure_cookie = FALSE) {
   q <- hub$db_query
-  secret <- local({
-    value <- hub$get_setting("lite_session_secret", "")
-    if (!nzchar(value %||% "")) {
-      value <- paste(sample(c(letters, LETTERS, 0:9), 64L, replace = TRUE), collapse = "")
-      hub$set_setting("lite_session_secret", value)
-    }
-    value
-  })
-  sign <- function(payload) digest::hmac(secret, payload, algo = "sha256")
-  make_cookie <- function(user_id) {
-    payload <- lite_b64url(paste0(user_id, "\n", as.numeric(now()) + session_hours * 3600))
-    paste0("lite_session=", payload, ".", sign(payload), "; Path=/; HttpOnly; SameSite=Lax",
-           "; Max-Age=", as.integer(session_hours * 3600), if (secure_cookie) "; Secure" else "")
-  }
-  clear_cookie <- "lite_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
-  session_user <- function(req) {
+  # Sessions are the hub's own. After Google sign-in the hub's login relay
+  # stores a token in arcade_sessions and sets it as the arcade_token cookie for
+  # the whole site; this service accepts that same cookie, so a student who is
+  # signed in to the Shiny app is signed in here, and the reverse. A password
+  # login issues the same kind of token.
+  session_seconds <- as.integer(hub$SESSION_DAYS %||% 14L) * 86400L
+  token_cookie <- function(token) paste0(
+    "arcade_token=", utils::URLencode(token, reserved = TRUE), "; Path=/; SameSite=Lax; Max-Age=", session_seconds,
+    if (secure_cookie) "; Secure" else "")
+  clear_cookie <- "arcade_token=; Path=/; SameSite=Lax; Max-Age=0"
+  session_token <- function(req) {
     cookies <- strsplit(req$HTTP_COOKIE %||% "", ";\\s*")[[1]]
-    value <- sub("^lite_session=", "", cookies[startsWith(cookies, "lite_session=")])
-    if (!length(value) || !grepl(".", value[1], fixed = TRUE)) return(NULL)
-    parts <- strsplit(value[1], ".", fixed = TRUE)[[1]]
-    if (length(parts) != 2L || !identical(sign(parts[1]), parts[2])) return(NULL)
-    fields <- strsplit(lite_unb64url(parts[1]), "\n", fixed = TRUE)[[1]]
-    if (length(fields) != 2L || is.na(suppressWarnings(as.numeric(fields[2])))) return(NULL)
-    if (as.numeric(fields[2]) < as.numeric(now())) return(NULL)
-    row <- q("SELECT user_id, display_name, course, section FROM users
-              WHERE LOWER(user_id)=LOWER(?) AND COALESCE(active,1)=1
-                AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0;", list(fields[1]))
+    value <- sub("^arcade_token=", "", cookies[startsWith(cookies, "arcade_token=")])
+    if (!length(value)) return("")
+    token <- utils::URLdecode(value[1])
+    if (grepl("^[A-Za-z0-9]{20,128}$", token)) token else ""
+  }
+  session_user <- function(req) {
+    row <- hub$lookup_token(session_token(req))
     if (!nrow(row)) return(NULL)
-    row[1, , drop = FALSE]
+    if (as.integer(row$active[1] %||% 1L) == 0L || as.integer(row$is_admin[1] %||% 0L) == 1L ||
+        as.integer(row$is_demo[1] %||% 0L) == 1L) return(NULL)
+    row[1, c("user_id", "display_name", "course", "section"), drop = FALSE]
   }
   read_body <- function(req) {
     raw <- tryCatch(req$rook.input$read(), error = function(e) raw(0))
@@ -222,10 +209,17 @@ lite_new_app <- function(hub, now = Sys.time, session_hours = 12, secure_cookie 
         return(lite_json(list(error = "This account has been archived. Contact your instructor."), 403L))
       if (as.integer(row$is_admin[1]) == 1L || as.integer(row$is_demo[1]) == 1L)
         return(lite_json(list(error = "Instructor and demo accounts use the main app."), 403L))
-      return(lite_json(list(ok = TRUE), headers = list("Set-Cookie" = make_cookie(row$user_id[1]))))
+      token <- hub$make_token()
+      hub$store_token(token, row$user_id[1])
+      return(lite_json(list(ok = TRUE), headers = list("Set-Cookie" = token_cookie(token))))
     }
-    if (method == "POST" && path == "/api/logout")
+    if (method == "POST" && path == "/api/logout") {
+      # Signing out ends the shared session, here and in the Shiny app.
+      hub$delete_token(session_token(req))
       return(lite_json(list(ok = TRUE), headers = list("Set-Cookie" = clear_cookie)))
+    }
+    if (method == "GET" && path == "/api/config")
+      return(lite_json(list(google = isTRUE(hub$GOOGLE_AUTH_ENABLED))))
 
     user <- session_user(req)
     if (is.null(user)) return(lite_json(list(error = "Sign in first."), 401L))

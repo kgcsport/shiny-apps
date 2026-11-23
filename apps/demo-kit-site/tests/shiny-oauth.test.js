@@ -13,10 +13,14 @@ test('preserves allowlisted course-app return paths', () => {
   assert.equal(safeShinyReturnPath('https://shiny.kylecoombs.com/review-quiz', base), '/review-quiz/');
   assert.equal(safeShinyReturnPath('/bonus-pot/', base), '/bonus-pot/');
   assert.equal(safeShinyReturnPath('https://shiny.kylecoombs.com/bonus-pot', base), '/bonus-pot/');
+  assert.equal(safeShinyReturnPath('/student-lite/', base), '/student-lite/');
+  assert.equal(safeShinyReturnPath('https://shiny.kylecoombs.com/student-lite', base), '/student-lite/');
 });
 
 test('rejects external, unrelated, and unrecognized return routes', () => {
   assert.equal(safeShinyReturnPath('https://example.com', base), '/class-job-market/');
   assert.equal(safeShinyReturnPath('/live-wordcloud/', base), '/class-job-market/');
+  assert.equal(safeShinyReturnPath('/student-lite/../class-job-market/?view=admin', base), '/class-job-market/');
+  assert.equal(safeShinyReturnPath('https://example.com/student-lite/', base), '/class-job-market/');
   assert.equal(safeShinyReturnPath('/class-job-market/?view=admin', base), '/class-job-market/');
 });

@@ -51,6 +51,12 @@
   .bar .msg { flex: 1; font-size: .88rem; color: var(--muted); }
   .head { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
   .error { color: var(--accent); font-size: .9rem; min-height: 1.3rem; margin-top: .5rem; }
+  a.google { display: block; text-align: center; font-weight: 600; text-decoration: none; border-radius: 10px;
+             padding: .8rem 1rem; background: var(--accent); color: var(--accent-ink); }
+  a.google:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  details { margin-top: .9rem; }
+  summary { color: var(--muted); font-size: .9rem; cursor: pointer; padding: .3rem 0; }
+  details .card { margin-top: .5rem; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -59,6 +65,11 @@
   <section id="login" hidden>
     <h1>Class Jobs</h1>
     <p class="sub">Sign in to see your points and enter your bids.</p>
+    <div class="card" id="google-box" hidden>
+      <a class="google" id="google-link" href="#">Sign in with your school Google account</a>
+    </div>
+    <details id="password-box">
+      <summary>Use a username and password instead</summary>
     <form id="login-form" class="card" autocomplete="on">
       <label for="username">Username</label>
       <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
@@ -67,6 +78,7 @@
       <div class="error" id="login-error" role="alert"></div>
       <button type="submit" id="login-btn">Sign in</button>
     </form>
+    </details>
   </section>
 
   <section id="app" hidden>
@@ -160,7 +172,7 @@
   }
 
   function refresh() {
-    return api('GET', '/api/state', undefined, etag ? { 'If-None-Match': etag } : {}).then(function (res) {
+    return api('GET', 'api/state', undefined, etag ? { 'If-None-Match': etag } : {}).then(function (res) {
       if (res.status === 304) return;
       if (res.status === 401) { etag = null; current = null; show('login'); return; }
       if (!res.ok) throw new Error('state ' + res.status);
@@ -177,7 +189,7 @@
     event.preventDefault();
     $('login-error').textContent = '';
     $('login-btn').disabled = true;
-    api('POST', '/api/login', { username: $('username').value, password: $('password').value })
+    api('POST', 'api/login', { username: $('username').value, password: $('password').value })
       .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body }; }); })
       .then(function (out) {
         if (!out.ok) { $('login-error').textContent = out.body.error || 'Could not sign in.'; return; }
@@ -188,7 +200,7 @@
       .then(function () { $('login-btn').disabled = false; });
   });
   $('logout').addEventListener('click', function () {
-    api('POST', '/api/logout', {}).then(function () { etag = null; current = null; dirty = false; show('login'); });
+    api('POST', 'api/logout', {}).then(function () { etag = null; current = null; dirty = false; show('login'); });
   });
   $('bids-form').addEventListener('input', function () { dirty = true; $('save-msg').textContent = 'Unsaved changes'; });
   $('bids-form').addEventListener('submit', function (event) {
@@ -198,7 +210,7 @@
       bids[input.name] = input.value === '' ? null : Number(input.value);
     });
     $('save').disabled = true; $('save-msg').textContent = 'Saving…';
-    api('POST', '/api/bids', { bids: bids })
+    api('POST', 'api/bids', { bids: bids })
       .then(function (res) { return res.json(); })
       .then(function (body) {
         dirty = false; etag = null;
@@ -209,6 +221,14 @@
       .then(function () { $('save').disabled = false; });
   });
   document.addEventListener('visibilitychange', function () { if (!document.hidden && !$('app').hidden) refresh(); });
+
+  // Google sign-in is the hub's existing flow; it returns the browser here.
+  api('GET', 'api/config').then(function (res) { return res.json(); }).then(function (config) {
+    var google = !!config.google;
+    $('google-box').hidden = !google;
+    $('password-box').open = !google;
+    $('google-link').href = '/auth/login?return_to=' + encodeURIComponent(location.pathname);
+  }).catch(function () { $('password-box').open = true; });
 
   refresh().then(function () { if ($('app').hidden) show('login'); schedule(); });
 })();

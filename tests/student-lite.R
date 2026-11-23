@@ -44,8 +44,7 @@ volunteer <- new_post("Volunteer: answer a question", "volunteer")
 hub$db_exec("INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning,note) VALUES('ana@test.edu','Ana Test','job',5,1,'x');")
 hub$db_exec("INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning,note) VALUES('ana@test.edu','Ana Test','extension',-2,0,'x');")
 
-clock <- Sys.time()
-app <- lite_new_app(hub, now = function() clock)
+app <- lite_new_app(hub)
 request <- function(method, path, body = NULL, cookie = "", headers = list()) {
   raw <- if (is.null(body)) raw(0) else charToRaw(as.character(jsonlite::toJSON(body, auto_unbox = TRUE, null = "null")))
   req <- c(list(REQUEST_METHOD = method, PATH_INFO = path, HTTP_COOKIE = cookie,
@@ -75,14 +74,25 @@ stopifnot(login("ana@test.edu", "wrong")$res$status == 401L,
           login("gone@test.edu", "gone-pass")$res$status == 403L,
           login("prof@test.edu", "prof-pass")$res$status == 403L)
 ana <- login("ANA@test.edu", "ana-pass")
-stopifnot(ana$res$status == 200L, grepl("^lite_session=.+\\..+", ana$cookie),
-          grepl("HttpOnly", ana$res$headers[["Set-Cookie"]], fixed = TRUE),
-          grepl("SameSite=Lax", ana$res$headers[["Set-Cookie"]], fixed = TRUE))
-# A forged or altered cookie is not a session, and a state-changing call
+stopifnot(ana$res$status == 200L, grepl("^arcade_token=[A-Za-z0-9]{48}$", ana$cookie),
+          grepl("SameSite=Lax", ana$res$headers[["Set-Cookie"]], fixed = TRUE),
+          grepl("Path=/;", ana$res$headers[["Set-Cookie"]], fixed = TRUE),
+          nrow(hub$db_query("SELECT token FROM arcade_sessions WHERE user_id='ana@test.edu';")) == 1L)
+# An unknown or malformed token is not a session, and a state-changing call
 # without the page's own header is refused.
-forged <- sub("\\.[0-9a-f]+$", paste0(".", strrep("0", 64)), ana$cookie)
-stopifnot(request("GET", "/api/state", cookie = forged)$status == 401L,
-          request("GET", "/api/state", cookie = "lite_session=abc")$status == 401L)
+stopifnot(request("GET", "/api/state", cookie = paste0("arcade_token=", strrep("a", 48)))$status == 401L,
+          request("GET", "/api/state", cookie = "arcade_token=abc")$status == 401L,
+          request("GET", "/api/state", cookie = "arcade_token=' OR 1=1 --")$status == 401L)
+
+# Shared sign-in: a token issued the way the Google login relay issues one is
+# accepted here without a second login, among other cookies, for students only.
+google_token <- hub$make_token()
+hub$store_token(google_token, "ben@test.edu")
+shared <- request("GET", "/api/state", cookie = paste0("other=1; arcade_token=", google_token, "; theme=dark"))
+prof_token <- hub$make_token(); hub$store_token(prof_token, "prof@test.edu")
+stopifnot(shared$status == 200L, shared$json$student$name == "Ben Test",
+          request("GET", "/api/state", cookie = paste0("arcade_token=", prof_token))$status == 401L,
+          identical(request("GET", "/api/config")$json$google, isTRUE(hub$GOOGLE_AUTH_ENABLED)))
 no_header <- app$call(list(REQUEST_METHOD = "POST", PATH_INFO = "/api/bids", HTTP_COOKIE = ana$cookie,
                            rook.input = list(read = function() charToRaw('{"bids":{}}'))))
 stopifnot(no_header$status == 400L)
@@ -135,10 +145,16 @@ quiet <- request("GET", "/api/state", cookie = ana$cookie)
 stopifnot(isTRUE(quiet$json$no_anchor), all(vapply(quiet$json$jobs, function(j) is.null(j$posted_wage), logical(1))),
           !grepl("posted_wage\":2", as.character(quiet$body), fixed = TRUE))
 
-# Sessions expire, and an archived student loses access at once.
-clock <- clock + 13 * 3600
+# Signing out ends the shared session; expired sessions and archived students
+# lose access at once.
+out <- request("POST", "/api/logout", list(), cookie = paste0("arcade_token=", google_token))
+stopifnot(out$status == 200L, grepl("Max-Age=0", out$headers[["Set-Cookie"]], fixed = TRUE),
+          nrow(hub$db_query("SELECT token FROM arcade_sessions WHERE token=?;", list(google_token))) == 0L,
+          request("GET", "/api/state", cookie = paste0("arcade_token=", google_token))$status == 401L)
+hub$db_exec("UPDATE arcade_sessions SET expires_at=datetime('now','-1 minute') WHERE user_id='ana@test.edu';")
 stopifnot(request("GET", "/api/state", cookie = ana$cookie)$status == 401L)
-clock <- clock - 13 * 3600
+hub$db_exec("UPDATE arcade_sessions SET expires_at=datetime('now','+1 day') WHERE user_id='ana@test.edu';")
+stopifnot(request("GET", "/api/state", cookie = ana$cookie)$status == 200L)
 hub$db_exec("UPDATE users SET active=0 WHERE user_id='ana@test.edu';")
 stopifnot(request("GET", "/api/state", cookie = ana$cookie)$status == 401L)
 

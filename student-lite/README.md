@@ -15,13 +15,46 @@ replacement for the Shiny app.
 - Bids are written to the same `job_wage_bids` rows the Shiny app reads, so the
   instructor's draw sees them with no sync step.
 
+## Sign-in
+
+Students sign in with Google through the hub's existing login. That flow
+already ends by storing a session token in the hub database and setting it as
+the `arcade_token` cookie for the whole site. Student Lite accepts the same
+cookie, so:
+
+- a student already signed in to the Shiny app is signed in here, and the
+  reverse;
+- the "Sign in with your school Google account" button goes to the existing
+  `/auth/login`, which now may return to `/student-lite/`;
+- signing out here ends the shared session.
+
+A username and password also work, tucked under a disclosure, and issue the
+same kind of session.
+
+Sharing the cookie requires Student Lite to be served from the same domain as
+the Shiny app. `nginx.conf` on this branch routes `/student-lite/` to the
+service for that reason.
+
 ## What it does not do
 
-- Google sign-in. It accepts a username and password only, so it cannot be
-  used by a class that signs in with Google until a sign-in handoff is built.
 - Assignments, reveals, spending, grades, games, or anything for instructors.
   Those stay in the Shiny app.
 - Students enrolled in more than one course see their primary course only.
+
+## To put it in front of a class
+
+1. Run the `student-lite` service next to the Shiny container, with the same
+   image, the same data volume, and the same Google environment variables
+   (`docker-compose.student-lite.yml` is an untested sketch; set
+   `LITE_SECURE_COOKIE=1`).
+2. Deploy this branch's `nginx.conf` (adds the `/student-lite/` route).
+3. Rebuild and deploy the demo-kit image, which hosts the Google login relay,
+   so it accepts `/student-lite/` as a place to return to.
+4. Send students to `https://<shiny domain>/student-lite/`.
+
+Not verified: a real Google sign-in end to end, and the Docker and nginx
+pieces. Verified in a browser: a session issued the way the relay issues one
+opens the page with no further sign-in, under the `/student-lite/` path.
 
 ## Run it
 

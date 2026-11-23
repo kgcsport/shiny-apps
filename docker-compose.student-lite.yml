@@ -16,3 +16,10 @@ services:
       LITE_DIR: /srv/student-lite
       LITE_HUB_APP: /srv/shiny-server/class-job-market/app.R
       LITE_PORT: "8090"
+      # Behind HTTPS in production set this to "1". Google sign-in also needs
+      # the same GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and SHINY_APP_URL as the
+      # Shiny service so the page knows to offer the Google button.
+      LITE_SECURE_COOKIE: "0"
+    env_file:
+      - path: .env
+        required: false
