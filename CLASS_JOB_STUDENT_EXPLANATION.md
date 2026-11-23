@@ -33,7 +33,7 @@ after bidding closes.
 
 ## What participation points are worth
 
-Participation is [WEIGHT]% of the course grade. [TARGET] gross participation
+Participation is 15% of the course grade. [TARGET] gross participation
 points earn full credit for that part of the course.
 
 Up to the full-credit threshold:

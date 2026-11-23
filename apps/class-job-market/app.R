@@ -3707,6 +3707,17 @@ server <- function(input, output, session) {
     set_setting(paste0(key,"::",current_scope_key()),value)
   spending_enabled_for_scope <- function() identical(as.character(get_scoped_setting("spending_enabled", "1")), "1")
   spending_disabled_message <- "Spending options are not active for this class environment."
+  # Pass Insurance availability for the active course/section. Turning it off
+  # stops new markets and purchases only; coverage already sold is still paid
+  # and can still be settled.
+  pass_insurance_enabled_for_scope <- function() {
+    scope <- current_scope_key()
+    explicit <- get_setting(paste0("pass_insurance_enabled::", scope), NA_character_)
+    has_history <- nrow(db_query(
+      "SELECT 1 FROM insurance_products WHERE scope_key=? LIMIT 1;", list(scope))) > 0
+    insurance_enabled_value(explicit, has_history)
+  }
+  pass_insurance_disabled_message <- "Pass Insurance is not offered in this class."
   active_round_id <- function(query_fn = db_query) {
     key <- current_scope_key()
     mapped <- tryCatch(query_fn(
@@ -4934,7 +4945,8 @@ server <- function(input, output, session) {
   }
 
   read_student_insurance_market <- function() {
-    list(period = insurance_product_for_round(), sale = next_insurance_offer())
+    list(period = insurance_product_for_round(), sale = next_insurance_offer(),
+         enabled = pass_insurance_enabled_for_scope())
   }
 
   student_insurance_market <- reactivePoll(6000, session,
@@ -5971,7 +5983,7 @@ server <- function(input, output, session) {
       tagList(
         div(class = "tab-howto", sprintf("Spend your tokens on academic benefits. Spendable balance: %s tokens.", fmt_token_amount(bal)), tags$p(style = "margin:.4rem 0 0;font-size:.85rem;color:#555;", tags$b("Note:"), " Spending tokens does not reduce your participation grade.", " Your participation grade is based on total tokens earned during the semester, not your current balance.")),
         div(class = "spend-cards",
-          {
+          if (isTRUE(student_insurance_market()$enabled)) {
             product <- student_insurance_market()$sale
             passes <- nrow(insurance_wallet())
             meta <- if (passes) sprintf("%d on hand", passes) else if (!insurance_purchase_is_open(product)) "Sales are closed" else
@@ -5996,7 +6008,12 @@ server <- function(input, output, session) {
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
     rv$spend_mode <- mode
   }
-  observeEvent(input$open_insurance,     { open_spending_mode("insurance") })
+  observeEvent(input$open_insurance, {
+    if (!pass_insurance_enabled_for_scope()) {
+      showNotification(pass_insurance_disabled_message, type = "warning"); return()
+    }
+    open_spending_mode("insurance")
+  })
   observeEvent(input$open_extension,     { open_spending_mode("extension") })
   observeEvent(input$open_reweight,      { open_spending_mode("reweight") })
   observeEvent(input$open_flex_question, { open_spending_mode("flex_question") })
@@ -6682,6 +6699,7 @@ server <- function(input, output, session) {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type="warning"); return() }
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type="warning"); return() }
+    if (!pass_insurance_enabled_for_scope()) { showNotification(pass_insurance_disabled_message, type="warning"); return() }
     product_id <- input$submit_insurance_purchase
     req(is.numeric(product_id), length(product_id) == 1L, is.finite(product_id), product_id > 0)
     checkout <- tryCatch({
@@ -10708,8 +10726,21 @@ server <- function(input, output, session) {
     showNotification(if (enabled) "Spending options enabled for this environment." else "Spending options disabled for this environment.", type="message")
   }, ignoreNULL=TRUE)
 
+  observeEvent(input$save_pass_insurance_enabled_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    enabled <- isTRUE(input$pass_insurance_enabled_input)
+    set_setting(paste0("pass_insurance_enabled::", current_scope_key()), if (enabled) "1" else "0")
+    rv$insurance_ver <- rv$insurance_ver + 1L
+    showNotification(if (enabled) "Pass Insurance is on for this course / section."
+                     else "Pass Insurance is off for this course / section. Coverage already sold is still honored.",
+                     type="message")
+  }, ignoreNULL=TRUE)
+
   observeEvent(input$save_insurance_product_btn, {
     req(rv$is_admin, !rv$impersonating)
+    if (!pass_insurance_enabled_for_scope()) {
+      showNotification("Turn Pass Insurance on for this course / section before opening sales.", type="warning"); return()
+    }
     round <- tryCatch(active_round_row(), error=function(e)data.frame())
     if (!nrow(round)) { showNotification("Choose a class date first.", type="warning"); return() }
     rid <- as.integer(round$id[1])
@@ -10883,8 +10914,14 @@ server <- function(input, output, session) {
          LEFT JOIN insurance_claims ic ON ic.product_id=ip.product_id AND LOWER(ic.user_id)=LOWER(ip.user_id)
          WHERE ip.product_id=? ORDER BY student;", list(as.integer(product$id[1]))),
         error=function(e)data.frame()) else data.frame()
+      insurance_on <- pass_insurance_enabled_for_scope()
       wrap_spending(tagList(
         tags$h5("Pass Insurance Market"),
+        div(style="background:#f8f9fa;border:1px solid #e2e5e8;border-radius:8px;padding:.55rem .7rem;margin-bottom:.8rem;",
+          checkboxInput("pass_insurance_enabled_input", "Offer Pass Insurance in this course / section", value=insurance_on),
+          actionButton("save_pass_insurance_enabled_btn", "Save availability", class="btn btn-sm btn-primary"),
+          if (!insurance_on) div(class="alert alert-warning", style="margin:.6rem 0 0;",
+            "Pass Insurance is off. Students do not see it and cannot buy it. Coverage already sold is still paid, and an open market can still be closed and settled below.")),
         tags$p(style="color:#555;font-size:.88rem;",
           "Students can buy one pass for the next scheduled class, including during that class. Coverage pays once for a live pass or recession firing. Closing sales leaves existing coverage active for that period. Settlement ends coverage and pays equal dividends from any positive profit. Insurance cash flows do not count as participation earnings."),
         if (!nrow(round)) div(class="alert alert-warning", "Choose a class date under Job Market Controls first.") else tagList(
@@ -10895,7 +10932,8 @@ server <- function(input, output, session) {
             column(4, numericInput("insurance_price_step_input", "Repricing increment:", value=default_step, min=0.01, step=0.25))
           ),
           div(style="display:flex;gap:.4rem;flex-wrap:wrap;",
-            actionButton("save_insurance_product_btn", if (nrow(product)) "Save / Open Sales" else "Create / Open Sales", class="btn btn-sm btn-primary"),
+            if (insurance_on)
+              actionButton("save_insurance_product_btn", if (nrow(product)) "Save / Open Sales" else "Create / Open Sales", class="btn btn-sm btn-primary"),
             if (nrow(product) && !identical(as.character(product$status[1]), "settled"))
               actionButton("close_insurance_sales_btn", "Close Sales", class="btn btn-sm btn-outline-warning"),
             if (nrow(product) && !identical(as.character(product$status[1]), "settled"))

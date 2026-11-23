@@ -166,6 +166,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-11-23** — Pass Insurance becomes an optional, per-course/section feature and is off for the class-job experiment. **Decision (Kyle):** drop Pass Insurance from the experiment but keep it available behind a switch; participation is 15% of the Intro grade; the study is IRB-exempt with about 25 students in each of two Intro sections meeting twice a week. **Must remain unchanged:** purchases, claims on Pass & Redraw and Recession — Fire & Redraw, settlement, dividends, repricing, and all historical insurance records in any course/section that already has an insurance market. **New behavior:** Settings → Spending Options → Pass Insurance has an **Offer Pass Insurance in this course / section** switch stored as `pass_insurance_enabled::<scope>`. With no saved choice it is on only where an insurance market already exists, so new courses start off and the deployment does not change a class mid-sequence. Off hides the student Spend card and blocks opening sales and buying; it never blocks claims, closing, or settlement, so sold coverage is not stranded. **Verification cases:** fresh scope cannot open sales and students see no card; switching on restores the full existing workflow; switching off with a policy outstanding blocks a new purchase and a contract rewrite, still pays the insured pass, and still settles; the setting does not leak to another section.
+
 - **2026-11-23** — The spring class-job study is a randomized experiment, not a descriptive market study. **Decision (Kyle):** the confirmatory question is whether randomly assigned job practice in the no-stakes training weeks changes a student's later minimum-wage bid for that same job; the descriptive market paper will be written from the fall pilot instead. **Consequences:** `CLASS_JOB_PREREGISTRATION_DRAFT.md` now has one primary hypothesis (assigned practice and the first sealed bid, student-by-job model with student fixed effects and randomization inference), a required baseline survey, a seeded and hashed exposure schedule, and an initial bid sheet at market opening as the primary outcome. The earlier market hypotheses are retained as descriptive analyses. No app code or course policy changed.
 
 - **2026-11-11** — Calculate automatic participation grades from positive earning ledger entries in Student Grades and Account, even before any uploaded grades. Use the configured category target and weight. With a target of 25 gross tokens and a 15% weight, verify that 10 tokens earn 6 percentage points, that later earnings update the grade, and that spending and non-earning credits do not change it. Preserve manual grades, grade adjustments, and roster scope.
@@ -487,6 +489,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-11-23** (Claude Code) — Added the Pass Insurance availability switch to Class Job Market (`apps/class-job-market/app.R`, `insurance.R`) with regression coverage in `tests/critical-insurance-market.R`, and recorded Kyle's setting decisions in the preregistration draft and student explanation. `Rscript tests/critical-insurance-market.R` passes, and fails as intended when the purchase guard is removed; `smoke-class-job-market`, `critical-extension-checkout`, `critical-token-spend-precision`, `critical-grade-reweighting`, and `critical-live-score-audit` pass. `critical-settings-organization` fails on "Students panel is missing: 2 on hand · 3 gross" both before and after this change. Tests ran with a local stand-in for `bcrypt` because CRAN was unreachable from the session. **Not staged or deployed:** the immutable-image staging check of the instructor and student insurance workflow is still required before production promotion.
 
 - **2026-11-23** (Claude Code) — Revised `CLASS_JOB_PREREGISTRATION_DRAFT.md` around the causal exposure test after Kyle chose it over the descriptive market study, and aligned `CLASS_JOB_EXPERIMENT_DESIGN.md` and `CLASS_JOB_STUDENT_EXPLANATION.md` with it. Documents only; nothing to build or render, and no app change.
 
@@ -938,8 +942,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Questions for Kyle
 
-- Class-job experiment: what is the institutional review status, and who will collect consent so that consent status stays hidden until grades are submitted?
-- Class-job experiment: what is the expected enrollment per Intro section, and how many training-period slots per meeting are feasible? This decides whether every student can practise a job or a no-practice arm is needed.
+- Class-job experiment: what are the exemption protocol number and date, and does the exemption require a consent step?
+- Class-job experiment: how many weeks does the term run, and how many training jobs should each student practise (one or two of the catalog jobs)? Two roughly needs 12-13 performances per training meeting in a 25-student section.
+- Class-job experiment: is the Data Science course graded on the job market or not? It is outside the confirmatory sample either way.
 - Class-job experiment: can the initial bid sheet at market opening be required of every student? It is the primary outcome, so missing responses cost power directly.
 - Class-job experiment: where is the fall pilot database? The power simulation needs its bid dispersion.
 

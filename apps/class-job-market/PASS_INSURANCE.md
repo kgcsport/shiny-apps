@@ -16,10 +16,13 @@ Pass Insurance adds single-use passes to the existing job market. It does not ch
 
 1. Select the course, section, and class date as usual.
 2. In **Settings → Spending Options**, make sure student spending is enabled.
-3. In **Settings → Spending Options → Pass Insurance**, choose the benefit, starting premium, and repricing increment. Click **Create / Open Sales**.
-4. Students buy from **Spend → Pass Insurance** while sales are open. Spend confirms the purchase for the next class. Account shows passes for the selected class period.
-5. In Live Tracker or the slide panel, use **Pass & Redraw** for a student who passes or **Recession — Fire & Redraw** to fire the drawn student. Either action records the event, pays an eligible claim, and redraws.
-6. After class, click **Settle, Dividend & Reprice**. The result is frozen, profit after paid claims is returned as equal class dividends, and the next zero-profit pooled premium is displayed.
+3. In **Settings → Spending Options → Pass Insurance**, tick **Offer Pass Insurance in this course / section** and click **Save availability**. It is off by default in a course/section that has never run an insurance market.
+4. In the same panel, choose the benefit, starting premium, and repricing increment. Click **Create / Open Sales**.
+5. Students buy from **Spend → Pass Insurance** while sales are open. Spend confirms the purchase for the next class. Account shows passes for the selected class period.
+6. In Live Tracker or the slide panel, use **Pass & Redraw** for a student who passes or **Recession — Fire & Redraw** to fire the drawn student. Either action records the event, pays an eligible claim, and redraws.
+7. After class, click **Settle, Dividend & Reprice**. The result is frozen, profit after paid claims is returned as equal class dividends, and the next zero-profit pooled premium is displayed.
+
+Unticking the box and saving hides Pass Insurance from students and blocks new sales and purchases. Coverage already sold is still paid on a pass or recession firing, and an open market can still be closed and settled.
 
 Premium and benefit are frozen after the first purchase. Settlement is idempotent: repeated clicks cannot pay another claim or dividend.
 

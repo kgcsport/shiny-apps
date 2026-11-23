@@ -30,6 +30,9 @@ and token-ledger reconciliation.
 
 ## Pass Insurance in Class Job Market
 
+0. In Settings → Spending Options → Pass Insurance, turn on **Offer Pass
+   Insurance in this course / section**. Expected before this step: students
+   see no Pass Insurance card under Spend.
 1. Open sales with a 2-token premium and 2-token benefit. Student A buys and
    taps **Buy policy** twice. Expected: one purchase and one 2-token debit.
 2. Refresh Student A's browser. Expected: the purchased policy remains visible

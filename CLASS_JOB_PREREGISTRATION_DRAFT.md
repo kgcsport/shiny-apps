@@ -23,8 +23,8 @@ Reservation Wages in an Introductory Course
 - Course: [COURSE NUMBER AND TITLE]
 - Term: [TERM]
 - Sections: [SECTION LABELS]
-- Expected enrollment: [N BY SECTION]
-- Meetings: [DAYS, NUMBER OF MEETINGS, AND LENGTH]
+- Expected enrollment: about 25 students per section, about 50 in total
+- Meetings: two per week per section; [DAYS, NUMBER OF WEEKS, AND LENGTH]
 - Registration repository/platform: [PLATFORM AND URL]
 - Planned registration date: [DATE]
 
@@ -40,8 +40,7 @@ catalog.
 
 ## 3. Institutional review and consent
 
-- Institutional determination: [IRB PROTOCOL / EXEMPTION / NOT-RESEARCH
-  DETERMINATION]
+- Institutional determination: exempt; [PROTOCOL NUMBER AND DETERMINATION DATE]
 - Consent procedure: [PROCEDURE]
 - Person obtaining consent: [PERSON]
 - Timing relative to grading: [TIMING]
@@ -172,8 +171,8 @@ Random assignment:
 - Roster: students enrolled and with a completed baseline survey at
   [FREEZE DATE/TIME].
 - Arms: each student is assigned to practise exactly [K] of the [J] catalog
-  jobs. [CHOOSE: EVERY STUDENT IS ASSIGNED / A NO-PRACTICE ARM OF SIZE N0 PER
-  SECTION EXISTS BECAUSE TRAINING SLOTS ARE LIMITED.]
+  jobs. Every student is assigned; with about 25 students and four training
+  meetings per section there is no no-practice arm.
 - Balance: arm sizes are fixed in advance and as equal across jobs as slot
   counts allow; [OPTIONAL: BLOCKED ON BASELINE COMFORT-INDEX TERCILE].
 - Timing: the training meeting in which each student performs is also drawn at
@@ -297,7 +296,7 @@ other non-earning ledger entries do not reduce gross earnings.
 
 ### 6.5 Participation-grade mapping
 
-- Course-grade weight: [W] percentage points
+- Course-grade weight: 15 percentage points
 - Full-credit threshold: [T] gross points
 - Mapping below the threshold:
 
@@ -335,8 +334,9 @@ At least one meaningful perk remains available after the final ordinary job
 auction. Unspent points [EXPIRE / HAVE THE PRE-SPECIFIED TERMINAL USE]. Spending
 never reduces gross participation credit.
 
-Pass Insurance is [REMOVED / RETAINED; CHOOSE BEFORE REGISTRATION]. If removed,
-problem-set extensions remain deterministic purchases and are not insurance.
+Pass Insurance is removed: its per-course switch in the app stays off in the
+registered sections for the whole term. Problem-set extensions remain
+deterministic purchases and are not insurance.
 
 ## 7. Sample
 
@@ -496,7 +496,8 @@ subgroup effects and the interaction.
 
 ### General effect of any practice
 
-Only if a no-practice arm is registered: compare the student's mean first bid
+Not estimated in this design, because every student is assigned practice. If
+a later term registers a no-practice arm: compare the student's mean first bid
 across all jobs between students assigned any practice and students assigned
 none, with section fixed effects and the student's mean baseline wage. This
 comparison is between students and is secondary.

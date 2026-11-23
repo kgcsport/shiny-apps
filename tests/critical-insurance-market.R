@@ -27,7 +27,9 @@ required_contract <- c(
   "slide_cold_call_recession_btn",
   "issue_insurance_claim",
   "insurance_dividend",
-  "suggested_next_premium"
+  "suggested_next_premium",
+  "pass_insurance_enabled_for_scope",
+  "save_pass_insurance_enabled_btn"
 )
 missing <- required_contract[!vapply(required_contract, grepl, logical(1),
                                      x = app_text, fixed = TRUE)]
@@ -79,6 +81,12 @@ gross_earnings <- dbGetQuery(con, "SELECT COALESCE(SUM(amount),0) x FROM token_l
 stopifnot(abs(cashflows) < 1e-9, gross_earnings == 20)
 stopifnot(insurance_zero_profit_premium(2, 4, step = 0.5) == 0.5)
 stopifnot(insurance_zero_profit_premium(10, 0, fallback = 1.2, step = 0.5) == 1)
+
+# Availability: an explicit instructor choice wins; with no choice the market
+# is on only where one already exists.
+stopifnot(!insurance_enabled_value(NA, FALSE), insurance_enabled_value(NA, TRUE),
+          insurance_enabled_value("1", FALSE), !insurance_enabled_value("0", TRUE),
+          !insurance_enabled_value(NULL, FALSE), insurance_enabled_value("", TRUE))
 
 # Exercise the production Shiny observers and shared SQLite persistence. This
 # is deliberately multi-session: classroom failures usually happen at the
@@ -148,13 +156,38 @@ if (requireNamespace("shiny", quietly = TRUE)) {
     rv$active_sections <- section; rv$is_demo <- FALSE
   }
 
-  # Open through the real instructor control.
+  # A course/section that has never used Pass Insurance starts with it off:
+  # the instructor cannot open sales and students are not offered it.
   shiny::testServer(app$server, {
     set_admin(rv)
+    stopifnot(!pass_insurance_enabled_for_scope())
     session$setInputs(insurance_benefit_input = 2, insurance_premium_input = 3,
                       insurance_price_step_input = 0.5,
                       save_insurance_product_btn = 1)
     session$flushReact()
+  })
+  stopifnot(nrow(app$db_query("SELECT id FROM insurance_products;")) == 0L)
+  shiny::testServer(app$server, {
+    set_student(rv, "s1@test.edu", "Student 1")
+    stopifnot(!grepl("Pass Insurance", output$spend_tab$html, fixed = TRUE),
+              grepl("Assignment Extension", output$spend_tab$html, fixed = TRUE))
+    session$setInputs(open_insurance = 1L)
+    stopifnot(is.null(rv$spend_mode))
+  })
+
+  # Turn it on, then open through the real instructor control.
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    session$setInputs(pass_insurance_enabled_input = TRUE, save_pass_insurance_enabled_btn = 1L)
+    stopifnot(pass_insurance_enabled_for_scope())
+    session$setInputs(insurance_benefit_input = 2, insurance_premium_input = 3,
+                      insurance_price_step_input = 0.5,
+                      save_insurance_product_btn = 1)
+    session$flushReact()
+  })
+  shiny::testServer(app$server, {
+    set_student(rv, "s1@test.edu", "Student 1")
+    stopifnot(grepl("Pass Insurance", output$spend_tab$html, fixed = TRUE))
   })
   product <- app$db_query("SELECT * FROM insurance_products;")
   stopifnot(nrow(product) == 1L, product$status[1] == "open",
@@ -351,5 +384,47 @@ if (requireNamespace("shiny", quietly = TRUE)) {
   next_purchase <- app$db_query("SELECT user_id,premium FROM insurance_purchases WHERE product_id=?;", list(next_offer))
   stopifnot(identical(next_purchase$user_id, "s3@test.edu"), next_purchase$premium[1] == 1)
 }
+
+  # Turning Pass Insurance off stops new sales but never strands coverage that
+  # was already sold: the insured pass is still paid and the market settles.
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    stopifnot(pass_insurance_enabled_for_scope()) # on by history before any explicit off
+    session$setInputs(pass_insurance_enabled_input = FALSE, save_pass_insurance_enabled_btn = 1L)
+    stopifnot(!pass_insurance_enabled_for_scope())
+  })
+  shiny::testServer(app$server, {
+    set_student(rv, "s4@test.edu", "Student 4")
+    stopifnot(!grepl("Pass Insurance", output$spend_tab$html, fixed = TRUE))
+    session$setInputs(open_insurance = 1L)
+    stopifnot(is.null(rv$spend_mode))
+    session$setInputs(submit_insurance_purchase = next_offer)
+    session$flushReact()
+  })
+  stopifnot(nrow(app$db_query("SELECT id FROM insurance_purchases WHERE product_id=?;", list(next_offer))) == 1L)
+  claims_before <- nrow(app$db_query("SELECT id FROM insurance_claims;"))
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    session$setInputs(active_round_select = next_round)
+    session$setInputs(insurance_benefit_input = 9, insurance_premium_input = 9,
+                      insurance_price_step_input = 0.5, save_insurance_product_btn = 1L)
+    rv$cold_call_draw <- list(user_id = "s3@test.edu", display_name = "Student 3", section = "01")
+    session$setInputs(cold_call_pass_btn = 1L)
+    session$setInputs(settle_insurance_market_btn = 1L)
+  })
+  off_offer <- app$db_query("SELECT status,benefit,premium FROM insurance_products WHERE id=?;", list(next_offer))
+  off_claim <- app$db_query(
+    "SELECT ic.benefit FROM insurance_claims ic WHERE ic.product_id=? AND ic.user_id='s3@test.edu';", list(next_offer))
+  stopifnot(nrow(app$db_query("SELECT id FROM insurance_claims;")) == claims_before + 1L,
+            nrow(off_claim) == 1L, off_claim$benefit[1] == 2,
+            off_offer$status[1] == "settled", off_offer$benefit[1] == 2, off_offer$premium[1] == 1)
+  # The switch is reversible and scoped to the course/section.
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    session$setInputs(pass_insurance_enabled_input = TRUE, save_pass_insurance_enabled_btn = 1L)
+    stopifnot(pass_insurance_enabled_for_scope())
+  })
+  stopifnot(identical(app$get_setting("pass_insurance_enabled::econ 342::01"), "1"),
+            is.null(app$get_setting("pass_insurance_enabled::econ 342::02")))
 
 cat("critical insurance market: PASS\n")

@@ -1,3 +1,13 @@
+# Pass Insurance is optional in each course/section. An explicit instructor
+# choice ("1" or "0") wins. With no choice recorded it stays on only where an
+# insurance market already exists, so new courses start without it and a
+# deployment never switches it off for a class that is already using it.
+insurance_enabled_value <- function(explicit = NA, has_history = FALSE) {
+  explicit <- if (length(explicit)) as.character(explicit[1]) else NA_character_
+  if (!is.na(explicit) && explicit %in% c("1", "0")) return(identical(explicit, "1"))
+  isTRUE(has_history)
+}
+
 insurance_round_to_step <- function(value, step = 0.5) {
   value <- suppressWarnings(as.numeric(value))
   step <- suppressWarnings(as.numeric(step))
