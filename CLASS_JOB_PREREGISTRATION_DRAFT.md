@@ -261,15 +261,22 @@ reason, and the information available at the time.
 
 ### 6.3 Wage bidding and allocation
 
-- Initial bid sheet: at market opening on [DATE], before any auction result is
-  shown, every student submits a bid or `Not willing at this wage` for every
-  job in the catalog. Submission is [REQUIRED IN CLASS / REQUIRED TO ENTER THE
-  MARKET]. These sealed responses are the primary outcome.
+- Bid form: the ordinary Job Market page, where a student enters a minimum
+  wage for each job and may update it until each bid lock. Bids stand and carry
+  forward between meetings.
+- No wage anchor: bid boxes are empty until the student saves a bid of their
+  own. No instructor wage is pre-filled or displayed before bids exist, and no
+  points are paid in the training period, so students see no wage before their
+  first bid.
+- Initial bid sheet: the bids on file at the first bid lock after the market
+  opens on [DATE], before any auction result is shown. Every student is asked
+  to enter a bid for every job by that lock [HOW: IN CLASS / REQUIRED]. These
+  sealed bids are the primary outcome.
 - Bidding begins: [DATE / WEEK]
 - Bid unit: participation points
 - Bid step: [STEP]
-- Maximum wage bid: [B]
-- Above-cap response: `Not willing at this wage`
+- Maximum wage bid: [UNDECIDED: A CEILING B WITH `Not willing at this wage` AS
+  THE ABOVE-CEILING RESPONSE, OR NO CEILING. THE APP CURRENTLY HAS NO CEILING.]
 - Allocation: lowest valid bids receive the posted slots
 - Pricing: uniform reverse-second-price
 - Wage: first unsuccessful bid, bounded by the registered maximum
@@ -311,13 +318,14 @@ the threshold, and the grade equivalent below the threshold.
 
 ### 6.6 Paid live participation
 
-- Paid answer slots per meeting: [NUMBER OR SCHEDULE]
-- Paid board-work slots per meeting: [NUMBER OR SCHEDULE]
-- Per-student paid-live limit per meeting: [LIMIT]
-- Wage: frozen clearing wage for the corresponding cold-call job
-- Oversubscription: random selection with priority for fewer prior paid live
-  contributions
-- Contributions after paid slots fill: permitted but unpaid
+- Live answers and board work are one job type each, filled either by cold
+  call or by volunteers.
+- Wage: the frozen clearing wage for the corresponding cold-call job. Volunteer
+  jobs are not bid on separately.
+- Paid volunteering: each student is paid for at most one voluntary
+  contribution per meeting. Later voluntary contributions that meeting are
+  welcome and are recorded with their outcome, unpaid.
+- There is no limit on how many students may volunteer.
 - Special bounties: valid only if announced before the task
 
 ### 6.7 Perks and token spending
@@ -388,9 +396,11 @@ outcomes are observed.
 
 ### Primary outcome
 
-- `first_bid_ij`: the student's response for job `j` on the initial bid sheet,
-  in participation points. `Not willing at this wage` is coded as the wage
-  ceiling plus one bid step.
+- `first_bid_ij`: the student's bid for job `j` on file at the first bid lock
+  after the market opens, in participation points. [IF A CEILING IS ADOPTED:
+  `Not willing at this wage` is coded as the ceiling plus one bid step. IF NOT:
+  bids are winsorized at the section-job [95TH] percentile, fixed here before
+  data are seen.]
 
 ### Secondary outcomes
 
@@ -399,7 +409,8 @@ outcomes are observed.
 - `willing_ij`: indicator for a numeric bid on the initial bid sheet;
 - `success_count_ij`: number of `Success` completions of job `j` in [WINDOW];
 - `held_ij`: indicator for holding job `j` at least once in [WINDOW]; and
-- paid and unpaid voluntary live contributions, for live/public jobs.
+- `volunteer_count_ij`: number of recorded voluntary contributions of job type
+  `j` in [WINDOW], paid or unpaid, for live/public jobs.
 
 ### Descriptive market variables
 

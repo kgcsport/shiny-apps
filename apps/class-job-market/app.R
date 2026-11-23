@@ -3707,6 +3707,22 @@ server <- function(input, output, session) {
     set_setting(paste0(key,"::",current_scope_key()),value)
   spending_enabled_for_scope <- function() identical(as.character(get_scoped_setting("spending_enabled", "1")), "1")
   spending_disabled_message <- "Spending options are not active for this class environment."
+  # Optional per course/section: pay each student for at most one voluntary
+  # contribution per class date. Later contributions that day are still
+  # recorded with their outcome, at zero tokens. Off by default.
+  volunteer_pay_capped_for_scope <- function()
+    identical(as.character(get_scoped_setting("volunteer_paid_cap", "0")), "1")
+  volunteer_already_paid <- function(round_id, user_id) {
+    paid <- db_query(
+      "SELECT COUNT(*) n FROM live_score_events
+       WHERE round_id=? AND LOWER(user_id)=LOWER(?) AND event_kind='participation'
+         AND COALESCE(tokens,0) > 0;", list(as.integer(round_id), as.character(user_id)))
+    as.integer(paid$n[1] %||% 0L) > 0L
+  }
+  volunteer_capped_tokens <- function(tokens, round_id, user_id) {
+    if (is.finite(tokens) && tokens > 0 && volunteer_pay_capped_for_scope() &&
+        volunteer_already_paid(round_id, user_id)) 0 else tokens
+  }
   # Pass Insurance availability for the active course/section. Turning it off
   # stops new markets and purchases only; coverage already sold is still paid
   # and can still be settled.
@@ -5419,17 +5435,20 @@ server <- function(input, output, session) {
             div(class = "sec-label", "Volunteer Wages For This Class"),
             div(class = "jm-card",
               tags$p(style = "color:#555;font-size:.83rem;margin:0 0 .4rem;",
-                     "Everyone who volunteers for a job earns the same market wage. It is frozen from the current bids when the first draw runs."),
+                     "Everyone who volunteers for a job earns the same market wage. It is frozen from the current bids when the first draw runs.",
+                     if (volunteer_pay_capped_for_scope()) " You are paid for one voluntary contribution per class; later ones that day are recorded but unpaid."),
               lapply(seq_len(nrow(vposts)), function(vi) {
                 vp <- vposts[vi, ]
                 cw <- class_wage_snapshot(vrid, as.integer(vp$job_post_id), NA_real_)
                 if (is.na(cw)) cw <- volunteer_clearing_wage(
                   vrid, vp$category_id, as.integer(vp$slots %||% 1L),
                   query_fn = db_query, job_post_id = as.integer(vp$job_post_id))
-                w  <- if (!is.na(cw)) cw else as.numeric(vp$fallback_wage %||% 1)
+                # Before any bid exists there is no market wage to show, and the
+                # instructor's fallback wage would anchor the first bids.
                 div(style = "display:flex;justify-content:space-between;font-size:.88rem;padding:.15rem 0;",
                     span(vp$job_name %||% ""),
-                    span(style = "font-weight:600;", sprintf("%g tokens", w)))
+                    span(style = "font-weight:600;",
+                         if (!is.na(cw)) sprintf("%g tokens", cw) else "Set by bids"))
               })
             )
           )
@@ -5534,11 +5553,14 @@ server <- function(input, output, session) {
         lock_note,
         tags$p(style = "color:#555;font-size:.88rem;",
                "Enter the minimum wage you'd accept for every job.",
-               "The instructor takes the cheapest bids and reveals the result in class."),
+               "The instructor takes the cheapest bids and reveals the result in class.",
+               "A job you leave blank has no bid from you."),
         div(class = "jm-card",
           lapply(seq_len(nrow(wage_posts)), function(i) {
             post <- wage_posts[i, ]
-            prev_bid <- as.numeric(post$default_wage %||% 0)
+            # No anchor: the box is empty until the student has saved a bid of
+            # their own. The posted default wage is never pre-filled.
+            prev_bid <- NA_real_
             if (nrow(jp$my_wage_bids)) {
               m <- jp$my_wage_bids[
                 jp$my_wage_bids$job_post_id == post$job_post_id &
@@ -8845,6 +8867,7 @@ server <- function(input, output, session) {
           next
         }
         tokens <- switch(outcome, complete = wage, tried = 1, missed = 0, 0)
+        if (identical(event_kind, "participation")) tokens <- volunteer_capped_tokens(tokens, rid, uid)
         stored_outcome <- if (identical(event_kind, "participation")) {
           switch(outcome, complete = "succeed", tried = "try", missed = "miss", outcome)
         } else outcome
@@ -11242,6 +11265,9 @@ server <- function(input, output, session) {
                                 "Demand-based (k-th lowest bid, k = post slots)" = "demand",
                                 "Posted demand (set k per class in Live Tracker)" = "posted"),
                     selected = as.character(get_setting("volunteer_clearing_rule", "lowest"))),
+        checkboxInput("volunteer_paid_cap_input",
+                      "Pay each student for at most one voluntary contribution per class (later ones are recorded, unpaid) — this course / section",
+                      value = volunteer_pay_capped_for_scope(), width = "100%"),
         actionButton("save_vol_clearing_btn", "Save", class = "btn btn-sm btn-primary"),
 
         # ── Templates ─────────────────────────────────────────────────────────────
@@ -13839,14 +13865,18 @@ server <- function(input, output, session) {
       succeed = wage_val,
       try     = 1,
       miss    = 0, 0)
+    uncapped_tokens <- tokens_to_award
+    tokens_to_award <- volunteer_capped_tokens(tokens_to_award, rid, uid)
     db_exec(
       "INSERT INTO live_score_events(round_id, user_id, job_post_id, event_kind,
               outcome, tokens, logged_by)
        VALUES(?,?,?,'participation',?,?,?);",
       list(rid, uid, post_id, outcome_type, tokens_to_award, rv$user_id %||% "admin"))
     showNotification(
-      sprintf("%s queued for audit (%d token%s).", dname, as.integer(tokens_to_award),
-              if (tokens_to_award == 1) "" else "s"),
+      if (tokens_to_award < uncapped_tokens)
+        sprintf("%s recorded, unpaid: already paid for a voluntary contribution this class.", dname)
+      else sprintf("%s queued for audit (%s token%s).", dname, fmt_token_amount(tokens_to_award),
+                   if (tokens_to_award == 1) "" else "s"),
       type = "message")
     return()
   }
@@ -14949,6 +14979,8 @@ server <- function(input, output, session) {
     if (!rule %in% c("lowest", "demand", "posted")) rule <- "lowest"
     db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('volunteer_clearing_rule',?);",
             list(rule))
+    if (!is.null(input$volunteer_paid_cap_input))
+      set_scoped_setting("volunteer_paid_cap", if (isTRUE(input$volunteer_paid_cap_input)) "1" else "0")
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification(
       switch(rule,

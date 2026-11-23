@@ -14,8 +14,7 @@ no bidding and no point payment during this practice period. You will receive
 short feedback so that you know what each job requires before the market
 begins.
 
-When the market opens in week three, everyone first enters a bid, or **Not
-willing at this wage**, for every job.
+When the market opens in week three, everyone first enters a bid for every job.
 
 Beginning in week three:
 
@@ -57,31 +56,27 @@ solutions never require points.
 
 ## Wage and earning limits
 
-- The highest permitted wage bid is [MAXIMUM BID] points.
+- [IF A BID CEILING IS ADOPTED: The highest permitted wage bid is [MAXIMUM BID]
+  points.]
 - A student can earn at most [PER-CLASS GROSS CAP] grade-relevant points in one
   class meeting.
-- A student may receive at most [ASSIGNED-JOB LIMIT] assigned job(s) and
-  [PAID-LIVE LIMIT] paid live contribution(s) in one meeting.
-- If you are not willing to do a job at the maximum wage, select
-  **Not willing at this wage** rather than entering a false bid.
+- A student may receive at most [ASSIGNED-JOB LIMIT] assigned job(s) in one
+  meeting and is paid for at most one voluntary contribution per meeting.
+- Bid boxes start empty. Enter your own number; a job you leave blank has no
+  bid from you.
 
 These limits keep opportunities available throughout the semester and prevent
 anyone from reaching the full-credit threshold after only a few classes.
 
 ## Cold calls and volunteering
 
-At the start of class, the app posts the wage for paid answers or board work and
-the number of paid live contributions available that day.
+Answering a question and working at the board can happen by cold call or by
+volunteering, and both pay the same wage. That wage comes from the class's
+bids and is fixed when the first draw of the day runs.
 
-You are always welcome to contribute to discussion. Payment is limited:
-
-- no more than [PAID-LIVE LIMIT] voluntary live contribution(s) per student per
-  class;
-- if more students volunteer than there are paid opportunities, selection is
-  random, with priority for students who have had fewer paid opportunities;
-  and
-- discussion may continue after the paid opportunities are filled, but later
-  contributions are not paid.
+You are always welcome to contribute. You are paid for one voluntary
+contribution per class. After that, further contributions that day are
+recorded and count as participation in the discussion, but they are not paid.
 
 The limit applies to payment, not to speaking or asking questions.
 

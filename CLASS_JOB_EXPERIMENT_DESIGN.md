@@ -12,6 +12,12 @@ design, baseline survey, and initial bid sheet are specified in
 `CLASS_JOB_PREREGISTRATION_DRAFT.md`, which governs where the two documents
 differ. The data are intended for research, which resolves decision 7 below.
 
+Decisions since this draft (2026-11-23): bid boxes carry no wage anchor;
+volunteering is not rationed by paid slots or a queue, but each student is paid
+for one voluntary contribution per class and later ones are unpaid; a bid
+ceiling is still undecided. Read the "Volunteering And Cold Calls" section
+below with those changes.
+
 ## Existing Economic Loop
 
 The app already has the intended structure:
