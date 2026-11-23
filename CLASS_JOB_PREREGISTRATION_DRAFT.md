@@ -24,7 +24,8 @@ Reservation Wages in an Introductory Course
 - Term: [TERM]
 - Sections: [SECTION LABELS]
 - Expected enrollment: about 25 students per section, about 50 in total
-- Meetings: two per week per section; [DAYS, NUMBER OF WEEKS, AND LENGTH]
+- Meetings: two per week per section for 12 weeks (24 meetings); [DAYS AND
+  LENGTH]
 - Registration repository/platform: [PLATFORM AND URL]
 - Planned registration date: [DATE]
 
@@ -175,15 +176,16 @@ in the other section of the course, and a try earns one point. A job that was
 not run in the other section earns that section's average across all jobs.
 Because the wage comes from the other section, no bid a student places can
 change their own practice pay. The two sections are run as separate markets
-in the app for this reason. Students are told this rule [WHEN].
+in the app for this reason. Students are told this rule at the start of the
+term.
 
 Random assignment:
 
 - Unit: student. Randomization is carried out separately within each section.
 - Roster: students enrolled and with a completed baseline survey at
   [FREEZE DATE/TIME].
-- Arms: each student is assigned to practise exactly [K] of the [J] catalog
-  jobs. Every student is assigned; with about 25 students and four training
+- Arms: each student is assigned to practise exactly [K; BETWEEN 0 AND 3 IS
+  ACCEPTABLE, 2 RECOMMENDED] of the [J] catalog jobs. Every student is assigned; with about 25 students and four training
   meetings per section there is no no-practice arm.
 - Balance: arm sizes are fixed in advance and as equal across jobs as slot
   counts allow; [OPTIONAL: BLOCKED ON BASELINE COMFORT-INDEX TERCILE].

@@ -967,7 +967,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - Class-job experiment: the volunteer wage setting defaults to the single lowest bid in a job type, which gives students a reason to bid above their true minimum for answers and board work. Check how cold-call selection uses those bids and whether the experiment sections should use the k-th-lowest rule.
 
 - Class-job experiment: what are the exemption protocol number and date, and does the exemption require a consent step?
-- Class-job experiment: how many weeks does the term run, and how many training jobs should each student practise (one or two of the catalog jobs)? Two roughly needs 12-13 performances per training meeting in a 25-student section.
+- Class-job experiment: fix the number of practice jobs per student (Kyle is open to 0-3; 2 recommended, about 12-13 performances per practice meeting in a 25-student section). The term is 12 weeks and the practice-pay rule is announced up front.
+- Class-job experiment: the baseline survey Kyle wrote is not in this repository on any branch; add it or share it so it can be matched to the preregistration.
 - Class-job experiment: can the initial bid sheet at market opening be required of every student? It is the primary outcome, so missing responses cost power directly.
 - Class-job experiment: where is the fall pilot database? The power simulation needs its bid dispersion.
 
