@@ -105,7 +105,7 @@ A student's first sealed minimum-wage bid for a job is lower when the student
 was randomly assigned to practise that job than when the student was not.
 
 The test is two-sided. The predicted direction is negative, because practice
-is expected to reduce the perceived cost of the job. A positive effect, in
+is expected to lower the points a student asks to be paid for the job. A positive effect, in
 which students learn that a job is harder than expected, is reported with the
 same weight.
 
