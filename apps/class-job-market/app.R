@@ -3836,6 +3836,12 @@ server <- function(input, output, session) {
   # existing courses keep the pre-filled default wage.
   bid_anchor_hidden_for_scope <- function()
     identical(as.character(get_scoped_setting("bid_no_anchor", "0")), "1")
+  # Optional per course/section: the saved draw applies the class date's wage
+  # pricing rule and one-job-per-student setting, as Preview does. Off by
+  # default, so existing courses keep the saved draw they have always had
+  # (pay as bid, multiple jobs allowed) for the non-random-wage rules.
+  saved_draw_uses_date_settings_for_scope <- function()
+    identical(as.character(get_scoped_setting("draw_uses_date_settings", "0")), "1")
   round_is_practice <- function(round_id) {
     row <- tryCatch(db_query(
       "SELECT COALESCE(practice_no_points,0) v FROM weekly_rounds WHERE id=?;",
@@ -11551,6 +11557,9 @@ server <- function(input, output, session) {
         checkboxInput("bid_no_anchor_input",
                       "Hide instructor wages from students until they bid (empty bid boxes, no fallback volunteer wage) — this course / section",
                       value = bid_anchor_hidden_for_scope(), width = "100%"),
+        checkboxInput("draw_uses_date_settings_input",
+                      "Draw Jobs applies each class date's wage pricing rule and one-job-per-student setting, as Preview does (off: the saved draw pays winners their own bid and allows multiple jobs, except on random-wage dates) — this course / section",
+                      value = saved_draw_uses_date_settings_for_scope(), width = "100%"),
         actionButton("save_vol_clearing_btn", "Save", class = "btn btn-sm btn-primary"),
 
         # ── Templates ─────────────────────────────────────────────────────────────
@@ -15492,6 +15501,8 @@ server <- function(input, output, session) {
       set_scoped_setting("volunteer_paid_cap", if (isTRUE(input$volunteer_paid_cap_input)) "1" else "0")
     if (!is.null(input$bid_no_anchor_input))
       set_scoped_setting("bid_no_anchor", if (isTRUE(input$bid_no_anchor_input)) "1" else "0")
+    if (!is.null(input$draw_uses_date_settings_input))
+      set_scoped_setting("draw_uses_date_settings", if (isTRUE(input$draw_uses_date_settings_input)) "1" else "0")
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification(
       switch(rule,
@@ -15744,14 +15755,17 @@ server <- function(input, output, session) {
       db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(target_rid))
     }
 
-    # The saved draw has always run with the defaults (pay as bid, multiple jobs
-    # allowed) whatever the class-date settings say; only Preview applies them.
-    # That is left exactly as it was. The random-wage rule is new, so it alone
-    # is passed through, with the date's one-job-per-student setting.
-    pairs <- if (identical(mode, "wage_bidding") && identical(pricing_rule, "random_wage"))
+    # The saved draw historically ran with the defaults (pay as bid, multiple
+    # jobs allowed) whatever the class-date settings say; only Preview applied
+    # them. That stays the default so a running term is not repriced. With the
+    # per-course/section switch on, the saved draw applies the date's settings
+    # for every rule. The random-wage rule always applies them.
+    random_wage_date <- identical(mode, "wage_bidding") && identical(pricing_rule, "random_wage")
+    pairs <- if (random_wage_date || saved_draw_uses_date_settings_for_scope())
       compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk,
                          allow_multiple_jobs = allow_multiple,
-                         wage_pricing_rule = pricing_rule, persist_random_wage = TRUE)
+                         wage_pricing_rule = pricing_rule,
+                         persist_random_wage = random_wage_date)
     else compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
     if (!length(pairs) && identical(mode, "wage_bidding") && identical(pricing_rule, "random_wage")) {
       close_bidding_after_draw(rid)
