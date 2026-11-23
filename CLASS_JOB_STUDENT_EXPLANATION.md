@@ -8,9 +8,14 @@ Our class needs real work: explaining graphs, summarizing ideas, asking useful
 questions, checking evidence, and helping the class make connections. You will
 have opportunities to do these jobs and earn participation points.
 
-During the first two weeks, we will practice the jobs. There is no bidding and
-no point payment during this practice period. You will receive short feedback
-so that you know what each job requires before the market begins.
+During the first two weeks, we will practice the jobs. Practice jobs are
+assigned by lottery, so which job you practice is a matter of chance. There is
+no bidding and no point payment during this practice period. You will receive
+short feedback so that you know what each job requires before the market
+begins.
+
+When the market opens in week three, everyone first enters a bid, or **Not
+willing at this wage**, for every job.
 
 Beginning in week three:
 

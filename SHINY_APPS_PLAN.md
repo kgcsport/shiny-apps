@@ -166,6 +166,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-11-23** — The spring class-job study is a randomized experiment, not a descriptive market study. **Decision (Kyle):** the confirmatory question is whether randomly assigned job practice in the no-stakes training weeks changes a student's later minimum-wage bid for that same job; the descriptive market paper will be written from the fall pilot instead. **Consequences:** `CLASS_JOB_PREREGISTRATION_DRAFT.md` now has one primary hypothesis (assigned practice and the first sealed bid, student-by-job model with student fixed effects and randomization inference), a required baseline survey, a seeded and hashed exposure schedule, and an initial bid sheet at market opening as the primary outcome. The earlier market hypotheses are retained as descriptive analyses. No app code or course policy changed.
+
 - **2026-11-11** — Calculate automatic participation grades from positive earning ledger entries in Student Grades and Account, even before any uploaded grades. Use the configured category target and weight. With a target of 25 gross tokens and a 15% weight, verify that 10 tokens earn 6 percentage points, that later earnings update the grade, and that spending and non-earning credits do not change it. Preserve manual grades, grade adjustments, and roster scope.
 
 - **2026-11-11** — Repair gradebook item editing, approved grade reweights, and policy-project dates. **Scope:** make gradebook item name/weight controls deliver a durable non-submit event; apply approved category and assignment reweight requests to each student’s displayed grade calculation; add scoped instructor controls for the progress-report and final-brief dates with ECON 342 defaults matching `PubEcon/course-data/fall2026.yml` (November 23 and December 15, 2026). Live synchronization with a course page/GitHub repository is future integration work, not part of this repair. **Invariants:** pending and rejected requests do not affect grades; pricing, cumulative caps, token debits/refunds, reveal gates, exam drops, stored raw grades, rubric scores, team presentation dates, and course/section isolation remain unchanged. **Acceptance:** an instructor renames/reweights a policy-project item, the saved values persist, and saving one subitem leaves the open category and sibling inputs in place; approving a category or individual-assignment request immediately changes that student’s effective weights and grade while another student’s grade is unchanged; an instructor can save scoped policy dates and students/admins see the same milestones, including the November 23 progress report before the Zoom meeting. **Dependency check:** preserve `gradebook_categories`, `gradebook_item_names`, `grade_reweight_requests`, `compute_student_grade()`, assessment reveal exclusions, policy team assignments, and the existing rubric workflow. **Verification:** `Rscript --vanilla tests/critical-grade-reweighting.R`, parser/diff checks, Class Job Market smoke tests, and the full Docker build; manually verify instructor Grades & Gradebook/Policy Rubrics and student Account/Assignments in the staged immutable image before production promotion.
@@ -485,6 +487,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-11-23** (Claude Code) — Revised `CLASS_JOB_PREREGISTRATION_DRAFT.md` around the causal exposure test after Kyle chose it over the descriptive market study, and aligned `CLASS_JOB_EXPERIMENT_DESIGN.md` and `CLASS_JOB_STUDENT_EXPLANATION.md` with it. Documents only; nothing to build or render, and no app change.
 
 - **2026-11-11** (Codex) — Connected the automatic Participation category to gross token earnings in Student Grades and Account. Verified live updates, a 25-token target at 15% in the test fixture, and the cap at full credit. Production’s Participation weight and the Fall 2026 syllabus both list 10%.
 - **2026-11-11** (Codex) — Made gradebook subitem saves non-disruptive: saving one item name or weight persists the change and linked-reference migration without invalidating and rebuilding the entire Settings panel, so the category remains open and sibling inputs stay in place. Category structural edits still refresh normally. The production-observer regression now asserts the gradebook render counter is unchanged by an item save; focused gradebook tests and all 35 Docker publication gates pass in local image `4727c9f233de`. No staging or production environment was changed.
@@ -933,6 +937,11 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 3. Publish the PS6 Cloudflare Worker assignment, then enable the preconfigured PS6 and PS6 corrections extension products in Settings → Spending Options → Assignment Extensions.
 
 ## Questions for Kyle
+
+- Class-job experiment: what is the institutional review status, and who will collect consent so that consent status stays hidden until grades are submitted?
+- Class-job experiment: what is the expected enrollment per Intro section, and how many training-period slots per meeting are feasible? This decides whether every student can practise a job or a no-practice arm is needed.
+- Class-job experiment: can the initial bid sheet at market opening be required of every student? It is the primary outcome, so missing responses cost power directly.
+- Class-job experiment: where is the fall pilot database? The power simulation needs its bid dispersion.
 
 - Should students see the posted demand k itself, or only the implied wage (current behavior)?
 - For ECON 160, what should the uploaded course and section labels be (for example, `ECON 160 Fall 2026` / `Religion module`)?

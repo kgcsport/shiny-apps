@@ -1,15 +1,20 @@
-# Preregistration Draft: Class-Job Labor Market
+# Preregistration Draft: Random Early Job Exposure in a Class-Job Market
 
-Version date: 2026-11-12
+Version date: 2026-11-23 (revises the 2026-11-12 draft)
 
 Status: registration draft. It must not be registered until all bracketed
 fields are resolved, the software is frozen and tested, and institutional
-review requirements are satisfied.
+review requirements are satisfied. Registration must precede the first
+training-period assignment.
+
+Change from the 2026-11-12 draft: the confirmatory question is now the causal
+effect of randomly assigned early job practice. The market questions in the
+earlier draft are retained as descriptive analyses only.
 
 ## 1. Title
 
-Reservation Wages, Classroom Work, and Perk-Backed Participation Points in an
-Introductory Course
+Learning to Participate: Random Early Exposure to Classroom Jobs and Later
+Reservation Wages in an Introductory Course
 
 ## 2. Investigators and setting
 
@@ -55,43 +60,74 @@ status until final grades are submitted.
 
 ## 4. Research questions
 
-Primary questions:
+Primary question:
 
-1. How do students' minimum acceptable wages differ across authentic classroom
-   jobs?
-2. How concentrated are paid classroom work and token earnings under the
-   auction and live-participation limits?
-3. Do students continue to submit informative bids as gross earnings approach
-   the participation threshold?
-4. How are spendable points used across individual and collective class perks?
+1. Does randomly assigned practice in a classroom job during the no-stakes
+   training period change the minimum wage the student later requires to do
+   that same job?
 
 Secondary questions:
 
-1. How do bids change after prior experience and feedback on the same job?
-2. How do bids, completion, purchases, and threshold timing differ descriptively
-   between sections?
-3. How does the distribution of unpaid volunteering compare with paid live
-   participation?
+1. Does any effect on bids persist through the first fixed-rule market weeks?
+2. Does assigned practice change how often the student later takes and
+   successfully completes that job?
+3. Does the effect differ by baseline comfort with participation and by job
+   family (live/public versus prepared/artifact)?
+4. If a no-practice arm exists, does practising any job change bids across all
+   jobs?
 
-The design is a repeated-measures observational market study. Auction assignment
-is endogenous to bids. Except for explicitly randomized tie-breaking and
-oversubscribed volunteer selection, analyses are not interpreted as causal
-treatment effects.
+Descriptive questions carried over from the earlier draft, with no
+confirmatory test:
+
+- how minimum acceptable wages differ across jobs;
+- how concentrated paid work and earnings are;
+- whether bidding continues as students approach the participation threshold;
+  and
+- how spendable points are used across perks.
+
+The design is a randomized experiment embedded in the course. Students are
+randomly assigned which job they practise in the training period. Treatment is
+practice with feedback: a student who practises a job also receives an outcome
+and up to two diagnostic tags for it, and the two are not separated. Every
+student can watch every job being performed, so the estimand is the effect of
+performing a job over and above observing it.
+
+Market assignment after the training period is endogenous to bids. Analyses of
+market behaviour that do not use the registered random assignment are
+descriptive.
 
 ## 5. Confirmatory hypotheses
 
-All directional hypotheses must be retained, revised, or removed before
-registration. A removed hypothesis cannot be restored after observing outcome
-data.
+### H1 (primary): own-job practice and the first sealed bid
 
-### H1: Job-specific reservation wages
+A student's first sealed minimum-wage bid for a job is lower when the student
+was randomly assigned to practise that job than when the student was not.
 
-Within students, minimum acceptable wages differ across pre-specified job
-families. The primary contrast is:
+The test is two-sided. The predicted direction is negative, because practice
+is expected to reduce the perceived cost of the job. A positive effect, in
+which students learn that a job is harder than expected, is reported with the
+same weight.
 
-> live/public-performance jobs versus prepared or artifact-producing jobs.
+### H2 (secondary): persistence
 
-Direction: live/public-performance jobs have higher median bids.
+The effect in H1 is also present in the student's mean bid for the job across
+the fixed-rule market weeks [WEEKS 3-6].
+
+### H3 (secondary): later completion
+
+A student records more `Success` completions of a job during [WINDOW] when the
+student was randomly assigned to practise it.
+
+This outcome is counted for every student-job pair and is zero when the
+student never holds the job, so it is not conditioned on winning an auction.
+
+### Pre-specified heterogeneity
+
+H1 is re-estimated separately for:
+
+- students above versus at or below the section median of the baseline
+  participation-comfort index; and
+- live/public versus prepared/artifact jobs, using the classification below.
 
 Pre-specified classification:
 
@@ -99,39 +135,68 @@ Pre-specified classification:
 - Prepared/artifact: [JOB LIST]
 - Excluded/other: [JOB LIST]
 
-### H2: Experience and subsequent bids
-
-After a prior `Success` on a job, a student's next bid for the same job is lower
-than the student's prior bid for that job.
-
-This is interpreted as a within-student association, not a causal learning
-effect, because job experience is selected by bids and allocation.
-
-### H3: Continued bidding near the threshold
-
-The probability of submitting a valid bid remains positive after a student has
-earned at least 80% of the participation threshold.
-
-Primary estimand: the valid-bid rate for eligible student-job opportunities at
-less than 80% versus at least 80% of the threshold. This is descriptive; perk
-demand and time trends may both affect the comparison.
-
-### H4: Concentration safeguard
-
-No student receives more than the pre-specified per-class paid-live limit, and
-the semester share of paid live contributions held by the highest-earning 10%
-of students is [BENCHMARK OR MARK AS DESCRIPTIVE].
-
-Unless an external benchmark is specified before registration, the second
-part is descriptive and not a hypothesis test.
+Heterogeneity by the feedback outcome received in training is exploratory,
+because that outcome is determined after assignment.
 
 ## 6. Course mechanism
 
-### 6.1 Training period
+### 6.1 Baseline survey
+
+Every student completes a baseline survey before the exposure schedule is
+generated. Survey close: [DATE/TIME, BEFORE THE FIRST TRAINING ASSIGNMENT].
+
+For each job in the frozen catalog the survey records:
+
+- comfort doing the job, on a [SCALE]; and
+- the hypothetical minimum number of participation points the student would
+  require to do it, with the same bid step, ceiling, and `Not willing`
+  response as the later market.
+
+It also records [COMFORT SPEAKING IN CLASS, CONCERN ABOUT BEING WRONG PUBLICLY,
+PRIOR PARTICIPATION HABITS, CONFIDENCE WITH QUANTITATIVE MATERIAL; FINAL ITEM
+LIST IN APPENDIX E]. The baseline participation-comfort index is [EXACT
+CONSTRUCTION].
+
+Baseline responses are hypothetical and unpaid. They are used as covariates
+and for the heterogeneity split, never to set wages.
+
+### 6.1a Training period and random exposure
 
 The first [NUMBER; PLANNED AS TWO] weeks contain no bids, purchases, or token
-payouts. Students practice authentic jobs and receive one outcome plus at most
-two diagnostic tags.
+payouts. Because nothing is paid, practising a job creates no difference in
+token wealth between students.
+
+Random assignment:
+
+- Unit: student. Randomization is carried out separately within each section.
+- Roster: students enrolled and with a completed baseline survey at
+  [FREEZE DATE/TIME].
+- Arms: each student is assigned to practise exactly [K] of the [J] catalog
+  jobs. [CHOOSE: EVERY STUDENT IS ASSIGNED / A NO-PRACTICE ARM OF SIZE N0 PER
+  SECTION EXISTS BECAUSE TRAINING SLOTS ARE LIMITED.]
+- Balance: arm sizes are fixed in advance and as equal across jobs as slot
+  counts allow; [OPTIONAL: BLOCKED ON BASELINE COMFORT-INDEX TERCILE].
+- Timing: the training meeting in which each student performs is also drawn at
+  random within the student's assigned job.
+- Procedure: a seeded script generates the full schedule once. The seed, the
+  script commit, and a hash of the schedule are recorded before the first
+  training meeting. The schedule is not regenerated.
+- Late adds: [EXCLUDED FROM THE CONFIRMATORY SAMPLE AND GIVEN A JOB BY THE SAME
+  SCRIPT / OTHER REGISTERED RULE].
+
+Students are told that training jobs are assigned by lottery. Students
+practise their assigned job and receive one outcome plus at most two
+diagnostic tags.
+
+Absences and replacements:
+
+- A student who is absent keeps the original assignment in the record.
+- Make-up rule: [PERFORM AT THE NEXT MEETING / NO MAKE-UP].
+- Empty slots are [LEFT EMPTY / FILLED IN THE ORDER OF A PRE-RANDOMIZED RESERVE
+  LIST GENERATED BY THE SAME SCRIPT]. A replacement's performance is recorded
+  as practice the student was not assigned.
+- The instructor does not reassign training jobs at discretion. Any departure
+  is logged with a reason.
 
 Outcomes:
 
@@ -197,6 +262,10 @@ reason, and the information available at the time.
 
 ### 6.3 Wage bidding and allocation
 
+- Initial bid sheet: at market opening on [DATE], before any auction result is
+  shown, every student submits a bid or `Not willing at this wage` for every
+  job in the catalog. Submission is [REQUIRED IN CLASS / REQUIRED TO ENTER THE
+  MARKET]. These sealed responses are the primary outcome.
 - Bidding begins: [DATE / WEEK]
 - Bid unit: participation points
 - Bid step: [STEP]
@@ -273,72 +342,96 @@ problem-set extensions remain deterministic purchases and are not insurance.
 
 ### Inclusion
 
-- enrolled students in the registered sections;
-- research consent or other approved basis for inclusion;
-- at least one eligible post-training class meeting.
+- students on the frozen randomization roster in the registered sections;
+- research consent or other approved basis for inclusion.
+
+Students are analysed according to the job they were assigned, whether or not
+they performed it.
 
 ### Exclusion
 
 - instructors, administrators, demo users, and synthetic accounts;
 - students who decline research participation;
-- students who withdraw before [PRE-SPECIFIED DATE OR RULE];
+- students who join after the randomization roster is frozen;
+- students who withdraw before the initial bid sheet;
 - records produced during documented app testing; and
 - observations outside the frozen course/section/date scope.
 
 Enrollment determines sample size. No enrollment-based stopping rule is used.
-Final sample counts and exclusions will be reported in a flow table by section.
+Final sample counts and exclusions will be reported in a flow table by section
+and by assigned job.
 
 ### Power and precision
 
-Before registration, run a simulation using final expected enrollment, job
-counts, meetings, within-student bid correlation, and plausible bid dispersion.
-Attach code and report the minimum detectable standardized within-student job
-contrast for H1 at 80% power and two-sided alpha 0.05. If confirmatory power is
-inadequate, label the study a descriptive pilot rather than changing the sample
-after outcomes are observed.
+Before registration, run a simulation of the exact registered design: final
+expected enrollment by section, [J] jobs, [K] assigned jobs per student, the
+planned arm sizes, and the H1 model with randomization inference. Take bid
+dispersion, the within-student correlation of bids across jobs, and the
+correlation between baseline and market bids from the pilot-semester data
+where available.
+
+Attach the code and report the minimum detectable effect on the first sealed
+bid, in points and in within-job standard deviations, at 80% power and
+two-sided alpha 0.05. If the minimum detectable effect is larger than
+[THRESHOLD], register the study as a pilot of the design rather than as a
+confirmatory test, or add sections or terms before registration, not after
+outcomes are observed.
 
 ## 8. Variables
 
-### Primary outcomes
+### Treatment
 
-1. `min_wage`: submitted minimum acceptable wage for an eligible student-job
-   opportunity.
-2. `valid_bid`: indicator for a numeric bid within bounds; `not willing` is a
-   distinct registered response.
-3. `paid_live_count`: paid live contributions per student and meeting.
-4. `gross_earned`: cumulative positive grade-relevant earnings.
-5. `perk_spending`: point debits and contributions by perk.
+- `assigned_ij`: 1 if student `i` was randomly assigned to practise job `j` in
+  the training period, from the hashed schedule.
+- `performed_ij`: 1 if student `i` actually performed job `j` in the training
+  period, whether assigned or as a replacement.
+
+### Primary outcome
+
+- `first_bid_ij`: the student's response for job `j` on the initial bid sheet,
+  in participation points. `Not willing at this wage` is coded as the wage
+  ceiling plus one bid step.
 
 ### Secondary outcomes
 
-- assignment and job family;
+- `mean_bid_ij`: mean locked bid for job `j` across [WEEKS 3-6], with the same
+  coding of `Not willing`;
+- `willing_ij`: indicator for a numeric bid on the initial bid sheet;
+- `success_count_ij`: number of `Success` completions of job `j` in [WINDOW];
+- `held_ij`: indicator for holding job `j` at least once in [WINDOW]; and
+- paid and unpaid voluntary live contributions, for live/public jobs.
+
+### Descriptive market variables
+
 - clearing wage and pricing fallback;
-- Success/Try/Fail/Miss/Excused;
-- diagnostic tags;
-- spendable balance;
-- unpaid live contributions;
-- threshold attainment date;
+- Success/Try/Fail/Miss/Excused and diagnostic tags;
+- gross earnings, spendable balance, and threshold attainment date;
+- perk debits and contributions by perk;
 - instructor override; and
 - technical-error indicator.
 
 ### Pre-specified covariates
 
-- section;
-- class date or meeting index;
-- job identity and job family;
-- prior assignment and prior outcome for the same job;
-- cumulative paid opportunities before the meeting;
-- gross earnings as a fraction of threshold before bidding; and
-- [OTHER PRE-TREATMENT COVARIATES, OR NONE].
+- baseline hypothetical minimum wage for the same student and job;
+- baseline comfort for the same student and job;
+- section; and
+- job identity and job family.
 
-Do not use final course performance, later grades, or post-market behavior as
-control variables in the primary bid models.
+All covariates are measured before random assignment. Do not use training
+feedback outcomes, later grades, earnings, or market behaviour as controls in
+the confirmatory models.
 
 ## 9. Missing and exceptional records
 
-- A saved `Not willing at this wage` response is not a missing bid.
-- No saved response is missing unless logs establish a technical failure.
-- Missing bids are not imputed.
+- A saved `Not willing at this wage` response is an observed outcome, not a
+  missing bid.
+- A student-job pair with no response on the initial bid sheet is missing and
+  is not imputed in the primary analysis.
+- Report missingness of the primary outcome by assignment status. If it
+  differs by more than [X] percentage points, report trimming bounds alongside
+  the primary estimate.
+- A missing baseline wage is set to the section-job mean and flagged with an
+  indicator.
 - A Try/Fail/Miss is an observed outcome, not missing completion data.
 - Excused absences are excluded from completion-rate denominators and reported.
 - Technical duplicate ledger entries are resolved using the app's idempotency
@@ -348,76 +441,94 @@ control variables in the primary bid models.
 
 ## 10. Analysis plan
 
-### H1
+### H1 (primary)
 
-Fit a student fixed-effect model among valid numeric bids:
+The unit of observation is the student-job pair, for every job in the frozen
+catalog. Estimate:
 
 ```text
-min_wage_ijt = student_FE_i + job_family_j + meeting_FE_t + error_ijt
+first_bid_ij = student_FE_i + job_by_section_FE_js
+               + beta * assigned_ij
+               + delta * baseline_wage_ij + error_ij
 ```
 
-Primary coefficient: live/public minus prepared/artifact. Use standard errors
-clustered by student. Report the coefficient, 95% confidence interval, within-
-student standardized effect, medians, and full bid distributions.
+`beta` is the intent-to-treat effect of being assigned to practise a job on
+the first sealed bid for that job, relative to the same student's bids for
+jobs the student was not assigned. Student fixed effects absorb anything that
+shifts a student's bids for all jobs, including how the student values a
+point.
+
+Inference: the registered p-value comes from randomization inference, using
+[10,000] re-draws of the registered assignment script and `beta` as the test
+statistic. Standard errors clustered by student and a 95% confidence interval
+are also reported.
+
+Because first bids are sealed and submitted before any auction result, this
+outcome cannot be affected by other students' market behaviour.
 
 Sensitivity analyses:
 
-- mixed-effects model with student random intercept;
-- ordinal/censored model including `Not willing at this wage` above the cap;
-- section-specific estimates; and
-- exact job indicators instead of job families.
+- the same model without the baseline covariate;
+- bids rank-transformed within job and section;
+- a censored model treating `Not willing` as above the ceiling;
+- `willing_ij` as the outcome; and
+- section-specific estimates.
 
-### H2
+### Effect of performing the job
 
-Among consecutive valid bids by the same student for the same job, calculate:
+Estimate the effect of actually performing the job by two-stage least squares,
+with `assigned_ij` as the instrument for `performed_ij` in the H1 model. Report
+the first stage and compliance rates by job and section.
 
-```text
-next bid - prior bid
-```
+### H2 and H3
 
-Compare changes after prior Success with changes after other observed outcomes,
-including student-job fixed effects and meeting index. Report as association.
+Re-estimate the H1 model with `mean_bid_ij` (H2) and `success_count_ij` (H3) as
+outcomes, using the same randomization inference. These outcomes are observed
+after the market opens, so they include any effect that operates through
+winning jobs, earning points, or changing clearing wages for other students.
+They are interpreted as total effects of assignment within the section market.
 
-### H3
+### Heterogeneity
 
-For every eligible student-job opportunity, compare valid-bid rates when the
-student begins the bidding window below 80% versus at or above 80% of `T`.
-Estimate a linear probability model with student and meeting fixed effects and
-job controls. Also plot bid rates in 10-percentage-point threshold bins.
+Estimate the H1 model with `assigned_ij` interacted with (a) the above-median
+baseline comfort indicator and (b) the live/public job indicator. Report the
+subgroup effects and the interaction.
 
-### H4 and concentration
+### General effect of any practice
 
-Verify the per-class cap directly. Report, by section and over time:
+Only if a no-practice arm is registered: compare the student's mean first bid
+across all jobs between students assigned any practice and students assigned
+none, with section fixed effects and the student's mean baseline wage. This
+comparison is between students and is secondary.
 
-- top-10% share of paid live contributions;
-- top-10% share of gross earnings;
-- Gini coefficients for both distributions;
-- unique students paid per meeting; and
-- the number of oversubscribed volunteer selections.
+### Descriptive market analyses
 
-Unless a benchmark is filled above, these are descriptive.
+Reported by section, without hypothesis tests:
 
-### Perk demand
+- bid distributions by job and job family, and the within-student live/public
+  minus prepared/artifact difference;
+- valid-bid rates by 10-percentage-point bins of progress to the threshold;
+- top-10% shares and Gini coefficients of paid live contributions and gross
+  earnings, unique students paid per meeting, and the number of oversubscribed
+  volunteer selections; and
+- purchase and contribution rates, timing, and point shares by perk.
 
-Report purchase/contribution rates, timing, and point shares by perk. For fixed-
-price individual perks, a purchase establishes valuation at least as high as
-the price only when the student had sufficient balance and was eligible. A
-nonpurchase is treated as valuation below price only under the same balance and
-eligibility conditions. Do not label other nonpurchases as zero willingness to
-pay.
+For fixed-price individual perks, a purchase establishes valuation at least as
+high as the price only when the student had sufficient balance and was
+eligible. A nonpurchase is treated as valuation below price only under the same
+conditions.
 
-### Section comparisons
-
-Report identical summaries by section. Do not attach causal language or use
-the section count as if it were a large cluster-randomized sample.
+Section comparisons carry no causal language. Two sections are not treated as
+a cluster-randomized sample.
 
 ## 11. Multiple testing
 
-H1 is the primary confirmatory test at two-sided alpha 0.05. H2 and H3 are a
-secondary family; report raw p-values and Benjamini-Hochberg adjusted q-values
-within that family. H4 is confirmatory only if a numeric benchmark is registered;
-otherwise it is descriptive. All other analyses are exploratory and labeled as
-such.
+H1 is the single primary confirmatory test at two-sided alpha 0.05. H2 and H3
+are a secondary family; report raw p-values and Benjamini-Hochberg adjusted
+q-values within that family. The two heterogeneity interactions are a separate
+secondary family treated the same way. The effect of performing the job, the
+general effect of any practice, and all market analyses are reported without
+confirmatory claims. Anything else is exploratory and labeled as such.
 
 ## 12. Data freeze and reproducibility
 
@@ -488,3 +599,8 @@ CEILING, AND FALLBACK WAGE.]
 ## Appendix D: Diagnostic-tag dictionary
 
 [INSERT FINAL TAGS AND ONE-SENTENCE APPLICATION RULES.]
+
+## Appendix E: Exposure schedule and baseline survey
+
+[INSERT THE ASSIGNMENT SCRIPT COMMIT, SEED-HANDLING RULE, ARM SIZES BY SECTION
+AND JOB, THE SCHEDULE HASH, AND THE FINAL BASELINE SURVEY INSTRUMENT.]

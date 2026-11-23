@@ -5,6 +5,13 @@ Date: 2026-11-12
 Status: design draft for instructor review. This changes neither the live app
 nor any course policy.
 
+Update 2026-11-23: the study is a randomized experiment. Training-period jobs
+are assigned by a registered random schedule, and the confirmatory question is
+whether assigned practice changes later bids for the same job. The registered
+design, baseline survey, and initial bid sheet are specified in
+`CLASS_JOB_PREREGISTRATION_DRAFT.md`, which governs where the two documents
+differ. The data are intended for research, which resolves decision 7 below.
+
 ## Existing Economic Loop
 
 The app already has the intended structure:
@@ -245,6 +252,8 @@ For every course, section, class, and job:
 
 - posted slots and fallback wage;
 - each sealed minimum-wage bid and submission time;
+- the baseline survey, the hashed training-period exposure schedule, who
+  actually performed each training job, and the initial bid sheet;
 - allocation, pricing rule, clearing wage, and tie-break;
 - completion outcome and payout;
 - feedback outcome and diagnostic tags;
