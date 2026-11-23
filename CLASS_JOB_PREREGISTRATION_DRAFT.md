@@ -147,9 +147,9 @@ generated. Survey close: [DATE/TIME, BEFORE THE FIRST TRAINING ASSIGNMENT].
 For each job in the frozen catalog the survey records:
 
 - comfort doing the job, on a [SCALE]; and
-- the hypothetical minimum number of participation points the student would
-  require to do it, with the same bid step, ceiling, and `Not willing`
-  response as the later market.
+- the minimum number of participation points the student would require to do
+  it, entered on the same Job Market bid form used in the later market, with
+  the same bid step and ceiling. Baseline bids assign no jobs and pay nothing.
 
 It also records [COMFORT SPEAKING IN CLASS, CONCERN ABOUT BEING WRONG PUBLICLY,
 PRIOR PARTICIPATION HABITS, CONFIDENCE WITH QUANTITATIVE MATERIAL; FINAL ITEM
@@ -264,7 +264,8 @@ reason, and the information available at the time.
 - Bid form: the ordinary Job Market page, where a student enters a minimum
   wage for each job and may update it until each bid lock. Bids stand and carry
   forward between meetings.
-- No wage anchor: bid boxes are empty until the student saves a bid of their
+- No wage anchor: the app's no-anchor switch is on for the registered sections.
+  Bid boxes are empty until the student saves a bid of their
   own. No instructor wage is pre-filled or displayed before bids exist, and no
   points are paid in the training period, so students see no wage before their
   first bid.
@@ -275,8 +276,10 @@ reason, and the information available at the time.
 - Bidding begins: [DATE / WEEK]
 - Bid unit: participation points
 - Bid step: [STEP]
-- Maximum wage bid: [UNDECIDED: A CEILING B WITH `Not willing at this wage` AS
-  THE ABOVE-CEILING RESPONSE, OR NO CEILING. THE APP CURRENTLY HAS NO CEILING.]
+- Maximum wage bid: [PROPOSED: B = T/4, ROUNDED DOWN TO THE BID STEP, WHERE T IS
+  THE FULL-CREDIT THRESHOLD; USE T/3 IF MORE THAN 5% OF PILOT-SEMESTER BIDS
+  EXCEED T/4. FIX B BEFORE THE BASELINE SURVEY SO BASELINE AND MARKET BIDS SHARE
+  IT. `Not willing at this wage` IS THE ABOVE-CEILING RESPONSE. NOT YET BUILT.]
 - Allocation: lowest valid bids receive the posted slots
 - Pricing: uniform reverse-second-price
 - Wage: first unsuccessful bid, bounded by the registered maximum

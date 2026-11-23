@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Regression coverage for two measurement rules in Class Job Market:
-#   1. The wage-bid form never pre-fills or displays an instructor wage before
-#      the student has bid, so first bids are not anchored.
+#   1. With the per-course switch on, the wage-bid form never pre-fills or
+#      displays an instructor wage before the student has bid.
 #   2. With the per-course switch on, a student is paid for at most one
 #      voluntary contribution per class date; later ones are recorded unpaid.
 suppressPackageStartupMessages({ library(DBI); library(RSQLite) })
@@ -80,7 +80,22 @@ bid_box <- function(html, post_id) {
 # Shiny renders an empty numeric box as value="NA", which browsers show blank.
 box_is_empty <- function(box) !grepl("value=", box, fixed = TRUE) || grepl("value=\"NA\"", box, fixed = TRUE)
 
-# 1. No anchor: empty boxes, no instructor wage on the volunteer wage list,
+# 0. Default (switch off): existing courses keep the pre-filled posted wage
+#    and the fallback volunteer wage.
+shiny::testServer(app$server, {
+  set_student(rv, "s1@test.edu", "Student 1")
+  stopifnot(!bid_anchor_hidden_for_scope(),
+            grepl("value=\"7\"", bid_box(output$jm_bid_form$html, role_post), fixed = TRUE),
+            grepl("7 tokens", output$job_market_tab$html, fixed = TRUE))
+})
+shiny::testServer(app$server, {
+  set_admin(rv)
+  session$setInputs(vol_clearing_rule_sel = "lowest", bid_no_anchor_input = TRUE, save_vol_clearing_btn = 1L)
+  stopifnot(bid_anchor_hidden_for_scope(), !volunteer_pay_capped_for_scope())
+})
+stopifnot(identical(app$get_setting("bid_no_anchor::econ 101::01"), "1"), is.null(app$get_setting("bid_no_anchor")))
+
+# 1. Switch on: empty boxes, no instructor wage on the volunteer wage list,
 #    and saving an untouched form records no bid.
 shiny::testServer(app$server, {
   set_student(rv, "s1@test.edu", "Student 1")

@@ -3712,6 +3712,11 @@ server <- function(input, output, session) {
   # recorded with their outcome, at zero tokens. Off by default.
   volunteer_pay_capped_for_scope <- function()
     identical(as.character(get_scoped_setting("volunteer_paid_cap", "0")), "1")
+  # Optional per course/section: never show students an instructor wage before
+  # they bid (empty bid boxes, no fallback volunteer wage). Off by default, so
+  # existing courses keep the pre-filled default wage.
+  bid_anchor_hidden_for_scope <- function()
+    identical(as.character(get_scoped_setting("bid_no_anchor", "0")), "1")
   volunteer_already_paid <- function(round_id, user_id) {
     paid <- db_query(
       "SELECT COUNT(*) n FROM live_score_events
@@ -5443,12 +5448,13 @@ server <- function(input, output, session) {
                 if (is.na(cw)) cw <- volunteer_clearing_wage(
                   vrid, vp$category_id, as.integer(vp$slots %||% 1L),
                   query_fn = db_query, job_post_id = as.integer(vp$job_post_id))
-                # Before any bid exists there is no market wage to show, and the
-                # instructor's fallback wage would anchor the first bids.
+                # Before any bid exists there is no market wage to show. With the
+                # no-anchor switch on, the instructor's fallback wage is withheld.
+                w  <- if (!is.na(cw)) cw else as.numeric(vp$fallback_wage %||% 1)
                 div(style = "display:flex;justify-content:space-between;font-size:.88rem;padding:.15rem 0;",
                     span(vp$job_name %||% ""),
                     span(style = "font-weight:600;",
-                         if (!is.na(cw)) sprintf("%g tokens", cw) else "Set by bids"))
+                         if (is.na(cw) && bid_anchor_hidden_for_scope()) "Set by bids" else sprintf("%g tokens", w)))
               })
             )
           )
@@ -5554,13 +5560,13 @@ server <- function(input, output, session) {
         tags$p(style = "color:#555;font-size:.88rem;",
                "Enter the minimum wage you'd accept for every job.",
                "The instructor takes the cheapest bids and reveals the result in class.",
-               "A job you leave blank has no bid from you."),
+               if (bid_anchor_hidden_for_scope()) "A job you leave blank has no bid from you."),
         div(class = "jm-card",
           lapply(seq_len(nrow(wage_posts)), function(i) {
             post <- wage_posts[i, ]
-            # No anchor: the box is empty until the student has saved a bid of
-            # their own. The posted default wage is never pre-filled.
-            prev_bid <- NA_real_
+            # With the no-anchor switch on, the box is empty until the student
+            # has saved a bid of their own; otherwise it starts at the posted wage.
+            prev_bid <- if (bid_anchor_hidden_for_scope()) NA_real_ else as.numeric(post$default_wage %||% 0)
             if (nrow(jp$my_wage_bids)) {
               m <- jp$my_wage_bids[
                 jp$my_wage_bids$job_post_id == post$job_post_id &
@@ -11268,6 +11274,9 @@ server <- function(input, output, session) {
         checkboxInput("volunteer_paid_cap_input",
                       "Pay each student for at most one voluntary contribution per class (later ones are recorded, unpaid) — this course / section",
                       value = volunteer_pay_capped_for_scope(), width = "100%"),
+        checkboxInput("bid_no_anchor_input",
+                      "Hide instructor wages from students until they bid (empty bid boxes, no fallback volunteer wage) — this course / section",
+                      value = bid_anchor_hidden_for_scope(), width = "100%"),
         actionButton("save_vol_clearing_btn", "Save", class = "btn btn-sm btn-primary"),
 
         # ── Templates ─────────────────────────────────────────────────────────────
@@ -14981,6 +14990,8 @@ server <- function(input, output, session) {
             list(rule))
     if (!is.null(input$volunteer_paid_cap_input))
       set_scoped_setting("volunteer_paid_cap", if (isTRUE(input$volunteer_paid_cap_input)) "1" else "0")
+    if (!is.null(input$bid_no_anchor_input))
+      set_scoped_setting("bid_no_anchor", if (isTRUE(input$bid_no_anchor_input)) "1" else "0")
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification(
       switch(rule,
