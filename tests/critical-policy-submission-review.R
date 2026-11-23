@@ -5,8 +5,11 @@ suppressPackageStartupMessages({
   library(shiny)
 })
 
-repo_root <- normalizePath(getwd(), mustWork=TRUE)
-app_file <- file.path(repo_root, "apps", "class-job-market", "app.R")
+app_file <- if (file.exists("apps/class-job-market/app.R")) {
+  "apps/class-job-market/app.R"
+} else {
+  "/srv/shiny-server/class-job-market/app.R"
+}
 
 test_that("instructor grading surfaces show the team's submitted policy work", {
   old_connect <- Sys.getenv("CONNECT_CONTENT_DIR", unset=NA_character_)
