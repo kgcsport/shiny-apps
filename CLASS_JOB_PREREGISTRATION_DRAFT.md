@@ -163,9 +163,19 @@ and for the heterogeneity split, never to set wages.
 
 ### 6.1a Training period and random exposure
 
-The first [NUMBER; PLANNED AS TWO] weeks contain no bids, purchases, or token
-payouts. Because nothing is paid, practising a job creates no difference in
-token wealth between students.
+The first [NUMBER; PLANNED AS TWO] weeks contain no purchases or token payouts.
+Each training meeting is flagged as a practice date in the app, which stores
+every wage for that date as zero, so students see no wage before their first
+market bid and practising a job creates no difference in token wealth during
+the term.
+
+Practice work is paid once, after the last ordinary class date: a completed
+practice job earns [CHOOSE: THE AVERAGE WAGE ACROSS ALL JOBS / THAT JOB'S OWN
+AVERAGE WAGE] on the ordinary dates in the same section, and a try earns one
+point. Students are told this rule [WHEN]. Paying each job its own average
+would give a student a reason to bid higher on exactly the jobs they practised,
+since a higher clearing wage for that job raises their own practice pay; the
+all-job average removes that job-specific incentive and is recommended.
 
 Random assignment:
 

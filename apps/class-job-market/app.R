@@ -1186,6 +1186,24 @@ ensure_column("job_assignments", "outcome TEXT")
 ensure_column("job_assignments", "tokens_awarded INTEGER DEFAULT 0")
 ensure_column("job_assignments", "updated_at TEXT")
 ensure_column("job_assignments", "tokens_credited INTEGER DEFAULT 1")
+# Practice dates: outcomes are recorded for feedback and nothing is paid. The
+# flag is per class date and off by default. While it is on, every wage or
+# token amount written for that date is stored as zero, whichever workflow
+# wrote it (draw, import, add-back, cold call, volunteer), so no path can pay
+# and students never see a wage for practice work.
+ensure_column("weekly_rounds", "practice_no_points INTEGER DEFAULT 0")
+for (practice_trigger in list(
+  c("practice_zero_assignment_wage_insert", "AFTER INSERT ON job_assignments", "assigned_wage", "job_assignments"),
+  c("practice_zero_assignment_wage_update", "AFTER UPDATE OF assigned_wage ON job_assignments", "assigned_wage", "job_assignments"),
+  c("practice_zero_event_tokens_insert", "AFTER INSERT ON live_score_events", "tokens", "live_score_events"),
+  c("practice_zero_event_tokens_update", "AFTER UPDATE OF tokens ON live_score_events", "tokens", "live_score_events"))) {
+  db_exec(sprintf(
+    "CREATE TRIGGER IF NOT EXISTS %s %s
+     WHEN COALESCE(NEW.%s,0) <> 0 AND EXISTS (
+       SELECT 1 FROM weekly_rounds WHERE id=NEW.round_id AND COALESCE(practice_no_points,0)=1)
+     BEGIN UPDATE %s SET %s=0 WHERE id=NEW.id; END;",
+    practice_trigger[1], practice_trigger[2], practice_trigger[3], practice_trigger[4], practice_trigger[3]))
+}
 ensure_column("job_assignments", "created_at TEXT")
 ensure_column("job_assignments", "scheduled_date TEXT")
 ensure_column("job_assignments", "display_on_today INTEGER DEFAULT 1")
@@ -3717,6 +3735,75 @@ server <- function(input, output, session) {
   # existing courses keep the pre-filled default wage.
   bid_anchor_hidden_for_scope <- function()
     identical(as.character(get_scoped_setting("bid_no_anchor", "0")), "1")
+  round_is_practice <- function(round_id) {
+    row <- tryCatch(db_query(
+      "SELECT COALESCE(practice_no_points,0) v FROM weekly_rounds WHERE id=?;",
+      list(as.integer(round_id))), error = function(e) data.frame())
+    nrow(row) > 0 && isTRUE(as.integer(row$v[1]) == 1L)
+  }
+  # End-of-term pay for practice-date work. Practice dates pay nothing at the
+  # time; this prices each completed practice job at the average wage that job
+  # (rule "job") or all jobs (rule "all") paid on the ordinary dates in the
+  # same course/section. A try pays 1, as on ordinary dates. Returns one row
+  # per payable piece of work, including ones already paid.
+  practice_pay_rows <- function(rule = "job") {
+    scope <- current_scope_key()
+    q <- function(sql) tryCatch(db_query(sql, list(scope)), error = function(e) data.frame())
+    wages <- rbind(
+      q("SELECT LOWER(TRIM(jp.job_name)) job, ja.assigned_wage wage
+         FROM job_assignments ja JOIN job_posts jp ON jp.id=ja.job_post_id
+         JOIN weekly_rounds wr ON wr.id=ja.round_id JOIN scope_rounds sr ON sr.round_id=ja.round_id
+         WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=0 AND COALESCE(ja.assigned_wage,0)>0
+           AND COALESCE(ja.status,'assigned') NOT IN ('absent_redrawn','absent','redrawn');"),
+      q("SELECT 'cold call: ' || LOWER(lse.outcome) job, lse.tokens wage
+         FROM live_score_events lse JOIN weekly_rounds wr ON wr.id=lse.round_id
+         JOIN scope_rounds sr ON sr.round_id=lse.round_id
+         WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=0 AND lse.event_kind='cold_call'
+           AND lse.outcome IN ('answer','board') AND COALESCE(lse.tokens,0)>0 AND lse.committed_at IS NOT NULL;"),
+      q("SELECT LOWER(TRIM(jp.job_name)) job, lse.tokens wage
+         FROM live_score_events lse JOIN job_posts jp ON jp.id=lse.job_post_id
+         JOIN weekly_rounds wr ON wr.id=lse.round_id JOIN scope_rounds sr ON sr.round_id=lse.round_id
+         WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=0 AND lse.event_kind='participation'
+           AND lse.outcome='succeed' AND COALESCE(lse.tokens,0)>0 AND lse.committed_at IS NOT NULL;"))
+    work <- rbind(
+      q("SELECT 'practice_pay_job' source_type, ja.id source_id, ja.user_id, COALESCE(u.display_name,ja.user_id) display_name,
+                wr.class_date, jp.job_name job_label, LOWER(TRIM(jp.job_name)) job, LOWER(TRIM(ja.outcome)) outcome
+         FROM job_assignments ja JOIN job_posts jp ON jp.id=ja.job_post_id
+         JOIN weekly_rounds wr ON wr.id=ja.round_id JOIN scope_rounds sr ON sr.round_id=ja.round_id
+         LEFT JOIN users u ON u.user_id=ja.user_id
+         WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=1
+           AND LOWER(TRIM(COALESCE(ja.outcome,''))) IN ('complete','tried')
+           AND COALESCE(ja.status,'assigned') NOT IN ('absent_redrawn','absent','redrawn');"),
+      q("SELECT 'practice_pay_event' source_type, lse.id source_id, lse.user_id, COALESCE(u.display_name,lse.user_id) display_name,
+                wr.class_date, 'Cold call: ' || lse.outcome job_label, 'cold call: ' || LOWER(lse.outcome) job, 'complete' outcome
+         FROM live_score_events lse JOIN weekly_rounds wr ON wr.id=lse.round_id
+         JOIN scope_rounds sr ON sr.round_id=lse.round_id LEFT JOIN users u ON u.user_id=lse.user_id
+         WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=1 AND lse.event_kind='cold_call'
+           AND lse.outcome IN ('answer','board') AND lse.committed_at IS NOT NULL;"),
+      q("SELECT 'practice_pay_event' source_type, lse.id source_id, lse.user_id, COALESCE(u.display_name,lse.user_id) display_name,
+                wr.class_date, jp.job_name job_label, LOWER(TRIM(jp.job_name)) job,
+                CASE lse.outcome WHEN 'succeed' THEN 'complete' ELSE 'tried' END outcome
+         FROM live_score_events lse JOIN job_posts jp ON jp.id=lse.job_post_id
+         JOIN weekly_rounds wr ON wr.id=lse.round_id JOIN scope_rounds sr ON sr.round_id=lse.round_id
+         LEFT JOIN users u ON u.user_id=lse.user_id
+         WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=1 AND lse.event_kind='participation'
+           AND lse.outcome IN ('succeed','try') AND lse.committed_at IS NOT NULL;"))
+    if (!nrow(work)) return(data.frame())
+    overall <- if (nrow(wages)) mean(as.numeric(wages$wage)) else NA_real_
+    by_job <- if (nrow(wages)) tapply(as.numeric(wages$wage), wages$job, mean) else numeric(0)
+    job_wage <- if (identical(rule, "all")) rep(overall, nrow(work)) else {
+      own <- unname(by_job[work$job]); ifelse(is.na(own), overall, own)
+    }
+    work$basis <- if (identical(rule, "all")) "all jobs" else
+      ifelse(work$job %in% names(by_job), "this job", "all jobs (no later wage for this job)")
+    work$amount <- ifelse(work$outcome == "complete", round_token_spend(job_wage), 1)
+    paid <- tryCatch(db_query(
+      "SELECT source_type, source_id FROM token_ledger
+       WHERE source_type IN ('practice_pay_job','practice_pay_event');"),
+      error = function(e) data.frame(source_type = character(0), source_id = integer(0)))
+    work$already_paid <- paste(work$source_type, work$source_id) %in% paste(paid$source_type, paid$source_id)
+    work[order(work$class_date, work$display_name), , drop = FALSE]
+  }
   volunteer_already_paid <- function(round_id, user_id) {
     paid <- db_query(
       "SELECT COUNT(*) n FROM live_score_events
@@ -8474,6 +8561,8 @@ server <- function(input, output, session) {
       "SELECT COALESCE(tokens_revealed,1) v FROM weekly_rounds WHERE id=?;",
       list(rid)), error=function(e) data.frame())
     tokens_revealed <- if (nrow(rnd_row)) isTRUE(as.integer(rnd_row$v[1]) == 1L) else TRUE
+    practice_date <- round_is_practice(rid)
+    if (practice_date) tokens_to_award <- 0
 
     if (identical(as.character(ev$event_kind[1]), "assignment")) {
       assign_id <- as.integer(ev$job_assignment_id[1])
@@ -8493,6 +8582,7 @@ server <- function(input, output, session) {
         tried = 1,
         missed = 0,
         tokens_to_award)
+      if (practice_date) tokens_to_award <- 0 # no points, including the usual 1 for a try
       db_exec(
         "UPDATE job_assignments SET outcome=?, tokens_awarded=?, tokens_credited=?,
                 updated_at=datetime('now') WHERE id=?;",
@@ -9415,6 +9505,26 @@ server <- function(input, output, session) {
       })
     tix <- max(1L, as.integer(input$edit_round_tix %||% 10L))
         if (is.null(bid_window)) return()
+    # Practice flag: only changed when the control was rendered. It cannot be
+    # switched on for a date that has already paid someone.
+    if (!is.null(input$edit_round_practice)) {
+      want_practice <- isTRUE(input$edit_round_practice)
+      if (want_practice && !round_is_practice(rid)) {
+        paid <- db_query(
+          "SELECT (SELECT COUNT(*) FROM job_assignments WHERE round_id=? AND COALESCE(tokens_awarded,0)>0) +
+                  (SELECT COUNT(*) FROM live_score_events WHERE round_id=? AND committed_at IS NOT NULL AND COALESCE(tokens,0)>0) n;",
+          list(rid, rid))$n[1]
+        if (as.integer(paid %||% 0L) > 0L) {
+          showNotification("This class date already has paid awards, so it cannot become a practice date.", type = "error")
+          return()
+        }
+        db_exec("UPDATE weekly_rounds SET practice_no_points=1 WHERE id=?;", list(rid))
+        db_exec("UPDATE job_assignments SET assigned_wage=0 WHERE round_id=? AND COALESCE(assigned_wage,0)<>0;", list(rid))
+        db_exec("UPDATE live_score_events SET tokens=0 WHERE round_id=? AND COALESCE(tokens,0)<>0;", list(rid))
+      } else if (!want_practice && round_is_practice(rid)) {
+        db_exec("UPDATE weekly_rounds SET practice_no_points=0 WHERE id=?;", list(rid))
+      }
+    }
     db_exec(
       "UPDATE weekly_rounds SET label=?, assignment_mode=?, tiebreak_method=?, tokens_revealed=?,
        bidding_enabled=?, bid_open_date=?, bid_close_date=?, tickets_per_student=?,
@@ -11474,6 +11584,9 @@ server <- function(input, output, session) {
                 checkboxInput("edit_round_delayed_tokens",
                   "Delay token reveal (students see pass/try/miss but not amounts until you release)",
                   value = isTRUE(as.integer(r$tokens_revealed %||% 1L) == 0L)),
+                checkboxInput("edit_round_practice",
+                  "Practice date: no points. Outcomes are recorded for feedback only, and every wage on this date is zero.",
+                  value = isTRUE(as.integer(r$practice_no_points %||% 0L) == 1L), width = "100%"),
                 div(style = "display:flex;gap:.5rem;margin-top:.3rem;",
                   actionButton("update_round_btn", "Save controls", class = "btn btn-sm btn-primary")
                 )
@@ -12965,6 +13078,17 @@ server <- function(input, output, session) {
                            onclick = "if(!confirm('Randomly select and award these students? This posts token credits immediately.')) return false;")
             )
           }
+        ),
+        tags$hr(),
+        tags$h6(style = "font-weight:700;color:#951829;", "Practice-Date Pay"),
+        tags$p(style = "color:#555;font-size:.88rem;",
+               "Practice dates pay nothing at the time. At the end of the term, pay completed practice work at the average wage from the ordinary class dates in this course / section. A try pays 1 token. Each piece of work can be paid once."),
+        div(class = "spend-form-box",
+          selectInput("practice_pay_rule", "Wage for a completed practice job:", width = "420px",
+                      choices = c("That job's own average wage" = "job",
+                                  "One average across all jobs" = "all")),
+          actionButton("practice_pay_preview_btn", "Preview practice pay", class = "btn btn-sm btn-outline-primary"),
+          uiOutput("practice_pay_preview")
         ),
         tags$hr(),
         tags$h6(style = "font-weight:700;color:#951829;", "Individual Adjustment"),
@@ -14884,6 +15008,68 @@ server <- function(input, output, session) {
               nrow(targets), if (nrow(targets) == 1) "" else "s"),
       type = "message")
   })
+
+  practice_pay_rule_input <- function() if (identical(input$practice_pay_rule, "all")) "all" else "job"
+  practice_pay_preview_rows <- reactiveVal(NULL)
+  observeEvent(input$practice_pay_preview_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    practice_pay_preview_rows(list(rule = practice_pay_rule_input(), rows = practice_pay_rows(practice_pay_rule_input())))
+  }, ignoreNULL = TRUE)
+  output$practice_pay_preview <- renderUI({
+    req(rv$is_admin)
+    preview <- practice_pay_preview_rows()
+    if (is.null(preview)) return(NULL)
+    rows <- preview$rows
+    if (!nrow(rows)) return(div(class = "alert alert-secondary", style = "margin-top:.6rem;",
+      "No completed or tried practice-date work was found in this course / section."))
+    due <- rows[!rows$already_paid, , drop = FALSE]
+    tagList(
+      tags$p(style = "margin:.6rem 0 .3rem;font-weight:600;",
+        sprintf("%d item%s to pay, %s tokens in total. %d already paid.", nrow(due), if (nrow(due) == 1L) "" else "s",
+                fmt_token_amount(sum(due$amount)), sum(rows$already_paid))),
+      div(style = "overflow-x:auto;max-height:320px;overflow-y:auto;", tags$table(class = "table table-sm",
+        tags$thead(tags$tr(tags$th("Date"), tags$th("Student"), tags$th("Job"), tags$th("Outcome"),
+                           tags$th("Tokens"), tags$th("Wage basis"), tags$th("Status"))),
+        tags$tbody(lapply(seq_len(nrow(rows)), function(i) {
+          r <- rows[i, ]
+          tags$tr(tags$td(r$class_date %||% ""), tags$td(r$display_name), tags$td(r$job_label), tags$td(r$outcome),
+                  tags$td(fmt_token_amount(r$amount)), tags$td(if (r$outcome == "complete") r$basis else "try"),
+                  tags$td(if (isTRUE(r$already_paid)) "Paid" else "To pay"))
+        })))),
+      if (nrow(due)) actionButton("practice_pay_commit_btn", "Pay these now", class = "btn btn-warning btn-sm",
+        onclick = "if(!confirm('Credit these practice-date tokens now? They count as earned participation tokens.')) return false;")
+    )
+  })
+  observeEvent(input$practice_pay_commit_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    preview <- practice_pay_preview_rows()
+    req(!is.null(preview))
+    # Recompute at the moment of payment so a stale preview cannot pay twice.
+    rows <- practice_pay_rows(preview$rule)
+    due <- if (nrow(rows)) rows[!rows$already_paid & rows$amount > 0, , drop = FALSE] else rows
+    if (!nrow(due)) { showNotification("Nothing left to pay.", type = "message"); return() }
+    result <- tryCatch({
+      connection <- get_con()
+      DBI::dbWithTransaction(connection, {
+        for (i in seq_len(nrow(due))) {
+          r <- due[i, ]
+          DBI::dbExecute(connection,
+            "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
+             SELECT ?,?,?,?,?,1,? WHERE NOT EXISTS (
+               SELECT 1 FROM token_ledger WHERE source_type=? AND source_id=?);",
+            params = list(r$user_id, r$display_name, r$source_type, as.integer(r$source_id), as.numeric(r$amount),
+                          sprintf("Practice-date pay: %s (%s, %s)", r$job_label, r$outcome,
+                                  if (r$outcome == "complete") paste("average wage,", r$basis) else "try"),
+                          r$source_type, as.integer(r$source_id)))
+        }
+      })
+      TRUE
+    }, error = function(e) { message("Practice-date pay failed: ", conditionMessage(e)); FALSE })
+    if (!isTRUE(result)) { showNotification("Practice-date pay failed; nothing was credited.", type = "error"); return() }
+    practice_pay_preview_rows(list(rule = preview$rule, rows = practice_pay_rows(preview$rule)))
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification(sprintf("Paid %d practice-date item%s.", nrow(due), if (nrow(due) == 1L) "" else "s"), type = "message")
+  }, ignoreNULL = TRUE)
 
   observeEvent(input$random_award_btn, {
     req(rv$is_admin, !rv$impersonating)
