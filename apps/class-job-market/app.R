@@ -3717,7 +3717,23 @@ server <- function(input, output, session) {
       "SELECT 1 FROM insurance_products WHERE scope_key=? LIMIT 1;", list(scope))) > 0
     insurance_enabled_value(explicit, has_history)
   }
-  pass_insurance_disabled_message <- "Pass Insurance is not offered in this class."
+  # Every student spending option has its own course/section switch under the
+  # master spending switch. Off removes the option from the student Spend menu
+  # and rejects new purchases; purchases already made keep their effect.
+  spend_option_labels <- c(insurance="Pass Insurance", extension="Assignment Extension",
+                           reweight="Grade Reweight", flex_question="Candidate Question Fund")
+  spend_option_keys <- c(insurance="pass_insurance_enabled", extension="extension_spending_enabled",
+                         reweight="reweight_spending_enabled", flex_question="flex_question_spending_enabled")
+  spend_option_enabled <- function(option) {
+    option <- as.character(option %||% "")
+    if (!option %in% names(spend_option_keys)) return(TRUE)
+    if (identical(option, "insurance")) return(pass_insurance_enabled_for_scope())
+    explicit <- get_setting(paste0(spend_option_keys[[option]], "::", current_scope_key()), NA_character_)
+    insurance_enabled_value(explicit, TRUE) # extensions, reweights, and question funding default on
+  }
+  spend_option_flags <- function() vapply(names(spend_option_keys), spend_option_enabled, logical(1))
+  spend_option_disabled_message <- function(option)
+    sprintf("%s is not offered in this class.", spend_option_labels[[option]])
   active_round_id <- function(query_fn = db_query) {
     key <- current_scope_key()
     mapped <- tryCatch(query_fn(
@@ -4946,7 +4962,7 @@ server <- function(input, output, session) {
 
   read_student_insurance_market <- function() {
     list(period = insurance_product_for_round(), sale = next_insurance_offer(),
-         enabled = pass_insurance_enabled_for_scope())
+         options = spend_option_flags())
   }
 
   student_insurance_market <- reactivePoll(6000, session,
@@ -5160,7 +5176,7 @@ server <- function(input, output, session) {
       },
 
       # Shared candidate-question funding progress
-      if (spending_enabled_for_scope()) {
+      if (spending_enabled_for_scope() && spend_option_enabled("flex_question")) {
         fq <- flex_poll()
         if (as.integer(fq$total %||% 0L) > 0) {
           status <- if (!nrow(fq$next_question)) {
@@ -5330,6 +5346,7 @@ server <- function(input, output, session) {
   })
   observeEvent(input$go_to_spend_fq, {
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
+    if (!spend_option_enabled("flex_question")) { showNotification(spend_option_disabled_message("flex_question"), type = "warning"); return() }
     rv$spend_mode <- "flex_question"
     updateTabsetPanel(session, "arc_tabs", selected = "Spend")
   })
@@ -5979,11 +5996,13 @@ server <- function(input, output, session) {
     bal <- token_bal()
     if (is.null(rv$spend_mode)) {
       fq <- flex_poll()
+      spend_options <- student_insurance_market()$options
       fq_status <- if (fq$total == 0) "No candidate questions loaded yet" else if (!nrow(fq$next_question)) sprintf("All %d unlocked", as.integer(fq$total)) else sprintf("%d / %d public · %d tokens still needed", as.integer(fq$unlocked_n), as.integer(fq$total), as.integer(fq$remaining))
       tagList(
         div(class = "tab-howto", sprintf("Spend your tokens on academic benefits. Spendable balance: %s tokens.", fmt_token_amount(bal)), tags$p(style = "margin:.4rem 0 0;font-size:.85rem;color:#555;", tags$b("Note:"), " Spending tokens does not reduce your participation grade.", " Your participation grade is based on total tokens earned during the semester, not your current balance.")),
+        if (!any(spend_options)) div(class = "alert alert-secondary", "No spending options are available in this class right now."),
         div(class = "spend-cards",
-          if (isTRUE(student_insurance_market()$enabled)) {
+          if (spend_options[["insurance"]]) {
             product <- student_insurance_market()$sale
             passes <- nrow(insurance_wallet())
             meta <- if (passes) sprintf("%d on hand", passes) else if (!insurance_purchase_is_open(product)) "Sales are closed" else
@@ -5994,9 +6013,9 @@ server <- function(input, output, session) {
                 div(class = "spend-card-meta", meta),
                 div(class = "spend-card-foot", actionButton("open_insurance", "Select →", class = "btn btn-sm btn-outline-primary")))
           },
-          div(class = "spend-card", div(class = "spend-card-icon", "📅"), div(class = "spend-card-label", "Assignment Extension"), div(class = "spend-card-desc", "Purchase extra time on a problem set before the deadline."), div(class = "spend-card-meta", "Cost varies by length"), div(class = "spend-card-foot", actionButton("open_extension", "Select →", class = "btn btn-sm btn-outline-primary"))),
-          div(class = "spend-card", div(class = "spend-card-icon", "⚖️"), div(class = "spend-card-label", "Grade Reweight"), div(class = "spend-card-desc", "Shift grade weight from one category to another."), div(class = "spend-card-meta", "Instructor reviews all requests"), div(class = "spend-card-foot", actionButton("open_reweight", "Select →", class = "btn btn-sm btn-outline-primary"))),
-          div(class = "spend-card", div(class = "spend-card-icon", "📚"), div(class = "spend-card-label", "Candidate Question Fund"), div(class = "spend-card-desc", "Contribute tokens toward a pooled-section reveal. Unlocked questions are public within that scope."), div(class = "spend-card-meta", fq_status), div(class = "spend-card-foot", actionButton("open_flex_question", "Select →", class = "btn btn-sm btn-outline-primary")))
+          if (spend_options[["extension"]]) div(class = "spend-card", div(class = "spend-card-icon", "📅"), div(class = "spend-card-label", "Assignment Extension"), div(class = "spend-card-desc", "Purchase extra time on a problem set before the deadline."), div(class = "spend-card-meta", "Cost varies by length"), div(class = "spend-card-foot", actionButton("open_extension", "Select →", class = "btn btn-sm btn-outline-primary"))),
+          if (spend_options[["reweight"]]) div(class = "spend-card", div(class = "spend-card-icon", "⚖️"), div(class = "spend-card-label", "Grade Reweight"), div(class = "spend-card-desc", "Shift grade weight from one category to another."), div(class = "spend-card-meta", "Instructor reviews all requests"), div(class = "spend-card-foot", actionButton("open_reweight", "Select →", class = "btn btn-sm btn-outline-primary"))),
+          if (spend_options[["flex_question"]]) div(class = "spend-card", div(class = "spend-card-icon", "📚"), div(class = "spend-card-label", "Candidate Question Fund"), div(class = "spend-card-desc", "Contribute tokens toward a pooled-section reveal. Unlocked questions are public within that scope."), div(class = "spend-card-meta", fq_status), div(class = "spend-card-foot", actionButton("open_flex_question", "Select →", class = "btn btn-sm btn-outline-primary")))
         ),
         div(class = "sec-label", "Spending History"), uiOutput("spend_history")
       )
@@ -6006,14 +6025,10 @@ server <- function(input, output, session) {
   })
   open_spending_mode <- function(mode) {
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
+    if (!spend_option_enabled(mode)) { showNotification(spend_option_disabled_message(mode), type = "warning"); return() }
     rv$spend_mode <- mode
   }
-  observeEvent(input$open_insurance, {
-    if (!pass_insurance_enabled_for_scope()) {
-      showNotification(pass_insurance_disabled_message, type = "warning"); return()
-    }
-    open_spending_mode("insurance")
-  })
+  observeEvent(input$open_insurance,     { open_spending_mode("insurance") })
   observeEvent(input$open_extension,     { open_spending_mode("extension") })
   observeEvent(input$open_reweight,      { open_spending_mode("reweight") })
   observeEvent(input$open_flex_question, { open_spending_mode("flex_question") })
@@ -6699,7 +6714,7 @@ server <- function(input, output, session) {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type="warning"); return() }
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type="warning"); return() }
-    if (!pass_insurance_enabled_for_scope()) { showNotification(pass_insurance_disabled_message, type="warning"); return() }
+    if (!spend_option_enabled("insurance")) { showNotification(spend_option_disabled_message("insurance"), type="warning"); return() }
     product_id <- input$submit_insurance_purchase
     req(is.numeric(product_id), length(product_id) == 1L, is.finite(product_id), product_id > 0)
     checkout <- tryCatch({
@@ -6719,6 +6734,7 @@ server <- function(input, output, session) {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
+    if (!spend_option_enabled("extension")) { showNotification(spend_option_disabled_message("extension"), type = "warning"); return() }
     pricing <- extension_pricing_settings()
     hrs <- suppressWarnings(as.numeric(input$ext_hours %||% NA_real_))
     if (!is.finite(hrs) || hrs <= 0 || hrs > pricing$max_hours) {
@@ -6776,6 +6792,7 @@ server <- function(input, output, session) {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) { showNotification("Demo mode.", type = "warning"); return() }
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
+    if (!spend_option_enabled("reweight")) { showNotification(spend_option_disabled_message("reweight"), type = "warning"); return() }
     if (nrow(rw_pending_request(rv$user_id))) {
       showNotification("You already have a grade-reweight request awaiting instructor review.", type = "warning")
       return()
@@ -6828,6 +6845,7 @@ server <- function(input, output, session) {
     }
     requested <- suppressWarnings(round_token_spend(input$flex_contribution %||% 0))
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
+    if (!spend_option_enabled("flex_question")) { showNotification(spend_option_disabled_message("flex_question"), type = "warning"); return() }
     if (!is.finite(requested) || requested < TOKEN_SPEND_STEP) {
       showNotification("Enter a positive token amount.", type = "error"); return()
     }
@@ -10722,24 +10740,22 @@ server <- function(input, output, session) {
     req(rv$is_admin, !rv$impersonating)
     enabled <- isTRUE(input$spending_enabled_input)
     set_scoped_setting("spending_enabled", if (enabled) "1" else "0")
+    # Only switches that were actually rendered are saved, so a partial form
+    # can never turn an option off by omission.
+    for (option in names(spend_option_keys)) {
+      value <- input[[paste0("spend_option_", option, "_input")]]
+      if (!is.null(value))
+        set_setting(paste0(spend_option_keys[[option]], "::", current_scope_key()), if (isTRUE(value)) "1" else "0")
+    }
+    rv$insurance_ver <- rv$insurance_ver + 1L
     rv$spend_mode <- NULL
     showNotification(if (enabled) "Spending options enabled for this environment." else "Spending options disabled for this environment.", type="message")
-  }, ignoreNULL=TRUE)
-
-  observeEvent(input$save_pass_insurance_enabled_btn, {
-    req(rv$is_admin, !rv$impersonating)
-    enabled <- isTRUE(input$pass_insurance_enabled_input)
-    set_setting(paste0("pass_insurance_enabled::", current_scope_key()), if (enabled) "1" else "0")
-    rv$insurance_ver <- rv$insurance_ver + 1L
-    showNotification(if (enabled) "Pass Insurance is on for this course / section."
-                     else "Pass Insurance is off for this course / section. Coverage already sold is still honored.",
-                     type="message")
   }, ignoreNULL=TRUE)
 
   observeEvent(input$save_insurance_product_btn, {
     req(rv$is_admin, !rv$impersonating)
     if (!pass_insurance_enabled_for_scope()) {
-      showNotification("Turn Pass Insurance on for this course / section before opening sales.", type="warning"); return()
+      showNotification("Turn Pass Insurance on under Spending Options → Overview & availability before opening sales.", type="warning"); return()
     }
     round <- tryCatch(active_round_row(), error=function(e)data.frame())
     if (!nrow(round)) { showNotification("Choose a class date first.", type="warning"); return() }
@@ -10897,7 +10913,7 @@ server <- function(input, output, session) {
     }
     if (act == "spending_overview") {
       enabled <- spending_enabled_for_scope()
-      wrap_spending(tagList(tags$h5("Spending options"), tags$p(style="color:#555;font-size:.88rem;", "This setting applies only to the active class / section environment. Existing purchases and token history are preserved. It covers insurance, extensions, grade reweights, and question funding."), checkboxInput("spending_enabled_input", "Enable student spending", value=enabled), actionButton("save_spending_options_btn", "Save spending", class="btn btn-primary"), if (!enabled) div(class="alert alert-warning", style="margin-top:.75rem;", "Student spending is currently disabled for this environment.")))
+      wrap_spending(tagList(tags$h5("Spending options"), tags$p(style="color:#555;font-size:.88rem;", "This setting applies only to the active class / section environment. Existing purchases and token history are preserved. It covers insurance, extensions, grade reweights, and question funding."), checkboxInput("spending_enabled_input", "Enable student spending", value=enabled), tags$p(style="font-weight:600;margin:.6rem 0 .2rem;", "Options on the student Spend menu"), tags$p(style="color:#555;font-size:.82rem;margin:0 0 .3rem;", "An option that is off does not appear for students and cannot be bought. Purchases already made keep their effect."), lapply(names(spend_option_keys), function(option) checkboxInput(paste0("spend_option_", option, "_input"), spend_option_labels[[option]], value=spend_option_enabled(option))), actionButton("save_spending_options_btn", "Save spending", class="btn btn-primary"), if (!enabled) div(class="alert alert-warning", style="margin-top:.75rem;", "Student spending is currently disabled for this environment.")))
     } else if (act == "insurance") {
       round <- tryCatch(active_round_row(), error=function(e)data.frame())
       product <- if (nrow(round)) insurance_product_for_round(as.integer(round$id[1])) else data.frame()
@@ -10917,11 +10933,8 @@ server <- function(input, output, session) {
       insurance_on <- pass_insurance_enabled_for_scope()
       wrap_spending(tagList(
         tags$h5("Pass Insurance Market"),
-        div(style="background:#f8f9fa;border:1px solid #e2e5e8;border-radius:8px;padding:.55rem .7rem;margin-bottom:.8rem;",
-          checkboxInput("pass_insurance_enabled_input", "Offer Pass Insurance in this course / section", value=insurance_on),
-          actionButton("save_pass_insurance_enabled_btn", "Save availability", class="btn btn-sm btn-primary"),
-          if (!insurance_on) div(class="alert alert-warning", style="margin:.6rem 0 0;",
-            "Pass Insurance is off. Students do not see it and cannot buy it. Coverage already sold is still paid, and an open market can still be closed and settled below.")),
+        if (!insurance_on) div(class="alert alert-warning",
+          "Pass Insurance is off for this course / section (Spending Options → Overview & availability). Students do not see it and cannot buy it. Coverage already sold is still paid, and an open market can still be closed and settled below."),
         tags$p(style="color:#555;font-size:.88rem;",
           "Students can buy one pass for the next scheduled class, including during that class. Coverage pays once for a live pass or recession firing. Closing sales leaves existing coverage active for that period. Settlement ends coverage and pays equal dividends from any positive profit. Insurance cash flows do not count as participation earnings."),
         if (!nrow(round)) div(class="alert alert-warning", "Choose a class date under Job Market Controls first.") else tagList(

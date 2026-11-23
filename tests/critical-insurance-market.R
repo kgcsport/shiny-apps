@@ -29,7 +29,11 @@ required_contract <- c(
   "insurance_dividend",
   "suggested_next_premium",
   "pass_insurance_enabled_for_scope",
-  "save_pass_insurance_enabled_btn"
+  "spend_option_enabled <- function(option)",
+  "if (!spend_option_enabled(\"insurance\"))",
+  "if (!spend_option_enabled(\"extension\"))",
+  "if (!spend_option_enabled(\"reweight\"))",
+  "if (!spend_option_enabled(\"flex_question\"))"
 )
 missing <- required_contract[!vapply(required_contract, grepl, logical(1),
                                      x = app_text, fixed = TRUE)]
@@ -178,7 +182,7 @@ if (requireNamespace("shiny", quietly = TRUE)) {
   # Turn it on, then open through the real instructor control.
   shiny::testServer(app$server, {
     set_admin(rv)
-    session$setInputs(pass_insurance_enabled_input = TRUE, save_pass_insurance_enabled_btn = 1L)
+    session$setInputs(spending_enabled_input = TRUE, spend_option_insurance_input = TRUE, save_spending_options_btn = 1L)
     stopifnot(pass_insurance_enabled_for_scope())
     session$setInputs(insurance_benefit_input = 2, insurance_premium_input = 3,
                       insurance_price_step_input = 0.5,
@@ -390,7 +394,7 @@ if (requireNamespace("shiny", quietly = TRUE)) {
   shiny::testServer(app$server, {
     set_admin(rv)
     stopifnot(pass_insurance_enabled_for_scope()) # on by history before any explicit off
-    session$setInputs(pass_insurance_enabled_input = FALSE, save_pass_insurance_enabled_btn = 1L)
+    session$setInputs(spending_enabled_input = TRUE, spend_option_insurance_input = FALSE, save_spending_options_btn = 1L)
     stopifnot(!pass_insurance_enabled_for_scope())
   })
   shiny::testServer(app$server, {
@@ -421,10 +425,70 @@ if (requireNamespace("shiny", quietly = TRUE)) {
   # The switch is reversible and scoped to the course/section.
   shiny::testServer(app$server, {
     set_admin(rv)
-    session$setInputs(pass_insurance_enabled_input = TRUE, save_pass_insurance_enabled_btn = 1L)
+    session$setInputs(spending_enabled_input = TRUE, spend_option_insurance_input = TRUE, save_spending_options_btn = 1L)
     stopifnot(pass_insurance_enabled_for_scope())
   })
   stopifnot(identical(app$get_setting("pass_insurance_enabled::econ 342::01"), "1"),
             is.null(app$get_setting("pass_insurance_enabled::econ 342::02")))
+
+  # Every other spending option has the same switch. They default on, saving
+  # one switch leaves the others alone, and an option that is off is absent
+  # from the student Spend menu and rejects the student's request.
+  cards <- c(extension = "Assignment Extension", reweight = "Grade Reweight",
+             flex_question = "Candidate Question Fund")
+  shiny::testServer(app$server, {
+    set_student(rv, "s1@test.edu", "Student 1")
+    html <- output$spend_tab$html
+    stopifnot(all(vapply(c(cards, "Pass Insurance"), grepl, logical(1), x = html, fixed = TRUE)))
+  })
+  for (option in names(cards)) {
+    shiny::testServer(app$server, {
+      set_admin(rv)
+      args <- list(spending_enabled_input = TRUE, save_spending_options_btn = 1L)
+      args[[paste0("spend_option_", option, "_input")]] <- FALSE
+      do.call(session$setInputs, args)
+      stopifnot(!spend_option_enabled(option), spending_enabled_for_scope(),
+                sum(spend_option_flags()) == 3L)
+    })
+    ledger_before <- nrow(app$db_query("SELECT id FROM token_ledger;"))
+    shiny::testServer(app$server, {
+      set_student(rv, "s1@test.edu", "Student 1")
+      html <- output$spend_tab$html
+      others <- setdiff(c(cards, "Pass Insurance"), cards[[option]])
+      stopifnot(!grepl(cards[[option]], html, fixed = TRUE),
+                all(vapply(others, grepl, logical(1), x = html, fixed = TRUE)))
+      do.call(session$setInputs, stats::setNames(list(1L), paste0("open_", option)))
+      stopifnot(is.null(rv$spend_mode))
+      if (identical(option, "flex_question")) {
+        session$setInputs(go_to_spend_fq = 1L)
+        stopifnot(is.null(rv$spend_mode))
+        session$setInputs(flex_contribution = 1, submit_flex_contribution = 1L)
+      } else {
+        do.call(session$setInputs, stats::setNames(list(1L), paste0("submit_", option)))
+      }
+    })
+    stopifnot(nrow(app$db_query("SELECT id FROM token_ledger;")) == ledger_before)
+    shiny::testServer(app$server, {
+      set_admin(rv)
+      args <- list(spending_enabled_input = TRUE, save_spending_options_btn = 1L)
+      args[[paste0("spend_option_", option, "_input")]] <- TRUE
+      do.call(session$setInputs, args)
+      stopifnot(all(spend_option_flags()))
+    })
+  }
+  # With every option off the menu is empty rather than broken.
+  shiny::testServer(app$server, {
+    set_admin(rv)
+    session$setInputs(spending_enabled_input = TRUE, spend_option_insurance_input = FALSE,
+                      spend_option_extension_input = FALSE, spend_option_reweight_input = FALSE,
+                      spend_option_flex_question_input = FALSE, save_spending_options_btn = 1L)
+    stopifnot(!any(spend_option_flags()))
+  })
+  shiny::testServer(app$server, {
+    set_student(rv, "s1@test.edu", "Student 1")
+    html <- output$spend_tab$html
+    stopifnot(grepl("No spending options are available", html, fixed = TRUE),
+              !any(vapply(c(cards, "Pass Insurance"), grepl, logical(1), x = html, fixed = TRUE)))
+  })
 
 cat("critical insurance market: PASS\n")
