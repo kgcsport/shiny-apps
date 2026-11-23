@@ -12006,6 +12006,9 @@ server <- function(input, output, session) {
           div(style = "color:#999;font-size:.88rem;margin:.4rem 0;", "No wage bids have been submitted for this class yet.")
         } else NULL,
         tags$p(style = "color:#555;font-size:.88rem;", "Download records as CSV files."),
+        checkboxInput("export_mask_ids",
+          "Mask student identities: replace names and user IDs with a hashed ID in every file below (free-text notes are left out)",
+          value = isTRUE(isolate(input$export_mask_ids)), width = "100%"),
         div(style = "display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.5rem;",
           downloadButton("dl_assignments",          "Assignments",          class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_wage_bids",            "Wage Bids",            class = "btn btn-sm btn-outline-secondary"),
@@ -12017,7 +12020,10 @@ server <- function(input, output, session) {
           downloadButton("dl_pubgood_contribs",     "Public Good Contribs", class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_flex_purchases",       "Question Contributions",     class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_students",             "Students",             class = "btn btn-sm btn-outline-secondary")
-        )
+        ),
+        tags$p(style = "color:#555;font-size:.84rem;margin-top:.9rem;",
+               "The ID key lists each student's name and user ID beside their hashed ID. Keep it private; it is what links masked files back to people."),
+        downloadButton("dl_masked_id_key", "ID key (private)", class = "btn btn-sm btn-outline-danger")
       ))
 
     } else if (act == "extensions") {
@@ -13453,10 +13459,61 @@ server <- function(input, output, session) {
   })
 
   # Download handlers (must be in server, not renderUI)
+  # ── Masked exports ──────────────────────────────────────────────────────────
+  # With "Mask student identities" ticked, every export replaces names and user
+  # IDs with a stable hashed ID. The hash is salted with a secret stored in this
+  # database, so the same student gets the same ID in every file and term, and
+  # the ID cannot be reversed by hashing a list of email addresses.
+  export_mask_salt <- function() {
+    salt <- get_setting("export_mask_salt", "")
+    if (!nzchar(salt %||% "")) {
+      salt <- paste(sample(c(letters, LETTERS, 0:9), 48L, replace = TRUE), collapse = "")
+      set_setting("export_mask_salt", salt)
+    }
+    salt
+  }
+  masked_student_id <- function(user_id) {
+    salt <- export_mask_salt()
+    vapply(as.character(user_id), function(uid) {
+      if (is.na(uid) || !nzchar(trimws(uid))) return(NA_character_)
+      paste0("S", substr(digest::digest(paste0(salt, "|", tolower(trimws(uid))),
+                                        algo = "sha256", serialize = FALSE), 1L, 12L))
+    }, character(1), USE.NAMES = FALSE)
+  }
+  export_masked <- function() isTRUE(input$export_mask_ids)
+  # Drop-in for write.csv on the export page. Queries carry the student's user
+  # ID as export_uid (or user_id); it never reaches an unmasked file unless the
+  # export already listed user_id.
+  write_export_csv <- function(rows, file, ...) {
+    rows <- as.data.frame(rows, stringsAsFactors = FALSE)
+    uid_col <- intersect(c("export_uid", "user_id"), names(rows))[1]
+    if (export_masked() && nrow(rows) + ncol(rows) > 0L) {
+      if (is.na(uid_col)) stop("This export has no student ID to mask.")
+      masked <- masked_student_id(rows[[uid_col]])
+      # Free-text notes can contain names, so they are left out of masked files.
+      rows <- rows[, setdiff(names(rows), c("export_uid", "user_id", "display_name", "student", "note")), drop = FALSE]
+      rows <- cbind(masked_id = masked, rows, stringsAsFactors = FALSE)
+    } else {
+      rows <- rows[, setdiff(names(rows), "export_uid"), drop = FALSE]
+    }
+    write.csv(rows, file, ...)
+  }
+  output$dl_masked_id_key <- downloadHandler(
+    filename = function() paste0("masked_id_key_PRIVATE_", Sys.Date(), ".csv"),
+    content = function(file) {
+      req(rv$is_admin, !rv$impersonating)
+      rows <- tryCatch(db_query(
+        "SELECT user_id,display_name,course,section FROM users
+         WHERE COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0 ORDER BY section,display_name;"),
+        error = function(e) data.frame())
+      rows <- scope_filter_rows(rows)
+      write.csv(cbind(masked_id = masked_student_id(rows$user_id), rows, stringsAsFactors = FALSE), file, row.names = FALSE)
+    })
+
   output$dl_assignments <- downloadHandler(
     filename = function() paste0("assignments_", Sys.Date(), ".csv"),
-    content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT wr.label round, u.display_name student, jp.job_name job,
+    content  = function(file) write_export_csv(tryCatch(db_query(
+      "SELECT u.user_id export_uid, wr.label round, u.display_name student, jp.job_name job,
               ja.assigned_wage wage, ja.assignment_mode, ja.created_at
        FROM job_assignments ja
        JOIN users u ON u.user_id=ja.user_id
@@ -13469,8 +13526,8 @@ server <- function(input, output, session) {
   )
   output$dl_wage_bids <- downloadHandler(
     filename = function() paste0("wage_bids_", Sys.Date(), ".csv"),
-    content  = function(file) write.csv(tryCatch(db_query(
-      "SELECT wr.label round, u.display_name student, jp.job_name job,
+    content  = function(file) write_export_csv(tryCatch(db_query(
+      "SELECT u.user_id export_uid, wr.label round, u.display_name student, jp.job_name job,
               jc.name category, jwb.min_wage, jwb.submitted_at
        FROM job_wage_bids jwb
        JOIN users u ON u.user_id=jwb.user_id
@@ -13480,7 +13537,7 @@ server <- function(input, output, session) {
        JOIN scope_rounds sr1 ON sr1.round_id=jwb.round_id
        WHERE sr1.scope_key=?
        UNION ALL
-       SELECT wr.label round, u.display_name student, '(legacy category bid)' job,
+       SELECT u.user_id export_uid, wr.label round, u.display_name student, '(legacy category bid)' job,
               jc.name category, wb.min_wage, wb.submitted_at
        FROM wage_bids wb
        JOIN users u ON u.user_id=wb.user_id
@@ -13500,7 +13557,7 @@ server <- function(input, output, session) {
                 tl.source_type,tl.note,tl.created_at
          FROM token_ledger tl LEFT JOIN users u ON u.user_id=tl.user_id
          ORDER BY tl.created_at DESC;"),error=function(e)data.frame())
-      write.csv(scope_filter_rows(rows),file,row.names=FALSE)
+      write_export_csv(scope_filter_rows(rows),file,row.names=FALSE)
     })
   output$dl_students <- downloadHandler(
     filename=function() paste0("students_",Sys.Date(),".csv"),
@@ -13509,7 +13566,7 @@ server <- function(input, output, session) {
         "SELECT user_id,display_name,course,section,COALESCE(active,1) active
          FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0
          ORDER BY section,display_name;"),error=function(e)data.frame())
-      write.csv(scope_filter_rows(rows),file,row.names=FALSE)
+      write_export_csv(scope_filter_rows(rows),file,row.names=FALSE)
     })
   output$dl_student_template <- downloadHandler(
     filename = function() "student_upload_template.csv",
@@ -13542,14 +13599,14 @@ server <- function(input, output, session) {
     filename = function() paste0("participation_events_", Sys.Date(), ".csv"),
     content = function(file) {
       rows <- tryCatch(db_query(
-        "SELECT pe.id, wr.label AS round, u.display_name AS student,
+        "SELECT pe.user_id AS export_uid, pe.id, wr.label AS round, u.display_name AS student,
                 u.course,u.section,pe.event_type,pe.tokens,pe.note,
                 pe.logged_by,pe.created_at
          FROM participation_events pe
          LEFT JOIN users u ON u.user_id=pe.user_id
          LEFT JOIN weekly_rounds wr ON wr.id=pe.round_id
          ORDER BY pe.created_at DESC;"), error=function(e)data.frame())
-      write.csv(scope_filter_rows(rows),file,row.names=FALSE)
+      write_export_csv(scope_filter_rows(rows),file,row.names=FALSE)
     }
   )
   output$dl_extensions <- downloadHandler(
@@ -13563,26 +13620,26 @@ server <- function(input, output, session) {
          LEFT JOIN users u ON u.user_id=ep.user_id
          LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id
          ORDER BY ep.purchased_at DESC;"), error=function(e)data.frame())
-      write.csv(scope_filter_rows(rows),file,row.names=FALSE)
+      write_export_csv(scope_filter_rows(rows),file,row.names=FALSE)
     }
   )
   output$dl_reweight_requests <- downloadHandler(
     filename = function() paste0("reweight_requests_", Sys.Date(), ".csv"),
     content = function(file) {
       rows <- tryCatch(db_query(
-        "SELECT r.id,u.display_name AS student,u.course,u.section,
+        "SELECT r.user_id AS export_uid,r.id,u.display_name AS student,u.course,u.section,
                 COALESCE(r.level,'category') AS level,r.from_category,r.to_category,
                 r.points,r.cost,r.status,r.created_at
          FROM grade_reweight_requests r
          LEFT JOIN users u ON u.user_id=r.user_id
          ORDER BY r.created_at DESC;"), error=function(e)data.frame())
-      write.csv(scope_filter_rows(rows),file,row.names=FALSE)
+      write_export_csv(scope_filter_rows(rows),file,row.names=FALSE)
     }
   )
   output$dl_pubgood_contribs <- downloadHandler(
     filename = function() paste0("pubgood_contributions_", Sys.Date(), ".csv"),
-    content = function(file) write.csv(tryCatch(db_query(
-      "SELECT pgc.id,pg.name AS public_good,u.display_name AS student,
+    content = function(file) write_export_csv(tryCatch(db_query(
+      "SELECT pgc.user_id AS export_uid,pgc.id,pg.name AS public_good,u.display_name AS student,
               u.course,u.section,pgc.scope_key,pgc.amount,pgc.contributed_at
        FROM public_good_contributions pgc
        LEFT JOIN users u ON u.user_id=pgc.user_id
@@ -13593,7 +13650,7 @@ server <- function(input, output, session) {
   )
   output$dl_flex_purchases <- downloadHandler(
     filename = function() paste0("flex_question_contributions_", Sys.Date(), ".csv"),
-    content  = function(file) write.csv(tryCatch(db_query(
+    content  = function(file) write_export_csv(tryCatch(db_query(
       "SELECT fqc.id, fqc.scope_key, u.display_name AS student, fqc.user_id,
               u.course,u.section,fq.order_index AS question_num,fq.question_text,
               fqc.amount AS tokens_contributed,fqc.contributed_at,
@@ -13609,8 +13666,8 @@ server <- function(input, output, session) {
   )
   output$dl_app_bids <- downloadHandler(
     filename = function() paste0("application_bids_", Sys.Date(), ".csv"),
-    content = function(file) write.csv(tryCatch(db_query(
-      "SELECT ab.id,wr.label AS round,jc.name AS category,u.display_name AS student,
+    content = function(file) write_export_csv(tryCatch(db_query(
+      "SELECT ab.user_id AS export_uid,ab.id,wr.label AS round,jc.name AS category,u.display_name AS student,
               u.course,u.section,ab.tickets,ab.submitted_at
        FROM application_bids ab
        LEFT JOIN users u ON u.user_id=ab.user_id
