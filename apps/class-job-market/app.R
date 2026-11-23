@@ -145,6 +145,66 @@ policy_rubric_score <- function(component, scores, adjustment = 0) {
        final_score = max(0, base + adjustment), max_score = sum(max_points))
 }
 
+policy_row_value <- function(row, field, fallback="—") {
+  if (!nrow(row) || !field %in% names(row)) return(fallback)
+  value <- trimws(as.character(row[[field]][1] %||% ""))
+  if (length(value) && !is.na(value[1]) && nzchar(value[1])) value[1] else fallback
+}
+
+policy_progress_responses_ui <- function(progress_row=data.frame()) {
+  progress_fields <- c(
+    feedback="1. Most consequential feedback",
+    why_matters="Why that feedback matters",
+    diagnosis="2. What the feedback reveals",
+    revision_plan="3. Planned revisions and needed evidence/work",
+    uncertainty="4. Remaining uncertainty or implementation issue"
+  )
+  progress_status <- policy_row_value(progress_row, "status", "Not saved")
+  progress_stamp <- if (identical(tolower(progress_status), "submitted"))
+    policy_row_value(progress_row, "submitted_at",
+                     policy_row_value(progress_row, "updated_at", ""))
+  else policy_row_value(progress_row, "updated_at", "")
+  tagList(
+    tags$p(style="color:#666;font-size:.82rem;",
+      paste0("Status: ", tools::toTitleCase(progress_status),
+             if (nzchar(progress_stamp)) paste0(" · ", progress_stamp) else "")),
+    if (!nrow(progress_row))
+      tags$p(style="color:#777;", "No progress report has been saved yet.")
+    else
+      tagList(lapply(names(progress_fields), function(field) tagList(
+        tags$h6(style="font-weight:700;margin-top:.65rem;", unname(progress_fields[[field]])),
+        tags$p(policy_row_value(progress_row, field, "No response provided."))
+      )))
+  )
+}
+
+policy_component_submission_ui <- function(component, topic_row=data.frame(),
+                                           progress_row=data.frame()) {
+  component <- as.character(component %||% "")
+  div(class="policy-rubric-card",
+    tags$h5("Student submission"),
+    if (component %in% c("question", "presentation")) tagList(
+      tags$h6(style="font-weight:700;margin-top:.65rem;", "Proposed topic"),
+      tags$p(policy_row_value(topic_row, "policy_topic", "No topic submitted yet.")),
+      tags$h6(style="font-weight:700;margin-top:.65rem;", "Proposed guiding question"),
+      tags$p(policy_row_value(topic_row, "policy_question",
+                              "No guiding question submitted yet."))
+    ),
+    if (identical(component, "presentation"))
+      tags$p(style="color:#777;font-size:.82rem;",
+             "The presentation is delivered live; no presentation file is stored in this app."),
+    if (identical(component, "progress")) tagList(
+      tags$h6(style="font-weight:700;", "Progress report / revision memo"),
+      policy_progress_responses_ui(progress_row)
+    ),
+    if (identical(component, "brief")) tagList(
+      tags$h6(style="font-weight:700;", "Written policy brief"),
+      tags$p(style="color:#777;",
+             "No written-brief submission is stored in this app yet. Use this rubric once the brief is available through the assigned submission channel.")
+    )
+  )
+}
+
 # ── Google OAuth config ───────────────────────────────────────────────────────
 GOOGLE_CLIENT_ID     <- Sys.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET <- Sys.getenv("GOOGLE_CLIENT_SECRET", "")
@@ -7426,8 +7486,15 @@ server <- function(input, output, session) {
         "SELECT policy_team, course_unit, presentation_date, COALESCE(policy_topic,'') AS policy_topic,
                 COALESCE(policy_question,'') AS policy_question, COALESCE(topic_status,'pending') AS topic_status,
                 COALESCE(topic_note,'') AS topic_note
-         FROM policy_group_assignments WHERE policy_team=? ORDER BY user_id LIMIT 1;", list(selected)),
+         FROM policy_group_assignments p
+         JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+         WHERE p.policy_team=? AND LOWER(COALESCE(u.course,''))=LOWER(?)
+         ORDER BY p.user_id LIMIT 1;", list(selected, scoped_course())),
         error=function(e) data.frame())
+      progress_report <- tryCatch(db_query(
+        "SELECT * FROM policy_progress_reports
+         WHERE LOWER(course)=LOWER(?) AND policy_team=? LIMIT 1;",
+        list(scoped_course(), selected)), error=function(e) data.frame())
       team_members <- tryCatch(db_query(
         "SELECT COALESCE(u.display_name,p.user_id) AS display_name
          FROM policy_group_assignments p LEFT JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
@@ -7435,23 +7502,31 @@ server <- function(input, output, session) {
         error=function(e) data.frame())
       tr <- if (nrow(team_row)) team_row[1,] else data.frame(policy_team=selected,course_unit="",presentation_date="",policy_topic="",policy_question="",topic_status="pending",topic_note="")
       return(tagList(
-        div(class="tab-howto", "Review team topics, approve the question, and open the rubric grader for the selected team."),
+        div(class="tab-howto",
+            "This is the selected team's policy-project view. Grade submissions and provide feedback under Settings → Policy Rubrics."),
         div(class="today-card",
-          selectInput("policy_admin_team", "Team to review:", choices=teams, selected=selected),
-          tags$p(tags$strong("Unit: "), tr$course_unit, " · ", tags$strong("Presentation: "), fmt_date(tr$presentation_date)),
+          selectInput("policy_admin_team", "Team:", choices=teams, selected=selected),
+          tags$h4("Policy brief"),
+          tags$p(tags$strong("Team: "), tr$policy_team, " · ", tr$course_unit),
+          tags$h5("Working topic and guiding question"),
+          tags$p(tags$strong("Topic: "),
+                 policy_row_value(tr, "policy_topic", "No topic submitted yet.")),
+          tags$p(tags$strong("Guiding question: "),
+                 policy_row_value(tr, "policy_question", "No guiding question submitted yet.")),
+          if (identical(tr$topic_status %||% "pending", "approved"))
+            tags$p(style="color:#1a6e3c;font-size:.84rem;", "Topic approved by instructor."),
+          if (identical(tr$topic_status %||% "pending", "needs_revision"))
+            tags$p(style="color:#9a5b00;font-size:.84rem;", "Topic needs revision."),
+          if (nzchar(tr$topic_note %||% ""))
+            tags$p(style="color:#666;font-size:.84rem;",
+                   tags$strong("Instructor note: "), tr$topic_note),
+          tags$p(tags$strong("Presentation: "), fmt_date(tr$presentation_date)),
           if (nrow(team_members)) tags$p(tags$strong("Group: "), paste(team_members$display_name, collapse=", ")),
-          tags$h5("Student-submitted topic and question"),
-          tags$p(if (nzchar(tr$policy_topic %||% "")) tr$policy_topic else "No topic submitted yet."),
-          tags$p(if (nzchar(tr$policy_question %||% "")) tr$policy_question else "No guiding question submitted yet."),
-          selectInput("policy_topic_status", "Topic status:",
-                      choices=c("Pending review"="pending", "Approved"="approved", "Needs revision"="needs_revision"),
-                      selected=tr$topic_status %||% "pending"),
-          textAreaInput("policy_topic_note", "Quick note to the team:",
-                        value=tr$topic_note %||% "", rows=2, width="100%",
-                        placeholder="Optional approval or revision note"),
-          div(style="display:flex;gap:.5rem;flex-wrap:wrap;",
-            actionButton("save_policy_topic_review_btn", "Save review", class="btn btn-primary"),
-            actionButton("policy_admin_open_grader_btn", "Grade rubric", class="btn btn-default"))
+          tags$p(style="color:#777;font-size:.84rem;margin-bottom:0;",
+                 paste("Final brief submission is due", final_brief_due_label, ".")),
+          policy_component_submission_ui("progress", tr, progress_report),
+          actionButton("policy_admin_open_grader_btn", "Open grading workspace",
+                       class="btn btn-primary")
         ),
         tags$h4("Milestones"),
         tags$ul(tags$li(paste("Presentation —", fmt_date(tr$presentation_date))),
@@ -7500,18 +7575,6 @@ server <- function(input, output, session) {
     rv$policy_ver <- rv$policy_ver + 1L
   }, ignoreInit=TRUE)
 
-  observeEvent(input$save_policy_topic_review_btn, {
-    req(rv$authed, rv$is_admin, !rv$impersonating)
-    team <- trimws(input$policy_admin_team %||% "")
-    if (!nzchar(team)) return()
-    status <- input$policy_topic_status %||% "pending"
-    if (!status %in% c("pending", "approved", "needs_revision")) status <- "pending"
-    db_exec("UPDATE policy_group_assignments SET topic_status=?, topic_note=?, topic_reviewed_at=CURRENT_TIMESTAMP WHERE policy_team=?;",
-            list(status, trimws(input$policy_topic_note %||% ""), team))
-    rv$policy_ver <- rv$policy_ver + 1L
-    showNotification("Saved topic review for the selected team.", type="message")
-  }, ignoreInit=TRUE)
-
   observeEvent(input$policy_admin_open_grader_btn, {
     req(rv$authed, rv$is_admin, !rv$impersonating)
     team <- trimws(input$policy_admin_team %||% "")
@@ -7520,6 +7583,7 @@ server <- function(input, output, session) {
       updateSelectInput(session, "policy_rubric_team", selected=team)
     }
     updateSelectInput(session, "config_action", selected="policy_rubrics")
+    updateSelectInput(session, "policy_rubric_component", selected="question")
     updateTabsetPanel(session, "arc_tabs", selected="Settings")
   }, ignoreInit=TRUE)
 
@@ -12226,8 +12290,9 @@ server <- function(input, output, session) {
     } else if (act == "policy_rubrics") {
       rv$rubric_ver
       catalog <- policy_rubric_catalog()
-      component_choices <- setNames(
-        names(catalog), vapply(catalog, function(x) x$label, character(1))
+      component_choices <- c(
+        "Topic & guiding question"="question",
+        setNames(names(catalog), vapply(catalog, function(x) x$label, character(1)))
       )
       team_rows <- tryCatch(db_query(
         "SELECT DISTINCT p.policy_team, u.course, u.section
@@ -12261,8 +12326,9 @@ server <- function(input, output, session) {
       } else {
         selected_team <- isolate(input$policy_rubric_team %||% rv$policy_grader_team %||% teams[1])
         if (!selected_team %in% teams) selected_team <- teams[1]
-        selected_component <- isolate(input$policy_rubric_component %||% "presentation")
-        if (!selected_component %in% names(catalog)) selected_component <- "presentation"
+        selected_component <- isolate(input$policy_rubric_component %||% "question")
+        valid_components <- c("question", names(catalog))
+        if (!selected_component %in% valid_components) selected_component <- "question"
         course <- scoped_course()
         draft <- tryCatch(db_query(
           "SELECT * FROM policy_rubric_assessments
@@ -12278,6 +12344,60 @@ server <- function(input, output, session) {
         current_scores <- if (nrow(current)) tryCatch(db_query(
           "SELECT * FROM policy_rubric_scores WHERE assessment_id=?;",
           list(current$id[1])), error=function(e)data.frame()) else data.frame()
+        topic_row <- tryCatch(db_query(
+          "SELECT COALESCE(p.policy_topic,'') AS policy_topic,
+                  COALESCE(p.policy_question,'') AS policy_question,
+                  COALESCE(p.topic_status,'pending') AS topic_status,
+                  COALESCE(p.topic_note,'') AS topic_note,
+                  COALESCE(p.course_unit,'') AS course_unit
+           FROM policy_group_assignments p
+           JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+           WHERE p.policy_team=? AND LOWER(COALESCE(u.course,''))=LOWER(?)
+             AND COALESCE(u.active,1)=1 AND COALESCE(u.is_admin,0)=0
+             AND COALESCE(u.is_demo,0)=0
+           ORDER BY p.user_id LIMIT 1;",
+          list(selected_team, course)), error=function(e)data.frame())
+        progress_report <- tryCatch(db_query(
+          "SELECT * FROM policy_progress_reports
+           WHERE LOWER(course)=LOWER(?) AND policy_team=? LIMIT 1;",
+          list(course, selected_team)), error=function(e)data.frame())
+        team_members <- tryCatch(db_query(
+          "SELECT COALESCE(u.display_name,p.user_id) AS display_name
+           FROM policy_group_assignments p
+           JOIN users u ON LOWER(u.user_id)=LOWER(p.user_id)
+           WHERE p.policy_team=? AND LOWER(COALESCE(u.course,''))=LOWER(?)
+             AND COALESCE(u.active,1)=1 AND COALESCE(u.is_admin,0)=0
+             AND COALESCE(u.is_demo,0)=0
+           ORDER BY COALESCE(u.display_name,p.user_id);",
+          list(selected_team, course)), error=function(e)data.frame())
+        member_names <- paste(nonempty_values(team_members$display_name %||% character(0)),
+                              collapse=", ")
+        if (identical(selected_component, "question")) return(tagList(
+          tags$h6(style="font-weight:700;color:#951829;margin-top:.5rem;",
+                  "Policy Project Grading"),
+          tags$p(style="color:#555;font-size:.85rem;",
+                 "Choose a team and assignment component. Student work and feedback controls stay together here."),
+          policy_deadline_controls,
+          fluidRow(
+            column(6, selectInput("policy_rubric_team", "Team:",
+                                  choices=setNames(teams, teams), selected=selected_team)),
+            column(6, selectInput("policy_rubric_component", "Component:",
+                                  choices=component_choices, selected=selected_component))
+          ),
+          if (nzchar(member_names))
+            tags$p(tags$strong("Team members: "), member_names),
+          policy_component_submission_ui("question", topic_row, progress_report),
+          selectInput("policy_grader_topic_status", "Question status:",
+                      choices=c("Pending review"="pending", "Approved"="approved",
+                                "Needs revision"="needs_revision"),
+                      selected=policy_row_value(topic_row, "topic_status", "pending")),
+          textAreaInput("policy_grader_topic_note", "Feedback to the team:",
+                        value=policy_row_value(topic_row, "topic_note", ""),
+                        rows=3, width="100%",
+                        placeholder="Approval note or requested revision"),
+          actionButton("save_policy_grader_question_btn", "Save question feedback",
+                       class="btn btn-primary")
+        ))
         component <- catalog[[selected_component]]
         criteria <- component$criteria
         gradebook_choices <- c(list("Feedback only" = c("Do not write a gradebook score" = "")),
@@ -12327,9 +12447,9 @@ server <- function(input, output, session) {
             "Released to students ", released$released_at[1] %||% "", ".")
         )
         tagList(
-          tags$h6(style="font-weight:700;color:#951829;margin-top:.5rem;", "Policy Rubrics"),
+          tags$h6(style="font-weight:700;color:#951829;margin-top:.5rem;", "Policy Project Grading"),
           tags$p(style="color:#555;font-size:.85rem;",
-            "Choose a performance anchor to prefill points, then fine-tune the score and add criterion feedback. Save privately while grading; Release to team publishes one shared copy to every team member and optionally writes the final score to the gradebook."),
+            "Choose a team and assignment component, review the submitted work, then score and provide feedback. Save privately while grading; Release publishes one shared copy to every team member and can write the score to the gradebook."),
           policy_deadline_controls,
           fluidRow(
             column(4, selectInput("policy_rubric_team", "Team:",
@@ -12339,6 +12459,10 @@ server <- function(input, output, session) {
             column(4, selectInput("policy_rubric_gradebook_item", "Gradebook item:",
                                   choices=gradebook_choices, selected=current_gradebook))
           ),
+          if (nzchar(member_names))
+            tags$p(tags$strong("Team members: "), member_names),
+          policy_component_submission_ui(selected_component, topic_row,
+                                         progress_report),
           status_ui,
           criterion_cards,
           fluidRow(
@@ -13223,6 +13347,28 @@ server <- function(input, output, session) {
   observeEvent(list(input$policy_rubric_team, input$policy_rubric_component), {
     req(rv$authed, rv$is_admin, !rv$impersonating)
     rv$rubric_ver <- rv$rubric_ver + 1L
+  }, ignoreInit=TRUE)
+
+  observeEvent(input$save_policy_grader_question_btn, {
+    req(rv$authed, rv$is_admin, !rv$impersonating)
+    team <- trimws(input$policy_rubric_team %||% "")
+    course <- scoped_course()
+    if (!nzchar(team) || !nzchar(course)) return()
+    status <- input$policy_grader_topic_status %||% "pending"
+    if (!status %in% c("pending", "approved", "needs_revision"))
+      status <- "pending"
+    db_exec(
+      "UPDATE policy_group_assignments
+       SET topic_status=?, topic_note=?, topic_reviewed_at=CURRENT_TIMESTAMP
+       WHERE policy_team=? AND EXISTS (
+         SELECT 1 FROM users u
+         WHERE LOWER(u.user_id)=LOWER(policy_group_assignments.user_id)
+           AND LOWER(COALESCE(u.course,''))=LOWER(?)
+       );",
+      list(status, trimws(input$policy_grader_topic_note %||% ""), team, course))
+    rv$policy_ver <- rv$policy_ver + 1L
+    rv$rubric_ver <- rv$rubric_ver + 1L
+    showNotification("Saved question feedback for the selected team.", type="message")
   }, ignoreInit=TRUE)
 
 
