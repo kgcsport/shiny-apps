@@ -3345,6 +3345,9 @@ assignment_history_state <- function(outcome = "", assignment_status = "assigned
       finalized = outcome %in% c("complete", "tried", "missed")
     ))
   }
+  if (identical(assignment_status, "passed_redrawn")) {
+    return(list(code = "absent", label = "Passed / redrawn", finalized = TRUE))
+  }
   if (assignment_status %in% c("absent_redrawn", "absent", "redrawn")) {
     return(list(code = "absent", label = "Absent / redrawn", finalized = TRUE))
   }
@@ -3867,7 +3870,7 @@ server <- function(input, output, session) {
          FROM job_assignments ja JOIN job_posts jp ON jp.id=ja.job_post_id
          JOIN weekly_rounds wr ON wr.id=ja.round_id JOIN scope_rounds sr ON sr.round_id=ja.round_id
          WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=0 AND COALESCE(ja.assigned_wage,0)>0
-           AND COALESCE(ja.status,'assigned') NOT IN ('absent_redrawn','absent','redrawn');", key),
+           AND COALESCE(ja.status,'assigned') NOT IN ('absent_redrawn','absent','redrawn','passed_redrawn');", key),
       q("SELECT 'cold call: ' || LOWER(lse.outcome) job, lse.tokens wage
          FROM live_score_events lse JOIN weekly_rounds wr ON wr.id=lse.round_id
          JOIN scope_rounds sr ON sr.round_id=lse.round_id
@@ -3886,7 +3889,7 @@ server <- function(input, output, session) {
          LEFT JOIN users u ON u.user_id=ja.user_id
          WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=1
            AND LOWER(TRIM(COALESCE(ja.outcome,''))) IN ('complete','tried')
-           AND COALESCE(ja.status,'assigned') NOT IN ('absent_redrawn','absent','redrawn');"),
+           AND COALESCE(ja.status,'assigned') NOT IN ('absent_redrawn','absent','redrawn','passed_redrawn');"),
       q("SELECT 'practice_pay_event' source_type, lse.id source_id, lse.user_id, COALESCE(u.display_name,lse.user_id) display_name,
                 wr.class_date, 'Cold call: ' || lse.outcome job_label, 'cold call: ' || LOWER(lse.outcome) job, 'complete' outcome
          FROM live_score_events lse JOIN weekly_rounds wr ON wr.id=lse.round_id
@@ -9351,10 +9354,18 @@ server <- function(input, output, session) {
     )
   })
 
-  observeEvent(input$redraw_absent_btn, {
+  # Hand an assigned job to another student. "Absent" also records the absence,
+  # which keeps the student out of every other draw that class. "Pass" only
+  # gives up this one job: the student stays in the pool for cold calls and for
+  # other jobs. Either way the original assignment is kept, unpaid, as a record.
+  redraw_assigned_job <- function(aid, passed = FALSE) {
     req(rv$is_admin)
-    aid <- suppressWarnings(as.integer(input$redraw_absent_btn %||% 0))
+    aid <- suppressWarnings(as.integer(aid %||% 0))
     if (is.na(aid) || aid <= 0) return()
+    released_status <- if (isTRUE(passed)) "passed_redrawn" else "absent_redrawn"
+    record_absence <- function() if (!isTRUE(passed)) db_exec(
+      "INSERT OR REPLACE INTO round_absences(round_id,user_id,marked_at) VALUES(?,?,CURRENT_TIMESTAMP);",
+      list(old$round_id[1], old$user_id[1]))
     old <- tryCatch(db_query(
       "SELECT ja.round_id, ja.user_id, ja.job_post_id, ja.assigned_wage,
               ja.assignment_mode, u.display_name, COALESCE(u.section,'') AS section
@@ -9364,7 +9375,7 @@ server <- function(input, output, session) {
       error = function(e) data.frame())
     if (!nrow(old)) { showNotification("Assignment not found.", type = "error"); return() }
     if (!is.na(old$assigned_wage[1] %||% NA) && as.numeric(old$assigned_wage[1]) < 0) {
-      showNotification("Cannot redraw an already marked absent assignment.", type = "warning")
+      showNotification("This assignment has already been redrawn.", type = "warning")
       return()
     }
     candidates <- tryCatch(db_query(
@@ -9394,13 +9405,13 @@ server <- function(input, output, session) {
     if(nrow(candidates)) candidates <- candidates[sample(nrow(candidates)),,drop=FALSE]
     if (!nrow(candidates) && random_wage_date) {
       db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;", list(aid))
-      db_exec("UPDATE job_assignments SET status='absent_redrawn', assigned_wage=-ABS(COALESCE(assigned_wage,0)),
-               updated_at=datetime('now') WHERE id=?;", list(aid))
-      db_exec("INSERT OR REPLACE INTO round_absences(round_id,user_id,marked_at) VALUES(?,?,CURRENT_TIMESTAMP);",
-              list(old$round_id[1], old$user_id[1]))
+      db_exec("UPDATE job_assignments SET status=?, assigned_wage=-ABS(COALESCE(assigned_wage,0)),
+               updated_at=datetime('now') WHERE id=?;", list(released_status, aid))
+      record_absence()
       rv$jobs_ver <- rv$jobs_ver + 1L
-      showNotification(sprintf("Marked %s absent. No other student bid at or below the drawn wage, so the slot stays empty.",
-                               old$display_name[1] %||% old$user_id[1]), type = "warning")
+      showNotification(sprintf("%s %s. No other student bid at or below the drawn wage, so the slot stays empty.",
+                               old$display_name[1] %||% old$user_id[1],
+                               if (isTRUE(passed)) "passed" else "was marked absent"), type = "warning")
       return()
     }
     if (!nrow(candidates)) {
@@ -9410,26 +9421,26 @@ server <- function(input, output, session) {
     db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;", list(aid))
     db_exec(
       "UPDATE job_assignments
-       SET status='absent_redrawn', assigned_wage=-ABS(COALESCE(assigned_wage,0)),
+       SET status=?, assigned_wage=-ABS(COALESCE(assigned_wage,0)),
            updated_at=datetime('now')
        WHERE id=?;",
-      list(aid))
-    db_exec(
-      "INSERT OR REPLACE INTO round_absences(round_id,user_id,marked_at)
-       VALUES(?,?,CURRENT_TIMESTAMP);",
-      list(old$round_id[1], old$user_id[1]))
+      list(released_status, aid))
+    record_absence()
     db_exec(
       "INSERT OR IGNORE INTO job_assignments(round_id, user_id, job_post_id, assigned_wage, assignment_mode)
        VALUES(?,?,?,?,?);",
       list(old$round_id[1], candidates$user_id[1], old$job_post_id[1],
            if (is.na(old$assigned_wage[1] %||% NA)) NA_real_ else abs(as.numeric(old$assigned_wage[1])),
            old$assignment_mode[1] %||% "redraw"))
+    rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification(
-      sprintf("Redrew %s's job to %s.",
+      sprintf(if (isTRUE(passed)) "%s passed; the job went to %s." else "Redrew %s's job to %s.",
               old$display_name[1] %||% old$user_id[1],
               candidates$display_name[1] %||% candidates$user_id[1]),
       type = "message")
-  }, ignoreNULL = TRUE)
+  }
+  observeEvent(input$redraw_absent_btn, redraw_assigned_job(input$redraw_absent_btn, passed = FALSE), ignoreNULL = TRUE)
+  observeEvent(input$redraw_pass_btn,   redraw_assigned_job(input$redraw_pass_btn,   passed = TRUE),  ignoreNULL = TRUE)
 
   observeEvent(input$clear_assignments_btn, {
     req(rv$is_admin)
@@ -10587,7 +10598,14 @@ server <- function(input, output, session) {
                       title = "Mark absent and redraw this job",
                       onclick = sprintf(
                         "if(confirm('Mark this student absent and redraw this job?')){Shiny.setInputValue('redraw_absent_btn',%d,{priority:'event'})}",
-                        as.integer(r$id)), "Redraw"),
+                        as.integer(r$id)), "Absent"),
+                    tags$button(
+                      class = "btn btn-xs btn-outline-warning",
+                      style = "padding:.1rem .3rem;font-size:.7rem;margin-right:.1rem;",
+                      title = "Student passes on this job; redraw it and keep the student eligible for other jobs and cold calls",
+                      onclick = sprintf(
+                        "if(confirm('Record a pass and redraw this job? The student stays eligible for other jobs and cold calls.')){Shiny.setInputValue('redraw_pass_btn',%d,{priority:'event'})}",
+                        as.integer(r$id)), "Pass"),
                     tags$button(
                       class = "btn btn-xs btn-outline-secondary",
                       style = "padding:.1rem .3rem;font-size:.7rem;",

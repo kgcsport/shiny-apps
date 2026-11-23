@@ -158,4 +158,44 @@ first <- app$db_query("SELECT id FROM job_assignments WHERE round_id=? AND user_
 shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_absent_btn = first) })
 stopifnot(nrow(app$db_query("SELECT id FROM job_assignments WHERE round_id=? AND status='assigned';", list(d$rid))) == 2L)
 
+# Pass on an assigned job: the job is redrawn and the original kept unpaid as
+# a record, but unlike an absence the student stays in the pool for cold calls
+# and other jobs, and is never redrawn into the job they passed on.
+absences <- function(rid) app$db_query("SELECT user_id FROM round_absences WHERE round_id=?;", list(rid))$user_id
+stopifnot(identical(absences(d$rid), students[1]))            # the absence above was recorded
+d <- new_date(31, "pay_as_bid")
+run_draw()
+passer <- app$db_query("SELECT id,user_id,assigned_wage FROM job_assignments WHERE round_id=? AND user_id=?;", list(d$rid, students[2]))
+shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_pass_btn = passer$id[1]) })
+rows <- app$db_query("SELECT user_id,status,assigned_wage FROM job_assignments WHERE round_id=? ORDER BY id;", list(d$rid))
+stopifnot(nrow(rows) == 3L,
+          identical(rows$status[rows$user_id == students[2]], "passed_redrawn"),
+          rows$assigned_wage[rows$user_id == students[2]] == -passer$assigned_wage[1],
+          sum(rows$status == "assigned") == 2L, !students[2] %in% rows$user_id[rows$status == "assigned"],
+          length(absences(d$rid)) == 0L,
+          identical(app$assignment_history_state("", "passed_redrawn")$label, "Passed / redrawn"),
+          identical(app$assignment_history_state("", "absent_redrawn")$label, "Absent / redrawn"))
+# A second click on the same pass does nothing more.
+shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_pass_btn = passer$id[1]) })
+stopifnot(nrow(app$db_query("SELECT id FROM job_assignments WHERE round_id=?;", list(d$rid))) == 3L)
+# The passer is still drawn for cold calls; an absent student is not.
+shiny::testServer(app$server, {
+  set_admin(rv)
+  seen <- character(0)
+  for (i in 1:80) { draw_cold_call(); seen <- c(seen, rv$cold_call_draw$user_id) }
+  stopifnot(students[2] %in% seen)
+})
+# Random-wage date with nobody else eligible: a pass leaves the slot empty and
+# records no absence.
+repeat {
+  d <- new_date(60 + nrow(app$db_query("SELECT id FROM weekly_rounds;")), "random_wage", slots = 1L)
+  run_draw()
+  if (nrow(assignments(d$rid)) == 1L) break
+}
+app$db_exec("UPDATE job_wage_bids SET min_wage=5000 WHERE round_id=?;", list(d$rid))
+only <- app$db_query("SELECT id FROM job_assignments WHERE round_id=?;", list(d$rid))$id[1]
+shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_pass_btn = only) })
+left <- app$db_query("SELECT status FROM job_assignments WHERE round_id=?;", list(d$rid))
+stopifnot(nrow(left) == 1L, identical(left$status[1], "passed_redrawn"), length(absences(d$rid)) == 0L)
+
 cat("critical random wage draw: PASS\n")
