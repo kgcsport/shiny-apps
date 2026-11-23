@@ -504,6 +504,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-23** (Claude Code) — Read Kyle's fall wage-bid export (12 students, 14 class dates, 11 jobs; not committed to the repository). Findings: nine of twelve students bid 2,000 or more on every job for the first market date, six of them within three minutes on the evening of 8 October; the share of such bids fell from 60% to 34% by 26 October and then held, with four students at 5,000 or more on every job through 18 November and four others using very high bids on one to three jobs as opt-outs; about 45% of late bids equal the pre-filled wage of 2; volunteer-job rows share one timestamp across students and look system-seeded. Consequences for spring: an unlimited bid under lowest-losing-bid pricing can be pushed up by coordination, so the earlier tentative "no ceiling" is withdrawn pending Kyle's choice between a ceiling and a random-wage draw; the fall bids cannot calibrate the power simulation on their own.
+
 - **2026-11-23** (Claude Code) — Added the other-section practice-pay rule and extended `tests/critical-practice-dates.R` with a two-section course: unpriced when the other section has no wages, priced from the other section only once it does, and never from the student's own section. That test, `critical-bid-anchor-volunteer-cap`, `critical-insurance-market`, `critical-live-score-audit`, `smoke-class-job-market`, `admin-roles`, and `critical-assignment-wage-award` pass. **Not staged or deployed.**
 
 - **2026-11-23** (Claude Code) — Built practice (no-points) class dates and end-of-term practice pay in Class Job Market, with `tests/critical-practice-dates.R` driving the per-date control, live volunteer and cold-call logging, the audit commit, the repair button, and the pay preview and payment. That test passes, as do `critical-bid-anchor-volunteer-cap`, `critical-insurance-market`, `critical-live-score-audit`, `critical-assignment-wage-award`, `smoke-class-job-market`, `admin-roles`, `critical-account-accordion`, `critical-extension-checkout`, `critical-grade-reweighting`, and `critical-token-spend-precision`. **Not staged or deployed;** the experiment features are for spring. Untested here: the bulk job import and the draw on a practice date in a browser, and how student pages word a zero wage.
@@ -965,6 +967,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 3. Publish the PS6 Cloudflare Worker assignment, then enable the preconfigured PS6 and PS6 corrections extension products in Settings → Spending Options → Assignment Extensions.
 
 ## Questions for Kyle
+
+- Class-job experiment: given the fall coordination on very high bids, choose between (a) a bid ceiling with the current lowest-losing-bid wage, which limits the damage but lets a group bid the ceiling, and (b) drawing each job's wage at random and choosing by lottery among students whose bid is at or below it, which no bid can move.
+- Class-job experiment: what was actually paid on the dates with very high bids? An export of assignments and the token ledger would show it and give the fall market's tightness.
 
 - Class-job experiment: the volunteer wage setting defaults to the single lowest bid in a job type, which gives students a reason to bid above their true minimum for answers and board work. Check how cold-call selection uses those bids and whether the experiment sections should use the k-th-lowest rule.
 

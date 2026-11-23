@@ -292,8 +292,9 @@ reason, and the information available at the time.
 - Bidding begins: [DATE / WEEK]
 - Bid unit: participation points
 - Bid step: [STEP]
-- Maximum wage bid: none [TENTATIVE]. A student who does not want a job enters
-  a high bid. Very high bids are handled in the analysis, not by the form.
+- Maximum wage bid: [OPEN. FALL BIDS SHOWED COORDINATED BIDS OF 5,000 OR MORE,
+  SO AN UNLIMITED BID IS NOT SAFE UNDER LOWEST-LOSING-BID PRICING. CHOOSE A
+  CEILING, OR REPLACE THE PRICING RULE WITH A RANDOM-WAGE DRAW.]
 - Allocation: lowest valid bids receive the posted slots
 - Pricing: uniform reverse-second-price
 - Wage: first unsuccessful bid
