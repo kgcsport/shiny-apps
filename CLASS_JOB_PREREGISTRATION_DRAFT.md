@@ -292,13 +292,25 @@ reason, and the information available at the time.
 - Bidding begins: [DATE / WEEK]
 - Bid unit: participation points
 - Bid step: [STEP]
-- Maximum wage bid: [OPEN. FALL BIDS SHOWED COORDINATED BIDS OF 5,000 OR MORE,
-  SO AN UNLIMITED BID IS NOT SAFE UNDER LOWEST-LOSING-BID PRICING. CHOOSE A
-  CEILING, OR REPLACE THE PRICING RULE WITH A RANDOM-WAGE DRAW.]
-- Allocation: lowest valid bids receive the posted slots
-- Pricing: uniform reverse-second-price
-- Wage: first unsuccessful bid
-- No-loser fallback: [FALLBACK]
+- Maximum wage bid: none. A student who does not want a job enters a bid above
+  any wage the job could pay.
+- Pricing: random wage. For each job and class date the app draws a wage
+  uniformly from the bid-step grid up to that job's posted maximum wage
+  [MAXIMUM BY JOB IN APPENDIX B]. The draw does not depend on any bid and is
+  fixed once drawn.
+- Allocation: students whose bid is at or below the drawn wage are eligible.
+  Winners are chosen among them by lottery, up to the posted slots, and every
+  winner is paid the drawn wage.
+- Unfilled slots: a slot with no eligible bidder stays empty. It is not filled
+  from students who bid above the wage or did not bid.
+- Rationale: no bid can change the wage, so entering one's true minimum is the
+  best response and a group cannot raise pay by coordinating on high bids, as
+  happened under the pilot's bid-determined wages.
+- Live answers and board work: the cold-call wage is drawn the same way, and
+  volunteers are paid that drawn wage. [OPEN: WHETHER PAID COLD CALLS ARE
+  LIMITED TO STUDENTS WHOSE BID IS AT OR BELOW THE DRAWN WAGE. AS BUILT, COLD
+  CALLS DRAW FROM ALL PRESENT STUDENTS, SO A BID FOR THESE JOBS DOES NOT AFFECT
+  SELECTION.]
 - Bid lock: [TIME]
 - Tie-break: [REGISTERED RANDOM PROCEDURE]
 - Maximum assigned jobs per meeting: [LIMIT]

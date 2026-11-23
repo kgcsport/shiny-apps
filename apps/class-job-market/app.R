@@ -1899,8 +1899,9 @@ order_job_posts_for_clearing <- function(posts) {
 
 normalize_wage_pricing_rule <- function(rule) {
   rule <- tolower(trimws(as.character(rule %||% "pay_as_bid")))
-  if (rule %in% c("uniform_second_price", "second_price", "uniform"))
-    "uniform_second_price" else "pay_as_bid"
+  if (rule %in% c("uniform_second_price", "second_price", "uniform")) "uniform_second_price"
+  else if (rule %in% c("random_wage", "random")) "random_wage"
+  else "pay_as_bid"
 }
 
 normalize_assignment_mode <- function(mode) {
@@ -1918,6 +1919,29 @@ round_state_signature <- function(round) {
   values <- vapply(round[1, , drop = FALSE], function(x)
     as.character(x[1] %||% ""), character(1))
   paste(names(values), values, sep = "=", collapse = "|")
+}
+
+# Random-wage rule. The wage for a job is drawn uniformly from the bid-step grid
+# up to the job's posted wage, which acts as the most the instructor will pay.
+# Students whose bid is at or below the drawn wage are eligible and winners are
+# chosen among them by lottery; everyone chosen is paid the drawn wage. No bid
+# can move the wage, so bidding one's true minimum is optimal and a group
+# cannot raise pay by bidding high. A slot with no eligible bidder stays empty.
+random_wage_grid <- function(max_wage, step = 0.5) {
+  max_wage <- suppressWarnings(as.numeric(max_wage %||% NA_real_))
+  if (!is.finite(max_wage) || max_wage < step) return(step)
+  seq(step, floor(max_wage / step + 1e-9) * step, by = step)
+}
+draw_random_wage <- function(max_wage, step = 0.5) {
+  grid <- random_wage_grid(max_wage, step)
+  grid[sample.int(length(grid), 1L)]
+}
+random_wage_winners <- function(post_bids, wage, slots) {
+  if (!nrow(post_bids) || !is.finite(wage)) return(character(0))
+  bid <- suppressWarnings(as.numeric(post_bids$min_wage))
+  eligible <- unique(as.character(post_bids$user_id[is.finite(bid) & bid <= wage + 1e-9]))
+  if (!length(eligible)) return(character(0))
+  eligible[sample.int(length(eligible), min(length(eligible), max(1L, as.integer(slots))))]
 }
 
 uniform_procurement_wage <- function(post_bids, winners, fallback_wage) {
@@ -2480,9 +2504,10 @@ class_wage_snapshot <- function(round_id, job_post_id, fallback_wage = NA_real_,
 }
 
 freeze_class_wages <- function(round_id, query_fn = db_query, exec_fn = db_exec) {
-  round <- tryCatch(query_fn("SELECT assignment_mode FROM weekly_rounds WHERE id=?;",
+  round <- tryCatch(query_fn("SELECT assignment_mode, wage_pricing_rule FROM weekly_rounds WHERE id=?;",
                              list(as.integer(round_id))), error = function(e) data.frame())
   if (!nrow(round)) return(0L)
+  random_wage_rule <- identical(normalize_wage_pricing_rule(round$wage_pricing_rule[1] %||% "pay_as_bid"), "random_wage")
   posts <- tryCatch(query_fn(
     "SELECT jp.id, jp.category_id, jp.slots, jp.job_name,
             COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time,
@@ -2493,10 +2518,23 @@ freeze_class_wages <- function(round_id, query_fn = db_query, exec_fn = db_exec)
     error = function(e) data.frame())
   if (!nrow(posts)) return(0L)
   wage_mode <- identical(as.character(round$assignment_mode[1] %||% "random"), "wage_bidding")
+  is_voluntary_post <- as.integer(posts$voluntary %||% 0L) == 1L | as.integer(posts$category_voluntary %||% 0L) == 1L
+  # Under the random-wage rule, cold-call and assigned posts are drawn first so
+  # volunteer posts can inherit the drawn cold-call wage.
+  if (random_wage_rule) { posts <- posts[order(is_voluntary_post), , drop = FALSE]; is_voluntary_post <- sort(is_voluntary_post) }
   for (i in seq_len(nrow(posts))) {
     post <- posts[i, ]
     wage <- as.numeric(post$fallback_wage %||% 0)
     auction_priced <- wage_mode && !is.na(post$category_id %||% NA)
+    if (auction_priced && random_wage_rule && !is_voluntary_post[i]) {
+      exec_fn(
+        "INSERT INTO class_wage_snapshots(round_id,snapshot_key,job_post_id,category_id,wage,source,snapshotted_at)
+         VALUES(?,?,?,?,?,'random_draw',CURRENT_TIMESTAMP)
+         ON CONFLICT(round_id,snapshot_key) DO NOTHING;",
+        list(as.integer(round_id), paste0("post:", as.integer(post$id)), as.integer(post$id),
+             as.integer(post$category_id), draw_random_wage(wage)))
+      next
+    }
     if (auction_priced) {
       cleared <- volunteer_clearing_wage(
         as.integer(round_id), as.integer(post$category_id),
@@ -11568,7 +11606,8 @@ server <- function(input, output, session) {
                 selectInput("edit_round_wage_pricing", "Wage auction pricing:",
                   choices = c(
                     "Pay as bid (winner receives own minimum)" = "pay_as_bid",
-                    "Uniform second price (winners receive next losing bid)" = "uniform_second_price"
+                    "Uniform second price (winners receive next losing bid)" = "uniform_second_price",
+                    "Random wage (lottery among bids at or below a randomly drawn wage; slots may go unfilled)" = "random_wage"
                   ),
                   selected = normalize_wage_pricing_rule(r$wage_pricing_rule %||% "pay_as_bid")),
                 selectInput("edit_round_bidding_enabled", "Bidding status:",
@@ -15305,7 +15344,8 @@ server <- function(input, output, session) {
 
   compute_draw_pairs <- function(rid, mode, posts, students, tiebreak = "weighted_lottery",
                                  allow_multiple_jobs = TRUE,
-                                 wage_pricing_rule = "pay_as_bid") {
+                                 wage_pricing_rule = "pay_as_bid",
+                                 persist_random_wage = FALSE) {
     tryCatch({
       posts <- order_job_posts_for_clearing(posts)
       if (mode == "wage_bidding") {
@@ -15321,6 +15361,10 @@ server <- function(input, output, session) {
         bids_raw <- bids_raw[bids_raw$user_id %in% eligible_ids, , drop=FALSE]
         assigned_ids <- character(0)
         pricing_rule <- normalize_wage_pricing_rule(wage_pricing_rule)
+        # A saved draw fixes each job's random wage once for the class date, so
+        # re-running the draw cannot fish for a different wage. A preview only
+        # illustrates the rule with a throwaway wage.
+        if (identical(pricing_rule, "random_wage") && isTRUE(persist_random_wage)) freeze_class_wages(rid)
         result <- list()
         for (i in seq_len(nrow(posts))) {
           p  <- posts[i, ]
@@ -15336,6 +15380,15 @@ server <- function(input, output, session) {
             wage_levels <- sort(unique(post_bids$min_wage))
             post_bids <- do.call(rbind, lapply(wage_levels, function(w)
               .apply_tiebreak(post_bids[post_bids$min_wage == w, , drop=FALSE], tiebreak)))
+          }
+          if (identical(pricing_rule, "random_wage")) {
+            wage <- if (isTRUE(persist_random_wage)) class_wage_snapshot(rid, as.integer(p$id), NA_real_)
+                    else draw_random_wage(p$wage %||% NA)
+            drawn <- random_wage_winners(post_bids, wage, n)
+            if (!isTRUE(allow_multiple_jobs)) assigned_ids <- c(assigned_ids, drawn)
+            for (uid in drawn)
+              result[[length(result)+1]] <- list(uid=uid, post_id=p$id, wage=wage)
+            next
           }
           pool_ids <- if (nrow(post_bids)) post_bids$user_id else character(0)
           other_ids <- setdiff(students$user_id, c(pool_ids,
@@ -15445,7 +15498,21 @@ server <- function(input, output, session) {
       db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(target_rid))
     }
 
-    pairs <- compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
+    # The saved draw has always run with the defaults (pay as bid, multiple jobs
+    # allowed) whatever the class-date settings say; only Preview applies them.
+    # That is left exactly as it was. The random-wage rule is new, so it alone
+    # is passed through, with the date's one-job-per-student setting.
+    pairs <- if (identical(mode, "wage_bidding") && identical(pricing_rule, "random_wage"))
+      compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk,
+                         allow_multiple_jobs = allow_multiple,
+                         wage_pricing_rule = pricing_rule, persist_random_wage = TRUE)
+    else compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
+    if (!length(pairs) && identical(mode, "wage_bidding") && identical(pricing_rule, "random_wage")) {
+      close_bidding_after_draw(rid)
+      rv$jobs_ver <- rv$jobs_ver + 1L
+      showNotification("No bid was at or below the drawn wage for any job, so no job was filled.", type = "warning")
+      return()
+    }
     if (!length(pairs)) { showNotification("Draw produced no assignments.", type = "error"); return() }
 
     post_timing <- setNames(as.character(posts$selection_time %||% "any"), as.character(posts$id))

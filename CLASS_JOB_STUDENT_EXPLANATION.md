@@ -23,11 +23,13 @@ Beginning in week three:
 
 1. You enter the minimum number of participation points you would accept to do
    each available job.
-2. Lower bids are more likely to receive the job.
-3. Everyone assigned to the same job receives the same clearing wage: the
-   lowest unsuccessful bid. If there is no unsuccessful bid, the posted
-   fallback wage applies.
-4. Completing the job earns the clearing wage. Partial and missing work follow
+2. Before each class the app draws a wage for each job at random. The draw
+   does not depend on anyone's bid.
+3. Everyone whose bid is at or below that wage is in the running, and the job
+   goes to students picked by lottery from that group. Everyone picked earns
+   the drawn wage, which is at least what they asked for.
+4. If nobody's bid is at or below the wage, the job is not filled that day.
+5. Completing the job earns the drawn wage. Partial and missing work follow
    the posted outcome rules.
 
 Your individual bids are private. The clearing wage and assignments are shown
@@ -100,9 +102,10 @@ the claim**, **Show the mechanism**, **Nice summary**, or **Prepare more**.
 ## What you should bid
 
 Enter the smallest wage at which you are genuinely willing to accept the job.
-Do not try to guess what another student bid. Under the uniform-wage rule, your
-bid mainly determines whether you receive the job; the clearing bid determines
-the wage paid to everyone assigned to it.
+Your bid cannot change the wage. It only decides which wages you are in the
+running for. Bid above your true minimum and you miss jobs you would have
+wanted at that pay; bid below it and you may be picked for pay you find too
+low. What other students bid does not change what you should enter.
 
 ## Absences, access, and mistakes
 
