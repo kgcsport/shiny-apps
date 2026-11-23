@@ -54,7 +54,7 @@ test_that("instructor grading surfaces show the team's submitted policy work", {
          "Add subgroup estimates and compare two phase-out designs.",
          "Take-up under automatic enrollment remains uncertain."))
 
-  expected <- c(
+  progress_responses <- c(
     "How should the child tax credit balance poverty reduction and work incentives?",
     "Clarify the target population.",
     "Eligibility changes the policy incidence.",
@@ -79,12 +79,54 @@ test_that("instructor grading surfaces show the team's submitted policy work", {
     )
     session$flushReact()
     grader_html <- paste(as.character(output$config_panel), collapse="")
-    expect_true(all(vapply(expected, grepl, logical(1), x=grader_html, fixed=TRUE)))
+    expect_true(all(vapply(progress_responses[-1], grepl, logical(1),
+                           x=grader_html, fixed=TRUE)))
+    expect_true(grepl("Alice, Bob", grader_html, fixed=TRUE))
+    expect_false(grepl(progress_responses[1], grader_html, fixed=TRUE))
 
     session$setInputs(policy_admin_team="Review Team")
     session$flushReact()
     review_html <- paste(as.character(output$policy_brief_tab), collapse="")
-    expect_true(all(vapply(expected, grepl, logical(1), x=review_html, fixed=TRUE)))
+    expect_true(all(vapply(progress_responses, grepl, logical(1),
+                           x=review_html, fixed=TRUE)))
+    expect_true(grepl("Grade submissions and provide feedback under Settings",
+                      review_html, fixed=TRUE))
+    expect_false(grepl("policy_topic_status", review_html, fixed=TRUE))
+    expect_false(grepl("save_policy_topic_review_btn", review_html, fixed=TRUE))
+
+    session$setInputs(policy_rubric_component="question")
+    session$flushReact()
+    question_html <- paste(as.character(output$config_panel), collapse="")
+    expect_true(grepl("Child tax credits", question_html, fixed=TRUE))
+    expect_true(grepl(progress_responses[1], question_html, fixed=TRUE))
+    expect_true(grepl("policy_grader_topic_note", question_html, fixed=TRUE))
+    expect_true(grepl("Alice, Bob", question_html, fixed=TRUE))
+    expect_false(grepl(progress_responses[2], question_html, fixed=TRUE))
+
+    session$setInputs(
+      policy_grader_topic_status="needs_revision",
+      policy_grader_topic_note="Narrow the population and implementation margin.",
+      save_policy_grader_question_btn=1
+    )
+    session$flushReact()
+    saved_review <- db_query(
+      "SELECT DISTINCT topic_status,topic_note FROM policy_group_assignments
+       WHERE policy_team='Review Team';")
+    expect_equal(saved_review$topic_status, "needs_revision")
+    expect_equal(saved_review$topic_note,
+                 "Narrow the population and implementation margin.")
+
+    session$setInputs(policy_rubric_component="presentation")
+    session$flushReact()
+    presentation_html <- paste(as.character(output$config_panel), collapse="")
+    expect_true(grepl(progress_responses[1], presentation_html, fixed=TRUE))
+    expect_true(grepl("delivered live", presentation_html, fixed=TRUE))
+
+    session$setInputs(policy_rubric_component="brief")
+    session$flushReact()
+    brief_html <- paste(as.character(output$config_panel), collapse="")
+    expect_true(grepl("No written-brief submission is stored in this app yet.",
+                      brief_html, fixed=TRUE))
   })
 })
 

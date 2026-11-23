@@ -639,21 +639,14 @@ test_that("policy rubric drafts privately, releases to a team, and writes grades
       )
       session$flushReact()
       rubric_panel <- as.character(output$config_panel)
-      expect_true(any(grepl("Policy Rubrics", rubric_panel, fixed=TRUE)))
+      expect_true(any(grepl("Policy Project Grading", rubric_panel, fixed=TRUE)))
       expect_true(any(grepl(
         "How should the child tax credit balance poverty reduction and work incentives?",
         rubric_panel, fixed=TRUE)))
-      expect_true(any(grepl("Clarify the target population.", rubric_panel, fixed=TRUE)))
-      expect_true(any(grepl("Eligibility changes the policy incidence.", rubric_panel, fixed=TRUE)))
-      expect_true(any(grepl(
-        "Our evidence does not separate short- and long-run labor supply.",
-        rubric_panel, fixed=TRUE)))
-      expect_true(any(grepl(
-        "Add subgroup estimates and compare two phase-out designs.",
-        rubric_panel, fixed=TRUE)))
-      expect_true(any(grepl(
-        "Take-up under automatic enrollment remains uncertain.",
-        rubric_panel, fixed=TRUE)))
+      expect_true(any(grepl("The presentation is delivered live", rubric_panel,
+                            fixed=TRUE)))
+      expect_false(any(grepl("Clarify the target population.", rubric_panel,
+                             fixed=TRUE)))
 
       session$setInputs(save_policy_rubric_draft_btn=1)
       session$flushReact()
