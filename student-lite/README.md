@@ -96,3 +96,23 @@ Phone-sized Chromium against both services on the same scratch database:
 Fifty simultaneous state requests to Student Lite: median 370 ms, slowest
 750 ms. These are local numbers with no network and no real class load; they
 show the shape of the difference, not what a classroom will see.
+
+## Resource use under a class-sized load (2026-11-23)
+
+Students signed in and left on the bid page, each app measured from a fresh
+start on the same machine and scratch database. CPU is the share of one core
+over a 30-second window; the Shiny app runs on a single core.
+
+| Students on the bid page | Student Lite memory | Student Lite CPU | Shiny memory | Shiny CPU |
+|---:|---:|---:|---:|---:|
+| 0 | 134 MB | – | 156 MB | – |
+| 1 | 134 MB | 0.2% | 211 MB | 1.2% |
+| 10 | 134 MB | 1.4% | 317 MB | 10.1% |
+| 25 | 134 MB | 3.7% | 586 MB | 22.8% |
+
+Student Lite costs a fixed 134 MB whether or not anyone uses it. Each student
+on the Shiny bid page costs about 17 MB and about 1% of a core, so it is a net
+memory saving once roughly eight students use it instead of the Shiny page,
+and a net cost if students keep both open. The Shiny process did not hand
+memory back after sessions closed in an earlier run.
+
