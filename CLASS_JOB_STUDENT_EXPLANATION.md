@@ -32,7 +32,7 @@ Beginning in week three:
 5. Completing the job earns the drawn wage. Partial and missing work follow
    the posted outcome rules.
 
-Your individual bids are private. The clearing wage and assignments are shown
+Your individual bids are private. The drawn wage and assignments are shown
 after bidding closes.
 
 ## What participation points are worth
