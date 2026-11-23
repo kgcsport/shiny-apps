@@ -149,7 +149,9 @@ For each job in the frozen catalog the survey records:
 - comfort doing the job, on a [SCALE]; and
 - the minimum number of participation points the student would require to do
   it, entered on the same Job Market bid form used in the later market, with
-  the same bid step and ceiling. Baseline bids assign no jobs and pay nothing.
+  the same bid step. Practice dates are set to wage-bidding mode so the form
+  accepts bids, but the lowest-bid draw is not run: practice jobs come from the
+  registered lottery schedule. Baseline bids assign no jobs and pay nothing.
 
 It also records [COMFORT SPEAKING IN CLASS, CONCERN ABOUT BEING WRONG PUBLICLY,
 PRIOR PARTICIPATION HABITS, CONFIDENCE WITH QUANTITATIVE MATERIAL; FINAL ITEM
@@ -276,13 +278,11 @@ reason, and the information available at the time.
 - Bidding begins: [DATE / WEEK]
 - Bid unit: participation points
 - Bid step: [STEP]
-- Maximum wage bid: [PROPOSED: B = T/4, ROUNDED DOWN TO THE BID STEP, WHERE T IS
-  THE FULL-CREDIT THRESHOLD; USE T/3 IF MORE THAN 5% OF PILOT-SEMESTER BIDS
-  EXCEED T/4. FIX B BEFORE THE BASELINE SURVEY SO BASELINE AND MARKET BIDS SHARE
-  IT. `Not willing at this wage` IS THE ABOVE-CEILING RESPONSE. NOT YET BUILT.]
+- Maximum wage bid: none [TENTATIVE]. A student who does not want a job enters
+  a high bid. Very high bids are handled in the analysis, not by the form.
 - Allocation: lowest valid bids receive the posted slots
 - Pricing: uniform reverse-second-price
-- Wage: first unsuccessful bid, bounded by the registered maximum
+- Wage: first unsuccessful bid
 - No-loser fallback: [FALLBACK]
 - Bid lock: [TIME]
 - Tie-break: [REGISTERED RANDOM PROCEDURE]
@@ -400,16 +400,16 @@ outcomes are observed.
 ### Primary outcome
 
 - `first_bid_ij`: the student's bid for job `j` on file at the first bid lock
-  after the market opens, in participation points. [IF A CEILING IS ADOPTED:
-  `Not willing at this wage` is coded as the ceiling plus one bid step. IF NOT:
-  bids are winsorized at the section-job [95TH] percentile, fixed here before
-  data are seen.]
+  after the market opens, in participation points. With no bid ceiling, bids
+  above the [95TH] percentile of their section and job are set to that
+  percentile. The percentile is fixed here, before any data are seen.
 
 ### Secondary outcomes
 
 - `mean_bid_ij`: mean locked bid for job `j` across [WEEKS 3-6], with the same
-  coding of `Not willing`;
-- `willing_ij`: indicator for a numeric bid on the initial bid sheet;
+  treatment of very high bids;
+- `willing_ij`: indicator that the first bid is at or below the section-job
+  median first bid;
 - `success_count_ij`: number of `Success` completions of job `j` in [WINDOW];
 - `held_ij`: indicator for holding job `j` at least once in [WINDOW]; and
 - `volunteer_count_ij`: number of recorded voluntary contributions of job type
@@ -437,8 +437,6 @@ the confirmatory models.
 
 ## 9. Missing and exceptional records
 
-- A saved `Not willing at this wage` response is an observed outcome, not a
-  missing bid.
 - A student-job pair with no response on the initial bid sheet is missing and
   is not imputed in the primary analysis.
 - Report missingness of the primary outcome by assignment status. If it
@@ -484,7 +482,7 @@ Sensitivity analyses:
 
 - the same model without the baseline covariate;
 - bids rank-transformed within job and section;
-- a censored model treating `Not willing` as above the ceiling;
+- the same model on untrimmed bids, and on bids trimmed at the 90th percentile;
 - `willing_ij` as the outcome; and
 - section-specific estimates.
 
@@ -590,7 +588,7 @@ the first consequential bid.
 | Paid volunteer slots/meeting | [ ] | [ ] | Registered plan |
 | Success rate | [ ] | [ ] | Weeks 1-2 |
 | Try rate and multiplier | [ ] | [ ] | Weeks 1-2 / rule |
-| Wage ceiling | [ ] | [ ] | Same unless justified |
+| Wage ceiling | none | none | Tentative |
 | Per-class earning ceiling | [ ] | [ ] | Mechanism rule |
 | Proposed threshold | [ ] | [ ] | Formula below |
 | Earliest possible threshold class | [ ] | [ ] | `ceiling(T/E_max)` |
