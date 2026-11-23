@@ -73,8 +73,9 @@ Secondary questions:
    successfully completes that job?
 3. Does the effect differ by baseline comfort with participation and by job
    family (live/public versus prepared/artifact)?
-4. If a no-practice arm exists, does practising any job change bids across all
-   jobs?
+4. Compared with students assigned no practice, does practising lower bids on
+   the practised jobs, and does it spill over to jobs the student did not
+   practise?
 
 Descriptive questions carried over from the earlier draft, with no
 confirmatory test:
@@ -184,11 +185,12 @@ Random assignment:
 - Unit: student. Randomization is carried out separately within each section.
 - Roster: students enrolled and with a completed baseline survey at
   [FREEZE DATE/TIME].
-- Arms: each student is assigned to practise exactly [K; BETWEEN 0 AND 3 IS
-  ACCEPTABLE, 2 RECOMMENDED] of the [J] catalog jobs. Every student is assigned; with about 25 students and four training
-  meetings per section there is no no-practice arm.
-- Balance: arm sizes are fixed in advance and as equal across jobs as slot
-  counts allow; [OPTIONAL: BLOCKED ON BASELINE COMFORT-INDEX TERCILE].
+- Arms: in each section, 5 students are drawn at random into a no-practice arm
+  and are assigned no practice job. Every other student (about 20 per section)
+  is assigned exactly two distinct jobs, drawn at random from the [J] catalog
+  jobs. If a section's roster is not 25, the no-practice arm stays at 5.
+- Balance: the number of students assigned to each job is fixed in advance and
+  as equal across jobs as slot counts allow; [OPTIONAL: BLOCKED ON BASELINE COMFORT-INDEX TERCILE].
 - Timing: the training meeting in which each student performs is also drawn at
   random within the student's assigned job.
 - Procedure: a seeded script generates the full schedule once. The seed, the
@@ -520,11 +522,20 @@ subgroup effects and the interaction.
 
 ### General effect of any practice
 
-Not estimated in this design, because every student is assigned practice. If
-a later term registers a no-practice arm: compare the student's mean first bid
-across all jobs between students assigned any practice and students assigned
-none, with section fixed effects and the student's mean baseline wage. This
-comparison is between students and is secondary.
+These comparisons are between students and use the no-practice arm. Each is
+estimated on student-job pairs with job-by-section fixed effects and the
+baseline wage for the same student and job, standard errors clustered by
+student, and randomization inference from the registered assignment script.
+
+- Level effect: first bids on practised jobs, against no-practice students'
+  first bids on the same jobs.
+- Spillover: practising students' first bids on the jobs they were not
+  assigned, against no-practice students' first bids on the same jobs.
+
+They show whether practice lowers required wages in general or only shifts
+them between jobs. With five no-practice students per section, one term can
+detect only a large effect; the estimates are reported with their confidence
+intervals and are intended to be pooled with later terms.
 
 ### Descriptive market analyses
 
@@ -551,9 +562,9 @@ a cluster-randomized sample.
 H1 is the single primary confirmatory test at two-sided alpha 0.05. H2 and H3
 are a secondary family; report raw p-values and Benjamini-Hochberg adjusted
 q-values within that family. The two heterogeneity interactions are a separate
-secondary family treated the same way. The effect of performing the job, the
-general effect of any practice, and all market analyses are reported without
-confirmatory claims. Anything else is exploratory and labeled as such.
+secondary family treated the same way, as are the level and spillover
+comparisons against the no-practice arm. The effect of performing the job and
+all market analyses are reported without confirmatory claims. Anything else is exploratory and labeled as such.
 
 ## 12. Data freeze and reproducibility
 
