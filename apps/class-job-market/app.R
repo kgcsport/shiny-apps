@@ -3744,27 +3744,42 @@ server <- function(input, output, session) {
   # End-of-term pay for practice-date work. Practice dates pay nothing at the
   # time; this prices each completed practice job at the average wage that job
   # (rule "job") or all jobs (rule "all") paid on the ordinary dates in the
-  # same course/section. A try pays 1, as on ordinary dates. Returns one row
-  # per payable piece of work, including ones already paid.
+  # same course/section, or (rule "other") that job's average wage in the
+  # other sections of the same course, which no bid of the student's own can
+  # move. A try pays 1, as on ordinary dates. Returns one row per payable
+  # piece of work, including ones already paid.
   practice_pay_rows <- function(rule = "job") {
     scope <- current_scope_key()
-    q <- function(sql) tryCatch(db_query(sql, list(scope)), error = function(e) data.frame())
-    wages <- rbind(
+    q <- function(sql, key = scope) tryCatch(db_query(sql, list(key)), error = function(e) data.frame())
+    # Other sections of this course: same course prefix, no section in common.
+    other_scopes <- function() {
+      parts <- strsplit(scope, "::", fixed = TRUE)[[1]]
+      mine <- strsplit(parts[2] %||% "", "|", fixed = TRUE)[[1]]
+      keys <- tryCatch(db_query("SELECT DISTINCT scope_key FROM scope_rounds;")$scope_key, error = function(e) character(0))
+      keys <- keys[!is.na(keys) & startsWith(keys, paste0(parts[1], "::")) & keys != scope]
+      Filter(function(key) {
+        theirs <- strsplit(sub("^.*?::", "", key, perl = TRUE), "|", fixed = TRUE)[[1]]
+        !length(intersect(theirs, mine))
+      }, keys)
+    }
+    wage_scopes <- if (identical(rule, "other")) other_scopes() else scope
+    wages <- do.call(rbind, c(list(data.frame(job = character(0), wage = numeric(0))),
+                              lapply(wage_scopes, function(key) rbind(
       q("SELECT LOWER(TRIM(jp.job_name)) job, ja.assigned_wage wage
          FROM job_assignments ja JOIN job_posts jp ON jp.id=ja.job_post_id
          JOIN weekly_rounds wr ON wr.id=ja.round_id JOIN scope_rounds sr ON sr.round_id=ja.round_id
          WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=0 AND COALESCE(ja.assigned_wage,0)>0
-           AND COALESCE(ja.status,'assigned') NOT IN ('absent_redrawn','absent','redrawn');"),
+           AND COALESCE(ja.status,'assigned') NOT IN ('absent_redrawn','absent','redrawn');", key),
       q("SELECT 'cold call: ' || LOWER(lse.outcome) job, lse.tokens wage
          FROM live_score_events lse JOIN weekly_rounds wr ON wr.id=lse.round_id
          JOIN scope_rounds sr ON sr.round_id=lse.round_id
          WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=0 AND lse.event_kind='cold_call'
-           AND lse.outcome IN ('answer','board') AND COALESCE(lse.tokens,0)>0 AND lse.committed_at IS NOT NULL;"),
+           AND lse.outcome IN ('answer','board') AND COALESCE(lse.tokens,0)>0 AND lse.committed_at IS NOT NULL;", key),
       q("SELECT LOWER(TRIM(jp.job_name)) job, lse.tokens wage
          FROM live_score_events lse JOIN job_posts jp ON jp.id=lse.job_post_id
          JOIN weekly_rounds wr ON wr.id=lse.round_id JOIN scope_rounds sr ON sr.round_id=lse.round_id
          WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=0 AND lse.event_kind='participation'
-           AND lse.outcome='succeed' AND COALESCE(lse.tokens,0)>0 AND lse.committed_at IS NOT NULL;"))
+           AND lse.outcome='succeed' AND COALESCE(lse.tokens,0)>0 AND lse.committed_at IS NOT NULL;", key)))))
     work <- rbind(
       q("SELECT 'practice_pay_job' source_type, ja.id source_id, ja.user_id, COALESCE(u.display_name,ja.user_id) display_name,
                 wr.class_date, jp.job_name job_label, LOWER(TRIM(jp.job_name)) job, LOWER(TRIM(ja.outcome)) outcome
@@ -3794,8 +3809,12 @@ server <- function(input, output, session) {
     job_wage <- if (identical(rule, "all")) rep(overall, nrow(work)) else {
       own <- unname(by_job[work$job]); ifelse(is.na(own), overall, own)
     }
-    work$basis <- if (identical(rule, "all")) "all jobs" else
-      ifelse(work$job %in% names(by_job), "this job", "all jobs (no later wage for this job)")
+    where <- if (identical(rule, "other")) ", other section" else ""
+    work$basis <- if (!nrow(wages)) "no wages to average" else if (identical(rule, "all")) "all jobs" else
+      ifelse(work$job %in% names(by_job), paste0("this job", where),
+             paste0("all jobs", where, " (no wage for this job there)"))
+    # With no wage to average, a completed job has no price yet: amount is NA
+    # and it is not payable until wages exist.
     work$amount <- ifelse(work$outcome == "complete", round_token_spend(job_wage), 1)
     paid <- tryCatch(db_query(
       "SELECT source_type, source_id FROM token_ledger
@@ -13085,8 +13104,11 @@ server <- function(input, output, session) {
                "Practice dates pay nothing at the time. At the end of the term, pay completed practice work at the average wage from the ordinary class dates in this course / section. A try pays 1 token. Each piece of work can be paid once."),
         div(class = "spend-form-box",
           selectInput("practice_pay_rule", "Wage for a completed practice job:", width = "420px",
-                      choices = c("That job's own average wage" = "job",
-                                  "One average across all jobs" = "all")),
+                      choices = c("That job's average wage in the other section(s) of this course" = "other",
+                                  "That job's own average wage in this section" = "job",
+                                  "One average across all jobs in this section" = "all")),
+          tags$p(style = "color:#555;font-size:.82rem;",
+                 "The other-section wage cannot be moved by a student's own bids. It needs the sections to be run as separate course / section scopes."),
           actionButton("practice_pay_preview_btn", "Preview practice pay", class = "btn btn-sm btn-outline-primary"),
           uiOutput("practice_pay_preview")
         ),
@@ -15009,7 +15031,10 @@ server <- function(input, output, session) {
       type = "message")
   })
 
-  practice_pay_rule_input <- function() if (identical(input$practice_pay_rule, "all")) "all" else "job"
+  practice_pay_rule_input <- function() {
+    rule <- as.character(input$practice_pay_rule %||% "other")
+    if (rule %in% c("other", "job", "all")) rule else "other"
+  }
   practice_pay_preview_rows <- reactiveVal(NULL)
   observeEvent(input$practice_pay_preview_btn, {
     req(rv$is_admin, !rv$impersonating)
@@ -15022,8 +15047,12 @@ server <- function(input, output, session) {
     rows <- preview$rows
     if (!nrow(rows)) return(div(class = "alert alert-secondary", style = "margin-top:.6rem;",
       "No completed or tried practice-date work was found in this course / section."))
-    due <- rows[!rows$already_paid, , drop = FALSE]
+    unpriced <- rows[!rows$already_paid & is.na(rows$amount), , drop = FALSE]
+    due <- rows[!rows$already_paid & !is.na(rows$amount), , drop = FALSE]
     tagList(
+      if (nrow(unpriced)) div(class = "alert alert-warning", style = "margin-top:.6rem;",
+        sprintf("%d completed item%s cannot be priced: there are no ordinary-date wages to average under this rule.",
+                nrow(unpriced), if (nrow(unpriced) == 1L) "" else "s")),
       tags$p(style = "margin:.6rem 0 .3rem;font-weight:600;",
         sprintf("%d item%s to pay, %s tokens in total. %d already paid.", nrow(due), if (nrow(due) == 1L) "" else "s",
                 fmt_token_amount(sum(due$amount)), sum(rows$already_paid))),
@@ -15033,7 +15062,7 @@ server <- function(input, output, session) {
         tags$tbody(lapply(seq_len(nrow(rows)), function(i) {
           r <- rows[i, ]
           tags$tr(tags$td(r$class_date %||% ""), tags$td(r$display_name), tags$td(r$job_label), tags$td(r$outcome),
-                  tags$td(fmt_token_amount(r$amount)), tags$td(if (r$outcome == "complete") r$basis else "try"),
+                  tags$td(if (is.na(r$amount)) "—" else fmt_token_amount(r$amount)), tags$td(if (r$outcome == "complete") r$basis else "try"),
                   tags$td(if (isTRUE(r$already_paid)) "Paid" else "To pay"))
         })))),
       if (nrow(due)) actionButton("practice_pay_commit_btn", "Pay these now", class = "btn btn-warning btn-sm",
@@ -15046,7 +15075,7 @@ server <- function(input, output, session) {
     req(!is.null(preview))
     # Recompute at the moment of payment so a stale preview cannot pay twice.
     rows <- practice_pay_rows(preview$rule)
-    due <- if (nrow(rows)) rows[!rows$already_paid & rows$amount > 0, , drop = FALSE] else rows
+    due <- if (nrow(rows)) rows[!rows$already_paid & !is.na(rows$amount) & rows$amount > 0, , drop = FALSE] else rows
     if (!nrow(due)) { showNotification("Nothing left to pay.", type = "message"); return() }
     result <- tryCatch({
       connection <- get_con()

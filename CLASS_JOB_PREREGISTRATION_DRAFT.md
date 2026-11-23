@@ -170,12 +170,12 @@ market bid and practising a job creates no difference in token wealth during
 the term.
 
 Practice work is paid once, after the last ordinary class date: a completed
-practice job earns [CHOOSE: THE AVERAGE WAGE ACROSS ALL JOBS / THAT JOB'S OWN
-AVERAGE WAGE] on the ordinary dates in the same section, and a try earns one
-point. Students are told this rule [WHEN]. Paying each job its own average
-would give a student a reason to bid higher on exactly the jobs they practised,
-since a higher clearing wage for that job raises their own practice pay; the
-all-job average removes that job-specific incentive and is recommended.
+practice job earns the average wage that same job paid on the ordinary dates
+in the other section of the course, and a try earns one point. A job that was
+not run in the other section earns that section's average across all jobs.
+Because the wage comes from the other section, no bid a student places can
+change their own practice pay. The two sections are run as separate markets
+in the app for this reason. Students are told this rule [WHEN].
 
 Random assignment:
 

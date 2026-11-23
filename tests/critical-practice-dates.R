@@ -192,6 +192,64 @@ stopifnot(nrow(practice_pay) == 6L, sum(practice_pay$amount) == 19, all(practice
           !any(duplicated(practice_pay[, c("source_type", "source_id")])),
           sum(practice_pay$amount[practice_pay$user_id == "s1@test.edu"]) == 9)
 
+# 5b. Other-section rule, in a second course so it starts unpaid. Section 01
+#     practised Recap; its pay comes only from section 02's wages (Recap 10,
+#     Note taker 2), never from its own (Recap 3), so no bid in 01 can move it.
+other <- list()
+for (sec in c("01", "02")) {
+  key <- paste0("econ 202::", sec)
+  for (kind in c("practice", "market")) {
+    app$db_exec("INSERT INTO weekly_rounds(label,class_date,assignment_mode,bidding_enabled,practice_no_points) VALUES(?,?,'wage_bidding',1,?);",
+                list(paste(key, kind), as.character(class_day + 30), as.integer(kind == "practice")))
+    rid <- as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1])
+    app$db_exec("INSERT INTO scope_rounds(scope_key,round_id) VALUES(?,?);", list(key, rid))
+    other[[paste(sec, kind)]] <- rid
+  }
+}
+app$db_exec("INSERT INTO scope_active_rounds(scope_key,course,sections,round_id) VALUES('econ 202::01','ECON 202','01',?);",
+            list(other[["01 practice"]]))
+for (row in list(c("t1@test.edu", "Transfer 1", "01"), c("t2@test.edu", "Transfer 2", "01"),
+                 c("t3@test.edu", "Transfer 3", "02"))) {
+  app$db_exec(
+    "INSERT OR REPLACE INTO users(user_id,display_name,pw_hash,is_admin,course,section,active,is_demo)
+     VALUES(?,?,'',0,'ECON 202',?,1,0);", list(row[1], row[2], row[3]))
+  app$db_exec("INSERT OR IGNORE INTO user_environments(user_id,course,section) VALUES(?,'ECON 202',?);", list(row[1], row[3]))
+}
+seed <- function(rid, uid, job, wage, outcome) {
+  aid <- assign_job(rid, uid, new_post(rid, job, role_cat), wage)
+  app$db_exec("UPDATE job_assignments SET outcome=? WHERE id=?;", list(outcome, aid))
+  aid
+}
+seed(other[["01 practice"]], "t1@test.edu", "Recap", 5, "complete")
+seed(other[["01 practice"]], "t2@test.edu", "Example scout", 5, "complete")
+seed(other[["01 market"]], "t1@test.edu", "Recap", 3, "complete")
+stopifnot(all(app$db_query("SELECT assigned_wage w FROM job_assignments WHERE round_id=?;", list(other[["01 practice"]]))$w == 0))
+set_admin_202 <- function(rv) { set_admin(rv); rv$course <- "ECON 202"; rv$active_course <- "ECON 202" }
+shiny::testServer(app$server, {
+  set_admin_202(rv)
+  stopifnot(identical(current_scope_key(), "econ 202::01"))
+  # No other-section wages yet: completed work cannot be priced or paid.
+  none <- practice_pay_rows("other")
+  stopifnot(nrow(none) == 2L, all(is.na(none$amount)))
+  session$setInputs(practice_pay_rule = "other", practice_pay_preview_btn = 1L)
+  stopifnot(grepl("cannot be priced", output$practice_pay_preview$html, fixed = TRUE))
+  session$setInputs(practice_pay_commit_btn = 1L)
+})
+stopifnot(nrow(ledger("source_type LIKE 'practice_pay%'")) == 6L)
+seed(other[["02 market"]], "t3@test.edu", "Recap", 10, "complete")
+seed(other[["02 market"]], "t3@test.edu", "Note taker", 2, "complete")
+shiny::testServer(app$server, {
+  set_admin_202(rv)
+  rows <- practice_pay_rows("other")
+  stopifnot(rows$amount[rows$job_label == "Recap"] == 10,          # section 02's Recap wage
+            rows$amount[rows$job_label == "Example scout"] == 6,   # section 02's all-job average
+            practice_pay_rows("job")$amount[rows$job_label == "Recap"] == 3)
+  session$setInputs(practice_pay_rule = "other", practice_pay_preview_btn = 1L)
+  session$setInputs(practice_pay_commit_btn = 1L)
+})
+other_pay <- ledger("source_type LIKE 'practice_pay%'")
+stopifnot(nrow(other_pay) == 8L, sum(utils::tail(other_pay$amount, 2)) == 16)
+
 # 6. Switching the flag off does not retroactively pay or re-price the date.
 shiny::testServer(app$server, {
   set_admin(rv)

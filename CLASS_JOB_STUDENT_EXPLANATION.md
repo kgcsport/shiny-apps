@@ -10,9 +10,8 @@ have opportunities to do these jobs and earn participation points.
 
 During the first two weeks, we will practice the jobs. Practice jobs are
 assigned by lottery, so which job you practice is a matter of chance. No points
-are paid during this practice period. [IF ANNOUNCED UP FRONT: Practice work is
-paid at the end of the term, at the average wage the class's jobs earned over
-the rest of the semester.] You will be asked what you would need to be paid
+are paid during this practice period. Practice work is paid at the end of the term, at
+the average wage the same job earned in the other section of the course. You will be asked what you would need to be paid
 for each job, but those early answers do not assign any jobs. You will receive
 short feedback so that you know what each job requires before the market
 begins.
