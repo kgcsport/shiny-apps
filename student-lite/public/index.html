@@ -182,10 +182,14 @@
           show('login');
         });
       }
-      if (!res.ok) throw new Error('state ' + res.status);
+      if (!res.ok) throw new Error('The server answered ' + res.status + '.');
       etag = res.headers.get('ETag');
       return res.json().then(render);
-    }).catch(function () { $('save-msg').textContent = 'Offline. Retrying…'; });
+    }).catch(function (err) {
+      $('save-msg').textContent = 'Offline. Retrying…';
+      // Never fail silently: before the page has loaded once, say why.
+      if ($('app').hidden) { show('login'); $('password-box').open = true; $('login-error').textContent = 'Signed in, but your page could not load. ' + (err && err.message ? err.message : ''); }
+    });
   }
   function schedule() {
     clearInterval(timer);

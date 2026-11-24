@@ -275,10 +275,14 @@
     return api('GET', 'api/tracker/state?' + where(), undefined, etag ? { 'If-None-Match': etag } : {}).then(function (res) {
       if (res.status === 304) return;
       if (res.status === 401) { show('login'); return; }
-      if (!res.ok) throw new Error('state');
+      if (!res.ok) throw new Error('The server answered ' + res.status + ' for this class.');
       etag = res.headers.get('ETag');
       return res.json().then(render);
-    }).catch(function () { say('Offline. Retrying…'); });
+    }).catch(function (err) {
+      say('Offline. Retrying…');
+      // Never leave a blank page: before the tracker has loaded once, say why.
+      if ($('app').hidden) { show('login'); $('login-error').textContent = 'Signed in, but the tracker could not load. ' + (err && err.message ? err.message : ''); $('password-box').open = true; }
+    });
   }
   function act(body) {
     if (busy) return Promise.resolve(null);
