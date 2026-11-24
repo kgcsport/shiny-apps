@@ -15,6 +15,41 @@ replacement for the Shiny app.
 - Bids are written to the same `job_wage_bids` rows the Shiny app reads, so the
   instructor's draw sees them with no sync step.
 
+## Instructor tracker
+
+`/tracker` (in production `/student-lite/tracker`) is a fast page for the
+in-class loop, for instructors only:
+
+- **Cold call:** draw a student who is present, then record Answer, Board,
+  Pass, or Absent. Pass and Absent draw the next student.
+- **Volunteers:** pick the volunteer job, tap S, T, or M beside a student.
+- **Jobs today:** mark each assigned job Done, Tried, or Miss.
+
+Everything it records goes into the Live Score Audit through the hub's own
+scoring functions (`queue_cold_call`, `queue_volunteer_event`,
+`queue_assignment_score` in `apps/class-job-market/app.R`), which the main
+Live Tracker also calls, so the two cannot price a contribution differently.
+A draw freezes the date's wages and closes bidding, as the main draw does.
+
+It does not commit the audit, run job draws, reveal assignments, redraw jobs,
+or record offers. Those stay in the main app. A pass by a student who holds
+Pass Insurance is refused with a message to record it in the main tracker, so
+the claim is paid there.
+
+An instructor sees only the sections they run: every section for a super
+admin, a course's sections for a course admin, one section for a section admin.
+
+Timed on one machine, one user, phone-sized Chromium (2026-11-24), median of
+five taps:
+
+| | Fast tracker | Main Live Tracker |
+|---|---|---|
+| Page ready to sign in | about 80 ms | 0.9 to 1.5 s |
+| Draw a cold call | 110 to 210 ms | about 330 ms |
+| Record an answer | 50 to 65 ms | about 220 ms |
+| Record a volunteer | about 65 ms | not timed |
+| Score a job | 70 to 85 ms | not timed |
+
 ## Sign-in
 
 Students sign in with Google through the hub's existing login. That flow
@@ -37,8 +72,8 @@ service for that reason.
 
 ## What it does not do
 
-- Assignments, reveals, spending, grades, games, or anything for instructors.
-  Those stay in the Shiny app.
+- For students: assignments, reveals, spending, grades, and games stay in the
+  Shiny app.
 - Students enrolled in more than one course see their primary course only.
 
 ## To put it in front of a class

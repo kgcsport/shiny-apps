@@ -183,16 +183,180 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
     list(ok = TRUE, message = sprintf("Saved %d wage bid%s.", saved, if (saved == 1L) "" else "s"), saved = saved)
   }
 
+  # ── Instructor tracker ──────────────────────────────────────────────────────
+  # A fast page for the in-class loop: cold calls, voluntary contributions, and
+  # scoring assigned jobs. Everything it records is queued for the Live Score
+  # Audit through the hub's own scoring rules; committing, draws, reveals, and
+  # repairs stay in the main app.
+  session_instructor <- function(req) {
+    row <- hub$lookup_token(session_token(req))
+    if (!nrow(row) || as.integer(row$active[1] %||% 1L) == 0L || as.integer(row$is_admin[1] %||% 0L) != 1L ||
+        as.integer(row$is_demo[1] %||% 0L) == 1L) return(NULL)
+    roles <- hub$admin_assignments_for(row$user_id[1])
+    if (!nrow(roles)) return(NULL)
+    list(user_id = row$user_id[1], name = row$display_name[1], roles = roles,
+         course = row$course[1] %||% "", section = row$section[1] %||% "")
+  }
+  may_run <- function(instructor, course, section) {
+    roles <- instructor$roles
+    course_key <- hub$norm_key(course); section_key <- hub$norm_key(section)
+    any(roles$role == "super_admin") ||
+      any(roles$role == "course_admin" & hub$norm_key(roles$course) == course_key) ||
+      any(roles$role == "section_admin" & hub$norm_key(roles$course) == course_key & hub$norm_key(roles$section) == section_key)
+  }
+  class_list <- function(instructor) {
+    rows <- q("SELECT DISTINCT course, section FROM users
+               WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0
+                 AND TRIM(COALESCE(course,''))<>'' AND TRIM(COALESCE(section,''))<>''
+               ORDER BY course, section;")
+    if (!nrow(rows)) return(list())
+    keep <- vapply(seq_len(nrow(rows)), function(i) may_run(instructor, rows$course[i], rows$section[i]), logical(1))
+    rows <- rows[keep, , drop = FALSE]
+    lapply(seq_len(nrow(rows)), function(i) list(course = rows$course[i], section = rows$section[i]))
+  }
+  class_students <- function(course, section) {
+    rows <- q("SELECT user_id, display_name, course, section FROM users
+               WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0
+               ORDER BY display_name;")
+    rows[hub$norm_key(rows$course) == hub$norm_key(course) & hub$norm_key(rows$section) == hub$norm_key(section), , drop = FALSE]
+  }
+  class_context <- function(course, section) {
+    user <- list(course = course, section = section)
+    list(course = hub$norm_key(course), sections = hub$norm_key(section), scope = scope_key(user), level = "auto")
+  }
+  tracker_state <- function(course, section) {
+    context <- class_context(course, section)
+    round <- round_row(context$scope)
+    students <- class_students(course, section)
+    if (!nrow(round)) return(list(course = course, section = section, round = NULL, students = list(),
+                                  volunteer_jobs = list(), assignments = list(), pending = 0L))
+    rid <- as.integer(round$id[1])
+    absent <- hub$norm_key(q("SELECT user_id FROM round_absences WHERE round_id=?;", list(rid))$user_id)
+    events <- q("SELECT user_id, event_kind, outcome, COALESCE(tokens,0) tokens FROM live_score_events WHERE round_id=?;", list(rid))
+    count <- function(uid, kind) sum(hub$norm_key(events$user_id) == hub$norm_key(uid) & events$event_kind == kind)
+    volunteer_posts <- q(
+      "SELECT jp.id, jp.job_name FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
+       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND (COALESCE(jc.voluntary,0)=1 OR COALESCE(jp.voluntary,0)=1)
+       ORDER BY jp.display_order, jp.job_name;", list(rid))
+    assignments <- q(
+      "SELECT ja.id, ja.user_id, u.display_name, jp.job_name, ABS(ja.assigned_wage) AS wage,
+              COALESCE(ja.status,'assigned') AS status, COALESCE(ja.outcome,'') AS outcome,
+              COALESCE(NULLIF(ja.selection_time,''), NULLIF(jp.selection_time,''), 'any') AS timing,
+              (SELECT lse.outcome FROM live_score_events lse
+                WHERE lse.job_assignment_id=ja.id AND lse.committed_at IS NULL ORDER BY lse.id DESC LIMIT 1) AS queued
+       FROM job_assignments ja JOIN users u ON u.user_id=ja.user_id JOIN job_posts jp ON jp.id=ja.job_post_id
+       WHERE ja.round_id=? AND COALESCE(ja.status,'assigned')='assigned'
+       ORDER BY jp.display_order, jp.job_name, u.display_name;", list(rid))
+    assignments <- assignments[hub$norm_key(assignments$user_id) %in% hub$norm_key(students$user_id), , drop = FALSE]
+    pending <- q("SELECT COUNT(*) n FROM live_score_events WHERE round_id=? AND committed_at IS NULL;", list(rid))$n[1]
+    list(
+      course = course, section = section,
+      round = list(label = round$label[1] %||% "", class_date = round$class_date[1] %||% "",
+                   practice = isTRUE(as.integer(round$practice_no_points[1] %||% 0L) == 1L)),
+      wages = list(answer = hub$cold_call_wage_for(rid, "answer"), board = hub$cold_call_wage_for(rid, "board")),
+      paid_volunteer_limit = identical(as.character(hub$resolve_setting("volunteer_paid_cap", "0", with_scope = TRUE)$value), "1"),
+      students = lapply(seq_len(nrow(students)), function(i) list(
+        user_id = students$user_id[i], name = students$display_name[i],
+        absent = hub$norm_key(students$user_id[i]) %in% absent,
+        cold_calls = count(students$user_id[i], "cold_call"), volunteered = count(students$user_id[i], "participation"))),
+      volunteer_jobs = lapply(seq_len(nrow(volunteer_posts)), function(i) list(
+        job_post_id = as.integer(volunteer_posts$id[i]), job_name = volunteer_posts$job_name[i])),
+      assignments = lapply(seq_len(nrow(assignments)), function(i) list(
+        assignment_id = as.integer(assignments$id[i]), name = assignments$display_name[i], job_name = assignments$job_name[i],
+        wage = as.numeric(assignments$wage[i]), timing = assignments$timing[i],
+        outcome = if (nzchar(assignments$outcome[i])) assignments$outcome[i] else NULL,
+        queued = if (is.na(assignments$queued[i])) NULL else assignments$queued[i])),
+      pending = as.integer(pending))
+  }
+  tracker_action <- function(instructor, course, section, action, body) {
+    context <- class_context(course, section)
+    round <- round_row(context$scope)
+    if (!nrow(round)) return(list(ok = FALSE, message = "No class date is selected for this section."))
+    rid <- as.integer(round$id[1])
+    students <- class_students(course, section)
+    in_class <- function(uid) nzchar(uid) && hub$norm_key(uid) %in% hub$norm_key(students$user_id)
+    name_of <- function(uid) students$display_name[hub$norm_key(students$user_id) == hub$norm_key(uid)][1]
+    absent <- hub$norm_key(q("SELECT user_id FROM round_absences WHERE round_id=?;", list(rid))$user_id)
+    uid <- as.character(body$user_id %||% "")
+
+    if (identical(action, "draw")) {
+      # The same first steps as the main tracker's draw: freeze the date's
+      # wages and close bidding, then pick among the students who are present.
+      hub$freeze_class_wages(rid)
+      hub$close_bidding_after_draw(rid)
+      skip <- hub$norm_key(as.character(unlist(body$exclude %||% character(0))))
+      pool <- students[!hub$norm_key(students$user_id) %in% c(absent, skip), , drop = FALSE]
+      if (!nrow(pool)) return(list(ok = FALSE, message = "No students are available to call."))
+      pick <- pool[sample.int(nrow(pool), 1L), ]
+      return(list(ok = TRUE, drawn = list(user_id = pick$user_id, name = pick$display_name)))
+    }
+    if (!in_class(uid) && !identical(action, "assignment"))
+      return(list(ok = FALSE, message = "That student is not in this section."))
+
+    if (identical(action, "cold_call")) {
+      kind <- as.character(body$kind %||% "")
+      if (kind %in% c("answer", "board")) {
+        tokens <- hub$queue_cold_call(rid, uid, kind, instructor$user_id)
+        return(list(ok = TRUE, message = sprintf("%s: %s recorded.", name_of(uid), if (kind == "answer") "answer" else "board work")))
+      }
+      if (identical(kind, "pass")) {
+        insured <- q("SELECT COUNT(*) n FROM insurance_purchases ip JOIN insurance_products p ON p.id=ip.product_id
+                      WHERE p.round_id=? AND p.status IN ('open','closed') AND LOWER(ip.user_id)=LOWER(?)
+                        AND NOT EXISTS (SELECT 1 FROM insurance_claims ic WHERE ic.product_id=ip.product_id
+                                        AND LOWER(ic.user_id)=LOWER(ip.user_id));", list(rid, uid))$n[1]
+        if (as.integer(insured %||% 0L) > 0L)
+          return(list(ok = FALSE, message = sprintf("%s holds Pass Insurance for today. Record this pass in the main tracker so the claim is paid.", name_of(uid))))
+        hub$db_exec("INSERT INTO live_score_events(round_id,user_id,event_kind,outcome,tokens,logged_by,committed_at,tokens_credited)
+                     VALUES(?,?,'cold_call','pass',0,?,datetime('now'),1);", list(rid, uid, instructor$user_id))
+        return(list(ok = TRUE, message = sprintf("%s passed.", name_of(uid))))
+      }
+      return(list(ok = FALSE, message = "Unknown cold-call result."))
+    }
+    if (identical(action, "volunteer")) {
+      outcome <- as.character(body$outcome %||% "")
+      if (!outcome %in% c("succeed", "try", "miss")) return(list(ok = FALSE, message = "Unknown result."))
+      capped <- identical(as.character(hub$resolve_setting("volunteer_paid_cap", "0", with_scope = TRUE)$value), "1")
+      result <- hub$queue_volunteer_event(round, suppressWarnings(as.integer(body$job_post_id %||% NA)), uid, outcome,
+                                          instructor$user_id, pay_capped = capped)
+      if (!isTRUE(result$ok)) return(list(ok = FALSE, message = result$message))
+      return(list(ok = TRUE, message = if (result$tokens < result$uncapped)
+        sprintf("%s recorded, unpaid: already paid for a contribution today.", name_of(uid))
+        else sprintf("%s recorded.", name_of(uid))))
+    }
+    if (identical(action, "absent")) {
+      hub$db_exec("INSERT OR REPLACE INTO round_absences(round_id,user_id,marked_at) VALUES(?,?,CURRENT_TIMESTAMP);", list(rid, uid))
+      return(list(ok = TRUE, message = sprintf("%s marked absent for today.", name_of(uid))))
+    }
+    if (identical(action, "assignment")) {
+      assign_id <- suppressWarnings(as.integer(body$assignment_id %||% NA))
+      outcome <- as.character(body$outcome %||% "")
+      owner <- q("SELECT user_id, round_id FROM job_assignments WHERE id=?;", list(assign_id))
+      if (!nrow(owner) || owner$round_id[1] != rid || !in_class(owner$user_id[1]) || !outcome %in% c("complete", "tried", "missed"))
+        return(list(ok = FALSE, message = "That assignment is not on today's list for this section."))
+      result <- hub$queue_assignment_score(assign_id, outcome, instructor$user_id)
+      return(list(ok = isTRUE(result$ok), message = result$message))
+    }
+    list(ok = FALSE, message = "Unknown action.")
+  }
+
   index_path <- file.path(lite_dir, "public", "index.html")
+  tracker_path <- file.path(lite_dir, "public", "tracker.html")
+  page <- function(path) list(
+    status = 200L,
+    headers = list("Content-Type" = "text/html; charset=utf-8", "Cache-Control" = "no-cache",
+                   "X-Content-Type-Options" = "nosniff", "Referrer-Policy" = "same-origin",
+                   "Content-Security-Policy" = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'"),
+    body = paste(readLines(path, warn = FALSE, encoding = "UTF-8"), collapse = "\n"))
+  query_value <- function(req, name) {
+    pairs <- strsplit(sub("^\\?", "", req$QUERY_STRING %||% ""), "&", fixed = TRUE)[[1]]
+    hit <- pairs[startsWith(pairs, paste0(name, "="))]
+    if (!length(hit)) "" else utils::URLdecode(gsub("+", " ", sub("^[^=]*=", "", hit[1]), fixed = TRUE))
+  }
   handle <- function(req) {
     path <- req$PATH_INFO %||% "/"
     method <- toupper(req$REQUEST_METHOD %||% "GET")
-    if (method == "GET" && path %in% c("/", "/index.html")) return(list(
-      status = 200L,
-      headers = list("Content-Type" = "text/html; charset=utf-8", "Cache-Control" = "no-cache",
-                     "X-Content-Type-Options" = "nosniff", "Referrer-Policy" = "same-origin",
-                     "Content-Security-Policy" = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'"),
-      body = paste(readLines(index_path, warn = FALSE, encoding = "UTF-8"), collapse = "\n")))
+    if (method == "GET" && path %in% c("/", "/index.html")) return(page(index_path))
+    if (method == "GET" && path %in% c("/tracker", "/tracker/")) return(page(tracker_path))
     if (method == "GET" && path == "/healthz") return(lite_json(list(ok = TRUE)))
     if (!startsWith(path, "/api/")) return(lite_json(list(error = "Not found"), 404L))
     # State-changing calls must come from this page's own script.
@@ -211,8 +375,10 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
       if (!ok) { Sys.sleep(0.4); return(lite_json(list(error = "Incorrect username or password."), 401L)) }
       if (as.integer(row$active[1]) == 0L)
         return(lite_json(list(error = "This account has been archived. Contact your instructor."), 403L))
-      if (as.integer(row$is_admin[1]) == 1L || as.integer(row$is_demo[1]) == 1L)
-        return(lite_json(list(error = "Instructor and demo accounts use the main app."), 403L))
+      if (as.integer(row$is_demo[1]) == 1L)
+        return(lite_json(list(error = "Demo accounts use the main app."), 403L))
+      # An instructor may sign in, for the tracker page. The student page and
+      # its endpoints still accept students only.
       token <- hub$make_token()
       hub$store_token(token, row$user_id[1])
       return(lite_json(list(ok = TRUE), headers = list("Set-Cookie" = token_cookie(token))))
@@ -224,6 +390,37 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
     }
     if (method == "GET" && path == "/api/config")
       return(lite_json(list(google = isTRUE(hub$GOOGLE_AUTH_ENABLED))))
+
+    if (startsWith(path, "/api/tracker/")) {
+      instructor <- session_instructor(req)
+      if (is.null(instructor)) return(lite_json(list(error = "Sign in as an instructor first."), 401L))
+      if (method == "GET" && path == "/api/tracker/classes")
+        # "home" is the instructor's own course and section, offered first.
+        return(lite_json(list(instructor = instructor$name, classes = class_list(instructor),
+                              home = list(course = instructor$course, section = instructor$section))))
+      body <- if (method == "POST") read_body(req) else NULL
+      course <- as.character((if (method == "POST") body$course else query_value(req, "course")) %||% "")
+      section <- as.character((if (method == "POST") body$section else query_value(req, "section")) %||% "")
+      if (!nzchar(course) || !nzchar(section) || !may_run(instructor, course, section))
+        return(lite_json(list(error = "You do not run that section."), 403L))
+      context <- class_context(course, section)
+      if (method == "GET" && path == "/api/tracker/state") {
+        state_body <- hub$with_setting_context(context, tracker_state(course, section))
+        etag <- paste0('"', digest::digest(state_body, algo = "md5"), '"')
+        if (identical(req$HTTP_IF_NONE_MATCH %||% "", etag))
+          return(list(status = 304L, headers = list("ETag" = etag, "Cache-Control" = "no-store"), body = ""))
+        return(lite_json(state_body, headers = list("ETag" = etag)))
+      }
+      if (method == "POST" && path == "/api/tracker/act") {
+        if (is.null(body)) return(lite_json(list(error = "Bad request"), 400L))
+        result <- hub$with_setting_context(context, {
+          done <- tracker_action(instructor, course, section, as.character(body$action %||% ""), body)
+          c(done, list(state = tracker_state(course, section)))
+        })
+        return(lite_json(result, if (isTRUE(result$ok)) 200L else 409L))
+      }
+      return(lite_json(list(error = "Not found"), 404L))
+    }
 
     user <- session_user(req)
     if (is.null(user)) return(lite_json(list(error = "Sign in first."), 401L))

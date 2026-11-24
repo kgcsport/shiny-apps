@@ -71,8 +71,7 @@ stopifnot(page$status == 200L, grepl("text/html", page$headers[["Content-Type"]]
 # Login uses the hub's own password check and account rules.
 stopifnot(login("ana@test.edu", "wrong")$res$status == 401L,
           login("nobody@test.edu", "x")$res$status == 401L,
-          login("gone@test.edu", "gone-pass")$res$status == 403L,
-          login("prof@test.edu", "prof-pass")$res$status == 403L)
+          login("gone@test.edu", "gone-pass")$res$status == 403L)
 ana <- login("ANA@test.edu", "ana-pass")
 stopifnot(ana$res$status == 200L, grepl("^arcade_token=[A-Za-z0-9]{48}$", ana$cookie),
           grepl("SameSite=Lax", ana$res$headers[["Set-Cookie"]], fixed = TRUE),
@@ -157,5 +156,106 @@ hub$db_exec("UPDATE arcade_sessions SET expires_at=datetime('now','+1 day') WHER
 stopifnot(request("GET", "/api/state", cookie = ana$cookie)$status == 200L)
 hub$db_exec("UPDATE users SET active=0 WHERE user_id='ana@test.edu';")
 stopifnot(request("GET", "/api/state", cookie = ana$cookie)$status == 401L)
+
+# ── Instructor tracker ───────────────────────────────────────────────────────
+# Fresh fixtures: two sections, a cold-call job, a volunteer job, one assigned job.
+hub$db_exec("UPDATE users SET active=1 WHERE user_id='ana@test.edu';")
+add_user("cy@test.edu", "Cy Test", "cy-pass")
+add_user("ta@test.edu", "Ta Test", "ta-pass", admin = 1L)
+hub$grant_admin_assignment("prof@test.edu", "super_admin", assigned_by = "test")
+hub$grant_admin_assignment("ta@test.edu", "section_admin", course = "ECON 101", section = "02", assigned_by = "test")
+hub$db_exec("INSERT INTO job_categories(name,default_wage,description,voluntary,in_draw) VALUES('Lite volunteer',2,'',1,0);")
+vol_cat <- as.integer(hub$db_query("SELECT last_insert_rowid() id;")$id[1])
+hub$db_exec("INSERT INTO job_posts(round_id,job_name,category_id,slots,wage_override,voluntary,in_draw,selection_time,active)
+             VALUES(?,'Volunteer: answer',?,99,2,1,0,'volunteer',1);", list(rid, vol_cat))
+vol_post <- as.integer(hub$db_query("SELECT last_insert_rowid() id;")$id[1])
+cold_post <- new_post("Cold call: answer a question", "during")
+hub$db_exec("INSERT INTO job_assignments(round_id,user_id,job_post_id,assigned_wage,assignment_mode,status)
+             VALUES(?,'ana@test.edu',?,3,'wage_bidding','assigned');", list(rid, recap))
+ana_job <- as.integer(hub$db_query("SELECT last_insert_rowid() id;")$id[1])
+hub$db_exec("DELETE FROM live_score_events;")
+hub$set_setting(paste0("bid_no_anchor::", scope), "0")
+
+prof <- login("prof@test.edu", "prof-pass"); ta <- login("ta@test.edu", "ta-pass"); cy <- login("cy@test.edu", "cy-pass")
+stopifnot(prof$res$status == 200L, ta$res$status == 200L)
+act <- function(who, body, section = "01") request("POST", "/api/tracker/act",
+  c(list(course = "ECON 101", section = section), body), cookie = who$cookie)
+tracker_state_for <- function(who, section = "01") {
+  req <- list(REQUEST_METHOD = "GET", PATH_INFO = "/api/tracker/state", HTTP_COOKIE = who$cookie,
+              QUERY_STRING = paste0("course=ECON+101&section=", section), rook.input = list(read = function() raw(0)))
+  res <- app$call(req)
+  res$json <- if (nzchar(res$body %||% "")) jsonlite::fromJSON(as.character(res$body), simplifyVector = FALSE) else NULL
+  res
+}
+events <- function() hub$db_query("SELECT user_id,event_kind,outcome,tokens,committed_at,job_assignment_id FROM live_score_events ORDER BY id;")
+
+# Who may use it: the page loads for anyone, the data only for instructors, and
+# only for sections they run.
+stopifnot(request("GET", "/tracker")$status == 200L, grepl("Class Tracker", request("GET", "/tracker")$body, fixed = TRUE),
+          request("GET", "/api/tracker/classes")$status == 401L,
+          request("GET", "/api/tracker/classes", cookie = cy$cookie)$status == 401L,
+          tracker_state_for(cy)$status == 401L, act(cy, list(action = "draw"))$status == 401L,
+          request("GET", "/api/state", cookie = prof$cookie)$status == 401L)
+classes <- function(who) vapply(request("GET", "/api/tracker/classes", cookie = who$cookie)$json$classes,
+                                function(c) paste(c$course, c$section), character(1))
+# A super admin sees every section, including the built-in demo course; a
+# section instructor sees only their own.
+stopifnot(all(c("ECON 101 01", "ECON 101 02") %in% classes(prof)), identical(classes(ta), "ECON 101 02"),
+          tracker_state_for(ta, "01")$status == 403L, act(ta, list(action = "draw"), "01")$status == 403L,
+          tracker_state_for(ta, "02")$status == 200L)
+
+# State for the section: its own students, the volunteer job, the assigned job.
+state <- tracker_state_for(prof)$json
+names_in <- vapply(state$students, function(s) s$name, character(1))
+stopifnot(setequal(names_in, c("Ana Test", "Cy Test")), state$round$label == "Lite class", state$pending == 0L,
+          length(state$volunteer_jobs) == 1L, state$volunteer_jobs[[1]]$job_post_id == vol_post,
+          length(state$assignments) == 1L, state$assignments[[1]]$name == "Ana Test", state$assignments[[1]]$wage == 3)
+
+# Drawing a cold call freezes the date's wages and closes bidding, as the main
+# tracker does, and only picks a present student from this section.
+drawn <- act(prof, list(action = "draw"))
+stopifnot(drawn$status == 200L, drawn$json$drawn$user_id %in% c("ana@test.edu", "cy@test.edu"),
+          nrow(hub$db_query("SELECT wage FROM class_wage_snapshots WHERE round_id=?;", list(rid))) > 0L,
+          hub$db_query("SELECT bidding_enabled v FROM weekly_rounds WHERE id=?;", list(rid))$v[1] != 1L)
+stopifnot(act(prof, list(action = "absent", user_id = "cy@test.edu"))$status == 200L)
+for (i in 1:10) stopifnot(act(prof, list(action = "draw"))$json$drawn$user_id == "ana@test.edu")
+stopifnot(act(prof, list(action = "draw", exclude = list("ana@test.edu")))$status == 409L)
+
+# Recording: the amounts come from the hub's own rules and wait in the audit.
+wage <- hub$cold_call_wage_for(rid, "answer")
+stopifnot(act(prof, list(action = "cold_call", user_id = "ana@test.edu", kind = "answer"))$status == 200L,
+          act(prof, list(action = "cold_call", user_id = "ana@test.edu", kind = "pass"))$status == 200L,
+          act(prof, list(action = "cold_call", user_id = "ben@test.edu", kind = "answer"))$status == 409L,
+          act(prof, list(action = "cold_call", user_id = "ana@test.edu", kind = "dance"))$status == 409L)
+log <- events()
+stopifnot(nrow(log) == 2L, log$outcome[1] == "answer", log$tokens[1] == wage, is.na(log$committed_at[1]),
+          log$outcome[2] == "pass", log$tokens[2] == 0, !is.na(log$committed_at[2]))
+# A pass by an insured student is sent to the main tracker, so the claim is paid there.
+hub$db_exec("INSERT INTO insurance_products(scope_key,round_id,benefit,premium,status,price_step) VALUES(?,?,2,1,'open',0.5);", list(scope, rid))
+product <- as.integer(hub$db_query("SELECT last_insert_rowid() id;")$id[1])
+hub$db_exec("INSERT INTO insurance_purchases(product_id,user_id,premium) VALUES(?,'ana@test.edu',1);", list(product))
+insured <- act(prof, list(action = "cold_call", user_id = "ana@test.edu", kind = "pass"))
+stopifnot(insured$status == 409L, grepl("Pass Insurance", insured$json$message, fixed = TRUE), nrow(events()) == 2L)
+
+# Voluntary contributions, with and without the one-paid-per-class limit.
+stopifnot(act(prof, list(action = "volunteer", user_id = "ana@test.edu", job_post_id = vol_post, outcome = "succeed"))$status == 200L,
+          act(prof, list(action = "volunteer", user_id = "ana@test.edu", job_post_id = vol_post, outcome = "succeed"))$status == 200L,
+          act(prof, list(action = "volunteer", user_id = "ana@test.edu", job_post_id = recap, outcome = "succeed"))$status == 409L)
+vol <- events()[events()$event_kind == "participation", ]
+stopifnot(nrow(vol) == 2L, all(vol$tokens > 0), vol$tokens[1] == vol$tokens[2])
+hub$set_setting(paste0("volunteer_paid_cap::", scope), "1")
+limited <- act(prof, list(action = "volunteer", user_id = "ana@test.edu", job_post_id = vol_post, outcome = "succeed"))
+stopifnot(limited$status == 200L, grepl("unpaid", limited$json$message, fixed = TRUE), isTRUE(limited$json$state$paid_volunteer_limit),
+          utils::tail(events()$tokens, 1) == 0)
+
+# Scoring an assigned job: once, at the wage on the assignment, this section only.
+scored <- act(prof, list(action = "assignment", assignment_id = ana_job, outcome = "complete"))
+again <- act(prof, list(action = "assignment", assignment_id = ana_job, outcome = "missed"))
+stopifnot(scored$status == 200L, scored$json$state$assignments[[1]]$queued == "complete", again$status == 409L,
+          act(ta, list(action = "assignment", assignment_id = ana_job, outcome = "complete"), "02")$status == 409L)
+job_event <- events()[!is.na(events()$job_assignment_id), ]
+stopifnot(nrow(job_event) == 1L, job_event$tokens == 3, is.na(job_event$committed_at),
+          scored$json$state$pending == nrow(events()[is.na(events()$committed_at), ]),
+          nrow(hub$db_query("SELECT id FROM token_ledger WHERE source_type IN ('job','participation') AND note <> 'x';")) == 0L)
 
 cat("student lite: PASS\n")

@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Class Tracker</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --ink: #1d1c1a; --muted: #6a675f; --line: #e2dfd8;
+    --accent: #951829; --accent-ink: #ffffff; --ok: #1f6f43; --ok-bg: #e4f3ea;
+    --try: #8a5a00; --try-bg: #fff1cf; --miss: #a02330; --miss-bg: #fbe4e6; --chip: #eeece6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17161a; --card: #211f25; --ink: #f0eee9; --muted: #a9a59c; --line: #35323b;
+      --accent: #e0667a; --accent-ink: #17161a; --ok: #7fd3a4; --ok-bg: #1d3328;
+      --try: #f1c96b; --try-bg: #3a3118; --miss: #f08a94; --miss-bg: #3b2024; --chip: #2c2a31;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 40rem; margin: 0 auto; padding: .8rem .9rem 5.5rem; }
+  h1 { font-size: 1.15rem; margin: 0; }
+  h2 { font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 1.3rem 0 .45rem; }
+  .sub { color: var(--muted); font-size: .88rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: .85rem .9rem; }
+  .head { display: flex; justify-content: space-between; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  select, input[type=search], input[type=text], input[type=password] {
+    font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line);
+    border-radius: 8px; padding: .5rem .6rem; max-width: 100%; }
+  button { font: inherit; font-weight: 600; border: 1px solid transparent; border-radius: 10px;
+           padding: .6rem .8rem; background: var(--chip); color: var(--ink); cursor: pointer; min-height: 2.75rem; }
+  button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-ink); }
+  button.ok { background: var(--ok-bg); color: var(--ok); }
+  button.try { background: var(--try-bg); color: var(--try); }
+  button.miss { background: var(--miss-bg); color: var(--miss); }
+  button.quiet { background: transparent; color: var(--muted); font-weight: 500; min-height: 0; padding: .3rem .5rem; }
+  .draw { width: 100%; font-size: 1.1rem; padding: .9rem; }
+  .called { font-size: 1.7rem; font-weight: 700; margin: .1rem 0 .1rem; }
+  .row { display: flex; gap: .45rem; flex-wrap: wrap; margin-top: .6rem; }
+  .row > button { flex: 1 1 6.5rem; }
+  .chips { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: .6rem; }
+  .chips button { min-height: 2.3rem; padding: .35rem .7rem; font-weight: 500; }
+  .chips button[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); }
+  .person { display: grid; grid-template-columns: 1fr auto; gap: .5rem; align-items: center;
+            padding: .5rem 0; border-top: 1px solid var(--line); }
+  .person:first-child { border-top: 0; }
+  .person .name { font-weight: 600; }
+  .person .meta { color: var(--muted); font-size: .8rem; }
+  .person .acts { display: flex; gap: .3rem; }
+  .person .acts button { min-width: 2.9rem; padding: .5rem .55rem; }
+  .absent .name { color: var(--muted); text-decoration: line-through; }
+  .tag { display: inline-block; font-size: .74rem; border-radius: 999px; padding: .05rem .5rem; background: var(--chip); color: var(--muted); margin-left: .35rem; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line);
+         padding: .6rem .9rem calc(.6rem + env(safe-area-inset-bottom)); }
+  .bar .inner { max-width: 40rem; margin: 0 auto; display: flex; gap: .7rem; align-items: center; justify-content: space-between; }
+  .bar .msg { font-size: .9rem; }
+  .bar a { color: var(--accent); font-size: .88rem; white-space: nowrap; }
+  .error { color: var(--miss); font-size: .9rem; min-height: 1.2rem; margin-top: .4rem; }
+  a.google { display: block; text-align: center; font-weight: 600; text-decoration: none; border-radius: 10px;
+             padding: .8rem 1rem; background: var(--accent); color: var(--accent-ink); }
+  label { display: block; font-size: .85rem; color: var(--muted); margin: .6rem 0 .2rem; }
+  details { margin-top: .8rem; } summary { color: var(--muted); font-size: .9rem; cursor: pointer; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section id="login" hidden>
+    <h1>Class Tracker</h1>
+    <p class="sub">Sign in as an instructor.</p>
+    <div class="card" id="google-box" hidden><a class="google" id="google-link" href="#">Sign in with your school Google account</a></div>
+    <details id="password-box">
+      <summary>Use a username and password instead</summary>
+      <form id="login-form" class="card" autocomplete="on">
+        <label for="username">Username</label>
+        <input id="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+        <div class="error" id="login-error" role="alert"></div>
+        <button class="primary" type="submit">Sign in</button>
+      </form>
+    </details>
+  </section>
+
+  <section id="app" hidden>
+    <div class="head">
+      <div>
+        <h1 id="date">Class Tracker</h1>
+        <div class="sub" id="class-line"></div>
+      </div>
+      <div>
+        <select id="class-pick" aria-label="Class and section" hidden></select>
+        <button class="quiet" id="logout" type="button">Sign out</button>
+      </div>
+    </div>
+
+    <h2>Cold call</h2>
+    <div class="card">
+      <div id="drawn-empty"><button class="primary draw" id="draw" type="button">Draw a student</button></div>
+      <div id="drawn" hidden>
+        <div class="sub">Called</div>
+        <div class="called" id="drawn-name" tabindex="-1"></div>
+        <div class="sub" id="drawn-pay"></div>
+        <div class="row">
+          <button class="ok" id="cc-answer" type="button">Answer</button>
+          <button class="ok" id="cc-board" type="button">Board</button>
+          <button class="try" id="cc-pass" type="button">Pass</button>
+          <button class="miss" id="cc-absent" type="button">Absent</button>
+        </div>
+        <div class="row"><button class="quiet" id="cc-clear" type="button">Clear without recording</button></div>
+      </div>
+    </div>
+
+    <h2>Volunteers</h2>
+    <div class="card">
+      <div class="chips" id="vol-jobs" role="group" aria-label="Volunteer job"></div>
+      <input id="search" type="search" placeholder="Find a student" aria-label="Find a student" style="width:100%;margin-bottom:.3rem;">
+      <div id="people"></div>
+      <div class="sub" id="vol-none" hidden>No volunteer jobs are posted for this class date.</div>
+    </div>
+
+    <h2>Jobs today</h2>
+    <div class="card">
+      <div id="jobs"></div>
+      <div class="sub" id="jobs-none" hidden>No jobs are assigned for this class date yet. Draws are run in the main app.</div>
+    </div>
+  </section>
+</main>
+
+<div class="bar" id="bar" hidden>
+  <div class="inner">
+    <div class="msg" id="msg" role="status" aria-live="polite"></div>
+    <a id="main-link" href="/class-job-market/">Audit and commit</a>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var classes = [], current = null, state = null, etag = null, drawn = null, volunteerJob = null, busy = false;
+
+  function api(method, path, body, extra) {
+    var headers = { 'X-Requested-With': 'student-lite' };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    for (var key in (extra || {})) headers[key] = extra[key];
+    return fetch(path, { method: method, headers: headers, credentials: 'same-origin',
+                         body: body === undefined ? undefined : JSON.stringify(body) });
+  }
+  function el(tag, attrs, text) {
+    var node = document.createElement(tag);
+    for (var key in (attrs || {})) node.setAttribute(key, attrs[key]);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function points(x) { var n = Number(x); return isFinite(n) ? String(Math.round(n * 100) / 100) : ''; }
+  function say(text) { $('msg').textContent = text || ''; }
+  function waiting() { say(state && state.pending ? state.pending + ' waiting in the audit' : 'Nothing waiting in the audit'); }
+  function show(view) { $('login').hidden = view !== 'login'; $('app').hidden = view !== 'app'; $('bar').hidden = view !== 'app'; }
+  function where() { return 'course=' + encodeURIComponent(current.course) + '&section=' + encodeURIComponent(current.section); }
+
+  function renderCall() {
+    $('drawn').hidden = !drawn; $('drawn-empty').hidden = !!drawn;
+    if (drawn) $('drawn-name').textContent = drawn.name;
+    if (state && state.wages && state.round)
+      $('drawn-pay').textContent = state.round.practice ? 'Practice date: nothing is paid'
+        : 'An answer pays ' + points(state.wages.answer) + ' · board work pays ' + points(state.wages.board);
+  }
+  function renderPeople() {
+    var box = $('people'); box.textContent = '';
+    var jobs = state.volunteer_jobs || [];
+    $('vol-none').hidden = jobs.length > 0; $('search').hidden = jobs.length === 0;
+    if (!jobs.length) return;
+    var filter = $('search').value.trim().toLowerCase();
+    state.students.filter(function (s) { return !filter || s.name.toLowerCase().indexOf(filter) >= 0; }).forEach(function (s) {
+      var row = el('div', { 'class': 'person' + (s.absent ? ' absent' : '') });
+      var left = el('div');
+      var name = el('div', { 'class': 'name' }, s.name);
+      if (s.absent) name.appendChild(el('span', { 'class': 'tag' }, 'absent'));
+      left.appendChild(name);
+      var bits = [];
+      if (s.volunteered) bits.push(s.volunteered + ' volunteered');
+      if (s.cold_calls) bits.push(s.cold_calls + ' called');
+      if (bits.length) left.appendChild(el('div', { 'class': 'meta' }, bits.join(' · ')));
+      var acts = el('div', { 'class': 'acts' });
+      [['succeed', 'ok', 'S', 'succeeded'], ['try', 'try', 'T', 'tried'], ['miss', 'miss', 'M', 'missed']].forEach(function (o) {
+        var b = el('button', { type: 'button', 'class': o[1], 'aria-label': s.name + ' ' + o[3] }, o[2]);
+        b.addEventListener('click', function () { act({ action: 'volunteer', user_id: s.user_id, job_post_id: volunteerJob, outcome: o[0] }); });
+        acts.appendChild(b);
+      });
+      row.appendChild(left); row.appendChild(acts); box.appendChild(row);
+    });
+  }
+  function renderVolunteerJobs() {
+    var box = $('vol-jobs'); box.textContent = '';
+    var jobs = state.volunteer_jobs || [];
+    if (!jobs.some(function (j) { return j.job_post_id === volunteerJob; })) volunteerJob = jobs.length ? jobs[0].job_post_id : null;
+    jobs.forEach(function (j) {
+      var b = el('button', { type: 'button', 'aria-pressed': String(j.job_post_id === volunteerJob) }, j.job_name.replace(/^Volunteer:\s*/i, ''));
+      b.addEventListener('click', function () { volunteerJob = j.job_post_id; renderVolunteerJobs(); });
+      box.appendChild(b);
+    });
+  }
+  function renderJobs() {
+    var box = $('jobs'); box.textContent = '';
+    var list = state.assignments || [];
+    $('jobs-none').hidden = list.length > 0;
+    list.forEach(function (a) {
+      var row = el('div', { 'class': 'person' });
+      var left = el('div');
+      left.appendChild(el('div', { 'class': 'name' }, a.name));
+      var done = a.outcome || a.queued;
+      left.appendChild(el('div', { 'class': 'meta' }, a.job_name + (state.round.practice ? '' : ' · ' + points(a.wage)) +
+        (a.outcome ? ' · ' + a.outcome : a.queued ? ' · ' + a.queued + ', waiting in the audit' : '')));
+      var acts = el('div', { 'class': 'acts' });
+      [['complete', 'ok', 'Done'], ['tried', 'try', 'Tried'], ['missed', 'miss', 'Miss']].forEach(function (o) {
+        var b = el('button', { type: 'button', 'class': o[1], 'aria-label': a.name + ' ' + a.job_name + ' ' + o[2] }, o[2]);
+        b.disabled = !!done;
+        b.addEventListener('click', function () { act({ action: 'assignment', assignment_id: a.assignment_id, outcome: o[0] }); });
+        acts.appendChild(b);
+      });
+      row.appendChild(left); row.appendChild(acts); box.appendChild(row);
+    });
+  }
+  function render(next) {
+    state = next;
+    $('date').textContent = state.round ? (state.round.label || state.round.class_date) : 'No class date selected';
+    $('class-line').textContent = state.course + ' · ' + state.section +
+      (state.round && state.round.practice ? ' · practice date, no points' : '') +
+      (state.paid_volunteer_limit ? ' · one paid volunteer contribution each' : '');
+    renderCall(); renderVolunteerJobs(); renderPeople(); renderJobs();
+    if (!$('msg').textContent || /waiting in the audit|Nothing waiting/.test($('msg').textContent)) waiting();
+    show('app');
+  }
+
+  function refresh() {
+    if (!current) return Promise.resolve();
+    return api('GET', 'api/tracker/state?' + where(), undefined, etag ? { 'If-None-Match': etag } : {}).then(function (res) {
+      if (res.status === 304) return;
+      if (res.status === 401) { show('login'); return; }
+      if (!res.ok) throw new Error('state');
+      etag = res.headers.get('ETag');
+      return res.json().then(render);
+    }).catch(function () { say('Offline. Retrying…'); });
+  }
+  function act(body) {
+    if (busy) return Promise.resolve(null);
+    busy = true;
+    body.course = current.course; body.section = current.section;
+    return api('POST', 'api/tracker/act', body).then(function (res) { return res.json(); }).then(function (out) {
+      etag = null;
+      if (out.state) render(out.state);
+      say(out.message || out.error || '');
+      return out;
+    }).catch(function () { say('Could not save. Check your connection and try again.'); return null; })
+      .then(function (out) { busy = false; return out; });
+  }
+  function draw(exclude) {
+    return act({ action: 'draw', exclude: exclude || [] }).then(function (out) {
+      if (out && out.ok && out.drawn) { drawn = out.drawn; renderCall(); waiting(); $('drawn-name').focus(); }
+    });
+  }
+  function recordCall(kind) {
+    if (!drawn) return;
+    var who = drawn;
+    act({ action: 'cold_call', user_id: who.user_id, kind: kind }).then(function (out) {
+      if (!out || !out.ok) return;
+      drawn = null; renderCall();
+      if (kind === 'pass') draw([who.user_id]);
+    });
+  }
+
+  $('draw').addEventListener('click', function () { draw([]); });
+  $('cc-answer').addEventListener('click', function () { recordCall('answer'); });
+  $('cc-board').addEventListener('click', function () { recordCall('board'); });
+  $('cc-pass').addEventListener('click', function () { recordCall('pass'); });
+  $('cc-absent').addEventListener('click', function () {
+    if (!drawn) return;
+    var who = drawn;
+    act({ action: 'absent', user_id: who.user_id }).then(function (out) { if (out && out.ok) { drawn = null; draw([who.user_id]); } });
+  });
+  $('cc-clear').addEventListener('click', function () { drawn = null; renderCall(); });
+  $('search').addEventListener('input', renderPeople);
+  $('class-pick').addEventListener('change', function () {
+    current = classes[Number($('class-pick').value)]; etag = null; drawn = null; say('');
+    try { localStorage.setItem('trackerClass', current.course + '\n' + current.section); } catch (e) {}
+    refresh();
+  });
+  $('logout').addEventListener('click', function () { api('POST', 'api/logout', {}).then(function () { location.reload(); }); });
+  $('login-form').addEventListener('submit', function (event) {
+    event.preventDefault(); $('login-error').textContent = '';
+    api('POST', 'api/login', { username: $('username').value, password: $('password').value })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body }; }); })
+      .then(function (out) { if (!out.ok) $('login-error').textContent = out.body.error || 'Could not sign in.'; else start(); })
+      .catch(function () { $('login-error').textContent = 'Could not reach the server.'; });
+  });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && !$('app').hidden) refresh(); });
+  setInterval(function () { if (!document.hidden && !$('app').hidden && !busy) refresh(); }, 8000);
+
+  function start() {
+    return api('GET', 'api/tracker/classes').then(function (res) {
+      if (res.status === 401) { show('login'); return; }
+      return res.json().then(function (body) {
+        classes = body.classes || [];
+        if (!classes.length) { show('login'); $('login-error').textContent = 'This account does not run any section.'; return; }
+        // Open on the class used last on this device, else the instructor's own.
+        var saved = ''; try { saved = localStorage.getItem('trackerClass') || ''; } catch (e) {}
+        var home = body.home ? body.home.course + '\n' + body.home.section : '';
+        var pick = $('class-pick'); pick.textContent = '';
+        var chosen = -1, homeIndex = -1;
+        classes.forEach(function (c, i) {
+          pick.appendChild(el('option', { value: String(i) }, c.course + ' · ' + c.section));
+          if (saved === c.course + '\n' + c.section) chosen = i;
+          if (home === c.course + '\n' + c.section) homeIndex = i;
+        });
+        pick.value = String(chosen >= 0 ? chosen : homeIndex >= 0 ? homeIndex : 0);
+        pick.hidden = classes.length < 2;
+        current = classes[Number(pick.value) || 0];
+        return refresh();
+      });
+    }).catch(function () { show('login'); });
+  }
+  api('GET', 'api/config').then(function (res) { return res.json(); }).then(function (config) {
+    $('google-box').hidden = !config.google; $('password-box').open = !config.google;
+    // Google sign-in returns to the student page, which sends instructors on to this one.
+    $('google-link').href = '/auth/login?return_to=' + encodeURIComponent(location.pathname.replace(/tracker\/?$/, ''));
+  }).catch(function () { $('password-box').open = true; });
+  start();
+})();
+</script>
+</body>
+</html>

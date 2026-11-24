@@ -174,7 +174,14 @@
   function refresh() {
     return api('GET', 'api/state', undefined, etag ? { 'If-None-Match': etag } : {}).then(function (res) {
       if (res.status === 304) return;
-      if (res.status === 401) { etag = null; current = null; show('login'); return; }
+      if (res.status === 401) {
+        etag = null; current = null;
+        // An instructor has no student page; send them to the class tracker.
+        return api('GET', 'api/tracker/classes').then(function (tracker) {
+          if (tracker.ok) { location.replace('tracker'); return; }
+          show('login');
+        });
+      }
       if (!res.ok) throw new Error('state ' + res.status);
       etag = res.headers.get('ETag');
       return res.json().then(render);

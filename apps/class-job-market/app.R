@@ -3808,6 +3808,114 @@ account_section <- function(title, hint, ..., open=FALSE) {
 }
 
 # ── Server ────────────────────────────────────────────────────────────────────
+# ── Live scoring rules ──────────────────────────────────────────────────────────
+# What a cold call, a voluntary contribution, or a scored job is worth, and how
+# it is queued for the Live Score Audit. The Live Tracker and the fast tracker
+# page both call these, so the two cannot disagree. Nothing here pays anyone:
+# payment happens when the audit is committed.
+cold_call_wage_for <- function(round_id, kind = "answer") {
+  post <- tryCatch(db_query(
+    "SELECT jp.id, COALESCE(jp.wage_override,jc.default_wage,1) AS fallback_wage
+     FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
+     WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+       AND (LOWER(COALESCE(jp.selection_time,'')) IN ('during','during class')
+            OR LOWER(COALESCE(jc.name,''))='cold call')
+     ORDER BY CASE WHEN LOWER(jp.job_name) LIKE ? THEN 0 ELSE 1 END, jp.display_order, jp.id
+     LIMIT 1;",
+    list(as.integer(round_id), paste0("%", tolower(kind), "%"))),
+    error = function(e) data.frame())
+  if (!nrow(post)) return(1)
+  class_wage_snapshot(round_id, as.integer(post$id[1]),
+                      as.numeric(post$fallback_wage[1] %||% 1))
+}
+
+queue_cold_call <- function(round_id, user_id, kind, logged_by = "admin") {
+  tokens <- cold_call_wage_for(round_id, kind)
+  db_exec(
+    "INSERT INTO live_score_events(round_id, user_id, event_kind,
+            outcome, tokens, logged_by)
+     VALUES(?,?,'cold_call',?,?,?);",
+    list(as.integer(round_id), user_id, kind, tokens, logged_by))
+  tokens
+}
+
+# round_row is the class date's row from weekly_rounds. pay_capped is the
+# course/section's one-paid-contribution-per-class switch.
+queue_volunteer_event <- function(round_row, post_id, user_id, outcome_type, logged_by = "admin",
+                                  pay_capped = FALSE) {
+  rid <- as.integer(round_row$id[1])
+  post_row <- tryCatch(db_query(
+    "SELECT jp.id, jp.category_id, jp.slots, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
+     FROM job_posts jp
+     LEFT JOIN job_categories jc ON jc.id = jp.category_id
+     WHERE jp.id=? AND jp.round_id=?
+       AND (COALESCE(jc.voluntary,0)=1 OR COALESCE(jp.voluntary,0)=1)
+     LIMIT 1;", list(as.integer(post_id), rid)),
+    error = function(e) data.frame())
+  if (!nrow(post_row)) return(list(ok = FALSE, message = "No voluntary post found."))
+  post_id   <- as.integer(post_row$id[1])
+  wage_val  <- as.numeric(post_row$tokens[1] %||% 0)
+  snap_wage <- class_wage_snapshot(rid, post_id, NA_real_)
+  if (!is.na(snap_wage)) wage_val <- snap_wage
+  # In wage-bidding rounds every volunteer in a category is paid the same
+  # equilibrium wage from that round's bids, not their own bid.
+  if (is.na(snap_wage) && identical(round_row$assignment_mode[1] %||% "random", "wage_bidding") &&
+      !is.na(post_row$category_id[1] %||% NA)) {
+    cw <- volunteer_clearing_wage(rid, as.integer(post_row$category_id[1]),
+                                  as.integer(post_row$slots[1] %||% 1L),
+                                  query_fn = db_query, job_post_id = post_id)
+    if (!is.na(cw)) wage_val <- cw
+  }
+  uncapped <- switch(outcome_type, succeed = wage_val, try = 1, miss = 0, 0)
+  tokens <- uncapped
+  if (isTRUE(pay_capped) && is.finite(tokens) && tokens > 0) {
+    paid <- db_query(
+      "SELECT COUNT(*) n FROM live_score_events
+       WHERE round_id=? AND LOWER(user_id)=LOWER(?) AND event_kind='participation'
+         AND COALESCE(tokens,0) > 0;", list(rid, as.character(user_id)))
+    if (as.integer(paid$n[1] %||% 0L) > 0L) tokens <- 0
+  }
+  db_exec(
+    "INSERT INTO live_score_events(round_id, user_id, job_post_id, event_kind,
+            outcome, tokens, logged_by)
+     VALUES(?,?,?,'participation',?,?,?);",
+    list(rid, user_id, post_id, outcome_type, tokens, logged_by))
+  list(ok = TRUE, tokens = tokens, uncapped = uncapped, job_post_id = post_id)
+}
+
+queue_assignment_score <- function(assign_id, outcome, logged_by = "admin") {
+  row <- db_query(
+    "SELECT ja.user_id, u.display_name, ja.assigned_wage,
+            COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
+            ja.round_id
+     FROM job_assignments ja
+     JOIN users u ON u.user_id=ja.user_id
+     JOIN job_posts jp ON jp.id=ja.job_post_id
+     LEFT JOIN job_categories jc ON jc.id=jp.category_id
+     WHERE ja.id=?;", list(as.integer(assign_id)))
+  if (!nrow(row)) return(list(ok = FALSE, type = "error", message = "Assignment not found."))
+  if (as.integer(row$tokens_awarded[1]) == 1L)
+    return(list(ok = FALSE, type = "warning", message = "Tokens already awarded \u2014 outcome cannot be changed."))
+  queued <- tryCatch(db_query(
+    "SELECT id FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL LIMIT 1;",
+    list(as.integer(assign_id))), error = function(e) data.frame())
+  if (nrow(queued)) return(list(ok = FALSE, type = "warning", message = "That assignment is already in the audit panel."))
+  uid   <- row$user_id[1]
+  dname <- row$display_name[1] %||% uid
+  # Complete jobs pay the wage snapshotted on the assignment.
+  wage  <- as.numeric(row$assigned_wage[1] %||% 0)
+  tokens_to_award <- switch(outcome, complete = wage, tried = 1, missed = 0, 0)
+  db_exec(
+    "INSERT INTO live_score_events(round_id, user_id, job_assignment_id, event_kind,
+            outcome, tokens, logged_by)
+     VALUES(?,?,?,'assignment',?,?,?);",
+    list(as.integer(row$round_id[1]), uid, as.integer(assign_id), outcome, tokens_to_award, logged_by))
+  list(ok = TRUE, type = "message", tokens = tokens_to_award, user_id = uid,
+       message = sprintf("%s queued for audit (%d token%s).", dname, as.integer(tokens_to_award),
+                         if (tokens_to_award == 1) "" else "s"))
+}
+
+
 server <- function(input, output, session) {
 
   # Mobile browsers routinely suspend background tabs and drop their WebSocket.
@@ -9802,21 +9910,7 @@ server <- function(input, output, session) {
   observeEvent(input$cold_call_recession_btn, pass_cold_call("recession_firing"), ignoreNULL = TRUE)
   observeEvent(input$slide_cold_call_recession_btn, pass_cold_call("recession_firing"), ignoreNULL = TRUE)
 
-  cold_call_wage <- function(round_id, kind = "answer") {
-    post <- tryCatch(db_query(
-      "SELECT jp.id, COALESCE(jp.wage_override,jc.default_wage,1) AS fallback_wage
-       FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
-       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
-         AND (LOWER(COALESCE(jp.selection_time,'')) IN ('during','during class')
-              OR LOWER(COALESCE(jc.name,''))='cold call')
-       ORDER BY CASE WHEN LOWER(jp.job_name) LIKE ? THEN 0 ELSE 1 END, jp.display_order, jp.id
-       LIMIT 1;",
-      list(as.integer(round_id), paste0("%", tolower(kind), "%"))),
-      error = function(e) data.frame())
-    if (!nrow(post)) return(1)
-    class_wage_snapshot(round_id, as.integer(post$id[1]),
-                        as.numeric(post$fallback_wage[1] %||% 1))
-  }
+  cold_call_wage <- function(round_id, kind = "answer") cold_call_wage_for(round_id, kind)
 
   record_cold_call <- function(kind) {
     req(rv$is_admin, !rv$impersonating)
@@ -9830,12 +9924,7 @@ server <- function(input, output, session) {
     if (!nrow(round)) { showNotification("No selected class date.", type = "error"); return() }
     rid <- as.integer(round$id[1])
     uid <- drawn$user_id
-    tokens <- cold_call_wage(rid, kind)
-    db_exec(
-      "INSERT INTO live_score_events(round_id, user_id, event_kind,
-              outcome, tokens, logged_by)
-       VALUES(?,?,'cold_call',?,?,?);",
-      list(rid, uid, kind, tokens, rv$user_id %||% "admin"))
+    tokens <- queue_cold_call(rid, uid, kind, rv$user_id %||% "admin")
     rv$cold_call_last <- list(
       display_name = drawn$display_name %||% uid,
       kind = kind,
@@ -14989,59 +15078,8 @@ server <- function(input, output, session) {
     if (is.na(assign_id) || !outcome %in% c("complete","tried","missed")) {
       showNotification("Invalid evaluation.", type = "error"); return()
     }
-    row <- db_query(
-      "SELECT ja.user_id, u.display_name, ja.assigned_wage,
-              COALESCE(ja.tokens_awarded,0) AS tokens_awarded,
-              ja.round_id
-       FROM job_assignments ja
-       JOIN users u ON u.user_id=ja.user_id
-       JOIN job_posts jp ON jp.id=ja.job_post_id
-       LEFT JOIN job_categories jc ON jc.id=jp.category_id
-       WHERE ja.id=?;", list(assign_id))
-    if (!nrow(row)) { showNotification("Assignment not found.", type = "error"); return() }
-    if (as.integer(row$tokens_awarded[1]) == 1L) {
-      showNotification("Tokens already awarded — outcome cannot be changed.", type = "warning")
-      return()
-    }
-    queued <- tryCatch(db_query(
-      "SELECT id FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL LIMIT 1;",
-      list(assign_id)), error = function(e) data.frame())
-    if (nrow(queued)) {
-      showNotification("That assignment is already in the audit panel.", type = "warning")
-      return()
-    }
-    uid   <- row$user_id[1]
-    dname <- row$display_name[1] %||% uid
-    # Complete jobs pay the wage snapshotted on the assignment.
-    wage  <- as.numeric(row$assigned_wage[1] %||% 0)
-    tokens_to_award <- switch(outcome,
-      complete = wage,
-      tried    = 1,
-      missed   = 0,
-      0)
-    pending_eval <- tryCatch(db_query(
-      "SELECT id FROM live_score_events
-       WHERE job_assignment_id=? AND committed_at IS NULL
-       ORDER BY id DESC LIMIT 1;",
-      list(assign_id)), error = function(e) data.frame())
-    if (nrow(pending_eval)) {
-      db_exec(
-        "UPDATE live_score_events
-         SET outcome=?, tokens=?, logged_by=?, created_at=datetime('now')
-         WHERE id=?;",
-        list(outcome, tokens_to_award, rv$user_id %||% "admin",
-             as.integer(pending_eval$id[1])))
-    } else {
-      db_exec(
-        "INSERT INTO live_score_events(round_id, user_id, job_assignment_id, event_kind,
-                outcome, tokens, logged_by)
-         VALUES(?,?,?,'assignment',?,?,?);",
-        list(as.integer(row$round_id[1]), uid, assign_id, outcome, tokens_to_award, rv$user_id %||% "admin"))
-    }
-    showNotification(
-      sprintf("%s queued for audit (%d token%s).", dname, as.integer(tokens_to_award),
-              if (tokens_to_award == 1) "" else "s"),
-      type = "message")
+    result <- queue_assignment_score(assign_id, outcome, rv$user_id %||% "admin")
+    showNotification(result$message, type = result$type)
     return()
   }, ignoreNULL = TRUE)
 
@@ -15062,49 +15100,14 @@ server <- function(input, output, session) {
     u_row <- tryCatch(db_query("SELECT display_name FROM users WHERE user_id=?;", list(uid)),
                       error = function(e) data.frame())
     dname <- if (nrow(u_row)) u_row$display_name[1] %||% uid else uid
-    post_row <- tryCatch(db_query(
-      "SELECT jp.id, jp.category_id, jp.slots, COALESCE(jp.wage_override, jc.default_wage, 1) AS tokens
-       FROM job_posts jp
-       LEFT JOIN job_categories jc ON jc.id = jp.category_id
-       WHERE jp.id=? AND jp.round_id=?
-         AND (COALESCE(jc.voluntary,0)=1 OR COALESCE(jp.voluntary,0)=1)
-       LIMIT 1;", list(post_id, rid)),
-      error = function(e) data.frame())
-    if (!nrow(post_row)) {
-      showNotification("No voluntary post found.", type = "error")
-      return()
-    }
-    post_id   <- as.integer(post_row$id[1])
-    wage_val  <- as.numeric(post_row$tokens[1] %||% 0)
-    snap_wage <- class_wage_snapshot(rid, post_id, NA_real_)
-    if (!is.na(snap_wage)) wage_val <- snap_wage
-    # In wage-bidding rounds every volunteer in a category is paid the same
-    # equilibrium wage from that round's bids — not their own bid. The rule is
-    # either the lowest bid, or (demand-based) the k-th lowest where k is the
-    # post's slots: the instructor's demand for that job over the session.
-    if (is.na(snap_wage) && identical(rid_row$assignment_mode[1] %||% "random", "wage_bidding") &&
-        !is.na(post_row$category_id[1] %||% NA)) {
-      cw <- volunteer_clearing_wage(rid, as.integer(post_row$category_id[1]),
-                                    as.integer(post_row$slots[1] %||% 1L),
-                                    query_fn = db_query, job_post_id = post_id)
-      if (!is.na(cw)) wage_val <- cw
-    }
-    tokens_to_award <- switch(outcome_type,
-      succeed = wage_val,
-      try     = 1,
-      miss    = 0, 0)
-    uncapped_tokens <- tokens_to_award
-    tokens_to_award <- volunteer_capped_tokens(tokens_to_award, rid, uid)
-    db_exec(
-      "INSERT INTO live_score_events(round_id, user_id, job_post_id, event_kind,
-              outcome, tokens, logged_by)
-       VALUES(?,?,?,'participation',?,?,?);",
-      list(rid, uid, post_id, outcome_type, tokens_to_award, rv$user_id %||% "admin"))
+    result <- queue_volunteer_event(rid_row, post_id, uid, outcome_type, rv$user_id %||% "admin",
+                                    pay_capped = volunteer_pay_capped_for_scope())
+    if (!isTRUE(result$ok)) { showNotification(result$message, type = "error"); return() }
     showNotification(
-      if (tokens_to_award < uncapped_tokens)
+      if (result$tokens < result$uncapped)
         sprintf("%s recorded, unpaid: already paid for a voluntary contribution this class.", dname)
-      else sprintf("%s queued for audit (%s token%s).", dname, fmt_token_amount(tokens_to_award),
-                   if (tokens_to_award == 1) "" else "s"),
+      else sprintf("%s queued for audit (%s token%s).", dname, fmt_token_amount(result$tokens),
+                   if (result$tokens == 1) "" else "s"),
       type = "message")
     return()
   }

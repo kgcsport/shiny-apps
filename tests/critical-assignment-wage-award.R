@@ -9,9 +9,15 @@ required_commit <- c("SELECT assigned_wage, COALESCE(tokens_awarded,0) AS tokens
 missing_commit <- required_commit[!vapply(required_commit, grepl, logical(1), x = commit_source, fixed = TRUE)]
 if (length(missing_commit)) stop("Assignment audit wage contract missing: ", paste(missing_commit, collapse = " | "))
 if (grepl("current_wage", commit_source, fixed = TRUE)) stop("Assignment audit must not read undeclared current_wage.")
-eval_start <- regexpr("# ── Job Evaluation", source_text, fixed = TRUE)
+# The rule for scoring an assigned job lives in one shared function, called by
+# the Live Tracker's evaluation handler and by the fast tracker page.
+eval_start <- regexpr("queue_assignment_score <- function", source_text, fixed = TRUE)
 if (eval_start[[1]] < 1L) stop("Could not locate assignment evaluation handler.")
 eval_source <- substr(source_text, eval_start[[1]], eval_start[[1]] + 4000L)
+handler_start <- regexpr("# ── Job Evaluation", source_text, fixed = TRUE)
+if (handler_start[[1]] < 1L || !grepl("queue_assignment_score(assign_id, outcome,",
+    substr(source_text, handler_start[[1]], handler_start[[1]] + 4000L), fixed = TRUE))
+  stop("The Live Tracker evaluation handler must score through queue_assignment_score.")
 if (!grepl("wage  <- as.numeric(row$assigned_wage[1] %||% 0)", eval_source, fixed = TRUE)) stop("Assignment evaluation must queue complete jobs at their assigned wage.")
 if (grepl("row$current_wage", eval_source, fixed = TRUE)) stop("Assignment evaluation must not read undeclared current_wage.")
 cat("critical assignment wage award: OK\n")
