@@ -19,3 +19,40 @@ Small Reclaim/Docker efficiency audit, July 2026. No broad rewrites were made.
 | review-quiz | `apps/review-quiz/app.R` | 5000ms | Added interval comments | Question bank and pending submissions are admin-ish views. |
 
 Search terms used: `invalidateLater`, `reactivePoll`, `reactiveTimer`, `setInterval`.
+
+## Class Job Market shared change detection (November 2026, branch `feature/shared-polling`)
+
+`apps/class-job-market/app.R` had eleven `reactivePoll` timers per session,
+each running its own queries, plus an export page that rebuilt itself every
+five seconds. They are replaced by one app-wide loop:
+
+- Once a second, for the whole app, read two SQLite counters that touch no
+  table: `PRAGMA data_version` (commits by any other connection or process)
+  and `total_changes()` (writes on the app's own connection).
+- When they move, tell every session to run its real checks, at most once per
+  three seconds. A change during that gap is held, never dropped.
+- A session also re-checks at once when it writes, or when something it reads
+  in the session changes, such as the open tab.
+- Once a minute every session re-checks regardless, for things that change
+  with the clock.
+- The loop does nothing while no one is connected.
+- `SHARED_POLLING=0` restores the independent timers.
+- The export page has a Refresh button and no timer.
+
+Measured on one machine, students signed in and left on the bid page, CPU as a
+share of one core over 30 seconds:
+
+| Students | Old timers, idle | Shared loop, idle | Old timers, a write every second | Shared loop, a write every second |
+|---:|---:|---:|---:|---:|
+| 1 | 1.2% | 0.3% | | |
+| 10 | 10.1% | 0.4% | | |
+| 25 | 22.8% | 0.4% | 24.0% | 24.8% |
+
+A job post added by another process appeared on an open student page in about
+one second (0.8 to 1.3 s over three tries); the old job timer ran every eight
+seconds. Memory per session is unchanged at roughly 17 MB.
+
+Known properties: any write anywhere wakes every session, so a class that is
+writing constantly sees no saving; all sessions re-check in the same instant
+after a change; the loop is per R process.
+

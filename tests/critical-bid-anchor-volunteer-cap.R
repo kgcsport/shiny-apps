@@ -86,7 +86,7 @@ shiny::testServer(app$server, {
   set_student(rv, "s1@test.edu", "Student 1")
   stopifnot(!bid_anchor_hidden_for_scope(),
             grepl("value=\"7\"", bid_box(output$jm_bid_form$html, role_post), fixed = TRUE),
-            grepl("7 tokens", output$job_market_tab$html, fixed = TRUE))
+            grepl("7 tokens", output$jm_summary$html, fixed = TRUE))
 })
 shiny::testServer(app$server, {
   set_admin(rv)
@@ -106,7 +106,7 @@ shiny::testServer(app$server, {
   # bid exists the instructor's fallback wage (7) must not be displayed.
   stopifnot(!grepl(sprintf("wbp_%d\"", vol_post), form, fixed = TRUE),
             !grepl("value=\"7\"", form, fixed = TRUE), !grepl("7 tokens", form, fixed = TRUE))
-  market <- output$job_market_tab$html
+  market <- output$jm_summary$html
   stopifnot(grepl("Volunteer Wages For This Class", market, fixed = TRUE),
             grepl("Set by bids", market, fixed = TRUE), !grepl("7 tokens", market, fixed = TRUE))
   args <- stats::setNames(list(NA_real_, NA_real_, 1L),
