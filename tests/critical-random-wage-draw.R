@@ -120,6 +120,16 @@ for (offset in 1:14) {
 # The drawn wage varies and does not track the bids on file.
 stopifnot(length(unique(seen_wages)) >= 3L, max(seen_wages) <= 4)
 
+# A bid changed after the first draw cannot win a re-run of it: the opt-out
+# bidder drops to zero once the wage is known and is still not chosen.
+d <- new_date(19, "random_wage")
+run_draw()
+first_winners <- assignments(d$rid)$user_id
+app$db_exec("UPDATE job_wage_bids SET min_wage=0 WHERE round_id=? AND user_id=?;", list(d$rid, students[4]))
+for (click in 2:6) { run_draw(click); stopifnot(!students[4] %in% assignments(d$rid)$user_id) }
+stopifnot(app$db_query("SELECT min_wage FROM job_wage_bid_locks WHERE round_id=? AND user_id=?;",
+                       list(d$rid, students[4]))$min_wage == 5000)
+
 # Everyone bidding high gains nothing: nobody is eligible and nothing is paid.
 d <- new_date(20, "random_wage")
 app$db_exec("UPDATE job_wage_bids SET min_wage=5000 WHERE round_id=?;", list(d$rid))
@@ -140,8 +150,10 @@ shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_absent_b
 after <- app$db_query("SELECT user_id,status,assigned_wage FROM job_assignments WHERE round_id=? ORDER BY id;", list(d$rid))
 stopifnot(nrow(after) == 2L, identical(after$status[1], "absent_redrawn"), after$assigned_wage[1] == -wage,
           after$user_id[2] %in% setdiff(eligible, first$user_id[1]), after$assigned_wage[2] == wage)
-# Make everyone else ineligible, then mark the replacement absent too.
+# Make everyone else ineligible, then mark the replacement absent too. Bids
+# edited after the draw do not count, so the recorded bids are changed here.
 app$db_exec("UPDATE job_wage_bids SET min_wage=5000 WHERE round_id=?;", list(d$rid))
+app$db_exec("UPDATE job_wage_bid_locks SET min_wage=5000 WHERE round_id=?;", list(d$rid))
 second <- app$db_query("SELECT id FROM job_assignments WHERE round_id=? AND status='assigned';", list(d$rid))$id[1]
 shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_absent_btn = second) })
 final <- app$db_query("SELECT status FROM job_assignments WHERE round_id=?;", list(d$rid))
@@ -226,7 +238,7 @@ repeat {
   run_draw()
   if (nrow(assignments(d$rid)) == 1L) break
 }
-app$db_exec("UPDATE job_wage_bids SET min_wage=5000 WHERE round_id=?;", list(d$rid))
+app$db_exec("UPDATE job_wage_bid_locks SET min_wage=5000 WHERE round_id=?;", list(d$rid))
 only <- app$db_query("SELECT id FROM job_assignments WHERE round_id=?;", list(d$rid))$id[1]
 shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_pass_btn = only) })
 left <- app$db_query("SELECT status FROM job_assignments WHERE round_id=?;", list(d$rid))

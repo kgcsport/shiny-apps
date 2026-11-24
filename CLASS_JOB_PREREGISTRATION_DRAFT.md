@@ -600,6 +600,10 @@ all market analyses are reported without confirmatory claims. Anything else is e
 - Data storage and access: [LOCATION AND ROLES]
 - Retention/destruction schedule: [SCHEDULE]
 
+The analysis datasets are the app's two research tables: student by job by
+class date, which holds the bid as it stood at each draw, and offers and cold
+calls by student. Both are exported with hashed student IDs.
+
 Before analysis, export an immutable raw snapshot and an audit manifest with
 row counts and cryptographic hashes. Write the cleaning script without viewing
 outcome summaries beyond validation counts. Preserve a machine-readable table

@@ -144,7 +144,7 @@ read_export <- function(mask) {
   shiny::testServer(app$server, {
     set_admin(rv)
     if (mask) session$setInputs(export_mask_ids = TRUE)
-    path <- output$dl_job_offers   # the file exists only while the session does
+    path <- output$dl_research_events   # the file exists only while the session does
     result <<- list(rows = utils::read.csv(path, stringsAsFactors = FALSE),
                     text = tolower(paste(readLines(path, warn = FALSE), collapse = "\n")))
   })
@@ -152,7 +152,8 @@ read_export <- function(mask) {
 }
 open_file <- read_export(FALSE)
 stopifnot(nrow(open_file$rows) == 12L, !"export_uid" %in% names(open_file$rows),
-          all(c("offer_id", "job", "offered_wage", "student", "bid_at_offer", "response") %in% names(open_file$rows)),
+          all(c("event_type", "event_id", "job", "offered_wage", "student", "bid_at_event", "response") %in% names(open_file$rows)),
+          all(open_file$rows$event_type == "job_offer"),
           sum(open_file$rows$response == "took") == 2L, grepl("person s1", open_file$text, fixed = TRUE))
 masked <- read_export(TRUE)
 stopifnot(nrow(masked$rows) == 12L, identical(names(masked$rows)[1], "masked_id"),

@@ -64,7 +64,7 @@ set_admin <- function(rv) {
 }
 exports <- c("dl_assignments", "dl_wage_bids", "dl_app_bids", "dl_tokens", "dl_participation_events",
              "dl_extensions", "dl_reweight_requests", "dl_pubgood_contribs", "dl_flex_purchases", "dl_students",
-             "dl_job_offers")
+             "dl_research_panel", "dl_research_events")
 identifying <- c("quinn", "rivers", "dana", "okafor")
 read_export <- function(path) {
   text <- tolower(paste(readLines(path, warn = FALSE), collapse = "\n"))
