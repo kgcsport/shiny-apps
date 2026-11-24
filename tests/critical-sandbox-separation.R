@@ -57,6 +57,10 @@ tables <- c("class_wage_snapshots", "job_wage_bid_locks", "job_assignments", "li
 main_before <- vapply(tables, count_main, numeric(1))
 stopifnot(all(main_before == 0))
 main_bids_before <- app$db_query("SELECT user_id, job_post_id, min_wage FROM job_wage_bids ORDER BY user_id, job_post_id;")
+app$set_setting("bid_reopen_time", "17:00")
+app$set_setting("volunteer_clearing_rule", "lowest")
+main_settings_before <- app$db_query("SELECT key, value FROM labor_settings ORDER BY key;")
+main_tokens_before <- app$db_query("SELECT COUNT(*) n FROM arcade_sessions;")$n[1]
 
 set_admin <- function(rv) {
   rv$authed <- TRUE; rv$user_id <- "admin@test.edu"; rv$name <- "Instructor"
@@ -64,6 +68,7 @@ set_admin <- function(rv) {
   rv$admin_role <- "super_admin"; rv$active_course <- "ECON 101"
   rv$active_section <- "01"; rv$active_sections <- "01"; rv$impersonating <- FALSE
 }
+sandbox_token <- ""
 shiny::testServer(app$server, {
   stopifnot(isTRUE(.sandbox))
   fixture(db_exec, sandbox_students, 0.5)        # the sandbox copy, in the sandbox database
@@ -84,6 +89,18 @@ shiny::testServer(app$server, {
   session$setInputs(offer_post_id = RECAP, offer_taker_uid = "", offer_record_btn = 1L)
   stopifnot(count("job_offers") == 1L)
 
+  # Settings saved in the sandbox, at any level, and a sandbox sign-in.
+  session$setInputs(vol_clearing_rule_sel = "demand", volunteer_paid_cap_input = TRUE, bid_no_anchor_input = TRUE,
+                    save_vol_clearing_btn = 1L)
+  # App-level helpers called while this session is running follow the session.
+  app$set_setting("bid_reopen_time", "21:30")
+  stopifnot(identical(app$get_setting("volunteer_clearing_rule"), "demand"),
+            identical(app$get_setting("bid_reopen_time"), "21:30"),
+            volunteer_pay_capped_for_scope(), identical(app$bid_lock_status()$reopen_at, "9:30 PM"))
+  token <- app$make_token(); app$store_token(token, sandbox_students[1])
+  stopifnot(nrow(app$lookup_token(token)) == 1L)
+  sandbox_token <<- token
+
   # Everything the sandbox recorded names sandbox students only.
   winners <- db_query("SELECT user_id FROM job_assignments WHERE round_id=?;", list(ROUND))$user_id
   locked <- db_query("SELECT DISTINCT user_id FROM job_wage_bid_locks WHERE round_id=?;", list(ROUND))$user_id
@@ -93,6 +110,10 @@ shiny::testServer(app$server, {
 # The real class is exactly as it was: no wage frozen, no bid locked, nobody
 # assigned, nothing scored or offered, and its bids untouched.
 main_after <- vapply(tables, count_main, numeric(1))
+stopifnot(identical(app$db_query("SELECT key, value FROM labor_settings ORDER BY key;"), main_settings_before),
+          identical(app$get_setting("volunteer_clearing_rule"), "lowest"), identical(app$get_setting("bid_reopen_time"), "17:00"),
+          app$db_query("SELECT COUNT(*) n FROM arcade_sessions;")$n[1] == main_tokens_before,
+          nrow(app$lookup_token(sandbox_token)) == 0L)
 stopifnot(identical(main_after, main_before),
           identical(app$db_query("SELECT user_id, job_post_id, min_wage FROM job_wage_bids ORDER BY user_id, job_post_id;"), main_bids_before),
           !any(grepl("sandbox", app$db_query("SELECT user_id FROM users;")$user_id)))

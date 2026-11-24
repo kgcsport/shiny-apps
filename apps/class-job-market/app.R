@@ -215,11 +215,29 @@ GOOGLE_AUTH_ENABLED  <- nzchar(GOOGLE_CLIENT_ID) && nzchar(GOOGLE_CLIENT_SECRET)
 DB_PATH <- shared_db_path(demo = FALSE)
 
 conn <- NULL
-get_con <- function() {
+# The app's own connection to the main database. Used at startup, by the
+# app-wide change loop, and whenever no session is running the code.
+main_con <- function() {
   if (is.null(conn) || !DBI::dbIsValid(conn)) {
     conn <<- connect_sqlite(DB_PATH)
   }
   conn
+}
+# Every session has its own database handle: the main database for a real
+# class, a separate file for the sandbox. Any database call made while a
+# session is running, from anywhere in the app, goes to that session's
+# database. This is what keeps the sandbox entirely to itself: settings, wage
+# freezes, sign-in tokens, and every helper defined at this level follow the
+# session without having to be told which database to use.
+session_database <- function() {
+  domain <- shiny::getDefaultReactiveDomain()
+  if (is.null(domain)) return(NULL)
+  handle <- tryCatch(domain$userData$cjm_database, error = function(e) NULL)
+  if (is.list(handle) && is.function(handle$get_con)) handle else NULL
+}
+get_con <- function() {
+  handle <- session_database()
+  if (is.null(handle)) main_con() else handle$get_con()
 }
 db_query <- function(sql, params = NULL) {
   tryCatch(
@@ -1825,8 +1843,8 @@ sandbox_change_stamp <- function() {
   tryCatch(DBI::dbGetQuery(.shared_poll$sandbox_con, "PRAGMA data_version;")[[1]][1], error = function(e) NA)
 }
 db_change_stamp <- function() {
-  version <- tryCatch(DBI::dbGetQuery(get_con(), "PRAGMA data_version;")[[1]][1], error = function(e) NA)
-  changes <- tryCatch(DBI::dbGetQuery(get_con(), "SELECT total_changes() AS n;")$n[1], error = function(e) NA)
+  version <- tryCatch(DBI::dbGetQuery(main_con(), "PRAGMA data_version;")[[1]][1], error = function(e) NA)
+  changes <- tryCatch(DBI::dbGetQuery(main_con(), "SELECT total_changes() AS n;")$n[1], error = function(e) NA)
   paste(version, changes)
 }
 # One step of the loop for one database. A burst of writes is answered once
@@ -3644,31 +3662,10 @@ server <- function(input, output, session) {
   session$allowReconnect(TRUE)
 
   dm       <- demo_server_init(session, DB_PATH)
+  session$userData$cjm_database <- dm   # see session_database()
   .sandbox <- dm$is_demo
   db_exec  <- dm$db_exec
   db_query <- dm$db_query
-  # Handlers that run their own transaction ask for a connection. It must be
-  # this session's, so a sandbox session never writes to the real database.
-  get_con  <- dm$get_con
-
-  # The wage and bid helpers below are defined for the whole app and default to
-  # the main database. Inside a session they must use that session's database,
-  # or a sandbox draw would read and freeze the real class's wages and bids.
-  # Each is rebound here so every call in this session goes to the right place.
-  app_freeze_class_wages <- freeze_class_wages
-  freeze_class_wages <- function(round_id, query_fn = db_query, exec_fn = db_exec)
-    app_freeze_class_wages(round_id, query_fn = query_fn, exec_fn = exec_fn)
-  app_class_wage_snapshot <- class_wage_snapshot
-  class_wage_snapshot <- function(round_id, job_post_id, fallback_wage = NA_real_, query_fn = db_query)
-    app_class_wage_snapshot(round_id, job_post_id, fallback_wage, query_fn = query_fn)
-  app_volunteer_clearing_wage <- volunteer_clearing_wage
-  volunteer_clearing_wage <- function(round_id, category_id, slots, query_fn = db_query, job_post_id = NA_integer_)
-    app_volunteer_clearing_wage(round_id, category_id, slots, query_fn = query_fn, job_post_id = job_post_id)
-  app_compute_clearing_wage <- compute_clearing_wage
-  compute_clearing_wage <- function(category_id, round_id, slots, job_post_id = NA_integer_, query_fn = db_query)
-    app_compute_clearing_wage(category_id, round_id, slots, job_post_id, query_fn = query_fn)
-  app_overdue_pending_jobs <- overdue_pending_jobs
-  overdue_pending_jobs <- function(query_fn = db_query) app_overdue_pending_jobs(query_fn = query_fn)
 
   # ── Shared change detection (session side) ──────────────────────────────────
   # This session's polls no longer run timers of their own. They re-check when
