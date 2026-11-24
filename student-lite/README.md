@@ -114,6 +114,21 @@ Settings, all optional environment variables:
 `docker-compose.student-lite.yml` is an untested sketch of running it beside
 the staging stack.
 
+## Production
+
+`docker-compose.student-lite.prod.yml` runs it beside the production stack, on
+the production database, reachable only through the `/student-lite/` route
+already in `nginx.conf`. It has not yet been run in Docker.
+
+```
+git checkout <the commit the promoted image was built from>
+scripts/reclaim.sh lite        # start or update, and reload nginx
+scripts/reclaim.sh lite-down   # stop; the route then shows the maintenance page
+```
+
+The page code is read from the checkout and the app code from the image, so
+the two must be the same commit.
+
 ## Tests
 
 ```

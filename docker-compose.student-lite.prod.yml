@@ -1,0 +1,24 @@
+# Production overlay for the fast pages (/student-lite/ and /student-lite/tracker).
+# Not yet run in Docker: start it on staging data first if you can.
+#   scripts/reclaim.sh lite        start or update the service and reload nginx
+#   scripts/reclaim.sh lite-down   stop it; nginx then shows the maintenance page there
+# It runs the same image as the Shiny app, on the same database, and is reached
+# only through nginx (no port is published).
+services:
+  student-lite:
+    image: ${SHINY_IMAGE:-ghcr.io/kgcsport/shiny-apps:latest}
+    restart: unless-stopped
+    # Run as the same user as the Shiny workers so database files keep one owner.
+    user: shiny
+    entrypoint: ["Rscript", "/srv/student-lite/server.R"]
+    volumes:
+      # The page code comes from this checkout, the app code from the image:
+      # keep the checkout at the commit the image was built from.
+      - ./student-lite:/srv/student-lite:ro
+      - ./appdata:/srv/shiny-server/appdata
+    env_file: .env
+    environment:
+      LITE_DIR: /srv/student-lite
+      LITE_HUB_APP: /srv/shiny-server/class-job-market/app.R
+      LITE_PORT: "8090"
+      LITE_SECURE_COOKIE: "1"

@@ -27,6 +27,8 @@ Commands:
   sync      Run the Cloudflare gradebook sync once
   logs      Show recent Shiny and nginx logs
   promote   Pin production to an immutable Shiny image tag
+  lite      Start/update the fast pages (/student-lite/) and reload nginx
+  lite-down Stop the fast pages
 EOF
 }
 
@@ -66,6 +68,15 @@ case "$command" in
     ;;
   logs)
     "${COMPOSE[@]}" logs --tail=150 shiny nginx
+    ;;
+  lite)
+    LITE=(docker compose -f docker-compose.yml -f docker-compose.student-lite.prod.yml)
+    "${LITE[@]}" up -d --force-recreate student-lite
+    # nginx reads its config at start; recreate it so the /student-lite/ route is live.
+    "${COMPOSE[@]}" up -d --force-recreate nginx
+    ;;
+  lite-down)
+    docker compose -f docker-compose.yml -f docker-compose.student-lite.prod.yml rm -sf student-lite
     ;;
   promote)
     image="${2:-}"
