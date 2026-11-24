@@ -1880,16 +1880,124 @@ get_config <- function(key, default = NULL) {
   if (!nrow(r) || is.na(r$value[1])) return(default)
   r$value[1]
 }
-get_setting <- function(key, default = NULL) {
+# ── Settings at three levels ───────────────────────────────────────────────────
+# A setting can be saved for one section, for a whole course, or for the whole
+# app. Reading one looks at the most specific level first:
+#     section  ->  course  ->  app-wide  ->  the built-in default
+# so a section follows its course, and a course follows the app, until someone
+# saves something more specific. Stored keys:
+#     app-wide   key
+#     course     key@course:<course>
+#     section    key@section:<course>/<section>
+# The older per-scope form, key::<course>::<sections>, is still read, between
+# the section and course levels, for settings that were always kept that way.
+raw_get_setting <- function(key, default = NULL) {
   r <- db_query("SELECT value FROM labor_settings WHERE key=?;", list(key))
   if (!nrow(r) || is.na(r$value[1])) return(default)
   r$value[1]
 }
-set_setting <- function(key, value) {
+raw_set_setting <- function(key, value) {
   db_exec(
     "INSERT INTO labor_settings(key,value) VALUES(?,?)
      ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
     list(key, value))
+}
+raw_clear_setting <- function(key) db_exec("DELETE FROM labor_settings WHERE key=?;", list(key))
+# Bookkeeping that belongs to the app itself and never to a course or section.
+SETTING_APP_WIDE_ONLY <- c("active_round_id", "active_course", "active_section", "active_sections",
+                           "export_mask_salt", "lite_session_secret", "job_catalog_v2_migrated")
+setting_is_qualified <- function(key) grepl("::|@course:|@section:", key)
+setting_level_key <- function(key, level, course = "", section = "") switch(level,
+  section = paste0(key, "@section:", course, "/", section),
+  course  = paste0(key, "@course:", course),
+  key)
+# Whose settings are being read or saved: the course and section of the session
+# running the code, and the level it has chosen to save at. Code outside a
+# session can supply one with with_setting_context().
+.setting_context <- new.env()
+setting_context <- function() {
+  if (!is.null(.setting_context$override)) return(.setting_context$override)
+  domain <- shiny::getDefaultReactiveDomain()
+  if (is.null(domain)) return(NULL)
+  provider <- tryCatch(domain$userData$cjm_setting_context, error = function(e) NULL)
+  if (is.function(provider)) tryCatch(provider(), error = function(e) NULL) else NULL
+}
+with_setting_context <- function(context, expr) {
+  previous <- .setting_context$override
+  .setting_context$override <- context
+  on.exit(.setting_context$override <- previous, add = TRUE)
+  force(expr)
+}
+# Candidate stored keys for a setting, most specific first.
+setting_candidates <- function(key, context = setting_context(), with_scope = FALSE) {
+  if (is.null(context) || key %in% SETTING_APP_WIDE_ONLY || setting_is_qualified(key)) return(key)
+  course <- as.character(context$course %||% "")
+  sections <- as.character(context$sections %||% character(0))
+  sections <- sections[nzchar(sections)]
+  c(if (nzchar(course) && length(sections) == 1L) setting_level_key(key, "section", course, sections),
+    if (isTRUE(with_scope) && nzchar(context$scope %||% "")) paste0(key, "::", context$scope),
+    if (nzchar(course)) setting_level_key(key, "course", course),
+    key)
+}
+# The built-in default each setting was last read with, so a save can tell
+# when a value is the same as the one that would apply anyway.
+.setting_defaults <- new.env()
+# The value in force and the level it comes from.
+resolve_setting <- function(key, default = NULL, with_scope = FALSE) {
+  if (!is.null(default) && length(default) == 1L && !is.na(default)) .setting_defaults[[key]] <- as.character(default)
+  candidates <- setting_candidates(key, with_scope = with_scope)
+  if (length(candidates) == 1L) {
+    value <- raw_get_setting(candidates, NULL)
+    return(list(value = value %||% default, source = if (is.null(value)) "default" else "app"))
+  }
+  rows <- db_query(sprintf("SELECT key, value FROM labor_settings WHERE key IN (%s);",
+                           paste(rep("?", length(candidates)), collapse = ",")), as.list(candidates))
+  rows <- rows[!is.na(rows$value), , drop = FALSE]
+  for (candidate in candidates) {
+    hit <- rows$value[rows$key == candidate]
+    if (length(hit)) return(list(value = hit[1], source =
+      if (grepl("@section:", candidate, fixed = TRUE)) "section"
+      else if (grepl("@course:", candidate, fixed = TRUE)) "course"
+      else if (identical(candidate, key)) "app" else "scope"))
+  }
+  list(value = default, source = "default")
+}
+get_setting <- function(key, default = NULL) resolve_setting(key, default)$value
+# Saving goes to the level the session has chosen. "auto", the starting choice,
+# saves each setting where it has always been saved.
+set_setting <- function(key, value, with_scope = FALSE) {
+  context <- setting_context()
+  level <- as.character(context$level %||% "auto")
+  if (is.null(context) || key %in% SETTING_APP_WIDE_ONLY || setting_is_qualified(key) ||
+      !level %in% c("section", "course", "app")) {
+    target <- if (isTRUE(with_scope) && !is.null(context) && nzchar(context$scope %||% "") &&
+                  !setting_is_qualified(key)) paste0(key, "::", context$scope) else key
+    return(raw_set_setting(target, value))
+  }
+  course <- as.character(context$course %||% "")
+  sections <- as.character(context$sections %||% character(0)); sections <- sections[nzchar(sections)]
+  # A section or course stores a value only when it differs from the one it
+  # would otherwise follow. Saving a whole form for one section therefore pins
+  # just the fields that were changed, and setting a value back to what the
+  # level above uses removes the stored value, so the section follows again.
+  save_at <- function(target, above) {
+    stored <- db_query(sprintf("SELECT key, value FROM labor_settings WHERE key IN (%s);",
+                               paste(rep("?", length(above)), collapse = ",")), as.list(above))
+    stored <- stored[!is.na(stored$value), , drop = FALSE]
+    inherited <- NULL
+    for (candidate in above) { hit <- stored$value[stored$key == candidate]; if (length(hit)) { inherited <- hit[1]; break } }
+    if (is.null(inherited)) inherited <- .setting_defaults[[key]]
+    if (!is.null(inherited) && identical(as.character(value), as.character(inherited))) raw_clear_setting(target)
+    else raw_set_setting(target, value)
+  }
+  course_key <- setting_level_key(key, "course", course)
+  scope_key <- if (isTRUE(with_scope) && nzchar(context$scope %||% "")) paste0(key, "::", context$scope) else NULL
+  if (identical(level, "section") && nzchar(course) && length(sections)) {
+    for (section in sections) save_at(setting_level_key(key, "section", course, section), c(scope_key, course_key, key))
+    return(invisible(length(sections)))
+  }
+  if (identical(level, "course") && nzchar(course)) return(save_at(course_key, key))
+  raw_set_setting(key, value)
 }
 
 active_round_id <- function(query_fn = db_query) {
@@ -1943,7 +2051,8 @@ bid_lock_status <- function() {
   lock_min   <- max(0L, start_min - lead)
   tz  <- as.character(get_setting("class_tz", "America/New_York"))
   now <- tryCatch(as.POSIXlt(Sys.time(), tz = tz), error = function(e) as.POSIXlt(Sys.time()))
-  draw_until_raw <- trimws(as.character(get_setting("bid_draw_locked_until", "")))
+  # A draw locks bidding for its own course/section only.
+  draw_until_raw <- trimws(as.character(resolve_setting("bid_draw_locked_until", "", with_scope = TRUE)$value))
   draw_until <- suppressWarnings(as.POSIXct(draw_until_raw, tz = tz, format = "%Y-%m-%d %H:%M:%S"))
   draw_locked <- !is.na(draw_until) && Sys.time() < draw_until
   today <- c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")[now$wday + 1L]
@@ -1979,7 +2088,14 @@ close_bidding_after_draw <- function(round_id, now = Sys.time()) {
   unlock_at <- as.POSIXct(paste(today, paste0(reopen_text, ":00")), tz = tz,
                           format = "%Y-%m-%d %H:%M:%S")
   if (is.na(unlock_at) || unlock_at <= now) unlock_at <- now + 60 * 60
-  set_setting("bid_draw_locked_until", format(unlock_at, "%Y-%m-%d %H:%M:%S", tz = tz))
+  # Recorded for the course/section that owns this class date, so one class's
+  # draw does not lock another class's bidding.
+  owners <- tryCatch(db_query("SELECT scope_key FROM scope_rounds WHERE round_id=?;",
+                              list(as.integer(round_id)))$scope_key, error = function(e) character(0))
+  owners <- owners[!is.na(owners) & nzchar(owners)]
+  locked_until <- format(unlock_at, "%Y-%m-%d %H:%M:%S", tz = tz)
+  if (length(owners)) for (owner in owners) raw_set_setting(paste0("bid_draw_locked_until::", owner), locked_until)
+  else raw_set_setting("bid_draw_locked_until", locked_until)
   db_exec("UPDATE weekly_rounds SET bidding_enabled=2 WHERE id=?;", list(as.integer(round_id)))
   sprintf("locked until %s unless manually reopened", format(unlock_at, "%I:%M %p", tz = tz))
 }
@@ -3712,6 +3828,7 @@ server <- function(input, output, session) {
     admin_assignments = data.frame(),
     is_demo        = FALSE,
     token          = NULL,
+    setting_level  = "auto",   # where Settings saves: auto | section | course | app
     game_detail_id = NULL,
     bp_contrib_val = NULL,
     pd_choice_val  = NULL,
@@ -3983,10 +4100,32 @@ server <- function(input, output, session) {
        ON CONFLICT(scope_key) DO UPDATE SET active_game=excluded.active_game,updated_at=strftime('%Y-%m-%d %H:%M:%f','now');",
       list(current_scope_key(), if (nzchar(game)) game else NA_character_))
   }
-  get_scoped_setting <- function(key,default=NULL)
-    get_setting(paste0(key,"::",current_scope_key()),get_setting(key,default))
-  set_scoped_setting <- function(key,value)
-    set_setting(paste0(key,"::",current_scope_key()),value)
+  # Tell the settings layer whose settings this session reads and saves.
+  # Tell the settings layer whose settings this session reads and saves. The
+  # course and section are worked out once and reused until the session's
+  # scope changes, because settings are read very often.
+  setting_scope <- reactive(list(course = norm_key(scoped_course()), sections = norm_key(scoped_sections()),
+                                 scope = current_scope_key()))
+  session$userData$cjm_setting_context <- function()
+    c(isolate(setting_scope()), list(level = isolate(rv$setting_level) %||% "auto"))
+  # Settings that have always been kept per course/section scope. They are read
+  # section first, then that scope, then the course, then app-wide. Reading one
+  # also makes the caller follow a change of scope, as it always has.
+  get_scoped_setting <- function(key,default=NULL) { setting_scope(); resolve_setting(key, default, with_scope = TRUE)$value }
+  set_scoped_setting <- function(key,value) set_setting(key, value, with_scope = TRUE)
+  # Stored overrides for this session's course and its sections, for display.
+  setting_overrides <- function() {
+    scope <- isolate(setting_scope())
+    if (!nzchar(scope$course)) return(data.frame())
+    rows <- tryCatch(db_query(
+      "SELECT key, value FROM labor_settings WHERE key LIKE ? OR key LIKE ? ORDER BY key;",
+      list(paste0("%@course:", scope$course), paste0("%@section:", scope$course, "/%"))), error = function(e) data.frame())
+    if (!nrow(rows)) return(rows)
+    rows$level <- ifelse(grepl("@section:", rows$key, fixed = TRUE), "section", "course")
+    rows$setting <- sub("@(course|section):.*$", "", rows$key)
+    rows$applies_to <- ifelse(rows$level == "course", scope$course, sub("^.*@section:[^/]*/", "", rows$key))
+    rows[rows$level == "course" | rows$applies_to %in% scope$sections, , drop = FALSE]
+  }
   spending_enabled_for_scope <- function() identical(as.character(get_scoped_setting("spending_enabled", "1")), "1")
   spending_disabled_message <- "Spending options are not active for this class environment."
   # Optional per course/section: pay each student for at most one voluntary
@@ -4112,7 +4251,7 @@ server <- function(input, output, session) {
   # and can still be settled.
   pass_insurance_enabled_for_scope <- function() {
     scope <- current_scope_key()
-    explicit <- get_setting(paste0("pass_insurance_enabled::", scope), NA_character_)
+    explicit <- get_scoped_setting("pass_insurance_enabled", NA_character_)
     has_history <- nrow(db_query(
       "SELECT 1 FROM insurance_products WHERE scope_key=? LIMIT 1;", list(scope))) > 0
     insurance_enabled_value(explicit, has_history)
@@ -4128,7 +4267,7 @@ server <- function(input, output, session) {
     option <- as.character(option %||% "")
     if (!option %in% names(spend_option_keys)) return(TRUE)
     if (identical(option, "insurance")) return(pass_insurance_enabled_for_scope())
-    explicit <- get_setting(paste0(spend_option_keys[[option]], "::", current_scope_key()), NA_character_)
+    explicit <- get_scoped_setting(spend_option_keys[[option]], NA_character_)
     insurance_enabled_value(explicit, TRUE) # extensions, reweights, and question funding default on
   }
   spend_option_flags <- function() vapply(names(spend_option_keys), spend_option_enabled, logical(1))
@@ -4757,12 +4896,10 @@ server <- function(input, output, session) {
   )
 
   flex_cost_schedule_for_scope <- function()
-    get_setting(paste0("flex_cost_schedule::",current_scope_key()),
-                get_setting("flex_cost_schedule","2,4,6,8,10"))
+    get_scoped_setting("flex_cost_schedule", "2,4,6,8,10")
 
   flex_cost_schedule_hidden_for_scope <- function() {
-    raw <- get_setting(paste0("flex_cost_schedule_hide::", current_scope_key()),
-                       get_setting("flex_cost_schedule_hide", "0"))
+    raw <- get_scoped_setting("flex_cost_schedule_hide", "0")
     isTRUE(as.integer(raw %||% 0L) == 1L)
   }
 
@@ -8128,8 +8265,7 @@ server <- function(input, output, session) {
   observeEvent(input$hide_archived_students_chk, {
     req(rv$is_admin)
     hide <- as.integer(isTRUE(input$hide_archived_students_chk))
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('hide_archived_students',?);",
-            list(as.character(hide)))
+    set_setting("hide_archived_students", as.character(hide))
     rv$students_ver <- rv$students_ver + 1L
   }, ignoreNULL = FALSE)
 
@@ -10264,15 +10400,12 @@ server <- function(input, output, session) {
     if (!tz %in% OlsonNames()) {
       showNotification(sprintf("Unknown time zone '%s'.", tz), type = "error"); return()
     }
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('bid_lock_enabled',?);",
-            list(if (isTRUE(input$bl_enabled)) "1" else "0"))
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('class_days',?);",
-            list(paste(days, collapse = ",")))
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('class_start_time',?);", list(ct))
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('bid_lock_lead_min',?);",
-            list(as.character(lead)))
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('bid_reopen_time',?);", list(rt))
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('class_tz',?);", list(tz))
+    set_setting("bid_lock_enabled", if (isTRUE(input$bl_enabled)) "1" else "0")
+    set_setting("class_days", paste(days, collapse = ","))
+    set_setting("class_start_time", ct)
+    set_setting("bid_lock_lead_min", as.character(lead))
+    set_setting("bid_reopen_time", rt)
+    set_setting("class_tz", tz)
     rv$jobs_ver <- rv$jobs_ver + 1L
     auto_select_class_date()
     showNotification("Bid lock schedule saved.", type = "message")
@@ -10286,10 +10419,8 @@ server <- function(input, output, session) {
     }
     max_pts <- max(1L, suppressWarnings(as.integer(input$rw_max_points_input %||% 5L)))
     if (is.na(max_pts)) max_pts <- 5L
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('reweight_cost_schedule',?);",
-            list(costs_str))
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('grade_reweight_max_points',?);",
-            list(as.character(max_pts)))
+    set_setting("reweight_cost_schedule", costs_str)
+    set_setting("grade_reweight_max_points", as.character(max_pts))
     showNotification("Reweighting setup saved.", type = "message")
     rv$gradebook_ver <- rv$gradebook_ver + 1L
   })
@@ -10310,9 +10441,7 @@ server <- function(input, output, session) {
       showNotification(sprintf("Category '%s' already exists.", nm), type = "error"); return()
     }
     cats_df <- rbind(cats_df, data.frame(name=nm, weight=weight, stringsAsFactors=FALSE))
-    db_exec(
-      "INSERT OR REPLACE INTO labor_settings(key,value) VALUES('grade_categories_json',?);",
-      list(jsonlite::toJSON(cats_df, auto_unbox = FALSE)))
+    set_setting("grade_categories_json", jsonlite::toJSON(cats_df, auto_unbox = FALSE))
     showNotification(sprintf("Added category '%s' (%.0f%%).", nm, weight), type = "message")
   })
 
@@ -10323,9 +10452,7 @@ server <- function(input, output, session) {
     cats_df <- tryCatch(parse_grade_categories(),
                         error = function(e) data.frame(name=character(0), weight=numeric(0)))
     cats_df <- cats_df[cats_df$name != nm, , drop = FALSE]
-    db_exec(
-      "INSERT OR REPLACE INTO labor_settings(key,value) VALUES('grade_categories_json',?);",
-      list(jsonlite::toJSON(cats_df, auto_unbox = FALSE)))
+    set_setting("grade_categories_json", jsonlite::toJSON(cats_df, auto_unbox = FALSE))
     showNotification(sprintf("Removed category '%s'.", nm), type = "message")
   }, ignoreNULL = TRUE)
 
@@ -10374,10 +10501,8 @@ server <- function(input, output, session) {
     keys <- c("extension_base_hours", "extension_base_tokens", "extension_cost_exponent",
               "extension_max_hours", "extension_step_hours")
     for (i in seq_along(keys))
-      db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES(?,?);",
-              list(keys[i], as.character(vals[i])))
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('extension_shortcuts',?);",
-            list(paste(sort(unique(shortcuts)), collapse=",")))
+      set_setting(keys[i], as.character(vals[i]))
+    set_setting("extension_shortcuts", paste(sort(unique(shortcuts)), collapse=","))
     rv$extensions_ver <- rv$extensions_ver + 1L
     showNotification("Extension pricing saved.", type="message")
   })
@@ -10395,9 +10520,8 @@ server <- function(input, output, session) {
           type = "error"); return()
       }
     }
-    set_setting(paste0("flex_cost_schedule::",current_scope_key()),sched)
-    set_setting(paste0("flex_cost_schedule_hide::", current_scope_key()),
-                if (isTRUE(input$flex_hide_schedule_input)) "1" else "0")
+    set_scoped_setting("flex_cost_schedule", sched)
+    set_scoped_setting("flex_cost_schedule_hide", if (isTRUE(input$flex_hide_schedule_input)) "1" else "0")
     showNotification("Price schedule saved.", type = "message")
     rv$flex_ver <- rv$flex_ver + 1L
   })
@@ -11416,10 +11540,62 @@ server <- function(input, output, session) {
   })
 
   # ── Settings tab (admin) ──────────────────────────────────────────────────────
+  # ── Where Settings saves ────────────────────────────────────────────────────
+  output$setting_level_panel <- renderUI({
+    req(rv$is_admin)
+    # Rebuilt when a level is chosen, a value is removed, a save bumps the jobs
+    # version, or the instructor moves to another Settings section.
+    rv$settings_ver; rv$jobs_ver; rv$setting_level; input$config_action
+    scope <- setting_scope()
+    sections <- scoped_sections()
+    overrides <- setting_overrides()
+    wellPanel(style = "padding:.6rem .8rem;",
+      selectInput("setting_level_sel", "Save settings for:", width = "100%",
+        selected = isolate(rv$setting_level) %||% "auto",
+        choices = c("Each setting's usual place (as before)" = "auto",
+                    stats::setNames("section", sprintf("Only %s: %s", if (length(sections) == 1L) "this section" else "these sections",
+                                                       paste(sections, collapse = ", "))),
+                    stats::setNames("course", sprintf("The whole course: %s", scoped_course())),
+                    "Every course" = "app")),
+      tags$p(style = "color:#666;font-size:.82rem;margin:.1rem 0 .3rem;",
+        "A section uses its own value if it has one, otherwise the course's, otherwise the value for every course. Pick a level here, then save a setting below as usual."),
+      if (nrow(overrides)) tags$details(
+        tags$summary(style = "cursor:pointer;color:#951829;font-weight:600;font-size:.88rem;",
+                     sprintf("%d setting%s saved for this course or its sections", nrow(overrides), if (nrow(overrides) == 1L) "" else "s")),
+        div(style = "overflow-x:auto;margin-top:.4rem;", tags$table(class = "table table-sm",
+          tags$thead(tags$tr(tags$th("Setting"), tags$th("Saved for"), tags$th("Value"), tags$th(""))),
+          tags$tbody(lapply(seq_len(nrow(overrides)), function(i) {
+            r <- overrides[i, ]
+            tags$tr(tags$td(r$setting), tags$td(paste(if (r$level == "course") "Course" else "Section", r$applies_to)),
+                    tags$td(style = "max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;", r$value %||% ""),
+                    tags$td(tags$button(class = "btn btn-xs btn-outline-secondary", style = "padding:.1rem .35rem;font-size:.72rem;",
+                      title = "Remove this value so the next level up applies",
+                      onclick = sprintf("if(confirm('Remove this value? The next level up will apply.')){Shiny.setInputValue('clear_setting_override',%s,{priority:'event'})}",
+                                        jsonlite::toJSON(r$key, auto_unbox = TRUE)), "Remove")))
+          })))))
+    )
+  })
+  observeEvent(input$setting_level_sel, {
+    req(rv$is_admin, !rv$impersonating)
+    level <- as.character(input$setting_level_sel %||% "auto")
+    rv$setting_level <- if (level %in% c("auto", "section", "course", "app")) level else "auto"
+  })
+  observeEvent(input$clear_setting_override, {
+    req(rv$is_admin, !rv$impersonating)
+    key <- as.character(input$clear_setting_override %||% "")
+    # Only a value saved for this session's own course or sections can be removed.
+    if (!key %in% setting_overrides()$key) { showNotification("That value is not saved for this course.", type = "warning"); return() }
+    raw_clear_setting(key)
+    rv$settings_ver <- (rv$settings_ver %||% 0L) + 1L
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification("Removed. The next level up now applies.", type = "message")
+  }, ignoreNULL = TRUE)
+
   output$settings_tab <- renderUI({
     req(rv$is_admin)
     tagList(
       wellPanel(tags$strong("Active scope: "), paste(c(scoped_course(), scoped_sections()), collapse=" / "), tags$p(style="color:#666;font-size:.82rem;margin:.25rem 0 .4rem;", "Roster, jobs, market controls, tracker choices, exports, Flex funding, and spending options use this scope."), actionButton("open_scope_picker_btn", "Change scope", class="btn btn-sm btn-outline-primary")),
+      uiOutput("setting_level_panel"),
       tutorial_note("How to configure the app", c("Jobs: edit reusable templates, instructions, wages, timing, and posts for the selected class date.", "Job Market Controls: choose the class date and adjust allocation or bidding at any time.", "Spending Options: enable or disable token purchases for the active class / section environment.", "Students: add, archive, restore, or impersonate roster members.", "Token Admin and Grades: make audited corrections and import course records.")),
       wellPanel(selectInput("config_action", "Settings section:", width = "100%", choices = c(
         "Jobs"="jobs", "Job Market Controls"="round_setup", "Students"="students",
@@ -11441,7 +11617,7 @@ server <- function(input, output, session) {
     for (option in names(spend_option_keys)) {
       value <- input[[paste0("spend_option_", option, "_input")]]
       if (!is.null(value))
-        set_setting(paste0(spend_option_keys[[option]], "::", current_scope_key()), if (isTRUE(value)) "1" else "0")
+        set_scoped_setting(spend_option_keys[[option]], if (isTRUE(value)) "1" else "0")
     }
     rv$insurance_ver <- rv$insurance_ver + 1L
     rv$spend_mode <- NULL
@@ -16056,8 +16232,7 @@ server <- function(input, output, session) {
     req(rv$is_admin)
     rule <- input$vol_clearing_rule_sel %||% "lowest"
     if (!rule %in% c("lowest", "demand", "posted")) rule <- "lowest"
-    db_exec("INSERT OR REPLACE INTO labor_settings(key,value) VALUES('volunteer_clearing_rule',?);",
-            list(rule))
+    set_setting("volunteer_clearing_rule", rule)
     if (!is.null(input$volunteer_paid_cap_input))
       set_scoped_setting("volunteer_paid_cap", if (isTRUE(input$volunteer_paid_cap_input)) "1" else "0")
     if (!is.null(input$bid_no_anchor_input))

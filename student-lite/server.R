@@ -88,7 +88,11 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
     if (nrow(mapped) && nzchar(mapped$scope_key[1] %||% "")) mapped$scope_key[1]
     else hub$section_scope_key(user$course, user$section)
   }
-  scoped_setting <- function(key, scope, default) hub$get_setting(paste0(key, "::", scope), hub$get_setting(key, default))
+  # Settings are read for the student's own section, then course, then
+  # app-wide, exactly as the hub reads them for that student.
+  setting_context <- function(user) list(course = hub$norm_key(user$course), sections = hub$norm_key(user$section),
+                                         scope = scope_key(user), level = "auto")
+  scoped_setting <- function(key, scope, default) hub$resolve_setting(key, default, with_scope = TRUE)$value
   round_row <- function(scope) {
     mapped <- q("SELECT sar.round_id FROM scope_active_rounds sar JOIN weekly_rounds wr ON wr.id=sar.round_id
                  WHERE sar.scope_key=? LIMIT 1;", list(scope))
@@ -224,7 +228,7 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
     user <- session_user(req)
     if (is.null(user)) return(lite_json(list(error = "Sign in first."), 401L))
     if (method == "GET" && path == "/api/state") {
-      body <- state(user)
+      body <- hub$with_setting_context(setting_context(user), state(user))
       etag <- paste0('"', digest::digest(body, algo = "md5"), '"')
       if (identical(req$HTTP_IF_NONE_MATCH %||% "", etag))
         return(list(status = 304L, headers = list("ETag" = etag, "Cache-Control" = "no-store"), body = ""))
@@ -233,8 +237,11 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
     if (method == "POST" && path == "/api/bids") {
       body <- read_body(req)
       if (is.null(body) || !is.list(body$bids)) return(lite_json(list(error = "Bad request"), 400L))
-      result <- save_bids(user, body$bids)
-      return(lite_json(c(result, list(state = state(user))), if (isTRUE(result$ok)) 200L else 409L))
+      result <- hub$with_setting_context(setting_context(user), {
+        saved <- save_bids(user, body$bids)
+        c(saved, list(state = state(user)))
+      })
+      return(lite_json(result, if (isTRUE(result$ok)) 200L else 409L))
     }
     lite_json(list(error = "Not found"), 404L)
   }

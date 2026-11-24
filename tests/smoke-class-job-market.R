@@ -20,6 +20,9 @@ db_exec <- function(sql, params = NULL) {
 app <- parse("apps/class-job-market/app.R")
 # Pull the definitions we need out of app.R without running the whole app
 wanted <- c("seed_class_job_defaults", "get_setting", "bid_lock_status",
+            # settings are read through the three-level resolver
+            "raw_get_setting", "raw_set_setting", "SETTING_APP_WIDE_ONLY", "setting_is_qualified",
+            "setting_level_key", ".setting_context", ".setting_defaults", "setting_context", "setting_candidates", "resolve_setting",
             "volunteer_clearing_wage", "class_wage_snapshot", "freeze_class_wages",
             "close_bidding_after_draw", "overdue_pending_jobs", "assignment_round_for_timing",
             "reveal_timings_for_scope", "assignment_reveal_timing", "assignment_is_revealed",
