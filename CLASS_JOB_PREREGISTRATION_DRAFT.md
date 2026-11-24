@@ -301,8 +301,13 @@ reason, and the information available at the time.
 - Allocation: students whose bid is at or below the drawn wage are eligible.
   Winners are chosen among them by lottery, up to the posted slots, and every
   winner is paid the drawn wage.
-- Unfilled slots: a slot with no eligible bidder stays empty. It is not filled
-  from students who bid above the wage or did not bid.
+- Unfilled slots: a slot with no eligible bidder is not filled by the lottery.
+  The instructor may offer it to the class at the drawn wage, and a student
+  who steps in is paid that wage even if it is below their bid. These
+  assignments are recorded as volunteer fills and are identifiable in the data.
+  [CHOOSE BEFORE REGISTRATION: WHETHER VOLUNTEER FILLS ARE OFFERED IN THE
+  EXPERIMENT SECTIONS. OFFERING THEM LETS A STUDENT WHO BID ABOVE THEIR TRUE
+  MINIMUM STILL GET THE JOB, WHICH WEAKENS THE REASON TO BID HONESTLY.]
 - Rationale: no bid can change the wage, so entering one's true minimum is the
   best response and a group cannot raise pay by coordinating on high bids, as
   happened under the pilot's bid-determined wages.

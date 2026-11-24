@@ -28,7 +28,8 @@ Beginning in week three:
 3. Everyone whose bid is at or below that wage is in the running, and the job
    goes to students picked by lottery from that group. Everyone picked earns
    the drawn wage, which is at least what they asked for.
-4. If nobody's bid is at or below the wage, the job is not filled that day.
+4. If nobody's bid is at or below the wage, the job may be offered to the class
+   at that wage. Anyone can step in; otherwise it is not filled that day.
 5. Completing the job earns the drawn wage. Partial and missing work follow
    the posted outcome rules.
 

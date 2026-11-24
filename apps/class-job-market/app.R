@@ -3930,6 +3930,9 @@ server <- function(input, output, session) {
     work$already_paid <- paste(work$source_type, work$source_id) %in% paste(paid$source_type, paid$source_id)
     work[order(work$class_date, work$display_name), , drop = FALSE]
   }
+  random_wage_date <- function(round) nrow(round) > 0 &&
+    identical(as.character(round$assignment_mode[1] %||% ""), "wage_bidding") &&
+    identical(normalize_wage_pricing_rule(round$wage_pricing_rule[1] %||% "pay_as_bid"), "random_wage")
   volunteer_already_paid <- function(round_id, user_id) {
     paid <- db_query(
       "SELECT COUNT(*) n FROM live_score_events
@@ -8935,6 +8938,25 @@ server <- function(input, output, session) {
               list(as.integer(old$id[1])))
     }
     assigned_wage <- if (is.na(post$wage[1] %||% NA)) NA_real_ else as.numeric(post$wage[1])
+    added_mode <- "manual"
+    # Random-wage dates: the posted wage is only the top of the draw, so an
+    # added student is paid the wage that was drawn for the job. This is how a
+    # volunteer fills a slot nobody was eligible for; stepping in below one's
+    # own bid, or without a bid, is recorded as a volunteer fill.
+    if (random_wage_date(round)) {
+      drawn <- tryCatch(db_query(
+        "SELECT wage FROM class_wage_snapshots WHERE round_id=? AND snapshot_key=? AND source='random_draw' LIMIT 1;",
+        list(rid, paste0("post:", post_id))), error = function(e) data.frame())
+      if (!nrow(drawn)) {
+        showNotification("Run the draw for this class date first. A volunteer is paid the wage drawn for the job.", type = "warning")
+        return()
+      }
+      assigned_wage <- as.numeric(drawn$wage[1])
+      own_bid <- tryCatch(db_query(
+        "SELECT min_wage FROM job_wage_bids WHERE round_id=? AND job_post_id=? AND LOWER(user_id)=LOWER(?) LIMIT 1;",
+        list(rid, post_id, uid))$min_wage, error = function(e) numeric(0))
+      if (!length(own_bid) || !is.finite(own_bid[1]) || own_bid[1] > assigned_wage + 1e-9) added_mode <- "volunteer_fill"
+    }
     db_exec(
       "INSERT INTO job_assignments(round_id, user_id, section, job_post_id, assigned_wage,
               assignment_mode, status, outcome, tokens_awarded, tokens_credited,
@@ -8955,7 +8977,7 @@ server <- function(input, output, session) {
                      updated_at=datetime('now');",
       list(rid, uid, stu$section[1], post_id,
            assigned_wage,
-           "manual",
+           added_mode,
            scheduled_date, input$manual_assign_timing %||% "any", display_today))
     rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification(
@@ -10515,6 +10537,8 @@ server <- function(input, output, session) {
                                       class = "btn btn-sm btn-primary",
                                       title = "Add this assignment back with the selected date and timing"))
                 ),
+                if (random_wage_date(round)) tags$p(style = "font-size:.82rem;color:#555;margin:.35rem 0 0;",
+                  "Random-wage date: use this to let a volunteer fill an empty slot. The student is paid the wage drawn for the job, even if it is below their bid or they did not bid, and the assignment is recorded as a volunteer fill."),
                 tags$p(style = "font-size:.78rem;color:#888;margin:.35rem 0 0;",
                        sprintf("This restores the assignment to the selected class date (%s), just like an in-class selection.",
                                format(as.Date(round$class_date[1] %||% Sys.Date()), "%B %d, %Y")))
