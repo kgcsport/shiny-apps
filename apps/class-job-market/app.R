@@ -5667,7 +5667,34 @@ server <- function(input, output, session) {
   })
 
   # ── Job Market tab ────────────────────────────────────────────────────────────
+  # The tab is a fixed shell. Each part below it is its own output, so a draw,
+  # a score, or a reveal redraws the summary without touching the bid form and
+  # whatever a student has typed into it.
   output$job_market_tab <- renderUI({
+    req(rv$authed)
+    tagList(
+      div(class = "tab-howto",
+        "Submit bids for class jobs for each class date. The allocation mode is set by your instructor."
+      ),
+      uiOutput("jm_summary"),
+
+      # Bid form
+      div(class = "sec-label", "Submit Bids"),
+      uiOutput("jm_bid_form"),
+
+      # History
+      div(class = "sec-label", "Recent History"),
+      uiOutput("jm_history"),
+
+      # Link to full app
+      div(style = "margin-top:1.2rem;font-size:.83rem;color:#888;",
+        "For detailed results and instructor setup, open the ",
+        tags$a(href = "/class-job-market/", target = "_blank", "Class Job Market app"), "."
+      )
+    )
+  })
+
+  output$jm_summary <- renderUI({
     req(rv$authed)
     jp <- jobs_poll()
 
@@ -5687,9 +5714,6 @@ server <- function(input, output, session) {
         "The instructor runs the weighted lottery and posts assignments in Today. You may receive more than one job when that class setting allows it."),
       c("Read the selected class date and assignment instructions, then follow the bidding directions shown below."))
     tagList(
-      div(class = "tab-howto",
-        "Submit bids for class jobs for each class date. The allocation mode is set by your instructor."
-      ),
       tutorial_note("How to use the Job Market", c(
         "Read the selected class date and assignment mode at the top.",
         mode_help,
@@ -5772,27 +5796,53 @@ server <- function(input, output, session) {
         }))
       } else {
         div(style = "color:#999;font-size:.9rem;", "No assignments for this class date yet.")
-      },
-
-      # Bid form
-      div(class = "sec-label", "Submit Bids"),
-      uiOutput("jm_bid_form"),
-
-      # History
-      div(class = "sec-label", "Recent History"),
-      uiOutput("jm_history"),
-
-      # Link to full app
-      div(style = "margin-top:1.2rem;font-size:.83rem;color:#888;",
-        "For detailed results and instructor setup, open the ",
-        tags$a(href = "/class-job-market/", target = "_blank", "Class Job Market app"), "."
-      )
+      }
     )
   })
 
+  # The bid form is rebuilt only when something it shows has changed: the class
+  # date and its bidding settings, the list of jobs, or this student's own saved
+  # bids. Draws, scores, and reveals change jobs_poll() but not this.
+  bid_form_state <- reactiveVal(NULL)
+  observe({
+    jp <- jobs_poll()
+    round <- jp$round
+    if (nrow(round)) round <- round[1, intersect(
+      c("id", "label", "class_date", "assignment_mode", "bidding_enabled", "bid_open_date",
+        "bid_close_date", "tickets_per_student"), names(round)), drop = FALSE]
+    state <- list(round = round, categories = jp$categories, wage_posts = jp$wage_posts,
+                  my_wage_bids = jp$my_wage_bids, my_app_bids = jp$my_app_bids)
+    if (!identical(state, isolate(bid_form_state()))) bid_form_state(state)
+  })
+  # When the form does rebuild, a number the student typed but has not saved is
+  # carried into the new form. Boxes are matched by job, not by the box's id,
+  # so this also holds when a new class date brings a fresh copy of each job.
+  bid_form_memory <- new.env()
+  bid_form_memory$.renders <- 0L   # how many times the form has been built
+  keep_unsaved_bid <- function(key, input_id, saved_value) {
+    previous <- bid_form_memory[[key]]
+    value <- saved_value
+    if (!is.null(previous)) {
+      typed <- suppressWarnings(as.numeric(isolate(input[[previous$id]]) %||% NA_real_))
+      shown <- suppressWarnings(as.numeric(previous$shown %||% NA_real_))
+      changed <- length(typed) == 1L && is.finite(typed) && (!is.finite(shown) || abs(typed - shown) > 1e-9)
+      if (changed) value <- typed
+    }
+    # Remember what was saved, not what was typed, so the typed number stays
+    # "unsaved" through any number of rebuilds until the student saves it.
+    bid_form_memory[[key]] <- list(id = input_id, shown = saved_value)
+    value
+  }
+  bid_memory_keys <- function(labels) {
+    labels <- as.character(labels)
+    paste0(labels, "#", stats::ave(seq_along(labels), labels, FUN = seq_along))
+  }
+
   output$jm_bid_form <- renderUI({
     req(rv$authed)
-    jp   <- jobs_poll()
+    jp   <- bid_form_state()
+    req(!is.null(jp))
+    bid_form_memory$.renders <- bid_form_memory$.renders + 1L
     if (!nrow(jp$round)) return(div(style = "color:#999;", "No selected class date configured."))
 
     r    <- jp$round[1, ]
@@ -5858,6 +5908,7 @@ server <- function(input, output, session) {
         div(class = "jm-card",
           lapply(seq_len(nrow(wage_posts)), function(i) {
             post <- wage_posts[i, ]
+            memory_key <- paste0("wage:", bid_memory_keys(wage_posts$job_name)[i])
             # With the no-anchor switch on, the box is empty until the student
             # has saved a bid of their own; otherwise it starts at the posted wage.
             prev_bid <- if (bid_anchor_hidden_for_scope()) NA_real_ else as.numeric(post$default_wage %||% 0)
@@ -5877,7 +5928,8 @@ server <- function(input, output, session) {
                     tags$small(style = "color:#aaa;display:block;", post$description)),
               div(class = "jm-bid-input",
                   numericInput(paste0("wbp_", post$job_post_id), NULL,
-                               value = prev_bid, min = 0, step = 0.5))
+                               value = keep_unsaved_bid(memory_key, paste0("wbp_", post$job_post_id), prev_bid),
+                               min = 0, step = 0.5))
             )
           }),
           div(style = "margin-top:.65rem;",
@@ -5906,7 +5958,8 @@ server <- function(input, output, session) {
                     tags$small(style = "color:#aaa;display:block;", cat$description)),
               div(class = "jm-bid-input",
                   numericInput(paste0("at_", cat$id), NULL,
-                               value = prev_tickets, min = 0, max = tickets_total, step = 1))
+                               value = as.integer(keep_unsaved_bid(paste0("tickets:", cat$id), paste0("at_", cat$id), prev_tickets)),
+                               min = 0, max = tickets_total, step = 1))
             )
           }),
           div(style = "margin-top:.65rem;",
