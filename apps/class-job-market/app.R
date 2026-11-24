@@ -3579,6 +3579,30 @@ assignment_is_revealed <- function(section, selection_time, reveals,
   any(rows)
 }
 
+# Live Tracker status text for the drawn jobs of the sections in scope. It
+# reads the same per-section, per-group rows as the Reveal/Hide button and as
+# `assignment_is_revealed`, so the line cannot disagree with either. Display
+# only: it never changes what a student can see.
+section_reveal_status_text <- function(sections, reveals) {
+  sections <- as.character(sections %||% character(0))
+  sections <- sections[!is.na(sections) & nzchar(sections)]
+  if (!length(sections)) return("Hidden from students")
+  state <- vapply(sections, function(sec) {
+    on <- vapply(c("start", "end"), function(timing)
+      assignment_is_revealed(sec, timing, reveals), logical(1))
+    if (all(on)) "all" else if (on[["start"]]) "start" else if (on[["end"]]) "end" else "none"
+  }, character(1))
+  group <- c(start = " (start of class)", end = " (end of class)", all = "", none = "")
+  if (length(unique(state)) == 1L) {
+    if (state[1] == "none") return("Hidden from students")
+    return(paste0("Visible to students", group[[state[1]]]))
+  }
+  # Sections in scope differ, so name each one.
+  paste(vapply(seq_along(sections), function(i) paste0(
+    sections[i], ": ", if (state[i] == "none") "hidden" else "visible", group[[state[i]]]),
+    character(1)), collapse = " · ")
+}
+
 job_description_details <- function(description, label = "What to do") {
   description <- trimws(as.character(description %||% ""))
   if (!nzchar(description)) return(NULL)
@@ -11243,6 +11267,8 @@ server <- function(input, output, session) {
   output$live_tracker_tab <- renderUI({
     req(rv$authed, rv$is_admin || rv$is_demo)
     td        <- tracker_poll()
+    # Retired app-wide flag, always 0. Visibility is per section and group:
+    # see `section_revealed` and `section_reveal_status_text` below.
     revealed  <- td$revealed
     round     <- td$round
     mode      <- if (nrow(round)) round$assignment_mode[1] %||% "random" else "random"
@@ -11499,7 +11525,7 @@ server <- function(input, output, session) {
             if (n_show > 0)
               tags$p(style = "font-size:.8rem;color:#888;margin-top:.4rem;margin-bottom:0;",
                      sprintf("%d students assigned · %s", n_show,
-                             if (revealed) "Visible to students" else "Hidden from students")),
+                             section_reveal_status_text(expanded_sections, td$section_reveals))),
             {
               # Jobs with an empty slot can be drawn one at a time.
               open_jobs <- tryCatch(db_query(
