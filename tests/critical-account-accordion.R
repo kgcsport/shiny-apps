@@ -122,6 +122,8 @@ shiny::testServer(app$server, {
   stopifnot(app$db_exec(
     "INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning)
      VALUES('student@example.edu','Student A','participation',15,1);") == 1L)
+  # Six seconds pass: the app-wide change loop steps once a second.
+  for (step in 1:6) app$shared_db_check()
   session$elapse(6000)
   grade_html <- output$account_grade_breakdown$html
   stopifnot(grepl("25 / 25", grade_html, fixed=TRUE),
@@ -143,6 +145,8 @@ shiny::testServer(app$server, {
   stopifnot(app$db_exec(
     "INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning)
      VALUES('student@example.edu','Student A','participation',20,1);") == 1L)
+  # Six seconds pass: the app-wide change loop steps once a second.
+  for (step in 1:6) app$shared_db_check()
   session$elapse(6000)
   stopifnot(grepl("100.0%", output$gradebook_student_summary$html, fixed=TRUE))
   grade <- app$compute_student_grade("student@example.edu")

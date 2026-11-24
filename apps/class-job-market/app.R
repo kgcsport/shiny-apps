@@ -1753,6 +1753,54 @@ lookup_token <- function(token) {
   )
 }
 
+# ── Shared change detection (app side) ─────────────────────────────────────────
+# Each student session used to run eleven timers, each asking the database its
+# own questions, so an idle class cost a steady stream of identical queries per
+# student. One loop for the whole app now asks SQLite a single cheap question,
+# "has anything changed?", and sessions run their real checks only when the
+# answer is yes.
+#   data_version    changes when any other connection or process commits;
+#   total_changes() counts writes made on this app's own connection.
+# Neither reads a table. SHARED_POLLING=0 restores the independent timers.
+shared_polling_enabled <- function() !identical(Sys.getenv("SHARED_POLLING", "1"), "0")
+SHARED_POLL_TICK_MS <- 1000L   # how often the change counters are read
+SHARED_POLL_MIN_GAP <- 3L      # at most one round of session checks per this many reads
+# Some things a page shows change with the clock, not with a write: a bid lock
+# starting, a class date passing. The old timers caught those within seconds;
+# a round of checks once a minute keeps them from going unnoticed.
+SHARED_POLL_HEARTBEAT <- 60L
+shared_db_tick <- shiny::reactiveVal(0L)
+.shared_poll <- new.env()
+.shared_poll$stamp <- NULL; .shared_poll$pending <- FALSE
+.shared_poll$since_emit <- SHARED_POLL_MIN_GAP; .shared_poll$sessions <- 0L
+shared_poll_session_started <- function() .shared_poll$sessions <- .shared_poll$sessions + 1L
+shared_poll_session_ended <- function() .shared_poll$sessions <- max(0L, .shared_poll$sessions - 1L)
+db_change_stamp <- function() {
+  version <- tryCatch(DBI::dbGetQuery(get_con(), "PRAGMA data_version;")[[1]][1], error = function(e) NA)
+  changes <- tryCatch(DBI::dbGetQuery(get_con(), "SELECT total_changes() AS n;")$n[1], error = function(e) NA)
+  paste(version, changes)
+}
+# One step of the loop. A burst of writes is answered once per gap, and the
+# last change in a burst is never dropped: the pending flag survives until it
+# has been sent. Returns TRUE when sessions were told to re-check.
+shared_db_check <- function() {
+  stamp <- db_change_stamp()
+  if (!identical(stamp, .shared_poll$stamp)) { .shared_poll$stamp <- stamp; .shared_poll$pending <- TRUE }
+  .shared_poll$since_emit <- .shared_poll$since_emit + 1L
+  if (.shared_poll$since_emit >= SHARED_POLL_HEARTBEAT) .shared_poll$pending <- TRUE
+  if (!.shared_poll$pending || .shared_poll$since_emit < SHARED_POLL_MIN_GAP) return(FALSE)
+  .shared_poll$pending <- FALSE; .shared_poll$since_emit <- 0L
+  shared_db_tick(shiny::isolate(shared_db_tick()) + 1L)
+  TRUE
+}
+if (shared_polling_enabled()) shiny::observe({
+  shiny::invalidateLater(SHARED_POLL_TICK_MS, NULL)
+  # With nobody connected there is nothing to refresh.
+  # A failed step must not end the loop, or every page would go stale.
+  if (.shared_poll$sessions > 0L)
+    tryCatch(shared_db_check(), error = function(e) message("shared_db_check: ", conditionMessage(e)))
+})
+
 get_config <- function(key, default = NULL) {
   r <- db_query("SELECT value FROM arcade_config WHERE key=?;", list(key))
   if (!nrow(r) || is.na(r$value[1])) return(default)
@@ -3538,6 +3586,39 @@ server <- function(input, output, session) {
   db_exec  <- dm$db_exec
   db_query <- dm$db_query
 
+  # ── Shared change detection (session side) ──────────────────────────────────
+  # This session's polls no longer run timers of their own. They re-check when
+  # the app-wide loop reports that the database changed (shared_db_tick), when
+  # this session writes (session_wrote), or when a value they read in this
+  # session changes, such as the open tab. See the app-level block near
+  # shared_db_check() for how changes are detected.
+  shared_polling_on <- shared_polling_enabled()
+  session_wrote <- reactiveVal(0L)
+  if (shared_polling_on) {
+    shared_poll_session_started()
+    session$onSessionEnded(shared_poll_session_ended)
+    # A sandbox session keeps its own database, which the app-wide loop does
+    # not watch, so its own writes are the signal. This also makes any
+    # session's page reflect its own write without waiting for the loop.
+    session_db_exec <- db_exec
+    db_exec <- function(sql, params = NULL) {
+      result <- session_db_exec(sql, params)
+      shiny::isolate(session_wrote(session_wrote() + 1L))
+      result
+    }
+  }
+  # Drop-in for reactivePoll(intervalMillis, session, checkFunc, valueFunc).
+  shared_db_poll <- function(intervalMillis, session, checkFunc, valueFunc) {
+    if (!shared_polling_on) return(reactivePoll(intervalMillis, session, checkFunc, valueFunc))
+    cookie <- reactiveVal(isolate(checkFunc()))
+    observe({
+      shared_db_tick(); session_wrote()
+      current <- checkFunc()
+      if (!identical(current, isolate(cookie()))) cookie(current)
+    })
+    reactive({ cookie(); valueFunc() })
+  }
+
   rv <- reactiveValues(
     authed         = FALSE,
     user_id        = NULL,
@@ -4410,7 +4491,7 @@ server <- function(input, output, session) {
   }, ignoreInit=FALSE)
 
   # ── Polls ─────────────────────────────────────────────────────────────────────
-  arcade_poll <- reactivePoll(3000, session,
+  arcade_poll <- shared_db_poll(3000, session,
     checkFunc = function() {
       if (!tab_is_active("Today", "Games & Demos", "Settings")) return("")
       rv$game_ver
@@ -4420,7 +4501,7 @@ server <- function(input, output, session) {
     valueFunc = active_game_state_for_scope
   )
 
-  olig_poll <- reactivePoll(3000, session,
+  olig_poll <- shared_db_poll(3000, session,
     checkFunc = function() {
       if (!tab_is_active("Games & Demos", "Settings")) return("")
       db_query("SELECT updated_at FROM olig_settings WHERE id=1;")$updated_at[1] %||% ""
@@ -4557,7 +4638,7 @@ server <- function(input, output, session) {
       tags$p(style="font-size:.8em;color:#777;margin:.6rem 0 0;", "Close debits each saved contribution once. Reveal then Apply payouts credits the calculated share once per contributor.")
     )
   })
-  token_poll <- reactivePoll(6000, session,
+  token_poll <- shared_db_poll(6000, session,
     checkFunc = function() {
       if (is.null(rv$user_id)) return("")
       tryCatch(
@@ -4580,7 +4661,7 @@ server <- function(input, output, session) {
     }
   )
 
-  gradebook_earnings_poll <- reactivePoll(6000, session,
+  gradebook_earnings_poll <- shared_db_poll(6000, session,
     checkFunc = function() {
       if (!isTRUE(rv$is_admin) || !tab_is_active("Settings") ||
           !identical(input$config_action, "gradebook")) return(NULL)
@@ -4648,7 +4729,7 @@ server <- function(input, output, session) {
          target=target, funded=funded, remaining=max(0,target-funded), scope_key=key)
   }
 
-  flex_poll <- reactivePoll(5000, session,
+  flex_poll <- shared_db_poll(5000, session,
     checkFunc = function() {
       if (!tab_is_active("Today", "Games & Demos", "Spend")) return("")
       rv$flex_ver
@@ -4665,7 +4746,7 @@ server <- function(input, output, session) {
     valueFunc = flex_question_state
   )
 
-  pubgood_poll <- reactivePoll(10000, session,
+  pubgood_poll <- shared_db_poll(10000, session,
     checkFunc = function() {
       if (!tab_is_active("Games & Demos", "Spend")) return("")
       if (!isTRUE(rv$authed)) return("")
@@ -4688,7 +4769,7 @@ server <- function(input, output, session) {
     }
   )
 
-  tracker_poll <- reactivePoll(5000, session,
+  tracker_poll <- shared_db_poll(5000, session,
     checkFunc = function() {
       if (!tab_is_active("Live Tracker", "Settings")) return("")
       if (!isTRUE(rv$is_admin)) return("")
@@ -4843,7 +4924,7 @@ server <- function(input, output, session) {
 
   # Poll for the class announcement independently of job rounds so it can be
   # shown (and cleared) on Today even when no market round exists.
-  announcement_poll <- reactivePoll(8000, session,
+  announcement_poll <- shared_db_poll(8000, session,
     checkFunc = function() {
       if (!tab_is_active("Today")) return("")
       if (!isTRUE(rv$authed)) return("")
@@ -4855,7 +4936,7 @@ server <- function(input, output, session) {
   )
 
   # Poll for job market data (Today + Job Market tabs)
-  jobs_poll <- reactivePoll(8000, session,
+  jobs_poll <- shared_db_poll(8000, session,
     checkFunc = function() {
       if (!tab_is_active("Today", "Job Market", "Account")) return("")
       uid <- rv$user_id
@@ -5199,7 +5280,7 @@ server <- function(input, output, session) {
          options = spend_option_flags())
   }
 
-  student_insurance_market <- reactivePoll(6000, session,
+  student_insurance_market <- shared_db_poll(6000, session,
     checkFunc = function() {
       if (is.null(rv$user_id) || !tab_is_active("Spend", "Account")) return(NULL)
       read_student_insurance_market()
@@ -7330,7 +7411,7 @@ server <- function(input, output, session) {
   observeEvent(input$save_policy_progress_draft_btn, save_policy_progress("draft"), ignoreInit=TRUE)
   observeEvent(input$submit_policy_progress_btn, save_policy_progress("submitted"), ignoreInit=TRUE)
 
-  policy_feedback_poll <- reactivePoll(6000,session,
+  policy_feedback_poll <- shared_db_poll(6000,session,
     checkFunc=function() {
       if (!tab_is_active("Account", "Policy Brief")) return("")
       if (!isTRUE(rv$authed) || isTRUE(rv$is_admin) || is.null(rv$user_id)) return("")
@@ -11974,7 +12055,9 @@ server <- function(input, output, session) {
       )
 
     } else if (act == "exports") {
-      invalidateLater(5000, session)
+      # No timer: the panel is built when opened and when Refresh is pressed.
+      # Downloads always read the database at the moment they are clicked.
+      input$refresh_export_bids_btn
       bid_round <- tryCatch(active_round_row(), error = function(e) data.frame())
       live_bids <- if (nrow(bid_round)) tryCatch(db_query(
         "SELECT u.display_name AS student, jp.job_name AS job, jc.name AS category,
@@ -11996,7 +12079,11 @@ server <- function(input, output, session) {
         error = function(e) data.frame()) else data.frame()
       wrap_spending(tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Export Data"),
-        tags$h6(style = "font-weight:700;color:#951829;margin-top:1rem;", "Live Wage Bids — Selected Class"),
+        tags$h6(style = "font-weight:700;color:#951829;margin-top:1rem;", "Wage Bids — Selected Class"),
+        div(style = "display:flex;gap:.6rem;align-items:center;margin-bottom:.3rem;",
+          actionButton("refresh_export_bids_btn", "Refresh", class = "btn btn-sm btn-outline-secondary"),
+          tags$span(style = "color:#666;font-size:.82rem;",
+                    paste("Shown as of", format(Sys.time(), "%I:%M:%S %p", tz = get_setting("class_tz", "America/New_York"))))),
         if (nrow(bid_round)) tags$p(style = "color:#555;font-size:.84rem;",
           paste0(bid_round$label[1] %||% "Selected class", " · ", bid_round$class_date[1] %||% "")) else NULL,
         if (nrow(live_bids)) {
