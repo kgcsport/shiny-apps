@@ -1246,6 +1246,28 @@ ensure_column("job_assignments", "outcome TEXT")
 ensure_column("job_assignments", "tokens_awarded INTEGER DEFAULT 0")
 ensure_column("job_assignments", "updated_at TEXT")
 ensure_column("job_assignments", "tokens_credited INTEGER DEFAULT 1")
+# Offers of an unfilled job to the whole class at a stated wage. One row per
+# offer, and one row per student who was present for it, with that student's
+# bid at the time and whether they took it, volunteered, or passed.
+db_exec("CREATE TABLE IF NOT EXISTS job_offers(
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id      INTEGER NOT NULL,
+  job_post_id   INTEGER NOT NULL,
+  scope_key     TEXT,
+  wage          REAL NOT NULL,
+  taken_by      TEXT,
+  assignment_id INTEGER,
+  offered_by    TEXT,
+  offered_at    TEXT DEFAULT CURRENT_TIMESTAMP
+);")
+db_exec("CREATE TABLE IF NOT EXISTS job_offer_audience(
+  offer_id     INTEGER NOT NULL,
+  user_id      TEXT NOT NULL,
+  bid_at_offer REAL,
+  response     TEXT NOT NULL,
+  PRIMARY KEY (offer_id, user_id)
+);")
+db_exec("CREATE INDEX IF NOT EXISTS idx_job_offers_round ON job_offers(round_id, job_post_id);")
 # Practice dates: outcomes are recorded for feedback and nothing is paid. The
 # flag is per class date and off by default. While it is on, every wage or
 # token amount written for that date is stored as zero, whichever workflow
@@ -8894,6 +8916,152 @@ server <- function(input, output, session) {
     showNotification("Assignment removed.", type = "message")
   }, ignoreNULL = TRUE)
 
+  # ── Offer an unfilled job to the class (random-wage dates) ────────────────────
+  # The instructor announces a job at its drawn wage and records what happened:
+  # who took it, who else volunteered, or that nobody did. Everyone present is
+  # logged with their bid at that moment, so one offer says something about the
+  # whole room, not only the student who stepped in.
+  job_offer_jobs <- function(round) {
+    if (!random_wage_date(round)) return(data.frame())
+    tryCatch(db_query(
+      "SELECT jp.id, jp.job_name, COALESCE(jp.slots,1) AS slots, cws.wage,
+              (SELECT COUNT(*) FROM job_assignments ja WHERE ja.round_id=jp.round_id AND ja.job_post_id=jp.id
+                 AND COALESCE(ja.status,'assigned')='assigned') AS filled
+       FROM job_posts jp
+       JOIN class_wage_snapshots cws ON cws.round_id=jp.round_id AND cws.snapshot_key='post:' || jp.id
+                                    AND cws.source='random_draw'
+       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+       ORDER BY jp.display_order, jp.job_name;", list(as.integer(round$id[1]))),
+      error = function(e) data.frame())
+  }
+  job_offer_students <- function(rid) {
+    students <- tryCatch(db_query(
+      "SELECT u.user_id, u.display_name, u.course, u.section FROM users u
+       WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
+         AND NOT EXISTS (SELECT 1 FROM round_absences ra
+                         WHERE ra.round_id=? AND LOWER(ra.user_id)=LOWER(u.user_id))
+       ORDER BY u.display_name;", list(as.integer(rid))), error = function(e) data.frame())
+    scope_filter_rows(students)
+  }
+  output$job_offer_panel <- renderUI({
+    req(rv$is_admin)
+    rv$jobs_ver
+    round <- tryCatch(active_round_row(), error = function(e) data.frame())
+    if (!random_wage_date(round)) return(NULL)
+    jobs <- job_offer_jobs(round)
+    students <- job_offer_students(round$id[1])
+    recent <- tryCatch(db_query(
+      "SELECT jo.offered_at, jp.job_name, jo.wage, COALESCE(u.display_name, jo.taken_by, '') AS taker,
+              (SELECT COUNT(*) FROM job_offer_audience a WHERE a.offer_id=jo.id) AS present,
+              (SELECT COUNT(*) FROM job_offer_audience a WHERE a.offer_id=jo.id AND a.response='volunteered') AS also
+       FROM job_offers jo JOIN job_posts jp ON jp.id=jo.job_post_id
+       LEFT JOIN users u ON u.user_id=jo.taken_by
+       WHERE jo.round_id=? ORDER BY jo.id DESC LIMIT 8;", list(as.integer(round$id[1]))),
+      error = function(e) data.frame())
+    tagList(
+      tags$hr(),
+      tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.4rem;", "Offer A Job To The Class"),
+      if (!nrow(jobs)) tags$p(style = "color:#999;margin:0;font-size:.86rem;",
+        "Run the draw for this class date first. A job is offered at the wage drawn for it.")
+      else tagList(
+        tags$p(style = "color:#555;font-size:.84rem;margin:0 0 .4rem;",
+          "Announce the job at its drawn wage, then record what happened. Everyone present is logged with their bid, whether or not anyone steps in."),
+        fluidRow(
+          column(4, selectInput("offer_post_id", "Job offered:", width = "100%",
+            choices = stats::setNames(jobs$id, sprintf("%s · %s points · %d of %d filled", jobs$job_name,
+                                                      fmt_token_amount(jobs$wage), as.integer(jobs$filled), as.integer(jobs$slots))))),
+          column(3, selectInput("offer_taker_uid", "Who took it:", width = "100%",
+            choices = c("Nobody stepped in" = "", stats::setNames(students$user_id, students$display_name)))),
+          column(3, selectizeInput("offer_also_uids", "Also volunteered:", width = "100%", multiple = TRUE,
+            choices = stats::setNames(students$user_id, students$display_name),
+            options = list(placeholder = "Optional"))),
+          column(2, tags$br(), actionButton("offer_record_btn", "Record offer", class = "btn btn-sm btn-primary"))
+        )),
+      if (nrow(recent)) div(style = "overflow-x:auto;margin-top:.4rem;", tags$table(class = "table table-sm",
+        tags$thead(tags$tr(tags$th("Offered"), tags$th("Job"), tags$th("Wage"), tags$th("Taken by"),
+                           tags$th("Also volunteered"), tags$th("Present"))),
+        tags$tbody(lapply(seq_len(nrow(recent)), function(i) {
+          r <- recent[i, ]
+          tags$tr(tags$td(r$offered_at %||% ""), tags$td(r$job_name), tags$td(fmt_token_amount(r$wage)),
+                  tags$td(if (nzchar(r$taker %||% "")) r$taker else "Nobody"),
+                  tags$td(as.integer(r$also)), tags$td(as.integer(r$present)))
+        }))))
+    )
+  })
+  observeEvent(input$offer_record_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    round <- tryCatch(active_round_row(), error = function(e) data.frame())
+    if (!random_wage_date(round)) { showNotification("Offers are recorded on random-wage class dates.", type = "warning"); return() }
+    rid <- as.integer(round$id[1])
+    post_id <- suppressWarnings(as.integer(input$offer_post_id %||% 0))
+    jobs <- job_offer_jobs(round)
+    job <- jobs[jobs$id == post_id, , drop = FALSE]
+    if (is.na(post_id) || !nrow(job)) {
+      showNotification("Run the draw for this class date first, then pick the job that was offered.", type = "warning"); return()
+    }
+    wage <- as.numeric(job$wage[1])
+    students <- job_offer_students(rid)
+    present <- norm_key(students$user_id)
+    taker <- trimws(as.character(input$offer_taker_uid %||% ""))
+    also <- setdiff(norm_key(as.character(unlist(input$offer_also_uids %||% character(0)))), norm_key(taker))
+    if (nzchar(taker) && !norm_key(taker) %in% present) {
+      showNotification("That student is not present in this section for this class date.", type = "error"); return()
+    }
+    if (nzchar(taker)) {
+      holds <- db_query("SELECT id FROM job_assignments WHERE round_id=? AND job_post_id=? AND LOWER(user_id)=LOWER(?)
+                         AND COALESCE(status,'assigned')='assigned' LIMIT 1;", list(rid, post_id, taker))
+      if (nrow(holds)) { showNotification("That student already has this job.", type = "warning"); return() }
+    }
+    bids <- tryCatch(db_query("SELECT user_id, min_wage FROM job_wage_bids WHERE round_id=? AND job_post_id=?;",
+                              list(rid, post_id)), error = function(e) data.frame())
+    bid_for <- function(uid) {
+      hit <- bids$min_wage[norm_key(bids$user_id) == norm_key(uid)]
+      if (length(hit) && is.finite(hit[1])) as.numeric(hit[1]) else NA_real_
+    }
+    recorded <- tryCatch({
+      connection <- get_con()
+      DBI::dbWithTransaction(connection, {
+        DBI::dbExecute(connection,
+          "INSERT INTO job_offers(round_id, job_post_id, scope_key, wage, taken_by, offered_by) VALUES(?,?,?,?,?,?);",
+          params = list(rid, post_id, current_scope_key(), wage, if (nzchar(taker)) taker else NA_character_,
+                        rv$user_id %||% "admin"))
+        offer_id <- as.integer(DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1])
+        for (i in seq_len(nrow(students))) {
+          uid <- students$user_id[i]
+          response <- if (nzchar(taker) && identical(norm_key(uid), norm_key(taker))) "took"
+                      else if (norm_key(uid) %in% also) "volunteered" else "passed"
+          DBI::dbExecute(connection,
+            "INSERT INTO job_offer_audience(offer_id, user_id, bid_at_offer, response) VALUES(?,?,?,?);",
+            params = list(offer_id, uid, bid_for(uid), response))
+        }
+        if (nzchar(taker)) {
+          own_bid <- bid_for(taker)
+          mode <- if (!is.finite(own_bid) || own_bid > wage + 1e-9) "volunteer_fill" else "manual"
+          section <- students$section[norm_key(students$user_id) == norm_key(taker)][1]
+          DBI::dbExecute(connection,
+            "INSERT INTO job_assignments(round_id, user_id, section, job_post_id, assigned_wage, assignment_mode,
+                    status, outcome, tokens_awarded, tokens_credited, scheduled_date, selection_time, display_on_today, updated_at)
+             VALUES(?,?,?,?,?,?,'assigned','',0,1,?,?,1,datetime('now'))
+             ON CONFLICT(round_id, user_id, job_post_id)
+             DO UPDATE SET assigned_wage=excluded.assigned_wage, assignment_mode=excluded.assignment_mode,
+                           status='assigned', outcome='', tokens_awarded=0, tokens_credited=1, updated_at=datetime('now');",
+            params = list(rid, taker, section, post_id, wage, mode, as.character(round$class_date[1] %||% Sys.Date()), "any"))
+          assignment_id <- as.integer(DBI::dbGetQuery(connection,
+            "SELECT id FROM job_assignments WHERE round_id=? AND job_post_id=? AND LOWER(user_id)=LOWER(?);",
+            params = list(rid, post_id, taker))$id[1])
+          DBI::dbExecute(connection, "UPDATE job_offers SET assignment_id=? WHERE id=?;", params = list(assignment_id, offer_id))
+        }
+        offer_id
+      })
+    }, error = function(e) { message("Job offer failed: ", conditionMessage(e)); NA_integer_ })
+    if (is.na(recorded)) { showNotification("Could not record the offer; nothing was saved.", type = "error"); return() }
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification(sprintf("Recorded the offer of %s at %s points to %d students. %s",
+                             job$job_name[1], fmt_token_amount(wage), nrow(students),
+                             if (nzchar(taker)) "The taker is assigned at that wage." else "Nobody stepped in."),
+                     type = "message")
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$manual_add_assignment_btn, {
     req(rv$is_admin)
     round <- tryCatch(active_round_row(),
@@ -10541,7 +10709,8 @@ server <- function(input, output, session) {
                   "Random-wage date: use this to let a volunteer fill an empty slot. The student is paid the wage drawn for the job, even if it is below their bid or they did not bid, and the assignment is recorded as a volunteer fill."),
                 tags$p(style = "font-size:.78rem;color:#888;margin:.35rem 0 0;",
                        sprintf("This restores the assignment to the selected class date (%s), just like an in-class selection.",
-                               format(as.Date(round$class_date[1] %||% Sys.Date()), "%B %d, %Y")))
+                               format(as.Date(round$class_date[1] %||% Sys.Date()), "%B %d, %Y"))),
+                uiOutput("job_offer_panel")
               )
             }
           )}
@@ -12052,6 +12221,7 @@ server <- function(input, output, session) {
           downloadButton("dl_reweight_requests",    "Reweight Requests",    class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_pubgood_contribs",     "Public Good Contribs", class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_flex_purchases",       "Question Contributions",     class = "btn btn-sm btn-outline-secondary"),
+          downloadButton("dl_job_offers",           "Job Offers",           class = "btn btn-sm btn-outline-secondary"),
           downloadButton("dl_students",             "Students",             class = "btn btn-sm btn-outline-secondary")
         ),
         tags$p(style = "color:#555;font-size:.84rem;margin-top:.9rem;",
@@ -13580,6 +13750,22 @@ server <- function(input, output, session) {
        WHERE sr2.scope_key=?
        ORDER BY round DESC,student,job;",
       list(current_scope_key(),current_scope_key())),error=function(e)data.frame()),
+      file, row.names = FALSE)
+  )
+  # One row per offer per student who was present for it.
+  output$dl_job_offers <- downloadHandler(
+    filename = function() paste0("job_offers_", Sys.Date(), ".csv"),
+    content  = function(file) write_export_csv(tryCatch(db_query(
+      "SELECT a.user_id export_uid, jo.id offer_id, wr.label round, wr.class_date, jp.job_name job, jo.wage offered_wage,
+              jo.offered_at, u.display_name student, u.course, u.section,
+              a.bid_at_offer, a.response
+       FROM job_offer_audience a
+       JOIN job_offers jo ON jo.id=a.offer_id
+       JOIN job_posts jp ON jp.id=jo.job_post_id
+       JOIN weekly_rounds wr ON wr.id=jo.round_id
+       LEFT JOIN users u ON u.user_id=a.user_id
+       WHERE jo.scope_key=?
+       ORDER BY jo.id, u.display_name;", list(current_scope_key())), error=function(e)data.frame()),
       file, row.names = FALSE)
   )
   output$dl_tokens <- downloadHandler(

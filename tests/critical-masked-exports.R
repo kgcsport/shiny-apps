@@ -63,7 +63,8 @@ set_admin <- function(rv) {
   rv$active_section <- "01"; rv$active_sections <- "01"; rv$impersonating <- FALSE
 }
 exports <- c("dl_assignments", "dl_wage_bids", "dl_app_bids", "dl_tokens", "dl_participation_events",
-             "dl_extensions", "dl_reweight_requests", "dl_pubgood_contribs", "dl_flex_purchases", "dl_students")
+             "dl_extensions", "dl_reweight_requests", "dl_pubgood_contribs", "dl_flex_purchases", "dl_students",
+             "dl_job_offers")
 identifying <- c("quinn", "rivers", "dana", "okafor")
 read_export <- function(path) {
   text <- tolower(paste(readLines(path, warn = FALSE), collapse = "\n"))

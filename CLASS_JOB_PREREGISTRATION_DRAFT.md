@@ -305,6 +305,10 @@ reason, and the information available at the time.
   The instructor may offer it to the class at the drawn wage, and a student
   who steps in is paid that wage even if it is below their bid. These
   assignments are recorded as volunteer fills and are identifiable in the data.
+  Each offer is logged with the job, the drawn wage, every student present,
+  each student's bid at that moment, and whether they took it, volunteered, or
+  passed. The share of takers and volunteers whose own bid was above the
+  offered wage is reported as a check on how well bids match behaviour.
   [CHOOSE BEFORE REGISTRATION: WHETHER VOLUNTEER FILLS ARE OFFERED IN THE
   EXPERIMENT SECTIONS. OFFERING THEM LETS A STUDENT WHO BID ABOVE THEIR TRUE
   MINIMUM STILL GET THE JOB, WHICH WEAKENS THE REASON TO BID HONESTLY.]
