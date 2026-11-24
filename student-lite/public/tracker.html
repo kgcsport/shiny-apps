@@ -50,7 +50,12 @@
   .person:first-child { border-top: 0; }
   .person .name { font-weight: 600; }
   .person .meta { color: var(--muted); font-size: .8rem; }
-  .person .acts { display: flex; gap: .3rem; }
+  .person .acts { display: flex; gap: .3rem; flex-wrap: wrap; justify-content: flex-end; }
+  .row > select { flex: 1 1 8rem; }
+  .bar button { padding: .45rem .7rem; white-space: nowrap; }
+  .person.job { display: block; }
+  .person.job .acts { justify-content: flex-start; margin-top: .4rem; }
+  .person.job .acts button { flex: 1 1 auto; }
   .person .acts button { min-width: 2.9rem; padding: .5rem .55rem; }
   .absent .name { color: var(--muted); text-decoration: line-through; }
   .tag { display: inline-block; font-size: .74rem; border-radius: 999px; padding: .05rem .5rem; background: var(--chip); color: var(--muted); margin-left: .35rem; }
@@ -125,8 +130,19 @@
 
     <h2>Jobs today</h2>
     <div class="card">
+      <div class="row" id="job-tools">
+        <select id="draw-timing" aria-label="Which jobs to draw">
+          <option value="all">All jobs</option>
+          <option value="start">Start of class</option>
+          <option value="during">During class</option>
+          <option value="end">End of class</option>
+        </select>
+        <button class="primary" id="draw-jobs" type="button">Draw jobs</button>
+        <button class="quiet" id="reveal" type="button">Show to students</button>
+      </div>
+      <div class="sub" id="reveal-line"></div>
       <div id="jobs"></div>
-      <div class="sub" id="jobs-none" hidden>No jobs are assigned for this class date yet. Draws are run in the main app.</div>
+      <div class="sub" id="jobs-none" hidden>No jobs are assigned for this class date yet.</div>
     </div>
   </section>
 </main>
@@ -134,7 +150,9 @@
 <div class="bar" id="bar" hidden>
   <div class="inner">
     <div class="msg" id="msg" role="status" aria-live="polite"></div>
-    <a id="main-link" href="/class-job-market/">Audit and commit</a>
+    <button class="quiet" id="undo" type="button">Undo last</button>
+    <button class="primary" id="commit" type="button">Commit</button>
+    <a id="main-link" href="/class-job-market/">Main app</a>
   </div>
 </div>
 
@@ -159,7 +177,7 @@
   }
   function points(x) { var n = Number(x); return isFinite(n) ? String(Math.round(n * 100) / 100) : ''; }
   function say(text) { $('msg').textContent = text || ''; }
-  function waiting() { say(state && state.pending ? state.pending + ' waiting in the audit' : 'Nothing waiting in the audit'); }
+  function waiting() { say(state && state.pending ? state.pending + ' waiting in the audit · last: ' + state.last_pending : 'Nothing waiting in the audit'); }
   function show(view) { $('login').hidden = view !== 'login'; $('app').hidden = view !== 'app'; $('bar').hidden = view !== 'app'; }
   function where() { return 'course=' + encodeURIComponent(current.course) + '&section=' + encodeURIComponent(current.section); }
 
@@ -210,7 +228,7 @@
     var list = state.assignments || [];
     $('jobs-none').hidden = list.length > 0;
     list.forEach(function (a) {
-      var row = el('div', { 'class': 'person' });
+      var row = el('div', { 'class': 'person job' });
       var left = el('div');
       left.appendChild(el('div', { 'class': 'name' }, a.name));
       var done = a.outcome || a.queued;
@@ -223,8 +241,23 @@
         b.addEventListener('click', function () { act({ action: 'assignment', assignment_id: a.assignment_id, outcome: o[0] }); });
         acts.appendChild(b);
       });
+      // Pass and Absent hand the job to another student, so they ask first.
+      [['job_pass', 'Pass', 'passes this job to another student'], ['job_absent', 'Absent', 'is absent; the job goes to another student']].forEach(function (o) {
+        var b = el('button', { type: 'button', 'class': 'quiet', 'aria-label': a.name + ' ' + a.job_name + ' ' + o[1] }, o[1]);
+        b.disabled = !!done;
+        b.addEventListener('click', function () {
+          if (window.confirm(a.name + ' ' + o[2] + '?')) act({ action: o[0], assignment_id: a.assignment_id });
+        });
+        acts.appendChild(b);
+      });
       row.appendChild(left); row.appendChild(acts); box.appendChild(row);
     });
+    var shown = state.shown || {};
+    var all = shown.start && shown.end;
+    $('reveal').textContent = all ? 'Hide from students' : 'Show to students';
+    $('reveal-line').textContent = !list.length ? '' : all ? 'Students can see their jobs.'
+      : shown.start ? 'Students can see start-of-class jobs only.' : 'Jobs are hidden from students.';
+    $('undo').disabled = !state.pending; $('commit').disabled = !state.pending;
   }
   function render(next) {
     state = next;
@@ -284,6 +317,15 @@
     act({ action: 'absent', user_id: who.user_id }).then(function (out) { if (out && out.ok) { drawn = null; draw([who.user_id]); } });
   });
   $('cc-clear').addEventListener('click', function () { drawn = null; renderCall(); });
+  $('draw-jobs').addEventListener('click', function () {
+    var timing = $('draw-timing').value;
+    var replace = timing === 'all' && state && (state.assignments || []).length;
+    if (replace && !window.confirm('Draw all jobs again? This replaces the jobs already drawn for this class date.')) return;
+    act({ action: 'draw_jobs', timing: timing });
+  });
+  $('reveal').addEventListener('click', function () { act({ action: 'reveal', timing: 'all' }); });
+  $('commit').addEventListener('click', function () { act({ action: 'commit' }); });
+  $('undo').addEventListener('click', function () { act({ action: 'undo' }); });
   $('search').addEventListener('input', renderPeople);
   $('class-pick').addEventListener('change', function () {
     current = classes[Number($('class-pick').value)]; etag = null; drawn = null; say('');

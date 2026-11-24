@@ -23,18 +23,22 @@ in-class loop, for instructors only:
 - **Cold call:** draw a student who is present, then record Answer, Board,
   Pass, or Absent. Pass and Absent draw the next student.
 - **Volunteers:** pick the volunteer job, tap S, T, or M beside a student.
-- **Jobs today:** mark each assigned job Done, Tried, or Miss.
+- **Jobs today:** draw the jobs (all, or start / during / end of class), show
+  them to students or hide them, mark each job Done, Tried, or Miss, and hand a
+  job on with Pass or Absent.
+- **Bottom bar:** how many scores are waiting, Undo last, and Commit.
 
-Everything it records goes into the Live Score Audit through the hub's own
-scoring functions (`queue_cold_call`, `queue_volunteer_event`,
-`queue_assignment_score` in `apps/class-job-market/app.R`), which the main
-Live Tracker also calls, so the two cannot price a contribution differently.
-A draw freezes the date's wages and closes bidding, as the main draw does.
+Every action runs the hub's own function in `apps/class-job-market/app.R`,
+which the main Live Tracker also calls, so the two cannot disagree:
+`queue_cold_call`, `queue_volunteer_event`, `queue_assignment_score`,
+`run_job_draw`, `redraw_job`, `toggle_section_reveal`, `commit_pending_scores`.
+A cold-call draw freezes the date's wages and closes bidding, as the main
+draw does.
 
-It does not commit the audit, run job draws, reveal assignments, redraw jobs,
-or record offers. Those stay in the main app. A pass by a student who holds
-Pass Insurance is refused with a message to record it in the main tracker, so
-the claim is paid there.
+It does not preview a draw, add assignments by hand, record offers, release
+held tokens, or run repairs. Those stay in the main app. A pass on a cold call
+by a student who holds Pass Insurance is refused with a message to record it
+in the main tracker, so the claim is paid there.
 
 An instructor sees only the sections they run: every section for a super
 admin, a course's sections for a course admin, one section for a section admin.

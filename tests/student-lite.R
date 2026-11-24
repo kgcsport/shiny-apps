@@ -258,4 +258,61 @@ stopifnot(nrow(job_event) == 1L, job_event$tokens == 3, is.na(job_event$committe
           scored$json$state$pending == nrow(events()[is.na(events()$committed_at), ]),
           nrow(hub$db_query("SELECT id FROM token_ledger WHERE source_type IN ('job','participation') AND note <> 'x';")) == 0L)
 
+# Undo removes the newest waiting score for this section; commit pays what is
+# left through the hub's own commit rule, and only for this section.
+ledger <- function() hub$db_query("SELECT user_id, source_type, amount FROM token_ledger WHERE source_type IN ('job','participation') AND note <> 'x' ORDER BY id;")
+before <- scored$json$state$pending
+undone <- act(prof, list(action = "undo"))
+stopifnot(undone$status == 200L, undone$json$state$pending == before - 1L, grepl("Ana Test", undone$json$message, fixed = TRUE),
+          is.null(undone$json$state$assignments[[1]]$queued), nrow(ledger()) == 0L)
+stopifnot(act(prof, list(action = "assignment", assignment_id = ana_job, outcome = "complete"))$status == 200L)
+other <- act(ta, list(action = "commit"), "02")
+# Section 02 has nothing waiting (and no class date here), so nothing is paid.
+stopifnot(other$status %in% c(200L, 409L), nrow(ledger()) == 0L, any(is.na(events()$committed_at)),
+          act(cy, list(action = "commit"))$status == 401L, act(ta, list(action = "commit"), "01")$status == 403L)
+waiting_tokens <- sum(events()$tokens[is.na(events()$committed_at)])
+committed <- act(prof, list(action = "commit"))
+stopifnot(committed$status == 200L, committed$json$state$pending == 0L, all(!is.na(events()$committed_at)),
+          all(ledger()$user_id == "ana@test.edu"), abs(sum(ledger()$amount) - waiting_tokens) < 1e-9,
+          sum(ledger()$amount[ledger()$source_type == "job"]) == 3,
+          hub$db_query("SELECT outcome, tokens_awarded FROM job_assignments WHERE id=?;", list(ana_job))$tokens_awarded == 3,
+          act(prof, list(action = "undo"))$status == 409L)
+
+# Showing jobs to students is per section and toggles.
+shown <- act(prof, list(action = "reveal", timing = "all"))
+reveals <- hub$db_query("SELECT section, timing, revealed FROM assignment_timing_reveals WHERE round_id=? AND revealed=1;", list(rid))
+stopifnot(shown$status == 200L, isTRUE(shown$json$state$shown$start), isTRUE(shown$json$state$shown$end),
+          nrow(reveals) == 2L, all(reveals$section == "01"),
+          !isTRUE(tracker_state_for(ta, "02")$json$shown$start))
+hidden <- act(prof, list(action = "reveal", timing = "all"))
+stopifnot(!isTRUE(hidden$json$state$shown$start), !isTRUE(hidden$json$state$shown$end))
+
+# Pass and Absent on an assigned job run the hub's redraw rule: the job moves to
+# another student of this section, and Absent also records the absence.
+hub$db_exec("DELETE FROM round_absences WHERE round_id=?;", list(rid))
+hub$db_exec("INSERT INTO job_assignments(round_id,user_id,job_post_id,assigned_wage,assignment_mode,status)
+             VALUES(?,'ana@test.edu',?,2,'random','assigned');", list(rid, cold_post))
+moving <- as.integer(hub$db_query("SELECT last_insert_rowid() id;")$id[1])
+jobs_of <- function(post) hub$db_query("SELECT id, user_id, status, assigned_wage FROM job_assignments WHERE round_id=? AND job_post_id=? ORDER BY id;", list(rid, post))
+stopifnot(act(ta, list(action = "job_pass", assignment_id = moving), "02")$status == 409L, jobs_of(cold_post)$status == "assigned")
+passed <- act(prof, list(action = "job_pass", assignment_id = moving))
+after_pass <- jobs_of(cold_post)
+stopifnot(passed$status == 200L, nrow(after_pass) == 2L, after_pass$status[1] == "passed_redrawn", after_pass$assigned_wage[1] == -2,
+          after_pass$user_id[2] == "cy@test.edu", after_pass$assigned_wage[2] == 2,
+          nrow(hub$db_query("SELECT 1 FROM round_absences WHERE round_id=?;", list(rid))) == 0L,
+          act(prof, list(action = "job_pass", assignment_id = moving))$status == 409L)
+gone <- act(prof, list(action = "job_absent", assignment_id = after_pass$id[2]))
+# Ana already held and passed this job, so nobody is left to take it.
+stopifnot(gone$status == 409L, jobs_of(cold_post)$status[2] == "assigned")
+
+# The job draw is the hub's draw, limited to this section's students.
+hub$db_exec("UPDATE weekly_rounds SET assignment_mode='random' WHERE id=?;", list(rid))
+before_draw <- hub$db_query("SELECT COUNT(*) n FROM job_assignments WHERE round_id=?;", list(rid))$n
+drew <- act(prof, list(action = "draw_jobs", timing = "all"))
+drawn_jobs <- hub$db_query("SELECT ja.user_id, u.section FROM job_assignments ja JOIN users u ON u.user_id=ja.user_id WHERE ja.round_id=?;", list(rid))
+stopifnot(drew$status == 200L, grepl("Drew", drew$json$message, fixed = TRUE), nrow(drawn_jobs) > 0L,
+          all(drawn_jobs$section == "01"), length(drew$json$state$assignments) == nrow(drawn_jobs),
+          act(prof, list(action = "draw_jobs", timing = "sideways"))$status == 409L,
+          act(ta, list(action = "draw_jobs", timing = "all"), "01")$status == 403L)
+
 cat("student lite: PASS\n")

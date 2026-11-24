@@ -100,7 +100,7 @@ early <- assign_job(practice_round, "s1@test.edu", p_recap, 5)
 shiny::testServer(app$server, {
   set_admin(rv)
   save_controls(session, TRUE, 1L)
-  stopifnot(round_is_practice(practice_round), !round_is_practice(market_round))
+  stopifnot(app$round_is_practice(practice_round), !app$round_is_practice(market_round))
 })
 mode_kept <- app$db_query("SELECT assignment_mode FROM weekly_rounds WHERE id=?;", list(practice_round))$assignment_mode[1]
 stopifnot(identical(mode_kept, "wage_bidding"),
@@ -155,7 +155,7 @@ shiny::testServer(app$server, {
   set_admin(rv)
   session$setInputs(active_round_select = market_round)
   save_controls(session, TRUE, 1L)
-  stopifnot(!round_is_practice(market_round))
+  stopifnot(!app$round_is_practice(market_round))
 })
 stopifnot(app$db_query("SELECT assigned_wage w FROM job_assignments WHERE id=?;", list(m1))$w[1] == 4)
 
@@ -255,7 +255,7 @@ shiny::testServer(app$server, {
   set_admin(rv)
   session$setInputs(active_round_select = practice_round)
   save_controls(session, FALSE, 1L)
-  stopifnot(!round_is_practice(practice_round))
+  stopifnot(!app$round_is_practice(practice_round))
 })
 stopifnot(all(app$db_query("SELECT assigned_wage w FROM job_assignments WHERE round_id=?;", list(practice_round))$w == 0),
           nrow(ledger("source_type='job'")) == 3L)

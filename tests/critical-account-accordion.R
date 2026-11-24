@@ -15,7 +15,7 @@ required <- c(
   'actionButton("refresh_account_assignments"',
   "assignment_review_gradebook_export()",
   "account_pending_problem_sets(",
-  'updateTabsetPanel(session, "arc_tabs", selected="Assignments")'
+  'updateTabsetPanel(session, "arc_tabs", selected="Policy Brief")'
 )
 missing <- required[!vapply(required, grepl, logical(1), x=source_text, fixed=TRUE)]
 if (length(missing)) stop("Account accordion contract missing: ", paste(missing, collapse=" | "))

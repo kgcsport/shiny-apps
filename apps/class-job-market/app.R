@@ -3927,6 +3927,471 @@ queue_assignment_score <- function(assign_id, outcome, logged_by = "admin") {
 }
 
 
+# ── Live class operations shared with the fast tracker page ─────────────────────
+# These ran inside the session function. They use no session state, so they sit
+# here unchanged, where the fast tracker page can call the same rules.
+round_is_practice <- function(round_id) {
+  row <- tryCatch(db_query(
+    "SELECT COALESCE(practice_no_points,0) v FROM weekly_rounds WHERE id=?;",
+    list(as.integer(round_id))), error = function(e) data.frame())
+  nrow(row) > 0 && isTRUE(as.integer(row$v[1]) == 1L)
+}
+
+token_credit <- function(uid, dname, amount, earning, source_type, source_id = NA, note = "") {
+  db_exec(
+    "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
+     VALUES(?,?,?,?,?,?,?);",
+    list(uid, dname, source_type,
+         if (is.na(source_id)) NA_integer_ else as.integer(source_id),
+         amount, as.integer(earning), note))
+  tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1], error = function(e) NA_integer_)
+}
+
+.commit_live_score_event <- function(ev) {
+  tokens_to_award <- as.numeric(ev$tokens %||% 0)
+  outcome <- as.character(ev$outcome %||% "")
+  rid <- as.integer(ev$round_id[1])
+  uid <- as.character(ev$user_id[1])
+  dname <- ev$display_name[1] %||% uid
+  rnd_row <- tryCatch(db_query(
+    "SELECT COALESCE(tokens_revealed,1) v FROM weekly_rounds WHERE id=?;",
+    list(rid)), error=function(e) data.frame())
+  tokens_revealed <- if (nrow(rnd_row)) isTRUE(as.integer(rnd_row$v[1]) == 1L) else TRUE
+  practice_date <- round_is_practice(rid)
+  if (practice_date) tokens_to_award <- 0
+
+  if (identical(as.character(ev$event_kind[1]), "assignment")) {
+    assign_id <- as.integer(ev$job_assignment_id[1])
+    cur <- tryCatch(db_query(
+      "SELECT assigned_wage, COALESCE(tokens_awarded,0) AS tokens_awarded FROM job_assignments WHERE id=?;",
+      list(assign_id)), error=function(e) data.frame())
+    if (!nrow(cur) || as.integer(cur$tokens_awarded[1] %||% 0L) == 1L) {
+      db_exec("UPDATE live_score_events SET committed_at=datetime('now') WHERE id=?;",
+              list(as.integer(ev$id[1])))
+      return(FALSE)
+    }
+    # An assignment's wage is fixed when it is assigned. Never look up the
+    # mutable post/category wage when scoring it.
+    final_wage <- as.numeric(cur$assigned_wage[1] %||% 0)
+    tokens_to_award <- switch(outcome,
+      complete = final_wage,
+      tried = 1,
+      missed = 0,
+      tokens_to_award)
+    if (practice_date) tokens_to_award <- 0 # no points, including the usual 1 for a try
+    db_exec(
+      "UPDATE job_assignments SET outcome=?, tokens_awarded=?, tokens_credited=?,
+              updated_at=datetime('now') WHERE id=?;",
+      list(outcome, tokens_to_award, if (tokens_revealed) 1L else 0L, assign_id))
+    if (tokens_to_award > 0 && tokens_revealed) {
+      token_credit(uid, dname, tokens_to_award, 1L, "job", assign_id,
+                   note = sprintf("Job wage (%s)", outcome))
+    }
+  } else if (identical(as.character(ev$event_kind[1]), "cold_call")) {
+    if (tokens_to_award > 0 && tokens_revealed) {
+      token_credit(uid, dname, tokens_to_award, 1L, "participation", as.integer(ev$id[1]),
+                   note = sprintf("Cold call (%s)", outcome))
+    }
+  } else {
+    # Voluntary contributions are independent, repeatable score events.
+    # Do not upsert job_assignments: that table intentionally represents the
+    # student's assigned class jobs for the round.
+    post_id <- as.integer(ev$job_post_id[1])
+    if (tokens_to_award > 0 && tokens_revealed) {
+      token_credit(uid, dname, tokens_to_award, 1L, "participation",
+                   as.integer(ev$id[1]),
+                   note = sprintf("Participation (%s; post %d)", outcome, post_id))
+    }
+  }
+  event_credited <- if (
+    identical(as.character(ev$event_kind[1]), "assignment") ||
+    tokens_revealed || tokens_to_award <= 0
+  ) 1L else 0L
+  db_exec("UPDATE live_score_events
+           SET committed_at=datetime('now'), tokens_credited=? WHERE id=?;",
+          list(event_credited, as.integer(ev$id[1])))
+  TRUE
+}
+
+.apply_tiebreak <- function(bids_df, tiebreak) {
+  if (!nrow(bids_df)) return(bids_df)
+  if (tiebreak == "first_submitted") return(bids_df)  # SQL already ordered by created_at
+  if (tiebreak == "random") {
+    bids_df[sample(nrow(bids_df)), , drop=FALSE]
+  } else if (tiebreak %in% c("lowest_grade", "lowest_tokens", "weighted_lottery", "most_misses")) {
+    uids <- as.character(bids_df$user_id)
+    uid_placeholders <- paste(rep("?", length(uids)), collapse = ",")
+    aux <- switch(tiebreak,
+      lowest_grade = tryCatch(db_query(
+        paste0("SELECT user_id, AVG(grade_pct) AS val FROM student_grades WHERE user_id IN (",
+               uid_placeholders, ") GROUP BY user_id;"), as.list(uids)),
+        error=function(e) data.frame()),
+      lowest_tokens = tryCatch(db_query(
+        paste0("SELECT user_id, COALESCE(SUM(amount),0) AS val FROM token_ledger WHERE user_id IN (",
+               uid_placeholders, ") AND earning=1 GROUP BY user_id;"), as.list(uids)),
+        error=function(e) data.frame()),
+      weighted_lottery = tryCatch(db_query(
+        paste0("SELECT user_id, COALESCE(SUM(amount),0) AS val FROM token_ledger WHERE user_id IN (",
+               uid_placeholders, ") AND earning=1 GROUP BY user_id;"), as.list(uids)),
+        error=function(e) data.frame()),
+      most_misses = tryCatch(db_query(
+        paste0("SELECT user_id, COUNT(*) AS val FROM job_assignments WHERE user_id IN (",
+               uid_placeholders, ") AND outcome='missed' GROUP BY user_id;"), as.list(uids)),
+        error=function(e) data.frame())
+    )
+    val_map <- if (nrow(aux)) setNames(as.numeric(aux$val), aux$user_id) else numeric(0)
+    bids_df$sort_val <- sapply(uids, function(u) val_map[u] %||% 0)
+    if (tiebreak == "weighted_lottery") {
+      max_val <- max(bids_df$sort_val, 1)
+      weights <- pmax(max_val - bids_df$sort_val + 1, 1)
+      bids_df[sample(nrow(bids_df), prob=weights), , drop=FALSE]
+    } else if (tiebreak == "most_misses") {
+      bids_df[order(-bids_df$sort_val), , drop=FALSE]
+    } else {
+      bids_df[order(bids_df$sort_val, na.last=TRUE), , drop=FALSE]
+    }
+  } else if (tiebreak == "alphabetical") {
+    uids <- as.character(bids_df$user_id)
+    uid_placeholders <- paste(rep("?", length(uids)), collapse = ",")
+    uids_df <- tryCatch(db_query(
+      paste0("SELECT user_id, display_name FROM users WHERE user_id IN (",
+             uid_placeholders, ");"), as.list(uids)),
+      error=function(e) data.frame())
+    nm_map <- if (nrow(uids_df)) setNames(uids_df$display_name, uids_df$user_id) else character(0)
+    bids_df$sort_name <- sapply(bids_df$user_id, function(u) nm_map[u] %||% u)
+    bids_df[order(bids_df$sort_name), , drop=FALSE]
+  } else {
+    bids_df
+  }
+}
+
+compute_draw_pairs <- function(rid, mode, posts, students, tiebreak = "weighted_lottery",
+                               allow_multiple_jobs = TRUE,
+                               wage_pricing_rule = "pay_as_bid",
+                               persist_random_wage = FALSE) {
+  tryCatch({
+    posts <- order_job_posts_for_clearing(posts)
+    if (mode == "wage_bidding") {
+      bids_raw <- db_query(
+        "SELECT jwb.user_id, jwb.job_post_id, jp.category_id, jwb.min_wage, jwb.submitted_at
+         FROM job_wage_bids jwb JOIN job_posts jp ON jp.id=jwb.job_post_id
+         WHERE jwb.round_id=?
+         UNION ALL
+         SELECT wb.user_id, NULL AS job_post_id, wb.category_id, wb.min_wage, wb.submitted_at
+         FROM wage_bids wb WHERE wb.round_id=?;",
+        list(rid, rid))
+      eligible_ids <- unique(as.character(students$user_id))
+      bids_raw <- bids_raw[bids_raw$user_id %in% eligible_ids, , drop=FALSE]
+      assigned_ids <- character(0)
+      pricing_rule <- normalize_wage_pricing_rule(wage_pricing_rule)
+      # A saved draw fixes each job's random wage once for the class date, so
+      # re-running the draw cannot fish for a different wage. A preview only
+      # illustrates the rule with a throwaway wage.
+      if (identical(pricing_rule, "random_wage") && isTRUE(persist_random_wage)) {
+        freeze_class_wages(rid)
+        # The wage becomes known once winners are revealed, so every later
+        # draw for this date uses the bids recorded at the first one. A bid
+        # changed after that cannot be aimed at the wage.
+        locked <- db_query(
+          "SELECT l.user_id, l.job_post_id, jp.category_id, l.min_wage, l.submitted_at
+           FROM job_wage_bid_locks l JOIN job_posts jp ON jp.id=l.job_post_id
+           WHERE l.round_id=?;", list(rid))
+        bids_raw <- locked[locked$user_id %in% eligible_ids, , drop=FALSE]
+      }
+      result <- list()
+      for (i in seq_len(nrow(posts))) {
+        p  <- posts[i, ]
+        n  <- max(1L, as.integer(p$slots %||% 1L))
+        exact <- bids_raw[!is.na(bids_raw$job_post_id) & bids_raw$job_post_id == p$id, , drop=FALSE]
+        legacy <- bids_raw[is.na(bids_raw$job_post_id) & bids_raw$category_id == p$category_id &
+                             !bids_raw$user_id %in% exact$user_id, , drop=FALSE]
+        post_bids <- rbind(exact, legacy)
+        if (!isTRUE(allow_multiple_jobs))
+          post_bids <- post_bids[!post_bids$user_id %in% assigned_ids, , drop=FALSE]
+        if (nrow(post_bids)) {
+          post_bids <- post_bids[order(post_bids$min_wage, post_bids$submitted_at), , drop=FALSE]
+          wage_levels <- sort(unique(post_bids$min_wage))
+          post_bids <- do.call(rbind, lapply(wage_levels, function(w)
+            .apply_tiebreak(post_bids[post_bids$min_wage == w, , drop=FALSE], tiebreak)))
+        }
+        if (identical(pricing_rule, "random_wage")) {
+          wage <- if (isTRUE(persist_random_wage)) class_wage_snapshot(rid, as.integer(p$id), NA_real_)
+                  else draw_random_wage(p$wage %||% NA)
+          drawn <- random_wage_winners(post_bids, wage, n)
+          if (!isTRUE(allow_multiple_jobs)) assigned_ids <- c(assigned_ids, drawn)
+          for (uid in drawn)
+            result[[length(result)+1]] <- list(uid=uid, post_id=p$id, wage=wage)
+          next
+        }
+        pool_ids <- if (nrow(post_bids)) post_bids$user_id else character(0)
+        other_ids <- setdiff(students$user_id, c(pool_ids,
+          if (isTRUE(allow_multiple_jobs)) character(0) else assigned_ids))
+        pool_ids  <- c(pool_ids, sample(other_ids))
+        drawn <- head(pool_ids, n)
+        wages <- if (identical(pricing_rule, "uniform_second_price")) {
+          clearing_wage <- uniform_procurement_wage(post_bids, drawn, p$wage %||% NA)
+          rep(clearing_wage, length(drawn))
+        } else if (nrow(post_bids)) {
+          sapply(drawn, function(u) {
+            m <- post_bids[post_bids$user_id == u, , drop=FALSE]
+            if (nrow(m)) as.numeric(m$min_wage[1]) else as.numeric(p$wage %||% NA)
+          })
+        } else rep(as.numeric(p$wage %||% NA), length(drawn))
+        if (!isTRUE(allow_multiple_jobs)) assigned_ids <- c(assigned_ids, drawn)
+        for (j in seq_along(drawn))
+          result[[length(result)+1]] <- list(uid=drawn[j], post_id=p$id, wage=wages[j])
+      }
+      result
+    } else if (mode == "application_bidding") {
+      bids <- tryCatch(db_query(
+        "SELECT user_id, category_id, tickets FROM application_bids WHERE round_id=? AND tickets>0;",
+        list(rid)), error=function(e) data.frame())
+      compute_application_pairs(posts, students, bids, allow_multiple_jobs)
+    } else {
+      assigned_ids <- character(0)
+      result <- list()
+      for (i in seq_len(nrow(posts))) {
+        p <- posts[i, ]
+        available <- if (isTRUE(allow_multiple_jobs)) students$user_id else setdiff(students$user_id, assigned_ids)
+        n <- min(length(available), max(1L, as.integer(p$slots %||% 1L)))
+        drawn <- if (n > 0L) sample(available, n) else character(0)
+        if (!isTRUE(allow_multiple_jobs)) assigned_ids <- c(assigned_ids, drawn)
+        for (uid in drawn) {
+          result[[length(result) + 1L]] <- list(
+            uid=uid, post_id=p$id, wage=as.numeric(p$wage %||% NA))
+        }
+      }
+      result
+    }
+  }, error = function(e) { message("draw error: ", e$message); list() })
+}
+
+filter_posts_for_draw_timing <- function(posts, timing_filter) {
+  if (!nrow(posts)) return(posts)
+  timing <- tolower(trimws(as.character(posts$selection_time %||% "")))
+  if (identical(timing_filter %||% "all", "all")) {
+    # Full pre-class draw: leave live cold-call (during-class) posts out —
+    # those are drawn one at a time in class with the During filter.
+    return(posts[!(timing %in% c("during", "during class")), , drop = FALSE])
+  }
+  if (identical(timing_filter, "start")) {
+    keep <- timing %in% c("start", "start of class")
+  } else if (identical(timing_filter, "during")) {
+    keep <- timing %in% c("during", "during class")
+  } else {
+    keep <- timing %in% c("end", "post", "post class", "after class", "end of class or after class")
+  }
+  posts[keep, , drop = FALSE]
+}
+
+# Commit every score waiting in the Live Score Audit for the students kept by
+# `scope_filter`. Returns how many were applied, or NA when none were waiting.
+commit_pending_scores <- function(scope_filter = identity) {
+  pending <- tryCatch(db_query(
+    "SELECT lse.*,u.display_name,u.course,u.section
+     FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
+     WHERE lse.committed_at IS NULL ORDER BY lse.id;"), error=function(e)data.frame())
+  pending <- scope_filter(pending)
+  if (!nrow(pending)) return(NA_integer_)
+  applied <- 0L
+  for (i in seq_len(nrow(pending))) {
+    if (isTRUE(.commit_live_score_event(pending[i, ]))) applied <- applied + 1L
+  }
+  applied
+}
+
+# Show or hide drawn jobs for the given sections. `scope` is "start", "end" or
+# "all". If every section already shows them they are hidden, otherwise shown.
+# Returns 1 when the jobs are now shown and 0 when hidden.
+toggle_section_reveal <- function(rid, sections, scope = "start") {
+  timings <- reveal_timings_for_scope(scope)
+  cur <- tryCatch(db_query(
+    "SELECT section,COALESCE(timing,'start') timing,COALESCE(revealed,0) v
+     FROM assignment_timing_reveals WHERE round_id=?;",
+    list(rid)),error=function(e)data.frame())
+  section_on <- vapply(sections,function(sec){
+    rows <- cur[!is.na(cur$section)&norm_key(cur$section)==norm_key(sec),,drop=FALSE]
+    all(timings %in% as.character(rows$timing[as.integer(rows$v %||% 0L)==1L]))
+  },logical(1))
+  new_val <- if(all(section_on)) 0L else 1L
+  for(sec in sections) for(timing in timings) db_exec(
+    "INSERT INTO assignment_timing_reveals(round_id,section,revealed,timing,updated_at)
+     VALUES(?,?,?,?,CURRENT_TIMESTAMP)
+     ON CONFLICT(round_id,section,timing) DO UPDATE SET
+       revealed=excluded.revealed,updated_at=CURRENT_TIMESTAMP;",
+    list(rid,sec,new_val,timing))
+  db_exec("UPDATE arcade_state SET assignments_revealed=0,updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+  new_val
+}
+
+# Hand an assigned job to another student. "Absent" also records the absence,
+# which keeps the student out of every other draw that class. "Pass" only
+# gives up this one job. Returns what happened; the caller reports it.
+redraw_job <- function(aid, passed = FALSE, scope_filter = identity) {
+  done <- function(message, type = "message", changed = FALSE) list(ok = !identical(type, "error"), message = message, type = type, changed = changed)
+  aid <- suppressWarnings(as.integer(aid %||% 0))
+  if (is.na(aid) || aid <= 0) return(done("Assignment not found.", "error"))
+  released_status <- if (isTRUE(passed)) "passed_redrawn" else "absent_redrawn"
+  record_absence <- function() if (!isTRUE(passed)) db_exec(
+    "INSERT OR REPLACE INTO round_absences(round_id,user_id,marked_at) VALUES(?,?,CURRENT_TIMESTAMP);",
+    list(old$round_id[1], old$user_id[1]))
+  old <- tryCatch(db_query(
+    "SELECT ja.round_id, ja.user_id, ja.job_post_id, ja.assigned_wage,
+            ja.assignment_mode, u.display_name, COALESCE(u.section,'') AS section
+     FROM job_assignments ja
+     JOIN users u ON u.user_id=ja.user_id
+     WHERE ja.id=?;", list(aid)),
+    error = function(e) data.frame())
+  if (!nrow(old)) return(done("Assignment not found.", "error"))
+  if (!is.na(old$assigned_wage[1] %||% NA) && as.numeric(old$assigned_wage[1]) < 0) {
+    return(done("This assignment has already been redrawn.", "warning"))
+  }
+  candidates <- tryCatch(db_query(
+    "SELECT u.user_id,u.display_name,u.course,u.section
+     FROM users u
+     WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
+       AND COALESCE(u.is_demo,0)=0 AND LOWER(u.user_id)<>LOWER(?)
+       AND NOT EXISTS(SELECT 1 FROM job_assignments ja
+         WHERE ja.round_id=? AND ja.user_id=u.user_id AND ja.job_post_id=?);",
+    list(old$user_id[1],old$round_id[1],old$job_post_id[1])),
+    error=function(e)data.frame())
+  candidates <- scope_filter(candidates)
+  # Random-wage dates: a replacement must also have bid at or below the drawn
+  # wage. With no such student the absence is recorded and the slot stays empty.
+  redraw_rule <- tryCatch(db_query("SELECT wage_pricing_rule, assignment_mode FROM weekly_rounds WHERE id=?;",
+                                   list(old$round_id[1])), error = function(e) data.frame())
+  random_wage_date <- nrow(redraw_rule) > 0 &&
+    identical(as.character(redraw_rule$assignment_mode[1] %||% ""), "wage_bidding") &&
+    identical(normalize_wage_pricing_rule(redraw_rule$wage_pricing_rule[1] %||% "pay_as_bid"), "random_wage")
+  if (random_wage_date && nrow(candidates)) {
+    eligible <- tryCatch(db_query(
+      "SELECT user_id FROM job_wage_bid_locks WHERE round_id=? AND job_post_id=? AND min_wage <= ?;",
+      list(old$round_id[1], old$job_post_id[1], abs(as.numeric(old$assigned_wage[1] %||% 0)) + 1e-9))$user_id,
+      error = function(e) character(0))
+    candidates <- candidates[norm_key(candidates$user_id) %in% norm_key(eligible), , drop = FALSE]
+  }
+  if(nrow(candidates)) candidates <- candidates[sample(nrow(candidates)),,drop=FALSE]
+  if (!nrow(candidates) && random_wage_date) {
+    db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;", list(aid))
+    db_exec("UPDATE job_assignments SET status=?, assigned_wage=-ABS(COALESCE(assigned_wage,0)),
+             updated_at=datetime('now') WHERE id=?;", list(released_status, aid))
+    record_absence()
+    return(done(sprintf("%s %s. No other student bid at or below the drawn wage, so the slot stays empty.",
+                        old$display_name[1] %||% old$user_id[1],
+                        if (isTRUE(passed)) "passed" else "was marked absent"), "warning", changed = TRUE))
+  }
+  if (!nrow(candidates)) {
+    return(done("No replacement student without this job was found.", "warning"))
+  }
+  db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;", list(aid))
+  db_exec(
+    "UPDATE job_assignments
+     SET status=?, assigned_wage=-ABS(COALESCE(assigned_wage,0)),
+         updated_at=datetime('now')
+     WHERE id=?;",
+    list(released_status, aid))
+  record_absence()
+  db_exec(
+    "INSERT OR IGNORE INTO job_assignments(round_id, user_id, job_post_id, assigned_wage, assignment_mode)
+     VALUES(?,?,?,?,?);",
+    list(old$round_id[1], candidates$user_id[1], old$job_post_id[1],
+         if (is.na(old$assigned_wage[1] %||% NA)) NA_real_ else abs(as.numeric(old$assigned_wage[1])),
+         old$assignment_mode[1] %||% "redraw"))
+  done(sprintf(if (isTRUE(passed)) "%s passed; the job went to %s." else "Redrew %s's job to %s.",
+               old$display_name[1] %||% old$user_id[1],
+               candidates$display_name[1] %||% candidates$user_id[1]), changed = TRUE)
+}
+
+# Draw today's jobs for one class: the rule behind the Live Tracker's Draw Jobs
+# button and the fast tracker page. `round` is the class date's row,
+# `scope_filter` keeps the students of the class being drawn.
+run_job_draw <- function(round, timing_filter = "all", scope_filter = identity, uses_date_settings = FALSE) {
+  done <- function(message, type = "message", changed = FALSE) list(ok = !identical(type, "error"), message = message, type = type, changed = changed)
+  if (!nrow(round)) return(done("No selected class date.", "error"))
+  rid    <- round$id[1]
+  mode   <- round$assignment_mode[1] %||% "random"
+  tbrk   <- round$tiebreak_method[1] %||% "weighted_lottery"
+  allow_multiple <- isTRUE(as.integer(round$allow_multiple_jobs[1] %||% 1L) == 1L)
+  pricing_rule <- normalize_wage_pricing_rule(round$wage_pricing_rule[1] %||% "pay_as_bid")
+
+  posts <- tryCatch(db_query(
+    "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
+            COALESCE(jp.display_order,99) AS display_order,
+            COALESCE(jp.wage_override, jc.default_wage) AS wage,
+            COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time
+     FROM job_posts jp
+     LEFT JOIN job_categories jc ON jc.id=jp.category_id
+     WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1
+     ORDER BY COALESCE(jp.display_order,99), jp.id;",
+    list(rid)),
+    error = function(e) data.frame())
+  timing_filter <- timing_filter %||% "all"
+  posts <- filter_posts_for_draw_timing(posts, timing_filter)
+  if (!nrow(posts)) return(done("No active job posts marked 'In Draw' for this class date.", "error"))
+  target_rid <- assignment_round_for_timing(rid, timing_filter)
+  target_label <- round$label[1] %||% paste("Round", rid)
+
+  students <- tryCatch(db_query(
+    "SELECT user_id,course,section FROM users
+     WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
+     ORDER BY RANDOM();"), error=function(e)data.frame())
+  students <- scope_filter(students)
+  if (!nrow(students)) return(done("No eligible students found.", "error"))
+  if (exclude_existing_assignments_for_timing(timing_filter, allow_multiple)) {
+    already <- tryCatch(db_query(
+      "SELECT user_id FROM job_assignments
+       WHERE round_id=? AND COALESCE(status,'assigned')='assigned';",
+      list(target_rid))$user_id, error = function(e) character(0))
+    students <- students[!(students$user_id %in% already), , drop = FALSE]
+    if (!nrow(students)) return(done("No unassigned students available for this timed draw.", "warning"))
+  }
+
+  if (identical(timing_filter, "all")) {
+    db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(target_rid))
+  }
+
+  # The saved draw historically ran with the defaults (pay as bid, multiple
+  # jobs allowed) whatever the class-date settings say; only Preview applied
+  # them. That stays the default so a running term is not repriced. With the
+  # per-course/section switch on, the saved draw applies the date's settings
+  # for every rule. The random-wage rule always applies them.
+  random_wage_date <- identical(mode, "wage_bidding") && identical(pricing_rule, "random_wage")
+  pairs <- if (random_wage_date || isTRUE(uses_date_settings))
+    compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk,
+                       allow_multiple_jobs = allow_multiple,
+                       wage_pricing_rule = pricing_rule,
+                       persist_random_wage = random_wage_date)
+  else compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
+  if (!length(pairs) && identical(mode, "wage_bidding") && identical(pricing_rule, "random_wage")) {
+    close_bidding_after_draw(rid)
+    return(done("No bid was at or below the drawn wage for any job, so no job was filled.", "warning", changed = TRUE))
+  }
+  if (!length(pairs)) return(done("Draw produced no assignments.", "error", changed = identical(timing_filter, "all")))
+
+  post_timing <- setNames(as.character(posts$selection_time %||% "any"), as.character(posts$id))
+  for (p in pairs) {
+    assignment_timing <- post_timing[[as.character(p$post_id)]] %||% "any"
+    db_exec(
+      "INSERT OR IGNORE INTO job_assignments(round_id, user_id, job_post_id, assigned_wage, assignment_mode, selection_time)
+       VALUES(?,?,?,?,?,?);",
+      list(target_rid, p$uid, p$post_id,
+           if (is.na(p$wage %||% NA)) NA_real_ else as.numeric(p$wage),
+           mode, assignment_timing))
+  }
+  freeze_class_wages(rid)
+  bid_close_note <- if (timing_filter %in% c("all", "start"))
+    close_bidding_after_draw(rid) else ""
+  db_exec("UPDATE arcade_state SET assignments_revealed=0, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+  msg <- if (identical(timing_filter, "end")) {
+    sprintf("Drew %d end-of-class assignment%s for the lecture just completed (%s).",
+            length(pairs), if (length(pairs) == 1) "" else "s", target_label)
+  } else {
+    sprintf("Drew %d assignments (hidden from students); wages frozen and bidding %s.",
+            length(pairs), bid_close_note)
+  }
+  done(msg, changed = TRUE)
+}
+
 server <- function(input, output, session) {
 
   # Mobile browsers routinely suspend background tabs and drop their WebSocket.
@@ -4300,12 +4765,6 @@ server <- function(input, output, session) {
   # (pay as bid, multiple jobs allowed) for the non-random-wage rules.
   saved_draw_uses_date_settings_for_scope <- function()
     identical(as.character(get_scoped_setting("draw_uses_date_settings", "0")), "1")
-  round_is_practice <- function(round_id) {
-    row <- tryCatch(db_query(
-      "SELECT COALESCE(practice_no_points,0) v FROM weekly_rounds WHERE id=?;",
-      list(as.integer(round_id))), error = function(e) data.frame())
-    nrow(row) > 0 && isTRUE(as.integer(row$v[1]) == 1L)
-  }
   # End-of-term pay for practice-date work. Practice dates pay nothing at the
   # time; this prices each completed practice job at the average wage that job
   # (rule "job") or all jobs (rule "all") paid on the ordinary dates in the
@@ -5546,15 +6005,6 @@ server <- function(input, output, session) {
       list(rv$user_id,current_scope_key())), error = function(e) data.frame())
   })
 
-  token_credit <- function(uid, dname, amount, earning, source_type, source_id = NA, note = "") {
-    db_exec(
-      "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
-       VALUES(?,?,?,?,?,?,?);",
-      list(uid, dname, source_type,
-           if (is.na(source_id)) NA_integer_ else as.integer(source_id),
-           amount, as.integer(earning), note))
-    tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1], error = function(e) NA_integer_)
-  }
   # Consume unreleased pending tokens (job_assignments with tokens_credited=0) LIFO.
   # Returns any remainder that wasn't covered by pending tokens.
   consume_pending_tokens <- function(uid, amount) {
@@ -8272,8 +8722,8 @@ server <- function(input, output, session) {
 
     tagList(
       div(class="tab-howto",
-        "Open a section below to find what you need. Problem-set submission and policy-brief work live in ",
-        actionLink("account_open_assignments", "Assignments", style="font-weight:700;"), "."),
+        "Open a section below to find what you need. Problem sets are listed here; policy-brief work lives in ",
+        actionLink("account_open_assignments", "Policy Brief", style="font-weight:700;"), "."),
       account_section("Needs your attention",
         sprintf("%d pending problem set%s", nrow(pending_problem_sets), if (nrow(pending_problem_sets)==1) "" else "s"),
         pending_assignments_ui, open=TRUE),
@@ -8323,7 +8773,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$account_open_assignments, {
     req(rv$authed)
-    updateTabsetPanel(session, "arc_tabs", selected="Assignments")
+    updateTabsetPanel(session, "arc_tabs", selected="Policy Brief")
   }, ignoreInit=TRUE)
 
   observeEvent(input$save_name_btn, {
@@ -9192,71 +9642,6 @@ server <- function(input, output, session) {
     rv$jobs_ver <- rv$jobs_ver + 1L
   }, ignoreNULL = TRUE)
 
-  .commit_live_score_event <- function(ev) {
-    tokens_to_award <- as.numeric(ev$tokens %||% 0)
-    outcome <- as.character(ev$outcome %||% "")
-    rid <- as.integer(ev$round_id[1])
-    uid <- as.character(ev$user_id[1])
-    dname <- ev$display_name[1] %||% uid
-    rnd_row <- tryCatch(db_query(
-      "SELECT COALESCE(tokens_revealed,1) v FROM weekly_rounds WHERE id=?;",
-      list(rid)), error=function(e) data.frame())
-    tokens_revealed <- if (nrow(rnd_row)) isTRUE(as.integer(rnd_row$v[1]) == 1L) else TRUE
-    practice_date <- round_is_practice(rid)
-    if (practice_date) tokens_to_award <- 0
-
-    if (identical(as.character(ev$event_kind[1]), "assignment")) {
-      assign_id <- as.integer(ev$job_assignment_id[1])
-      cur <- tryCatch(db_query(
-        "SELECT assigned_wage, COALESCE(tokens_awarded,0) AS tokens_awarded FROM job_assignments WHERE id=?;",
-        list(assign_id)), error=function(e) data.frame())
-      if (!nrow(cur) || as.integer(cur$tokens_awarded[1] %||% 0L) == 1L) {
-        db_exec("UPDATE live_score_events SET committed_at=datetime('now') WHERE id=?;",
-                list(as.integer(ev$id[1])))
-        return(FALSE)
-      }
-      # An assignment's wage is fixed when it is assigned. Never look up the
-      # mutable post/category wage when scoring it.
-      final_wage <- as.numeric(cur$assigned_wage[1] %||% 0)
-      tokens_to_award <- switch(outcome,
-        complete = final_wage,
-        tried = 1,
-        missed = 0,
-        tokens_to_award)
-      if (practice_date) tokens_to_award <- 0 # no points, including the usual 1 for a try
-      db_exec(
-        "UPDATE job_assignments SET outcome=?, tokens_awarded=?, tokens_credited=?,
-                updated_at=datetime('now') WHERE id=?;",
-        list(outcome, tokens_to_award, if (tokens_revealed) 1L else 0L, assign_id))
-      if (tokens_to_award > 0 && tokens_revealed) {
-        token_credit(uid, dname, tokens_to_award, 1L, "job", assign_id,
-                     note = sprintf("Job wage (%s)", outcome))
-      }
-    } else if (identical(as.character(ev$event_kind[1]), "cold_call")) {
-      if (tokens_to_award > 0 && tokens_revealed) {
-        token_credit(uid, dname, tokens_to_award, 1L, "participation", as.integer(ev$id[1]),
-                     note = sprintf("Cold call (%s)", outcome))
-      }
-    } else {
-      # Voluntary contributions are independent, repeatable score events.
-      # Do not upsert job_assignments: that table intentionally represents the
-      # student's assigned class jobs for the round.
-      post_id <- as.integer(ev$job_post_id[1])
-      if (tokens_to_award > 0 && tokens_revealed) {
-        token_credit(uid, dname, tokens_to_award, 1L, "participation",
-                     as.integer(ev$id[1]),
-                     note = sprintf("Participation (%s; post %d)", outcome, post_id))
-      }
-    }
-    event_credited <- if (
-      identical(as.character(ev$event_kind[1]), "assignment") ||
-      tokens_revealed || tokens_to_award <= 0
-    ) 1L else 0L
-    db_exec("UPDATE live_score_events
-             SET committed_at=datetime('now'), tokens_credited=? WHERE id=?;",
-            list(event_credited, as.integer(ev$id[1])))
-    TRUE
-  }
 
   zeroed_completed_job_repairs <- function() {
     rows <- tryCatch(db_query("SELECT ja.id, ja.user_id, u.display_name, ja.assigned_wage FROM job_assignments ja JOIN users u ON u.user_id=ja.user_id WHERE LOWER(TRIM(COALESCE(ja.outcome,'')))='complete' AND COALESCE(ja.assigned_wage,0)>0 AND COALESCE(ja.tokens_awarded,0)=0 AND EXISTS (SELECT 1 FROM live_score_events lse WHERE lse.job_assignment_id=ja.id AND lse.event_kind='assignment' AND lse.committed_at IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM token_ledger tl WHERE tl.user_id=ja.user_id AND tl.source_type='job' AND tl.source_id=ja.id AND tl.amount>0);"), error=function(e)data.frame())
@@ -9319,16 +9704,8 @@ server <- function(input, output, session) {
 
   observeEvent(input$commit_live_scores_btn, {
     req(rv$is_admin, !rv$impersonating)
-    pending <- tryCatch(db_query(
-      "SELECT lse.*,u.display_name,u.course,u.section
-       FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
-       WHERE lse.committed_at IS NULL ORDER BY lse.id;"), error=function(e)data.frame())
-    pending <- scope_filter_rows(pending)
-    if (!nrow(pending)) { showNotification("No pending live scores.", type = "message"); return() }
-    applied <- 0L
-    for (i in seq_len(nrow(pending))) {
-      if (isTRUE(.commit_live_score_event(pending[i, ]))) applied <- applied + 1L
-    }
+    applied <- commit_pending_scores(scope_filter_rows)
+    if (is.na(applied)) { showNotification("No pending live scores.", type = "message"); return() }
     showNotification(sprintf("Committed %d live score%s.", applied, if (applied == 1L) "" else "s"),
                      type = "message")
   }, ignoreNULL = TRUE)
@@ -10022,84 +10399,9 @@ server <- function(input, output, session) {
   # other jobs. Either way the original assignment is kept, unpaid, as a record.
   redraw_assigned_job <- function(aid, passed = FALSE) {
     req(rv$is_admin)
-    aid <- suppressWarnings(as.integer(aid %||% 0))
-    if (is.na(aid) || aid <= 0) return()
-    released_status <- if (isTRUE(passed)) "passed_redrawn" else "absent_redrawn"
-    record_absence <- function() if (!isTRUE(passed)) db_exec(
-      "INSERT OR REPLACE INTO round_absences(round_id,user_id,marked_at) VALUES(?,?,CURRENT_TIMESTAMP);",
-      list(old$round_id[1], old$user_id[1]))
-    old <- tryCatch(db_query(
-      "SELECT ja.round_id, ja.user_id, ja.job_post_id, ja.assigned_wage,
-              ja.assignment_mode, u.display_name, COALESCE(u.section,'') AS section
-       FROM job_assignments ja
-       JOIN users u ON u.user_id=ja.user_id
-       WHERE ja.id=?;", list(aid)),
-      error = function(e) data.frame())
-    if (!nrow(old)) { showNotification("Assignment not found.", type = "error"); return() }
-    if (!is.na(old$assigned_wage[1] %||% NA) && as.numeric(old$assigned_wage[1]) < 0) {
-      showNotification("This assignment has already been redrawn.", type = "warning")
-      return()
-    }
-    candidates <- tryCatch(db_query(
-      "SELECT u.user_id,u.display_name,u.course,u.section
-       FROM users u
-       WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1
-         AND COALESCE(u.is_demo,0)=0 AND LOWER(u.user_id)<>LOWER(?)
-         AND NOT EXISTS(SELECT 1 FROM job_assignments ja
-           WHERE ja.round_id=? AND ja.user_id=u.user_id AND ja.job_post_id=?);",
-      list(old$user_id[1],old$round_id[1],old$job_post_id[1])),
-      error=function(e)data.frame())
-    candidates <- scope_filter_rows(candidates)
-    # Random-wage dates: a replacement must also have bid at or below the drawn
-    # wage. With no such student the absence is recorded and the slot stays empty.
-    redraw_rule <- tryCatch(db_query("SELECT wage_pricing_rule, assignment_mode FROM weekly_rounds WHERE id=?;",
-                                     list(old$round_id[1])), error = function(e) data.frame())
-    random_wage_date <- nrow(redraw_rule) > 0 &&
-      identical(as.character(redraw_rule$assignment_mode[1] %||% ""), "wage_bidding") &&
-      identical(normalize_wage_pricing_rule(redraw_rule$wage_pricing_rule[1] %||% "pay_as_bid"), "random_wage")
-    if (random_wage_date && nrow(candidates)) {
-      eligible <- tryCatch(db_query(
-        "SELECT user_id FROM job_wage_bid_locks WHERE round_id=? AND job_post_id=? AND min_wage <= ?;",
-        list(old$round_id[1], old$job_post_id[1], abs(as.numeric(old$assigned_wage[1] %||% 0)) + 1e-9))$user_id,
-        error = function(e) character(0))
-      candidates <- candidates[norm_key(candidates$user_id) %in% norm_key(eligible), , drop = FALSE]
-    }
-    if(nrow(candidates)) candidates <- candidates[sample(nrow(candidates)),,drop=FALSE]
-    if (!nrow(candidates) && random_wage_date) {
-      db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;", list(aid))
-      db_exec("UPDATE job_assignments SET status=?, assigned_wage=-ABS(COALESCE(assigned_wage,0)),
-               updated_at=datetime('now') WHERE id=?;", list(released_status, aid))
-      record_absence()
-      rv$jobs_ver <- rv$jobs_ver + 1L
-      showNotification(sprintf("%s %s. No other student bid at or below the drawn wage, so the slot stays empty.",
-                               old$display_name[1] %||% old$user_id[1],
-                               if (isTRUE(passed)) "passed" else "was marked absent"), type = "warning")
-      return()
-    }
-    if (!nrow(candidates)) {
-      showNotification("No replacement student without this job was found.", type = "warning")
-      return()
-    }
-    db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;", list(aid))
-    db_exec(
-      "UPDATE job_assignments
-       SET status=?, assigned_wage=-ABS(COALESCE(assigned_wage,0)),
-           updated_at=datetime('now')
-       WHERE id=?;",
-      list(released_status, aid))
-    record_absence()
-    db_exec(
-      "INSERT OR IGNORE INTO job_assignments(round_id, user_id, job_post_id, assigned_wage, assignment_mode)
-       VALUES(?,?,?,?,?);",
-      list(old$round_id[1], candidates$user_id[1], old$job_post_id[1],
-           if (is.na(old$assigned_wage[1] %||% NA)) NA_real_ else abs(as.numeric(old$assigned_wage[1])),
-           old$assignment_mode[1] %||% "redraw"))
-    rv$jobs_ver <- rv$jobs_ver + 1L
-    showNotification(
-      sprintf(if (isTRUE(passed)) "%s passed; the job went to %s." else "Redrew %s's job to %s.",
-              old$display_name[1] %||% old$user_id[1],
-              candidates$display_name[1] %||% candidates$user_id[1]),
-      type = "message")
+    result <- redraw_job(aid, passed, scope_filter_rows)
+    if (isTRUE(result$changed)) rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification(result$message, type = result$type)
   }
   observeEvent(input$redraw_absent_btn, redraw_assigned_job(input$redraw_absent_btn, passed = FALSE), ignoreNULL = TRUE)
   observeEvent(input$redraw_pass_btn,   redraw_assigned_job(input$redraw_pass_btn,   passed = TRUE),  ignoreNULL = TRUE)
@@ -16369,268 +16671,20 @@ server <- function(input, output, session) {
 
   # ── Job draw ──────────────────────────────────────────────────────────────────
   # Helper: apply tiebreak ordering within groups of tied bids
-  .apply_tiebreak <- function(bids_df, tiebreak) {
-    if (!nrow(bids_df)) return(bids_df)
-    if (tiebreak == "first_submitted") return(bids_df)  # SQL already ordered by created_at
-    if (tiebreak == "random") {
-      bids_df[sample(nrow(bids_df)), , drop=FALSE]
-    } else if (tiebreak %in% c("lowest_grade", "lowest_tokens", "weighted_lottery", "most_misses")) {
-      uids <- as.character(bids_df$user_id)
-      uid_placeholders <- paste(rep("?", length(uids)), collapse = ",")
-      aux <- switch(tiebreak,
-        lowest_grade = tryCatch(db_query(
-          paste0("SELECT user_id, AVG(grade_pct) AS val FROM student_grades WHERE user_id IN (",
-                 uid_placeholders, ") GROUP BY user_id;"), as.list(uids)),
-          error=function(e) data.frame()),
-        lowest_tokens = tryCatch(db_query(
-          paste0("SELECT user_id, COALESCE(SUM(amount),0) AS val FROM token_ledger WHERE user_id IN (",
-                 uid_placeholders, ") AND earning=1 GROUP BY user_id;"), as.list(uids)),
-          error=function(e) data.frame()),
-        weighted_lottery = tryCatch(db_query(
-          paste0("SELECT user_id, COALESCE(SUM(amount),0) AS val FROM token_ledger WHERE user_id IN (",
-                 uid_placeholders, ") AND earning=1 GROUP BY user_id;"), as.list(uids)),
-          error=function(e) data.frame()),
-        most_misses = tryCatch(db_query(
-          paste0("SELECT user_id, COUNT(*) AS val FROM job_assignments WHERE user_id IN (",
-                 uid_placeholders, ") AND outcome='missed' GROUP BY user_id;"), as.list(uids)),
-          error=function(e) data.frame())
-      )
-      val_map <- if (nrow(aux)) setNames(as.numeric(aux$val), aux$user_id) else numeric(0)
-      bids_df$sort_val <- sapply(uids, function(u) val_map[u] %||% 0)
-      if (tiebreak == "weighted_lottery") {
-        max_val <- max(bids_df$sort_val, 1)
-        weights <- pmax(max_val - bids_df$sort_val + 1, 1)
-        bids_df[sample(nrow(bids_df), prob=weights), , drop=FALSE]
-      } else if (tiebreak == "most_misses") {
-        bids_df[order(-bids_df$sort_val), , drop=FALSE]
-      } else {
-        bids_df[order(bids_df$sort_val, na.last=TRUE), , drop=FALSE]
-      }
-    } else if (tiebreak == "alphabetical") {
-      uids <- as.character(bids_df$user_id)
-      uid_placeholders <- paste(rep("?", length(uids)), collapse = ",")
-      uids_df <- tryCatch(db_query(
-        paste0("SELECT user_id, display_name FROM users WHERE user_id IN (",
-               uid_placeholders, ");"), as.list(uids)),
-        error=function(e) data.frame())
-      nm_map <- if (nrow(uids_df)) setNames(uids_df$display_name, uids_df$user_id) else character(0)
-      bids_df$sort_name <- sapply(bids_df$user_id, function(u) nm_map[u] %||% u)
-      bids_df[order(bids_df$sort_name), , drop=FALSE]
-    } else {
-      bids_df
-    }
-  }
 
-  compute_draw_pairs <- function(rid, mode, posts, students, tiebreak = "weighted_lottery",
-                                 allow_multiple_jobs = TRUE,
-                                 wage_pricing_rule = "pay_as_bid",
-                                 persist_random_wage = FALSE) {
-    tryCatch({
-      posts <- order_job_posts_for_clearing(posts)
-      if (mode == "wage_bidding") {
-        bids_raw <- db_query(
-          "SELECT jwb.user_id, jwb.job_post_id, jp.category_id, jwb.min_wage, jwb.submitted_at
-           FROM job_wage_bids jwb JOIN job_posts jp ON jp.id=jwb.job_post_id
-           WHERE jwb.round_id=?
-           UNION ALL
-           SELECT wb.user_id, NULL AS job_post_id, wb.category_id, wb.min_wage, wb.submitted_at
-           FROM wage_bids wb WHERE wb.round_id=?;",
-          list(rid, rid))
-        eligible_ids <- unique(as.character(students$user_id))
-        bids_raw <- bids_raw[bids_raw$user_id %in% eligible_ids, , drop=FALSE]
-        assigned_ids <- character(0)
-        pricing_rule <- normalize_wage_pricing_rule(wage_pricing_rule)
-        # A saved draw fixes each job's random wage once for the class date, so
-        # re-running the draw cannot fish for a different wage. A preview only
-        # illustrates the rule with a throwaway wage.
-        if (identical(pricing_rule, "random_wage") && isTRUE(persist_random_wage)) {
-          freeze_class_wages(rid)
-          # The wage becomes known once winners are revealed, so every later
-          # draw for this date uses the bids recorded at the first one. A bid
-          # changed after that cannot be aimed at the wage.
-          locked <- db_query(
-            "SELECT l.user_id, l.job_post_id, jp.category_id, l.min_wage, l.submitted_at
-             FROM job_wage_bid_locks l JOIN job_posts jp ON jp.id=l.job_post_id
-             WHERE l.round_id=?;", list(rid))
-          bids_raw <- locked[locked$user_id %in% eligible_ids, , drop=FALSE]
-        }
-        result <- list()
-        for (i in seq_len(nrow(posts))) {
-          p  <- posts[i, ]
-          n  <- max(1L, as.integer(p$slots %||% 1L))
-          exact <- bids_raw[!is.na(bids_raw$job_post_id) & bids_raw$job_post_id == p$id, , drop=FALSE]
-          legacy <- bids_raw[is.na(bids_raw$job_post_id) & bids_raw$category_id == p$category_id &
-                               !bids_raw$user_id %in% exact$user_id, , drop=FALSE]
-          post_bids <- rbind(exact, legacy)
-          if (!isTRUE(allow_multiple_jobs))
-            post_bids <- post_bids[!post_bids$user_id %in% assigned_ids, , drop=FALSE]
-          if (nrow(post_bids)) {
-            post_bids <- post_bids[order(post_bids$min_wage, post_bids$submitted_at), , drop=FALSE]
-            wage_levels <- sort(unique(post_bids$min_wage))
-            post_bids <- do.call(rbind, lapply(wage_levels, function(w)
-              .apply_tiebreak(post_bids[post_bids$min_wage == w, , drop=FALSE], tiebreak)))
-          }
-          if (identical(pricing_rule, "random_wage")) {
-            wage <- if (isTRUE(persist_random_wage)) class_wage_snapshot(rid, as.integer(p$id), NA_real_)
-                    else draw_random_wage(p$wage %||% NA)
-            drawn <- random_wage_winners(post_bids, wage, n)
-            if (!isTRUE(allow_multiple_jobs)) assigned_ids <- c(assigned_ids, drawn)
-            for (uid in drawn)
-              result[[length(result)+1]] <- list(uid=uid, post_id=p$id, wage=wage)
-            next
-          }
-          pool_ids <- if (nrow(post_bids)) post_bids$user_id else character(0)
-          other_ids <- setdiff(students$user_id, c(pool_ids,
-            if (isTRUE(allow_multiple_jobs)) character(0) else assigned_ids))
-          pool_ids  <- c(pool_ids, sample(other_ids))
-          drawn <- head(pool_ids, n)
-          wages <- if (identical(pricing_rule, "uniform_second_price")) {
-            clearing_wage <- uniform_procurement_wage(post_bids, drawn, p$wage %||% NA)
-            rep(clearing_wage, length(drawn))
-          } else if (nrow(post_bids)) {
-            sapply(drawn, function(u) {
-              m <- post_bids[post_bids$user_id == u, , drop=FALSE]
-              if (nrow(m)) as.numeric(m$min_wage[1]) else as.numeric(p$wage %||% NA)
-            })
-          } else rep(as.numeric(p$wage %||% NA), length(drawn))
-          if (!isTRUE(allow_multiple_jobs)) assigned_ids <- c(assigned_ids, drawn)
-          for (j in seq_along(drawn))
-            result[[length(result)+1]] <- list(uid=drawn[j], post_id=p$id, wage=wages[j])
-        }
-        result
-      } else if (mode == "application_bidding") {
-        bids <- tryCatch(db_query(
-          "SELECT user_id, category_id, tickets FROM application_bids WHERE round_id=? AND tickets>0;",
-          list(rid)), error=function(e) data.frame())
-        compute_application_pairs(posts, students, bids, allow_multiple_jobs)
-      } else {
-        assigned_ids <- character(0)
-        result <- list()
-        for (i in seq_len(nrow(posts))) {
-          p <- posts[i, ]
-          available <- if (isTRUE(allow_multiple_jobs)) students$user_id else setdiff(students$user_id, assigned_ids)
-          n <- min(length(available), max(1L, as.integer(p$slots %||% 1L)))
-          drawn <- if (n > 0L) sample(available, n) else character(0)
-          if (!isTRUE(allow_multiple_jobs)) assigned_ids <- c(assigned_ids, drawn)
-          for (uid in drawn) {
-            result[[length(result) + 1L]] <- list(
-              uid=uid, post_id=p$id, wage=as.numeric(p$wage %||% NA))
-          }
-        }
-        result
-      }
-    }, error = function(e) { message("draw error: ", e$message); list() })
-  }
 
-  filter_posts_for_draw_timing <- function(posts, timing_filter) {
-    if (!nrow(posts)) return(posts)
-    timing <- tolower(trimws(as.character(posts$selection_time %||% "")))
-    if (identical(timing_filter %||% "all", "all")) {
-      # Full pre-class draw: leave live cold-call (during-class) posts out —
-      # those are drawn one at a time in class with the During filter.
-      return(posts[!(timing %in% c("during", "during class")), , drop = FALSE])
-    }
-    if (identical(timing_filter, "start")) {
-      keep <- timing %in% c("start", "start of class")
-    } else if (identical(timing_filter, "during")) {
-      keep <- timing %in% c("during", "during class")
-    } else {
-      keep <- timing %in% c("end", "post", "post class", "after class", "end of class or after class")
-    }
-    posts[keep, , drop = FALSE]
-  }
 
   observeEvent(input$run_draw_btn, {
     req(rv$is_admin)
     round <- tryCatch(active_round_row(),
                       error = function(e) data.frame())
-    if (!nrow(round)) { showNotification("No selected class date.", type = "error"); return() }
-    rid    <- round$id[1]
-    mode   <- round$assignment_mode[1] %||% "random"
-    tbrk   <- round$tiebreak_method[1] %||% "weighted_lottery"
-    allow_multiple <- isTRUE(as.integer(round$allow_multiple_jobs[1] %||% 1L) == 1L)
-    pricing_rule <- normalize_wage_pricing_rule(round$wage_pricing_rule[1] %||% "pay_as_bid")
-
-    posts <- tryCatch(db_query(
-      "SELECT jp.id, jp.job_name, jp.slots, jp.category_id,
-              COALESCE(jp.display_order,99) AS display_order,
-              COALESCE(jp.wage_override, jc.default_wage) AS wage,
-              COALESCE(NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'any') AS selection_time
-       FROM job_posts jp
-       LEFT JOIN job_categories jc ON jc.id=jp.category_id
-       WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1
-       ORDER BY COALESCE(jp.display_order,99), jp.id;",
-      list(rid)),
-      error = function(e) data.frame())
-    timing_filter <- input$draw_timing_filter %||% "all"
-    posts <- filter_posts_for_draw_timing(posts, timing_filter)
-    if (!nrow(posts)) { showNotification("No active job posts marked 'In Draw' for this class date.", type = "error"); return() }
-    target_rid <- assignment_round_for_timing(rid, timing_filter)
-    target_label <- round$label[1] %||% paste("Round", rid)
-
-    students <- tryCatch(db_query(
-      "SELECT user_id,course,section FROM users
-       WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
-       ORDER BY RANDOM();"), error=function(e)data.frame())
-    students <- scope_filter_rows(students)
-    if (!nrow(students)) { showNotification("No eligible students found.", type = "error"); return() }
-    if (exclude_existing_assignments_for_timing(timing_filter, allow_multiple)) {
-      already <- tryCatch(db_query(
-        "SELECT user_id FROM job_assignments
-         WHERE round_id=? AND COALESCE(status,'assigned')='assigned';",
-        list(target_rid))$user_id, error = function(e) character(0))
-      students <- students[!(students$user_id %in% already), , drop = FALSE]
-      if (!nrow(students)) { showNotification("No unassigned students available for this timed draw.", type = "warning"); return() }
-    }
-
-    if (identical(timing_filter, "all")) {
-      db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(target_rid))
-    }
-
-    # The saved draw historically ran with the defaults (pay as bid, multiple
-    # jobs allowed) whatever the class-date settings say; only Preview applied
-    # them. That stays the default so a running term is not repriced. With the
-    # per-course/section switch on, the saved draw applies the date's settings
-    # for every rule. The random-wage rule always applies them.
-    random_wage_date <- identical(mode, "wage_bidding") && identical(pricing_rule, "random_wage")
-    pairs <- if (random_wage_date || saved_draw_uses_date_settings_for_scope())
-      compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk,
-                         allow_multiple_jobs = allow_multiple,
-                         wage_pricing_rule = pricing_rule,
-                         persist_random_wage = random_wage_date)
-    else compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk)
-    if (!length(pairs) && identical(mode, "wage_bidding") && identical(pricing_rule, "random_wage")) {
-      close_bidding_after_draw(rid)
+    result <- run_job_draw(round, input$draw_timing_filter %||% "all", scope_filter_rows,
+                           saved_draw_uses_date_settings_for_scope())
+    if (isTRUE(result$changed)) {
       rv$jobs_ver <- rv$jobs_ver + 1L
-      showNotification("No bid was at or below the drawn wage for any job, so no job was filled.", type = "warning")
-      return()
+      if (isTRUE(result$ok) && !identical(result$type, "warning")) rv$draw_preview <- NULL
     }
-    if (!length(pairs)) { showNotification("Draw produced no assignments.", type = "error"); return() }
-
-    post_timing <- setNames(as.character(posts$selection_time %||% "any"), as.character(posts$id))
-    for (p in pairs) {
-      assignment_timing <- post_timing[[as.character(p$post_id)]] %||% "any"
-      db_exec(
-        "INSERT OR IGNORE INTO job_assignments(round_id, user_id, job_post_id, assigned_wage, assignment_mode, selection_time)
-         VALUES(?,?,?,?,?,?);",
-        list(target_rid, p$uid, p$post_id,
-             if (is.na(p$wage %||% NA)) NA_real_ else as.numeric(p$wage),
-             mode, assignment_timing))
-    }
-    freeze_class_wages(rid)
-    bid_close_note <- if (timing_filter %in% c("all", "start"))
-      close_bidding_after_draw(rid) else ""
-    rv$jobs_ver <- rv$jobs_ver + 1L
-    db_exec("UPDATE arcade_state SET assignments_revealed=0, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-    rv$draw_preview <- NULL
-    msg <- if (identical(timing_filter, "end")) {
-      sprintf("Drew %d end-of-class assignment%s for the lecture just completed (%s).",
-              length(pairs), if (length(pairs) == 1) "" else "s", target_label)
-    } else {
-      sprintf("Drew %d assignments (hidden from students); wages frozen and bidding %s.",
-              length(pairs), bid_close_note)
-    }
-    showNotification(msg, type = "message")
+    showNotification(result$message, type = result$type)
   })
 
   observeEvent(input$preview_draw_btn, {
@@ -16699,23 +16753,7 @@ server <- function(input, output, session) {
     rid_row <- tryCatch(active_round_row(),error=function(e)data.frame())
     if (!nrow(rid_row)) {showNotification("No selected class date.",type="error");return()}
     scope <- input$section_reveal_timing %||% "start"
-    timings <- reveal_timings_for_scope(scope)
-    cur <- tryCatch(db_query(
-      "SELECT section,COALESCE(timing,'start') timing,COALESCE(revealed,0) v
-       FROM assignment_timing_reveals WHERE round_id=?;",
-      list(rid_row$id[1])),error=function(e)data.frame())
-    section_on <- vapply(sections,function(sec){
-      rows <- cur[!is.na(cur$section)&norm_key(cur$section)==norm_key(sec),,drop=FALSE]
-      all(timings %in% as.character(rows$timing[as.integer(rows$v %||% 0L)==1L]))
-    },logical(1))
-    new_val <- if(all(section_on)) 0L else 1L
-    for(sec in sections) for(timing in timings) db_exec(
-      "INSERT INTO assignment_timing_reveals(round_id,section,revealed,timing,updated_at)
-       VALUES(?,?,?,?,CURRENT_TIMESTAMP)
-       ON CONFLICT(round_id,section,timing) DO UPDATE SET
-         revealed=excluded.revealed,updated_at=CURRENT_TIMESTAMP;",
-      list(rid_row$id[1],sec,new_val,timing))
-    db_exec("UPDATE arcade_state SET assignments_revealed=0,updated_at=CURRENT_TIMESTAMP WHERE id=1;")
+    new_val <- toggle_section_reveal(rid_row$id[1], sections, scope)
     scope_label <- switch(scope,end="end of class",all="all assignments","start of class")
     showNotification(sprintf("%s %s (%s).",paste(sections,collapse=", "),
       if(new_val==1L)"revealed" else "hidden",scope_label),type="message")

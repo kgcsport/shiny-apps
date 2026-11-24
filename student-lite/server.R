@@ -185,9 +185,10 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
 
   # ── Instructor tracker ──────────────────────────────────────────────────────
   # A fast page for the in-class loop: cold calls, voluntary contributions, and
-  # scoring assigned jobs. Everything it records is queued for the Live Score
-  # Audit through the hub's own scoring rules; committing, draws, reveals, and
-  # repairs stay in the main app.
+  # the job draw, showing jobs to students, scoring, and committing scores. Every
+  # one of these runs the hub's own rule, so the two trackers cannot disagree.
+  # Previews, manual assignments, offers, token release, and repairs stay in the
+  # main app.
   session_instructor <- function(req) {
     row <- hub$lookup_token(session_token(req))
     if (!nrow(row) || as.integer(row$active[1] %||% 1L) == 0L || as.integer(row$is_admin[1] %||% 0L) != 1L ||
@@ -248,7 +249,14 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
        WHERE ja.round_id=? AND COALESCE(ja.status,'assigned')='assigned'
        ORDER BY jp.display_order, jp.job_name, u.display_name;", list(rid))
     assignments <- assignments[hub$norm_key(assignments$user_id) %in% hub$norm_key(students$user_id), , drop = FALSE]
-    pending <- q("SELECT COUNT(*) n FROM live_score_events WHERE round_id=? AND committed_at IS NULL;", list(rid))$n[1]
+    waiting <- q("SELECT lse.id, lse.user_id, u.display_name, lse.event_kind, lse.outcome
+                  FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
+                  WHERE lse.committed_at IS NULL ORDER BY lse.id;")
+    waiting <- waiting[hub$norm_key(waiting$user_id) %in% hub$norm_key(students$user_id), , drop = FALSE]
+    pending <- nrow(waiting)
+    shown <- q("SELECT COALESCE(timing,'start') timing FROM assignment_timing_reveals
+                WHERE round_id=? AND COALESCE(revealed,0)=1 AND LOWER(TRIM(section))=?;",
+               list(rid, hub$norm_key(section)))$timing
     list(
       course = course, section = section,
       round = list(label = round$label[1] %||% "", class_date = round$class_date[1] %||% "",
@@ -266,6 +274,8 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
         wage = as.numeric(assignments$wage[i]), timing = assignments$timing[i],
         outcome = if (nzchar(assignments$outcome[i])) assignments$outcome[i] else NULL,
         queued = if (is.na(assignments$queued[i])) NULL else assignments$queued[i])),
+      shown = list(start = "start" %in% shown, end = "end" %in% shown),
+      last_pending = if (pending) sprintf("%s (%s)", waiting$display_name[pending], waiting$outcome[pending]) else NULL,
       pending = as.integer(pending))
   }
   tracker_action <- function(instructor, course, section, action, body) {
@@ -289,6 +299,45 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
       if (!nrow(pool)) return(list(ok = FALSE, message = "No students are available to call."))
       pick <- pool[sample.int(nrow(pool), 1L), ]
       return(list(ok = TRUE, drawn = list(user_id = pick$user_id, name = pick$display_name)))
+    }
+    keep_class <- function(rows) {
+      if (!nrow(rows)) return(rows)
+      rows[hub$norm_key(rows$course) == hub$norm_key(course) & hub$norm_key(rows$section) == hub$norm_key(section), , drop = FALSE]
+    }
+    if (identical(action, "draw_jobs")) {
+      timing <- as.character(body$timing %||% "all")
+      if (!timing %in% c("all", "start", "during", "end")) return(list(ok = FALSE, message = "Unknown draw."))
+      by_date <- identical(as.character(hub$resolve_setting("draw_uses_date_settings", "0", with_scope = TRUE)$value), "1")
+      result <- hub$run_job_draw(round, timing, keep_class, by_date)
+      return(list(ok = isTRUE(result$ok), message = result$message))
+    }
+    if (identical(action, "reveal")) {
+      which <- as.character(body$timing %||% "all")
+      if (!which %in% c("all", "start", "end")) return(list(ok = FALSE, message = "Unknown choice."))
+      now <- hub$toggle_section_reveal(rid, section, which)
+      return(list(ok = TRUE, message = if (now == 1L) "Students can now see their jobs." else "Jobs are hidden from students."))
+    }
+    if (identical(action, "commit")) {
+      applied <- hub$commit_pending_scores(keep_class)
+      return(list(ok = TRUE, message = if (is.na(applied)) "Nothing was waiting."
+                  else sprintf("Committed %d score%s.", applied, if (applied == 1L) "" else "s")))
+    }
+    if (identical(action, "undo")) {
+      waiting <- keep_class(q("SELECT lse.id, u.display_name, u.course, u.section, lse.outcome
+                               FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
+                               WHERE lse.committed_at IS NULL ORDER BY lse.id;"))
+      if (!nrow(waiting)) return(list(ok = FALSE, message = "Nothing waiting to undo."))
+      last <- waiting[nrow(waiting), ]
+      hub$db_exec("DELETE FROM live_score_events WHERE id=? AND committed_at IS NULL;", list(as.integer(last$id)))
+      return(list(ok = TRUE, message = sprintf("Removed %s (%s).", last$display_name, last$outcome)))
+    }
+    if (action %in% c("job_pass", "job_absent")) {
+      assign_id <- suppressWarnings(as.integer(body$assignment_id %||% NA))
+      owner <- q("SELECT user_id, round_id FROM job_assignments WHERE id=?;", list(assign_id))
+      if (!nrow(owner) || owner$round_id[1] != rid || !in_class(owner$user_id[1]))
+        return(list(ok = FALSE, message = "That assignment is not on today's list for this section."))
+      result <- hub$redraw_job(assign_id, passed = identical(action, "job_pass"), scope_filter = keep_class)
+      return(list(ok = isTRUE(result$ok) && isTRUE(result$changed), message = result$message))
     }
     if (!in_class(uid) && !identical(action, "assignment"))
       return(list(ok = FALSE, message = "That student is not in this section."))
