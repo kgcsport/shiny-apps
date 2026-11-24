@@ -3578,6 +3578,17 @@ job_description_details <- function(description, label = "What to do") {
   )
 }
 
+# Settings pages. Seven pages replace eleven sections: small or overlapping
+# sections were folded into the page where they are used. The old section
+# names still work as addresses and open the page that now holds them.
+SETTINGS_PAGES <- c("Class day" = "round_setup", "Jobs" = "jobs", "People" = "students",
+                    "Tokens & spending" = "token_admin", "Grades" = "gradebook",
+                    "Policy project" = "policy_rubrics", "Data & tools" = "exports")
+SETTINGS_DEFAULT_PAGE <- "round_setup"
+settings_page_for <- function(section) switch(as.character(section %||% SETTINGS_DEFAULT_PAGE),
+  spending = "token_admin", game_controls = "round_setup", app_settings = "round_setup",
+  sandbox_demo = "exports", as.character(section %||% SETTINGS_DEFAULT_PAGE))
+
 # A collapsible group on an instructor screen. Whether it is open is remembered
 # in the browser by key, so the group stays as the instructor left it when the
 # screen is redrawn after a save.
@@ -8013,7 +8024,7 @@ server <- function(input, output, session) {
       tr <- if (nrow(team_row)) team_row[1,] else data.frame(policy_team=selected,course_unit="",presentation_date="",policy_topic="",policy_question="",topic_status="pending",topic_note="")
       return(tagList(
         div(class="tab-howto",
-            "This is the selected team's policy-project view. Grade submissions and provide feedback under Settings → Policy Rubrics."),
+            "This is the selected team's policy-project view. Grade submissions and provide feedback under Settings → Policy project."),
         div(class="today-card",
           selectInput("policy_admin_team", "Team:", choices=teams, selected=selected),
           tags$h4("Policy brief"),
@@ -11041,7 +11052,7 @@ server <- function(input, output, session) {
                 "\U0001f4cb Job Assignments"),
         if (!nrow(round)) {
           tags$p(style = "color:#999;margin:0;",
-                 "No selected class date configured. Set one up in Settings → Job Market Controls.")
+                 "No selected class date configured. Set one up in Settings → Class day.")
         } else {
           mode_label <- switch(mode,
             random              = "Random draw",
@@ -11725,13 +11736,9 @@ server <- function(input, output, session) {
     tagList(
       wellPanel(tags$strong("Active scope: "), paste(c(scoped_course(), scoped_sections()), collapse=" / "), tags$p(style="color:#666;font-size:.82rem;margin:.25rem 0 .4rem;", "Roster, jobs, market controls, tracker choices, exports, Flex funding, and spending options use this scope."), actionButton("open_scope_picker_btn", "Change scope", class="btn btn-sm btn-outline-primary")),
       uiOutput("setting_level_panel"),
-      tutorial_note("How to configure the app", c("Jobs: edit reusable templates, instructions, wages, timing, and posts for the selected class date.", "Job Market Controls: choose the class date and adjust allocation or bidding at any time.", "Spending Options: enable or disable token purchases for the active class / section environment.", "Students: add, archive, restore, or impersonate roster members.", "Token Admin and Grades: make audited corrections and import course records.")),
-      wellPanel(selectInput("config_action", "Settings section:", width = "100%", choices = c(
-        "Jobs"="jobs", "Job Market Controls"="round_setup", "Students"="students",
-        "Token Admin"="token_admin", "Spending Options"="spending",
-        "Policy Rubrics"="policy_rubrics", "Grades & Gradebook"="gradebook",
-        "Exports"="exports", "Game Controls"="game_controls",
-        "App Settings"="app_settings", "Demo / Testing"="sandbox_demo"), selected="jobs"),
+      tutorial_note("How to configure the app", c("Class day: the class date, allocation and bidding, the bid lock, wage rules, the Today announcement, and games.", "Jobs: posts for the selected class date, job types, and templates.", "People: add, archive, restore, or view as a student; administrator access.", "Tokens & spending: audited awards and corrections, and what students can buy.", "Grades: categories, uploads, and downloads.", "Policy project: rubrics, due dates, and team assignments.", "Data & tools: exports, research tables, the app name, and links to other apps.")),
+      wellPanel(selectInput("config_action", "Settings page:", width = "100%",
+                            choices = SETTINGS_PAGES, selected = SETTINGS_DEFAULT_PAGE),
         uiOutput("config_panel"))
     )
   })
@@ -11756,7 +11763,7 @@ server <- function(input, output, session) {
   observeEvent(input$save_insurance_product_btn, {
     req(rv$is_admin, !rv$impersonating)
     if (!pass_insurance_enabled_for_scope()) {
-      showNotification("Turn Pass Insurance on under Spending Options → Overview & availability before opening sales.", type="warning"); return()
+      showNotification("Turn Pass Insurance on under Settings → Tokens & spending → What students can spend tokens on before opening sales.", type="warning"); return()
     }
     round <- tryCatch(active_round_row(), error=function(e)data.frame())
     if (!nrow(round)) { showNotification("Choose a class date first.", type="warning"); return() }
@@ -11887,7 +11894,10 @@ server <- function(input, output, session) {
   output$config_panel <- renderUI({
     req(rv$is_admin)
     rv$jobs_ver; rv$extensions_ver; rv$flex_ver; rv$students_ver; rv$insurance_ver
-    top_act <- input$config_action %||% "jobs"
+    # Each former Settings section is built by this function. A page is one or
+    # more sections, or named parts of them, put together below.
+    settings_section <- function(top_act, want = NULL) {
+    part <- function(name, ui) if (is.null(want) || name %in% want) ui else NULL
     spending_nav <- NULL
     act <- top_act
     if (identical(top_act, "spending")) {
@@ -11935,10 +11945,10 @@ server <- function(input, output, session) {
       wrap_spending(tagList(
         tags$h5("Pass Insurance Market"),
         if (!insurance_on) div(class="alert alert-warning",
-          "Pass Insurance is off for this course / section (Spending Options → Overview & availability). Students do not see it and cannot buy it. Coverage already sold is still paid, and an open market can still be closed and settled below."),
+          "Pass Insurance is off for this course / section (Settings → Tokens & spending → What students can spend tokens on). Students do not see it and cannot buy it. Coverage already sold is still paid, and an open market can still be closed and settled below."),
         tags$p(style="color:#555;font-size:.88rem;",
           "Students can buy one pass for the next scheduled class, including during that class. Coverage pays once for a live pass or recession firing. Closing sales leaves existing coverage active for that period. Settlement ends coverage and pays equal dividends from any positive profit. Insurance cash flows do not count as participation earnings."),
-        if (!nrow(round)) div(class="alert alert-warning", "Choose a class date under Job Market Controls first.") else tagList(
+        if (!nrow(round)) div(class="alert alert-warning", "Choose a class date under Settings → Class day first.") else tagList(
           tags$p(tags$strong("Selected class: "), round$label[1] %||% "", " · ", round$class_date[1] %||% ""),
           fluidRow(
             column(4, numericInput("insurance_benefit_input", "Pass benefit:", value=default_benefit, min=0.01, step=0.5)),
@@ -12033,7 +12043,7 @@ server <- function(input, output, session) {
       tagList(
 
         # ── Job Posts ─────────────────────────────────────────────────────────────
-        settings_group("jobs-posts", "Jobs for the selected class date", open = TRUE,
+        part("jobs-posts", settings_group("jobs-posts", "Jobs for the selected class date", open = TRUE,
           hint = sprintf("%d posted", if (is.data.frame(all_posts)) nrow(all_posts) else 0L),
         div(style = paste0("background:#f0f4ff;border-left:3px solid #4a6fa5;padding:.5rem .8rem;",
                            "border-radius:0 4px 4px 0;margin-bottom:.6rem;font-size:.85rem;color:#333;"),
@@ -12149,8 +12159,8 @@ server <- function(input, output, session) {
         },
 
         # ── Job Types ─────────────────────────────────────────────────────────────
-        ),
-        settings_group("jobs-types", "Job types", hint = "Groups of jobs and their default wage",
+        )),
+        part("jobs-types", settings_group("jobs-types", "Job types", hint = "Groups of jobs and their default wage",
         tags$p(style = "color:#555;font-size:.85rem;",
                "Job types group related posts and set their default wage. Click a row to expand and edit it, then click Save changes (the form closes automatically)."),
         if (nrow(all_cats)) {
@@ -12230,8 +12240,8 @@ server <- function(input, output, session) {
         ),
 
         # ── Volunteer Clearing Wage ───────────────────────────────────────────────
-        ),
-        settings_group("jobs-wage-rules", "Wage and bidding rules",
+        )),
+        part("jobs-wage-rules", settings_group("jobs-wage-rules", "Wage and bidding rules",
           hint = "Volunteer wage, paid-volunteer limit, hidden wages, draw rules",
         tags$p(style = "color:#555;font-size:.85rem;",
                "With wage bidding, every volunteer in a job type is paid the same equilibrium wage from the class-date bids — not their own bid, and nobody is rationed out. The wage freezes when the first draw runs. ",
@@ -12256,8 +12266,8 @@ server <- function(input, output, session) {
         actionButton("save_vol_clearing_btn", "Save", class = "btn btn-sm btn-primary"),
 
         # ── Templates ─────────────────────────────────────────────────────────────
-        ),
-        settings_group("jobs-templates", "Templates", hint = "Jobs carried into each new class date",
+        )),
+        part("jobs-templates", settings_group("jobs-templates", "Templates", hint = "Jobs carried into each new class date",
         tags$p(style = "color:#555;font-size:.85rem;",
                "Templates with Auto-copy ON are carried into each new class date with their timing, wage, slots, and voluntary/in-draw flags. ",
                "Keep every-class jobs ON and toggle occasional jobs (discussion lead, cold calls) only when you want them."),
@@ -12351,7 +12361,7 @@ server <- function(input, output, session) {
             )
           )
         }
-        )
+        ))
       )
 
     } else if (act == "round_setup") {
@@ -12516,6 +12526,7 @@ server <- function(input, output, session) {
       # student here so changing the active course/section cannot hide the
       # records needed to repair their course or section assignments.
       tagList(
+        part("roster", tagList(
         tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Student Roster"),
         checkboxInput("hide_archived_students_chk", "Hide archived students",
                       value = hide_archived),
@@ -12641,10 +12652,10 @@ server <- function(input, output, session) {
                         "Update existing students (display name + class + section; password only if provided in CSV)",
                         value = FALSE),
           actionButton("bulk_upload_students_btn", "Upload", class = "btn btn-sm btn-primary")
-        ),
-        tags$details(
-          style="margin-top:.65rem;border-top:1px solid #eee;padding-top:.55rem;",
-          tags$summary(style="cursor:pointer;color:#951829;font-weight:700;", "Policy group assignments"),
+        ))),
+        part("policy-groups", tags$details(
+          class = "settings-group", `data-remember` = "policy-groups", style="padding:.2rem .8rem .6rem;",
+          tags$summary(style="cursor:pointer;color:#951829;font-weight:700;padding:.4rem 0;", "Policy group assignments"),
           tags$p(style = "color:#555;font-size:.85rem;",
                  "Manually update one student or import the final allocation CSV. Assignments appear immediately on student Account profiles."),
           {
@@ -12664,7 +12675,7 @@ server <- function(input, output, session) {
           tags$p(style="color:#555;font-size:.82rem;", "Required CSV columns: user_id, policy_team, presentation_date, and course_unit."),
           fileInput("upload_policy_groups_csv", NULL, accept = ".csv", buttonLabel = "Browse…", placeholder = "No file chosen"),
           actionButton("upload_policy_groups_btn", "Import CSV", class = "btn btn-sm btn-primary")
-        )
+        ))
       )
 
     } else if (act == "exports") {
@@ -13086,7 +13097,7 @@ server <- function(input, output, session) {
         tagList(
           tags$h6(style="font-weight:700;color:#951829;margin-top:.5rem;", "Policy Rubrics"),
           policy_deadline_controls,
-          tags$p(style="color:#999;", "No policy teams exist in the selected course/section scope. Import or assign policy groups under Settings → Students first.")
+          tags$p(style="color:#999;", "No policy teams exist in the selected course/section scope. Import or assign policy groups under Settings → Policy project first.")
         )
       } else {
         selected_team <- isolate(input$policy_rubric_team %||% rv$policy_grader_team %||% teams[1])
@@ -13828,7 +13839,7 @@ server <- function(input, output, session) {
         },
 
         tags$p(style="color:#666;font-size:.82rem;margin-top:.8rem;",
-               "Grade-reweight pricing and limits are configured under Settings → Spending Options.")
+               "Grade-reweight pricing and limits are configured under Settings → Tokens & spending.")
       )
 
     } else if (act == "game_controls") {
@@ -13989,7 +14000,7 @@ server <- function(input, output, session) {
             )
           )
         },
-        tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "Bulk Token Award / Deduct"),
+        settings_group("tokens-bulk", "Award or deduct for a whole class or section", open = TRUE,
         tags$p(style = "color:#555;font-size:.88rem;",
                "Award or deduct tokens from all active students, one class, or one section at once."),
         div(class = "spend-form-box",
@@ -14003,8 +14014,8 @@ server <- function(input, output, session) {
           tags$p(style = "color:#888;font-size:.78rem;margin:.3rem 0 0;",
                  "Positive = award; negative = deduct. Applied to every active non-admin student.")
         ),
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Random Token Lottery"),
+        ),
+        settings_group("tokens-lottery", "Random token lottery",
         tags$p(style = "color:#555;font-size:.88rem;",
                "Randomly award the same token amount to a draw without replacement. First choose one or more class/section environments above; optionally narrow the draw to a named subset."),
         div(class = "spend-form-box",
@@ -14026,8 +14037,8 @@ server <- function(input, output, session) {
             )
           }
         ),
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Practice-Date Pay"),
+        ),
+        settings_group("tokens-practice-pay", "Practice-date pay",
         tags$p(style = "color:#555;font-size:.88rem;",
                "Practice dates pay nothing at the time. At the end of the term, pay completed practice work at the average wage from the ordinary class dates in this course / section. A try pays 1 token. Each piece of work can be paid once."),
         div(class = "spend-form-box",
@@ -14040,8 +14051,8 @@ server <- function(input, output, session) {
           actionButton("practice_pay_preview_btn", "Preview practice pay", class = "btn btn-sm btn-outline-primary"),
           uiOutput("practice_pay_preview")
         ),
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Individual Adjustment"),
+        ),
+        settings_group("tokens-individual", "Adjust one account",
         tags$p(style = "color:#555;font-size:.88rem;",
                "Correct any active account's token balance at any time, including your own or another administrator's. Use a positive amount to add tokens or a negative amount to deduct them. The correction is recorded separately so the original committed job remains auditable."),
         div(class = "spend-form-box",
@@ -14058,8 +14069,8 @@ server <- function(input, output, session) {
             )
           }
         ),
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Selected-Student Award"),
+        ),
+        settings_group("tokens-selected", "Award a chosen group",
         tags$p(style = "color:#555;font-size:.88rem;",
                "Award the same positive earned-token amount to a selected crew or group. Use this for one verified Taboo crew at a time."),
         div(class = "spend-form-box",
@@ -14079,28 +14090,58 @@ server <- function(input, output, session) {
             )
           }
         )
+        )
       )
-
 
     } else if (act == "app_settings") {
       tagList(
-        tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;", "App Settings"),
+        part("app-name", tagList(
         textInput("new_app_name", "App name:",
                   value = get_config("app_name", "Classroom Economy"), width = "100%"),
-        actionButton("save_app_name_btn", "Save app name", class = "btn btn-sm btn-primary"),
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Today Announcement"),
+        actionButton("save_app_name_btn", "Save app name", class = "btn btn-sm btn-primary"))),
+        part("announcement", tagList(
         tags$p(style = "color:#666;font-size:.88rem;",
                "Shown near the top of Today for students in the selected section scope. Save it blank to hide the announcement."),
         textAreaInput("today_announcement_text", "Class announcement:",
                       value = get_scoped_setting("today_announcement", ""), rows = 4, width = "100%",
                       placeholder = "e.g. Bring your worksheet to class today."),
         actionButton("save_today_announcement_btn", "Save announcement",
-                     class = "btn btn-sm btn-primary")
+                     class = "btn btn-sm btn-primary")))
       )
     } else if (act == "sandbox_demo") {
       demo_settings_panel(.sandbox)
     }
+    }
+
+    requested <- as.character(input$config_action %||% SETTINGS_DEFAULT_PAGE)
+    page <- settings_page_for(requested)
+    switch(page,
+      round_setup = tagList(
+        settings_section("round_setup"),
+        settings_section("jobs", want = "jobs-wage-rules"),
+        settings_group("class-announcement", "Announcement for students", hint = "Shown at the top of Today",
+                       open = identical(requested, "app_settings"),
+                       settings_section("app_settings", want = "announcement")),
+        settings_group("class-games", "Games", hint = "Active game and coordination game controls",
+                       open = identical(requested, "game_controls"),
+                       settings_section("game_controls"))),
+      jobs = settings_section("jobs", want = c("jobs-posts", "jobs-types", "jobs-templates")),
+      students = settings_section("students", want = "roster"),
+      token_admin = tagList(
+        settings_section("token_admin"),
+        settings_group("tokens-spending", "What students can spend tokens on",
+                       hint = "Availability, extensions, exam questions, grade reweighting, Pass Insurance",
+                       open = identical(requested, "spending"),
+                       settings_section("spending"))),
+      policy_rubrics = tagList(
+        settings_section("policy_rubrics"),
+        settings_section("students", want = "policy-groups")),
+      exports = tagList(
+        settings_section("exports"),
+        settings_group("tools-app-name", "App name", settings_section("app_settings", want = "app-name")),
+        settings_group("tools-other-apps", "Other apps", open = identical(requested, "sandbox_demo"),
+                       settings_section("sandbox_demo"))),
+      settings_section(page))
   })
 
   # Team and component determine which rubric/assessment is loaded. The

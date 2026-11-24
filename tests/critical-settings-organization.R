@@ -7,7 +7,8 @@ app_path <- if (file.exists("apps/class-job-market/app.R")) {
 }
 source_text <- paste(readLines(app_path, warn=FALSE), collapse="\n")
 required <- c(
-  '"Spending Options"="spending"',
+  '"Class day" = "round_setup"', '"Tokens & spending" = "token_admin"',
+  '"Policy project" = "policy_rubrics"', '"Data & tools" = "exports"',
   '"Pass insurance"="insurance"',
   '"Assignment extensions"="extensions"',
   '"Exam questions"="flex_questions"',
@@ -23,7 +24,7 @@ if (length(missing)) stop("Settings organization contract missing: ", paste(miss
 
 # The four systems no longer occupy separate top-level dropdown entries.
 top_select <- regmatches(source_text, regexpr(
-  'selectInput\\("config_action"[\\s\\S]{1,1800}?selected="jobs"\\)',
+  'SETTINGS_PAGES <- c\\([\\s\\S]{1,600}?\\)\n',
   source_text, perl=TRUE))
 if (!length(top_select) || !nzchar(top_select)) stop("Could not find Settings section selector.")
 for (legacy in c('"Insurance"="insurance"', '"Extensions"="extensions"',
@@ -62,8 +63,44 @@ shiny::testServer(app$server, {
   students_html <- paste(as.character(output$config_panel),collapse="")
   for (label in c("Student Roster", "Student A", "2 on hand · 3 gross",
                   "Administrator access", "Add student", "Reset password",
-                  "Bulk upload students", "Policy group assignments"))
+                  "Bulk upload students"))
     if (!grepl(label,students_html,fixed=TRUE)) stop("Students panel is missing: ",label)
+  if (grepl("Policy group assignments",students_html,fixed=TRUE))
+    stop("Policy group assignments should sit on the Policy project page.")
+
+  # Seven pages; every folded-in section appears once, on the page that uses it.
+  if (length(app$SETTINGS_PAGES) != 7) stop("Settings should have seven pages.")
+  page_html <- function(id) {
+    session$setInputs(config_action=id); session$flushReact()
+    paste(as.character(output$config_panel),collapse="")
+  }
+  expect_on <- function(id, labels) {
+    html <- page_html(id)
+    for (label in labels) if (!grepl(label,html,fixed=TRUE))
+      stop("Settings page ",id," is missing: ",label)
+    html
+  }
+  class_day <- expect_on("round_setup", c("Wage and bidding rules", "Announcement for students",
+                                           "save_today_announcement_btn", "Games"))
+  jobs_html <- expect_on("jobs", c("Jobs for the selected class date", "Job types", "Templates"))
+  if (grepl("Wage and bidding rules",jobs_html,fixed=TRUE))
+    stop("Wage and bidding rules should appear only on the Class day page.")
+  expect_on("token_admin", c("Award or deduct for a whole class or section", "Random token lottery",
+                             "Practice-date pay", "Adjust one account", "Award a chosen group",
+                             "What students can spend tokens on", "Spending controls"))
+  expect_on("policy_rubrics", "Policy group assignments")
+  expect_on("exports", c("save_app_name_btn", "Other apps"))
+  # Old section addresses open the page that now holds them.
+  for (old in c("spending","game_controls","app_settings","sandbox_demo")) {
+    html <- page_html(old)
+    if (!nzchar(html)) stop("Old Settings address renders nothing: ",old)
+  }
+  # No input id is rendered twice on any page.
+  for (id in unname(app$SETTINGS_PAGES)) {
+    ids <- regmatches(page_html(id), gregexpr('id="[^"]+"', page_html(id)))[[1]]
+    dup <- unique(ids[duplicated(ids)])
+    if (length(dup)) stop("Settings page ",id," repeats ids: ",paste(dup,collapse=", "))
+  }
 
   panels <- c(spending_overview="Spending options", insurance="Pass Insurance Market",
               extensions="Extension Pricing", flex_questions="Flex Questions",
