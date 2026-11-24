@@ -301,8 +301,17 @@ reason, and the information available at the time.
 - Allocation: students whose bid is at or below the drawn wage are eligible.
   Winners are chosen among them by lottery, up to the posted slots, and every
   winner is paid the drawn wage.
-- Unfilled slots: a slot with no eligible bidder stays empty. It is not filled
-  from students who bid above the wage or did not bid.
+- Unfilled slots: a slot with no eligible bidder is not filled by the lottery.
+  The instructor may offer it to the class at the drawn wage, and a student
+  who steps in is paid that wage even if it is below their bid. These
+  assignments are recorded as volunteer fills and are identifiable in the data.
+  Each offer is logged with the job, the drawn wage, every student present,
+  each student's bid at that moment, and whether they took it, volunteered, or
+  passed. The share of takers and volunteers whose own bid was above the
+  offered wage is reported as a check on how well bids match behaviour.
+  [CHOOSE BEFORE REGISTRATION: WHETHER VOLUNTEER FILLS ARE OFFERED IN THE
+  EXPERIMENT SECTIONS. OFFERING THEM LETS A STUDENT WHO BID ABOVE THEIR TRUE
+  MINIMUM STILL GET THE JOB, WHICH WEAKENS THE REASON TO BID HONESTLY.]
 - Rationale: no bid can change the wage, so entering one's true minimum is the
   best response and a group cannot raise pay by coordinating on high bids, as
   happened under the pilot's bid-determined wages.
@@ -590,6 +599,10 @@ all market analyses are reported without confirmatory claims. Anything else is e
 - De-identification procedure: [PROCEDURE]
 - Data storage and access: [LOCATION AND ROLES]
 - Retention/destruction schedule: [SCHEDULE]
+
+The analysis datasets are the app's two research tables: student by job by
+class date, which holds the bid as it stood at each draw, and offers and cold
+calls by student. Both are exported with hashed student IDs.
 
 Before analysis, export an immutable raw snapshot and an audit manifest with
 row counts and cryptographic hashes. Write the cleaning script without viewing

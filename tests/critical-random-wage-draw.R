@@ -120,6 +120,16 @@ for (offset in 1:14) {
 # The drawn wage varies and does not track the bids on file.
 stopifnot(length(unique(seen_wages)) >= 3L, max(seen_wages) <= 4)
 
+# A bid changed after the first draw cannot win a re-run of it: the opt-out
+# bidder drops to zero once the wage is known and is still not chosen.
+d <- new_date(19, "random_wage")
+run_draw()
+first_winners <- assignments(d$rid)$user_id
+app$db_exec("UPDATE job_wage_bids SET min_wage=0 WHERE round_id=? AND user_id=?;", list(d$rid, students[4]))
+for (click in 2:6) { run_draw(click); stopifnot(!students[4] %in% assignments(d$rid)$user_id) }
+stopifnot(app$db_query("SELECT min_wage FROM job_wage_bid_locks WHERE round_id=? AND user_id=?;",
+                       list(d$rid, students[4]))$min_wage == 5000)
+
 # Everyone bidding high gains nothing: nobody is eligible and nothing is paid.
 d <- new_date(20, "random_wage")
 app$db_exec("UPDATE job_wage_bids SET min_wage=5000 WHERE round_id=?;", list(d$rid))
@@ -140,13 +150,49 @@ shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_absent_b
 after <- app$db_query("SELECT user_id,status,assigned_wage FROM job_assignments WHERE round_id=? ORDER BY id;", list(d$rid))
 stopifnot(nrow(after) == 2L, identical(after$status[1], "absent_redrawn"), after$assigned_wage[1] == -wage,
           after$user_id[2] %in% setdiff(eligible, first$user_id[1]), after$assigned_wage[2] == wage)
-# Make everyone else ineligible, then mark the replacement absent too.
+# Make everyone else ineligible, then mark the replacement absent too. Bids
+# edited after the draw do not count, so the recorded bids are changed here.
 app$db_exec("UPDATE job_wage_bids SET min_wage=5000 WHERE round_id=?;", list(d$rid))
+app$db_exec("UPDATE job_wage_bid_locks SET min_wage=5000 WHERE round_id=?;", list(d$rid))
 second <- app$db_query("SELECT id FROM job_assignments WHERE round_id=? AND status='assigned';", list(d$rid))$id[1]
 shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_absent_btn = second) })
 final <- app$db_query("SELECT status FROM job_assignments WHERE round_id=?;", list(d$rid))
 stopifnot(nrow(final) == 2L, all(final$status == "absent_redrawn"),
           nrow(app$db_query("SELECT user_id FROM round_absences WHERE round_id=?;", list(d$rid))) == 2L)
+
+# A volunteer can fill a slot nobody was eligible for. The volunteer is paid
+# the drawn wage, never the posted maximum, even though it is below their bid.
+add_student <- function(uid, post, click = 1L) shiny::testServer(app$server, {
+  set_admin(rv)
+  session$setInputs(manual_assign_uid = uid, manual_assign_post_id = post,
+                    manual_assign_timing = "start", manual_add_assignment_btn = click)
+})
+d <- new_date(25, "random_wage", slots = 2L)
+add_student(students[4], d$post)                       # before any draw: refused
+stopifnot(nrow(assignments(d$rid)) == 0L, nrow(snapshot(d)) == 0L)
+app$db_exec("UPDATE job_wage_bids SET min_wage=5000 WHERE round_id=?;", list(d$rid))
+app$db_exec("UPDATE job_wage_bids SET min_wage=0.5 WHERE round_id=? AND user_id=?;", list(d$rid, students[1]))
+run_draw()
+wage <- snapshot(d)$wage[1]
+add_student(students[4], d$post)                       # bid 5000, far above the wage
+add_student(students[6], d$post, 2L)                   # never bid
+filled <- app$db_query("SELECT user_id, assigned_wage, assignment_mode FROM job_assignments WHERE round_id=? ORDER BY user_id;", list(d$rid))
+stopifnot(wage <= 4, all(filled$assigned_wage == wage),
+          identical(filled$assignment_mode[filled$user_id == students[4]], "volunteer_fill"),
+          identical(filled$assignment_mode[filled$user_id == students[6]], "volunteer_fill"),
+          # the one eligible bidder was drawn by the lottery and is not a volunteer fill
+          identical(filled$assignment_mode[filled$user_id == students[1]], "wage_bidding"),
+          snapshot(d)$wage[1] == wage)
+# Adding back a student who was eligible is an ordinary repair at the drawn wage.
+app$db_exec("DELETE FROM job_assignments WHERE round_id=? AND user_id=?;", list(d$rid, students[1]))
+add_student(students[1], d$post, 3L)
+back <- app$db_query("SELECT assigned_wage, assignment_mode FROM job_assignments WHERE round_id=? AND user_id=?;", list(d$rid, students[1]))
+stopifnot(back$assigned_wage[1] == wage, identical(back$assignment_mode[1], "manual"))
+# On other dates an added assignment still takes the posted wage.
+d <- new_date(26, "pay_as_bid")
+add_student(students[6], d$post)
+plain <- app$db_query("SELECT assigned_wage, assignment_mode FROM job_assignments WHERE round_id=?;", list(d$rid))
+stopifnot(nrow(plain) == 1L, plain$assigned_wage[1] == 4, identical(plain$assignment_mode[1], "manual"))
 
 # The existing pay-as-bid draw is unchanged: lowest bidders win and receive
 # their own bid, and an empty slot is still filled from the remaining students.
@@ -192,7 +238,7 @@ repeat {
   run_draw()
   if (nrow(assignments(d$rid)) == 1L) break
 }
-app$db_exec("UPDATE job_wage_bids SET min_wage=5000 WHERE round_id=?;", list(d$rid))
+app$db_exec("UPDATE job_wage_bid_locks SET min_wage=5000 WHERE round_id=?;", list(d$rid))
 only <- app$db_query("SELECT id FROM job_assignments WHERE round_id=?;", list(d$rid))$id[1]
 shiny::testServer(app$server, { set_admin(rv); session$setInputs(redraw_pass_btn = only) })
 left <- app$db_query("SELECT status FROM job_assignments WHERE round_id=?;", list(d$rid))
