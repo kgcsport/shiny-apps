@@ -6,6 +6,10 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 COMPOSE=(docker compose)
+# Staging and the fast pages live in their own compose files, so each command
+# here sees the other's container as an "orphan". They are not leftovers: do
+# not remove them. This silences the warning.
+export COMPOSE_IGNORE_ORPHANS=True
 # Probe the local origin, not the public Cloudflare hostname. Reclaim's own
 # outbound request can be rejected by Cloudflare even when student traffic is
 # healthy. The Host header selects the same Nginx virtual host students use.
