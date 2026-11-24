@@ -3338,6 +3338,12 @@ body.tutorial-off .tab-howto, body.tutorial-off .tutorial-note { display:none !i
 .rw-delta-neg { color:#b00020; font-weight:600; }
 
 /* ── Job Market tab ─────────────────────────────────────────────────────── */
+.settings-group { background:#fff; border:1px solid #e2e5e8; border-radius:8px; margin-bottom:.6rem; }
+.settings-group > summary { cursor:pointer; padding:.6rem .8rem; list-style-position:inside; }
+.settings-group > summary:focus-visible { outline:2px solid #951829; outline-offset:2px; }
+.settings-group-title { font-weight:700; color:#951829; }
+.settings-group-hint { color:#777; font-size:.84rem; margin-left:.6rem; }
+.settings-group-body { padding:.2rem .8rem .8rem; }
 .jm-card { background: #fff; border-radius: 10px; border: 1px solid #e8e8e8;
            padding: 1rem 1.1rem; margin-bottom: .8rem; }
 .jm-assignment { border-left: 3px solid #951829; background: #fff8f8;
@@ -3491,6 +3497,25 @@ COOKIE_JS <- HTML("
       window.setArcadeFontScale(localStorage.getItem('classJobFontScale') || '110');
     }, 0);
   });
+  // Collapsible groups keep their open or closed state across redraws.
+  function rememberedGroups() {
+    var store = {};
+    try { store = JSON.parse(sessionStorage.getItem('classJobGroups') || '{}'); } catch (e) {}
+    document.querySelectorAll('details[data-remember]').forEach(function(el) {
+      var key = el.getAttribute('data-remember');
+      if (Object.prototype.hasOwnProperty.call(store, key)) el.open = !!store[key];
+    });
+  }
+  document.addEventListener('toggle', function(event) {
+    var el = event.target;
+    if (!el || !el.matches || !el.matches('details[data-remember]')) return;
+    var store = {};
+    try { store = JSON.parse(sessionStorage.getItem('classJobGroups') || '{}'); } catch (e) {}
+    store[el.getAttribute('data-remember')] = el.open;
+    try { sessionStorage.setItem('classJobGroups', JSON.stringify(store)); } catch (e) {}
+  }, true);
+  $(document).on('shiny:value', function() { setTimeout(rememberedGroups, 0); });
+  $(rememberedGroups);
 })();
 ")
 
@@ -3550,6 +3575,18 @@ job_description_details <- function(description, label = "What to do") {
     style = "margin-top:.22rem;font-size:.78rem;color:#555;",
     tags$summary(style = "cursor:pointer;color:#951829;font-weight:600;", label),
     div(style = "padding:.3rem .15rem;white-space:pre-wrap;", description)
+  )
+}
+
+# A collapsible group on an instructor screen. Whether it is open is remembered
+# in the browser by key, so the group stays as the instructor left it when the
+# screen is redrawn after a save.
+settings_group <- function(key, title, ..., open = FALSE, hint = NULL) {
+  tags$details(
+    class = "settings-group", `data-remember` = key, open = if (isTRUE(open)) NA else NULL,
+    tags$summary(tags$span(class = "settings-group-title", title),
+                 if (!is.null(hint)) tags$span(class = "settings-group-hint", hint)),
+    div(class = "settings-group-body", ...)
   )
 }
 
@@ -9288,8 +9325,7 @@ server <- function(input, output, session) {
        LEFT JOIN users u ON u.user_id=jo.taken_by
        WHERE jo.round_id=? ORDER BY jo.id DESC LIMIT 8;", list(as.integer(round$id[1]))),
       error = function(e) data.frame())
-    tagList(
-      tags$hr(),
+    div(style = "margin-bottom:.8rem;",
       tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.4rem;", "Offer A Job To The Class"),
       if (!nrow(jobs)) tags$p(style = "color:#999;margin:0;font-size:.86rem;",
         "Run the draw for this class date first. A job is offered at the wage drawn for it.")
@@ -10857,7 +10893,7 @@ server <- function(input, output, session) {
 
     tagList(
       div(class = "tab-howto",
-          "Manage job assignments and log participation during class. Updates every 5 seconds."),
+          "Manage job assignments and log participation during class. The page updates as changes happen."),
       tutorial_note("Live class workflow", c(
         "Choose the active class and section in the banner before drawing or scoring anything.",
         "Draw start-, end-, or all-timing jobs; use Preview Draw when you want to inspect first.",
@@ -10866,16 +10902,9 @@ server <- function(input, output, session) {
         "Mark job outcomes, review them in Live Score Audit, then commit when they are correct."
       )),
 
-      fluidRow(
-        column(6, div(class="alert alert-info", style="margin-bottom:.4rem;",
-          tags$strong("Active environment: "),
-          paste(c(cur_course, section_scope_label)[nzchar(c(cur_course, section_scope_label))], collapse=" / "))),
-        column(3,
-          selectInput("draw_timing_filter", "Draw jobs:",
-                      choices = c("All timings" = "all", "Start of class" = "start",
-                                  "End/post class" = "end"),
-                      selected = "all", width = "100%"))
-      ),
+      div(style = "font-size:.9rem;color:#31708f;margin:.1rem 0 .6rem;",
+          tags$strong("Class: "),
+          paste(c(cur_course, section_scope_label)[nzchar(c(cur_course, section_scope_label))], collapse=" / ")),
 
       wellPanel(
         tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
@@ -10957,6 +10986,13 @@ server <- function(input, output, session) {
                            if (nzchar(section_scope_label)) paste0(" / Sections: ",section_scope_label) else "",
                            if (tok_rev) "released" else sprintf("%d pending", as.integer(n_pending)))),
             fluidRow(
+              # Which jobs the draw covers sits beside the button it controls,
+              # and keeps its value when the page is redrawn.
+              column(3,
+                selectInput("draw_timing_filter", "Jobs to draw:",
+                            choices = c("All timings" = "all", "Start of class" = "start",
+                                        "End/post class" = "end"),
+                            selected = isolate(input$draw_timing_filter) %||% "all", width = "100%")),
               column(2,
                 actionButton("run_draw_btn", "\U0001f3b2 Draw Jobs",
                              class = "btn btn-primary btn-sm",
@@ -11001,8 +11037,9 @@ server <- function(input, output, session) {
                              if (revealed) "Visible to students" else "Hidden from students")),
             uiOutput("draw_preview_table"),
             tags$hr(),
-            tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.4rem;",
-                    "Add Assignment Back"),
+            uiOutput("job_offer_panel"),
+            settings_group("tracker-add-assignment", "Add an assignment by hand",
+              hint = "Restore a removed assignment or place a student in a job",
             if (!length(assignment_stu_choices) || !length(manual_post_choices)) {
               tags$p(style = "color:#999;margin:0;font-size:.86rem;",
                      "No eligible students or active jobs available for this class date.")
@@ -11027,10 +11064,9 @@ server <- function(input, output, session) {
                   "Random-wage date: use this to let a volunteer fill an empty slot. The student is paid the wage drawn for the job, even if it is below their bid or they did not bid, and the assignment is recorded as a volunteer fill."),
                 tags$p(style = "font-size:.78rem;color:#888;margin:.35rem 0 0;",
                        sprintf("This restores the assignment to the selected class date (%s), just like an in-class selection.",
-                               format(as.Date(round$class_date[1] %||% Sys.Date()), "%B %d, %Y"))),
-                uiOutput("job_offer_panel")
+                               format(as.Date(round$class_date[1] %||% Sys.Date()), "%B %d, %Y")))
               )
-            }
+            })
           )}
         }
       ),
@@ -11387,8 +11423,8 @@ server <- function(input, output, session) {
         tags$h6(style = "font-weight:700;color:#951829;margin-bottom:.6rem;",
                 "Live Score Audit"),
         actionButton("repair_zeroed_jobs_btn", "Repair zeroed jobs",
-                     class = "btn btn-outline-warning btn-sm",
-                     style = "margin-bottom:.55rem;",
+                     class = "btn btn-link btn-sm",
+                     style = "margin-bottom:.55rem;padding-left:0;color:#8a6d3b;",
                      title = "Credit only completed jobs with a positive stored wage, a zero award, and no existing job-token credit",
                      onclick = "if(!confirm('Repair only completed jobs that have a positive saved wage but were mistakenly recorded at 0 tokens? Missed jobs and already credited jobs are excluded.')) return false;"),
 
@@ -11549,7 +11585,11 @@ server <- function(input, output, session) {
     scope <- setting_scope()
     sections <- scoped_sections()
     overrides <- setting_overrides()
-    wellPanel(style = "padding:.6rem .8rem;",
+    level_now <- isolate(rv$setting_level) %||% "auto"
+    settings_group("setting-level", "Where settings are saved",
+      hint = paste0(switch(level_now, section = "This section only", course = "The whole course",
+                           app = "Every course", "Each setting's usual place"),
+                    if (nrow(overrides)) sprintf(" · %d saved for this course or its sections", nrow(overrides)) else ""),
       selectInput("setting_level_sel", "Save settings for:", width = "100%",
         selected = isolate(rv$setting_level) %||% "auto",
         choices = c("Each setting's usual place (as before)" = "auto",
@@ -11904,8 +11944,8 @@ server <- function(input, output, session) {
       tagList(
 
         # ── Job Posts ─────────────────────────────────────────────────────────────
-        tags$h6(style = "font-weight:700;color:#951829;margin-top:.5rem;",
-                "Job Posts (Selected Class)"),
+        settings_group("jobs-posts", "Jobs for the selected class date", open = TRUE,
+          hint = sprintf("%d posted", if (is.data.frame(all_posts)) nrow(all_posts) else 0L),
         div(style = paste0("background:#f0f4ff;border-left:3px solid #4a6fa5;padding:.5rem .8rem;",
                            "border-radius:0 4px 4px 0;margin-bottom:.6rem;font-size:.85rem;color:#333;"),
           tags$strong("How flags work:"), " ",
@@ -12020,8 +12060,8 @@ server <- function(input, output, session) {
         },
 
         # ── Job Types ─────────────────────────────────────────────────────────────
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Job Types"),
+        ),
+        settings_group("jobs-types", "Job types", hint = "Groups of jobs and their default wage",
         tags$p(style = "color:#555;font-size:.85rem;",
                "Job types group related posts and set their default wage. Click a row to expand and edit it, then click Save changes (the form closes automatically)."),
         if (nrow(all_cats)) {
@@ -12101,8 +12141,9 @@ server <- function(input, output, session) {
         ),
 
         # ── Volunteer Clearing Wage ───────────────────────────────────────────────
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Volunteer Clearing Wage"),
+        ),
+        settings_group("jobs-wage-rules", "Wage and bidding rules",
+          hint = "Volunteer wage, paid-volunteer limit, hidden wages, draw rules",
         tags$p(style = "color:#555;font-size:.85rem;",
                "With wage bidding, every volunteer in a job type is paid the same equilibrium wage from the class-date bids — not their own bid, and nobody is rationed out. The wage freezes when the first draw runs. ",
                tags$b("Lowest bid"), " pays the cheapest bid in the job type. ",
@@ -12126,8 +12167,8 @@ server <- function(input, output, session) {
         actionButton("save_vol_clearing_btn", "Save", class = "btn btn-sm btn-primary"),
 
         # ── Templates ─────────────────────────────────────────────────────────────
-        tags$hr(),
-        tags$h6(style = "font-weight:700;color:#951829;", "Templates"),
+        ),
+        settings_group("jobs-templates", "Templates", hint = "Jobs carried into each new class date",
         tags$p(style = "color:#555;font-size:.85rem;",
                "Templates with Auto-copy ON are carried into each new class date with their timing, wage, slots, and voluntary/in-draw flags. ",
                "Keep every-class jobs ON and toggle occasional jobs (discussion lead, cold calls) only when you want them."),
@@ -12221,6 +12262,7 @@ server <- function(input, output, session) {
             )
           )
         }
+        )
       )
 
     } else if (act == "round_setup") {
