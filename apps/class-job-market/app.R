@@ -1809,10 +1809,22 @@ shared_db_tick <- shiny::reactiveVal(0L)
 .shared_poll$since_emit <- SHARED_POLL_MIN_GAP; .shared_poll$sessions <- 0L
 shared_poll_session_started <- function() .shared_poll$sessions <- .shared_poll$sessions + 1L
 shared_poll_session_ended <- function() .shared_poll$sessions <- max(0L, .shared_poll$sessions - 1L)
+# Sandbox sessions keep their records in a separate database, each on its own
+# connection, so the loop watches that file too through a connection of its
+# own. Without this a change made on one sandbox device would reach another
+# only on the once-a-minute heartbeat.
+sandbox_change_stamp <- function() {
+  path <- tryCatch(shared_db_path(demo = TRUE), error = function(e) "")
+  if (!nzchar(path) || !file.exists(path) || identical(normalizePath(path), normalizePath(DB_PATH))) return(NA)
+  if (is.null(.shared_poll$sandbox_con) || !DBI::dbIsValid(.shared_poll$sandbox_con))
+    .shared_poll$sandbox_con <- tryCatch(connect_sqlite(path), error = function(e) NULL)
+  if (is.null(.shared_poll$sandbox_con)) return(NA)
+  tryCatch(DBI::dbGetQuery(.shared_poll$sandbox_con, "PRAGMA data_version;")[[1]][1], error = function(e) NA)
+}
 db_change_stamp <- function() {
   version <- tryCatch(DBI::dbGetQuery(get_con(), "PRAGMA data_version;")[[1]][1], error = function(e) NA)
   changes <- tryCatch(DBI::dbGetQuery(get_con(), "SELECT total_changes() AS n;")$n[1], error = function(e) NA)
-  paste(version, changes)
+  paste(version, changes, sandbox_change_stamp())
 }
 # One step of the loop. A burst of writes is answered once per gap, and the
 # last change in a burst is never dropped: the pending flag survives until it

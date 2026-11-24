@@ -143,6 +143,20 @@ shiny::testServer(app$server, {
   session$elapse(40000); session$flushReact()
   stopifnot(!any(quiet), length(query_log()) == 0L)
 })
+# Sandbox sessions write to a separate database on their own connections. The
+# loop must notice those commits too, and must stay quiet when that database
+# is idle.
+sandbox_path <- app$shared_db_path(demo = TRUE)
+sandbox <- DBI::dbConnect(RSQLite::SQLite(), sandbox_path)
+DBI::dbExecute(sandbox, "CREATE TABLE IF NOT EXISTS sandbox_probe(x INTEGER);")
+for (i in 1:4) app$shared_db_check()
+stopifnot(!any(vapply(1:20, function(i) app$shared_db_check(), logical(1))))
+DBI::dbExecute(sandbox, "INSERT INTO sandbox_probe VALUES(1);")
+stopifnot(isTRUE(app$shared_db_check()))
+for (i in 1:4) app$shared_db_check()
+stopifnot(!any(vapply(1:20, function(i) app$shared_db_check(), logical(1))))
+DBI::dbDisconnect(sandbox)
+
 # The loop stops working for nobody: the session count returns to zero.
 stopifnot(app$.shared_poll$sessions == 0L)
 
