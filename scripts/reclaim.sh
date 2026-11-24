@@ -30,7 +30,9 @@ Commands:
   health    Check the public Class Job Market URL
   sync      Run the Cloudflare gradebook sync once
   logs      Show recent Shiny and nginx logs
-  promote   Pin production to an immutable Shiny image tag
+  promote   Pin production to an immutable Shiny image tag. With no tag, or
+            "latest", pulls the repo and pins the image built from its newest
+            commit that changed the app.
   lite      Start/update the fast pages (/student-lite/) and reload nginx
   lite-down Stop the fast pages
 EOF
@@ -84,8 +86,24 @@ case "$command" in
     ;;
   promote)
     image="${2:-}"
+    if [[ -z "$image" || "$image" == "latest" ]]; then
+      # Resolve "latest" to the exact commit it was built from, so production
+      # stays pinned to something that cannot change underneath it.
+      git pull --ff-only
+      sha="$(git log -n 1 --format=%H -- apps tests scripts shiny-server.conf Dockerfile docker-entrypoint.sh)"
+      [[ -n "$sha" ]] || { echo "Could not find a commit that builds an image." >&2; exit 1; }
+      image="ghcr.io/kgcsport/shiny-apps:$sha"
+      if ! docker manifest inspect "$image" >/dev/null 2>&1; then
+        echo "No image yet for the newest app commit ${sha:0:7}: $(git log -n 1 --format=%s "$sha")" >&2
+        echo "The build may still be running or may have failed (GitHub > Actions)." >&2
+        echo "Try again in a few minutes, or pass an older tag explicitly." >&2
+        exit 1
+      fi
+      echo "Newest built commit: ${sha:0:7} $(git log -n 1 --format=%s "$sha")"
+      echo "Currently pinned:    $(grep -E '^SHINY_IMAGE=' .env 2>/dev/null | cut -d= -f2- || true)"
+    fi
     [[ "$image" =~ ^ghcr.io/kgcsport/shiny-apps:[A-Za-z0-9._/-]+$ ]] || {
-      echo "Usage: scripts/reclaim.sh promote ghcr.io/kgcsport/shiny-apps:<full-commit-sha>" >&2
+      echo "Usage: scripts/reclaim.sh promote [latest | ghcr.io/kgcsport/shiny-apps:<full-commit-sha>]" >&2
       exit 2
     }
     [[ -f .env ]] || { echo ".env is required on the Reclaim host" >&2; exit 1; }
