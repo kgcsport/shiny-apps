@@ -332,7 +332,10 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
       hub$close_bidding_after_draw(rid)
       skip <- hub$norm_key(as.character(unlist(body$exclude %||% character(0))))
       pool <- students[!hub$norm_key(students$user_id) %in% c(absent, skip), , drop = FALSE]
-      if (!nrow(pool)) return(list(ok = FALSE, message = "No students are available to call."))
+      pool <- hub$cold_call_eligible(rid, pool)
+      if (!nrow(pool)) return(list(ok = FALSE, message = if (hub$cold_call_bidders_only())
+        "No present student bid at or below the cold-call wage. Take a volunteer instead."
+        else "No students are available to call."))
       pick <- pool[sample.int(nrow(pool), 1L), ]
       return(list(ok = TRUE, drawn = list(user_id = pick$user_id, name = pick$display_name)))
     }

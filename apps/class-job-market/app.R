@@ -2225,13 +2225,61 @@ round_state_signature <- function(round) {
 # chosen among them by lottery; everyone chosen is paid the drawn wage. No bid
 # can move the wage, so bidding one's true minimum is optimal and a group
 # cannot raise pay by bidding high. A slot with no eligible bidder stays empty.
-random_wage_grid <- function(max_wage, step = 0.5) {
+random_wage_grid <- function(max_wage, step = 0.5, floor_wage = 0) {
   max_wage <- suppressWarnings(as.numeric(max_wage %||% NA_real_))
   if (!is.finite(max_wage) || max_wage < step) return(step)
-  seq(step, floor(max_wage / step + 1e-9) * step, by = step)
+  grid <- seq(step, floor(max_wage / step + 1e-9) * step, by = step)
+  # A floor removes the lowest wages from the draw. If it is at or above the
+  # top of the range, the top wage is the only one left.
+  floor_wage <- suppressWarnings(as.numeric(floor_wage %||% 0))
+  if (is.finite(floor_wage) && floor_wage > 0) {
+    kept <- grid[grid >= floor_wage - 1e-9]
+    grid <- if (length(kept)) kept else max(grid)
+  }
+  grid
 }
-draw_random_wage <- function(max_wage, step = 0.5) {
-  grid <- random_wage_grid(max_wage, step)
+# The lowest wage a random-wage draw may produce, for the class in force. The
+# wage paid never depends on anyone's bid, so a floor leaves a truthful bid
+# optimal; bids below the floor are simply all eligible.
+random_wage_floor_value <- function() {
+  value <- suppressWarnings(as.numeric(resolve_setting("random_wage_floor", "0", with_scope = TRUE)$value))
+  if (is.finite(value) && value > 0) value else 0
+}
+# Which present students a paid cold call may pick. With the bidders-only
+# switch on, only students who bid on a cold-call job: on a random-wage date
+# the bid must be at or below that job's drawn wage, otherwise any bid counts.
+# Bids recorded at the date's first draw are used when they exist.
+cold_call_bidders_only <- function()
+  identical(as.character(resolve_setting("cold_call_bidders_only", "0", with_scope = TRUE)$value), "1")
+cold_call_eligible <- function(round_id, students) {
+  if (!nrow(students) || !cold_call_bidders_only()) return(students)
+  rid <- as.integer(round_id)
+  posts <- tryCatch(db_query(
+    "SELECT jp.id, jp.category_id, COALESCE(jp.wage_override,jc.default_wage,1) AS fallback_wage
+     FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
+     WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
+       AND (LOWER(COALESCE(jp.selection_time,'')) IN ('during','during class')
+            OR LOWER(COALESCE(jc.name,''))='cold call');", list(rid)), error = function(e) data.frame())
+  if (!nrow(posts)) return(students[0, , drop = FALSE])
+  round <- db_query("SELECT assignment_mode, wage_pricing_rule FROM weekly_rounds WHERE id=?;", list(rid))
+  random_wage <- nrow(round) > 0 && identical(as.character(round$assignment_mode[1] %||% ""), "wage_bidding") &&
+    identical(normalize_wage_pricing_rule(round$wage_pricing_rule[1] %||% "pay_as_bid"), "random_wage")
+  locked <- db_query("SELECT user_id, job_post_id, min_wage FROM job_wage_bid_locks WHERE round_id=?;", list(rid))
+  bids <- if (nrow(locked)) locked else db_query(
+    "SELECT jwb.user_id, jwb.job_post_id, jwb.min_wage FROM job_wage_bids jwb WHERE jwb.round_id=?
+     UNION ALL
+     SELECT wb.user_id, jp.id AS job_post_id, wb.min_wage FROM wage_bids wb
+       JOIN job_posts jp ON jp.round_id=wb.round_id AND jp.category_id=wb.category_id
+     WHERE wb.round_id=?;", list(rid, rid))
+  bids <- bids[bids$job_post_id %in% posts$id & is.finite(suppressWarnings(as.numeric(bids$min_wage))), , drop = FALSE]
+  if (!nrow(bids)) return(students[0, , drop = FALSE])
+  limit <- vapply(bids$job_post_id, function(id) if (!random_wage) Inf else
+    class_wage_snapshot(rid, as.integer(id), as.numeric(posts$fallback_wage[posts$id == id][1])), numeric(1))
+  ok <- unique(norm_key(bids$user_id[as.numeric(bids$min_wage) <= limit + 1e-9]))
+  students[norm_key(students$user_id) %in% ok, , drop = FALSE]
+}
+draw_random_wage <- function(max_wage, step = 0.5, floor_wage = random_wage_floor_value()) {
+  grid <- random_wage_grid(max_wage, step, floor_wage)
   grid[sample.int(length(grid), 1L)]
 }
 random_wage_winners <- function(post_bids, wage, slots) {
@@ -10283,10 +10331,12 @@ server <- function(input, output, session) {
            WHERE ra.round_id=? AND LOWER(ra.user_id)=LOWER(u.user_id));",
       list(rid)),error=function(e)data.frame())
     pool <- scope_filter_rows(pool)
+    pool <- cold_call_eligible(rid, pool)
     if (nrow(pool) && nzchar(exclude_uid)) pool <- pool[norm_key(pool$user_id) != norm_key(exclude_uid), , drop=FALSE]
     if(nrow(pool)) pool <- pool[sample(nrow(pool)),,drop=FALSE]
     if (!nrow(pool)) {
-      showNotification("No eligible students for a cold call.", type = "warning")
+      showNotification(if (cold_call_bidders_only()) "No present student bid at or below the cold-call wage. Take a volunteer instead."
+                       else "No eligible students for a cold call.", type = "warning")
       return()
     }
     rv$cold_call_draw <- list(
@@ -12671,6 +12721,12 @@ server <- function(input, output, session) {
         checkboxInput("volunteer_paid_cap_input",
                       "Pay each student for at most one voluntary contribution per class (later ones are recorded, unpaid) — this course / section",
                       value = volunteer_pay_capped_for_scope(), width = "100%"),
+        checkboxInput("cold_call_bidders_only_input",
+                      "Draw paid cold calls only from students who bid on a cold-call job (at or below the drawn wage on random-wage dates); volunteering stays open to everyone — this course / section",
+                      value = cold_call_bidders_only(), width = "100%"),
+        numericInput("random_wage_floor_input",
+                     "Lowest wage a random-wage draw can produce (0 = no floor) — this course / section",
+                     value = random_wage_floor_value(), min = 0, step = 0.5, width = "420px"),
         checkboxInput("bid_no_anchor_input",
                       "Hide instructor wages from students until they bid (empty bid boxes, no fallback volunteer wage) — this course / section",
                       value = bid_anchor_hidden_for_scope(), width = "100%"),
@@ -16737,6 +16793,11 @@ server <- function(input, output, session) {
       set_scoped_setting("volunteer_paid_cap", if (isTRUE(input$volunteer_paid_cap_input)) "1" else "0")
     if (!is.null(input$bid_no_anchor_input))
       set_scoped_setting("bid_no_anchor", if (isTRUE(input$bid_no_anchor_input)) "1" else "0")
+    if (!is.null(input$cold_call_bidders_only_input))
+      set_scoped_setting("cold_call_bidders_only", if (isTRUE(input$cold_call_bidders_only_input)) "1" else "0")
+    floor_in <- suppressWarnings(as.numeric(input$random_wage_floor_input %||% NA))
+    if (is.finite(floor_in) && floor_in >= 0)
+      set_scoped_setting("random_wage_floor", as.character(round(floor_in * 2) / 2))
     if (!is.null(input$draw_uses_date_settings_input))
       set_scoped_setting("draw_uses_date_settings", if (isTRUE(input$draw_uses_date_settings_input)) "1" else "0")
     rv$jobs_ver <- rv$jobs_ver + 1L
