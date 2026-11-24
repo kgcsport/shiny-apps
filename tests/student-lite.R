@@ -315,4 +315,48 @@ stopifnot(drew$status == 200L, grepl("Drew", drew$json$message, fixed = TRUE), n
           act(prof, list(action = "draw_jobs", timing = "sideways"))$status == 409L,
           act(ta, list(action = "draw_jobs", timing = "all"), "01")$status == 403L)
 
+# One job drawn alone: only its open slot is filled, other jobs are untouched,
+# an absent student is not picked, and a full job is refused.
+hub$db_exec("DELETE FROM round_absences WHERE round_id=?;", list(rid))
+single_post <- new_post("Solo job", "start")
+others_before <- hub$db_query("SELECT id, user_id, job_post_id, status FROM job_assignments WHERE round_id=? ORDER BY id;", list(rid))
+open_names <- function(st) vapply(st$open_jobs, function(j) j$job_name, character(1))
+stopifnot("Solo job" %in% open_names(tracker_state_for(prof)$json))
+hub$db_exec("INSERT OR REPLACE INTO round_absences(round_id,user_id,marked_at) VALUES(?,'cy@test.edu',CURRENT_TIMESTAMP);", list(rid))
+one <- act(prof, list(action = "draw_job", job_post_id = single_post))
+solo <- jobs_of(single_post)
+others_after <- hub$db_query("SELECT id, user_id, job_post_id, status FROM job_assignments WHERE round_id=? AND job_post_id<>? ORDER BY id;", list(rid, single_post))
+stopifnot(one$status == 200L, grepl("Drew Ana Test for Solo job", one$json$message, fixed = TRUE),
+          nrow(solo) == 1L, solo$user_id == "ana@test.edu", identical(others_before, others_after),
+          !"Solo job" %in% open_names(one$json$state),
+          act(prof, list(action = "draw_job", job_post_id = single_post))$status == 409L, nrow(jobs_of(single_post)) == 1L,
+          act(ta, list(action = "draw_job", job_post_id = single_post), "01")$status == 403L,
+          act(prof, list(action = "draw_job", job_post_id = 999999L))$status == 409L)
+
+# Redraw: the job moves to another student and nothing is held against the first.
+hub$db_exec("DELETE FROM round_absences WHERE round_id=?;", list(rid))
+moved <- act(prof, list(action = "job_redraw", assignment_id = solo$id[1]))
+solo <- jobs_of(single_post)
+stopifnot(moved$status == 200L, nrow(solo) == 2L, solo$status[1] == "redrawn", solo$user_id[2] == "cy@test.edu",
+          solo$status[2] == "assigned", solo$assigned_wage[2] == abs(solo$assigned_wage[1]),
+          nrow(hub$db_query("SELECT 1 FROM round_absences WHERE round_id=?;", list(rid))) == 0L,
+          hub$assignment_history_state("", "redrawn")$label == "Redrawn")
+
+# The student page shows a student their own job for the day, with its
+# instructions, only after the instructor shows it to their section.
+hub$db_exec("UPDATE job_posts SET description='Bring the handout.' WHERE id=?;", list(single_post))
+hub$db_exec("DELETE FROM assignment_timing_reveals WHERE round_id=?;", list(rid))
+cy_page <- function() request("GET", "/api/state", cookie = cy$cookie)$json
+hidden_page <- cy_page()
+stopifnot(length(hidden_page$my_jobs) == 0L, hidden_page$jobs_not_shown >= 1L,
+          !grepl("Solo job", jsonlite::toJSON(hidden_page[c("my_jobs", "jobs_not_shown")]), fixed = TRUE))
+stopifnot(act(prof, list(action = "reveal", timing = "all"))$status == 200L)
+shown_page <- cy_page()
+mine <- Filter(function(j) j$job_name == "Solo job", shown_page$my_jobs)
+stopifnot(length(mine) == 1L, mine[[1]]$description == "Bring the handout.", mine[[1]]$when == "Start of class",
+          mine[[1]]$wage == solo$assigned_wage[2], shown_page$jobs_not_shown == 0L,
+          # Ana no longer holds it, so it is not on her page.
+          !any(vapply(request("GET", "/api/state", cookie = login("ana@test.edu", "ana-pass")$cookie)$json$my_jobs,
+                      function(j) j$job_name == "Solo job", logical(1))))
+
 cat("student lite: PASS\n")

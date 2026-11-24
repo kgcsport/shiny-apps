@@ -23,6 +23,9 @@
   h2 { font-size: .8rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 1.4rem 0 .5rem; }
   .sub { color: var(--muted); font-size: .9rem; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: .9rem 1rem; }
+  .myjob + .myjob, .myjob + .sub { margin-top: .7rem; padding-top: .7rem; border-top: 1px solid var(--line); }
+  .myjob-name { font-weight: 700; font-size: 1.05rem; }
+  .myjob-how { margin-top: .3rem; white-space: pre-wrap; }
   .wallet { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
   .tile .num { font-size: 1.7rem; font-weight: 650; font-variant-numeric: tabular-nums; }
   .tile .lab { color: var(--muted); font-size: .82rem; }
@@ -96,6 +99,11 @@
       <div class="card tile"><div class="num" id="on-hand">–</div><div class="lab">On hand to spend</div></div>
     </div>
 
+    <div id="today" hidden>
+      <h2>Your jobs today</h2>
+      <div class="card" id="my-jobs"></div>
+    </div>
+
     <h2 id="bids-title">Your bids</h2>
     <div class="status" id="status" role="status"></div>
     <p class="sub" id="bid-help" hidden>Enter the fewest points you would accept to do each job. Leave a job blank to place no bid on it.</p>
@@ -123,6 +131,12 @@
     return fetch(path, { method: method, headers: headers, credentials: 'same-origin',
                          body: body === undefined ? undefined : JSON.stringify(body) });
   }
+  function el(tag, attrs, text) {
+    var node = document.createElement(tag);
+    for (var key in (attrs || {})) node.setAttribute(key, attrs[key]);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
   function points(x) {
     var n = Number(x);
     return isFinite(n) ? (Math.round(n * 100) / 100).toString() : '–';
@@ -139,6 +153,23 @@
     $('where').textContent = [state.student.course, state.student.section].filter(Boolean).join(' · ');
     $('earned').textContent = points(state.wallet.earned);
     $('on-hand').textContent = points(state.wallet.on_hand);
+    // The student's own jobs for today, once the instructor has shown them.
+    var mine = state.my_jobs || [], waitingJobs = state.jobs_not_shown || 0;
+    var box = $('my-jobs'); box.textContent = '';
+    $('today').hidden = !mine.length && !waitingJobs;
+    mine.forEach(function (job) {
+      var item = el('div', { 'class': 'myjob' });
+      item.appendChild(el('div', { 'class': 'myjob-name' }, job.job_name));
+      var bits = [job.when];
+      if (job.wage !== undefined && job.wage !== null) bits.push('pays ' + points(job.wage));
+      if (job.outcome) bits.push({ complete: 'done', tried: 'tried', missed: 'missed' }[job.outcome] || job.outcome);
+      item.appendChild(el('div', { 'class': 'sub' }, bits.join(' · ')));
+      if (job.description) item.appendChild(el('div', { 'class': 'myjob-how' }, job.description));
+      box.appendChild(item);
+    });
+    if (waitingJobs) box.appendChild(el('div', { 'class': 'sub' },
+      waitingJobs === 1 ? 'You have 1 job that your instructor has not shown yet.'
+                        : 'You have ' + waitingJobs + ' jobs that your instructor has not shown yet.'));
     $('bids-title').textContent = state.round
       ? 'Your bids · ' + (state.round.label || state.round.class_date) : 'Your bids';
     var status = $('status');

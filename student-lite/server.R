@@ -156,7 +156,34 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
            # With the no-anchor switch on, the posted wage is never sent.
            posted_wage = if (no_anchor) NULL else as.numeric(post$default_wage))
     })
+    # The student's own jobs for this class date. A job appears only once the
+    # instructor has shown its group (start or end of class) to this section,
+    # by the hub's own rule; until then only a count is sent.
+    assigned <- if (!is.na(rid)) q(
+      "SELECT jp.job_name, COALESCE(jp.description, '') AS description,
+              ABS(COALESCE(ja.assigned_wage, jp.wage_override, jc.default_wage, 0)) AS wage,
+              COALESCE(ja.outcome,'') AS outcome,
+              COALESCE(NULLIF(NULLIF(ja.selection_time,''),'any'),
+                       NULLIF(jp.selection_time,''), NULLIF(jc.selection_time,''), 'start') AS timing
+       FROM job_assignments ja JOIN job_posts jp ON jp.id=ja.job_post_id
+       LEFT JOIN job_categories jc ON jc.id=jp.category_id
+       WHERE ja.round_id=? AND LOWER(ja.user_id)=LOWER(?) AND COALESCE(ja.status,'assigned')='assigned'
+         AND COALESCE(ja.display_on_today,1)=1
+       ORDER BY COALESCE(jp.display_order,99), jp.id;", list(rid, user$user_id)) else data.frame()
+    reveals <- if (nrow(assigned)) q(
+      "SELECT round_id, section, COALESCE(timing,'start') AS timing, COALESCE(revealed,0) AS revealed
+       FROM assignment_timing_reveals WHERE round_id=?;", list(rid)) else data.frame()
+    visible <- vapply(seq_len(nrow(assigned)), function(i)
+      isTRUE(hub$assignment_is_revealed(user$section, assigned$timing[i], reveals, round_id = rid)), logical(1))
+    practice <- nrow(round) > 0 && isTRUE(as.integer(round$practice_no_points[1] %||% 0L) == 1L)
+    my_jobs <- lapply(which(visible), function(i) list(
+      job_name = assigned$job_name[i], description = assigned$description[i],
+      when = if (identical(hub$assignment_reveal_timing(assigned$timing[i]), "end")) "End of class" else "Start of class",
+      # Practice dates pay nothing, so no wage is shown.
+      wage = if (practice) NULL else as.numeric(assigned$wage[i]),
+      outcome = if (nzchar(assigned$outcome[i])) assigned$outcome[i] else NULL))
     list(student = list(name = user$display_name, course = user$course, section = user$section),
+         my_jobs = my_jobs, jobs_not_shown = sum(!visible),
          wallet = list(earned = as.numeric(wallet$earned[1]), on_hand = as.numeric(wallet$on_hand[1])),
          round = if (nrow(round)) list(label = round$label[1] %||% "", class_date = round$class_date[1] %||% "") else NULL,
          bidding = bidding_status(round), no_anchor = no_anchor, jobs = jobs)
@@ -230,7 +257,7 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
     round <- round_row(context$scope)
     students <- class_students(course, section)
     if (!nrow(round)) return(list(course = course, section = section, round = NULL, students = list(),
-                                  volunteer_jobs = list(), assignments = list(), pending = 0L))
+                                  volunteer_jobs = list(), assignments = list(), open_jobs = list(), pending = 0L))
     rid <- as.integer(round$id[1])
     absent <- hub$norm_key(q("SELECT user_id FROM round_absences WHERE round_id=?;", list(rid))$user_id)
     events <- q("SELECT user_id, event_kind, outcome, COALESCE(tokens,0) tokens FROM live_score_events WHERE round_id=?;", list(rid))
@@ -254,6 +281,13 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
                   WHERE lse.committed_at IS NULL ORDER BY lse.id;")
     waiting <- waiting[hub$norm_key(waiting$user_id) %in% hub$norm_key(students$user_id), , drop = FALSE]
     pending <- nrow(waiting)
+    # Jobs in the draw that still have an empty slot, so one can be drawn alone.
+    open_jobs <- q(
+      "SELECT jp.id, jp.job_name, COALESCE(jp.slots,1) - (SELECT COUNT(*) FROM job_assignments ja
+                WHERE ja.round_id=jp.round_id AND ja.job_post_id=jp.id AND COALESCE(ja.status,'assigned')='assigned') AS open
+       FROM job_posts jp WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1
+       ORDER BY COALESCE(jp.display_order,99), jp.id;", list(rid))
+    open_jobs <- open_jobs[open_jobs$open > 0, , drop = FALSE]
     shown <- q("SELECT COALESCE(timing,'start') timing FROM assignment_timing_reveals
                 WHERE round_id=? AND COALESCE(revealed,0)=1 AND LOWER(TRIM(section))=?;",
                list(rid, hub$norm_key(section)))$timing
@@ -274,6 +308,8 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
         wage = as.numeric(assignments$wage[i]), timing = assignments$timing[i],
         outcome = if (nzchar(assignments$outcome[i])) assignments$outcome[i] else NULL,
         queued = if (is.na(assignments$queued[i])) NULL else assignments$queued[i])),
+      open_jobs = lapply(seq_len(nrow(open_jobs)), function(i) list(
+        job_post_id = as.integer(open_jobs$id[i]), job_name = open_jobs$job_name[i], open = as.integer(open_jobs$open[i]))),
       shown = list(start = "start" %in% shown, end = "end" %in% shown),
       last_pending = if (pending) sprintf("%s (%s)", waiting$display_name[pending], waiting$outcome[pending]) else NULL,
       pending = as.integer(pending))
@@ -331,12 +367,19 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
       hub$db_exec("DELETE FROM live_score_events WHERE id=? AND committed_at IS NULL;", list(as.integer(last$id)))
       return(list(ok = TRUE, message = sprintf("Removed %s (%s).", last$display_name, last$outcome)))
     }
-    if (action %in% c("job_pass", "job_absent")) {
+    if (identical(action, "draw_job")) {
+      by_date <- identical(as.character(hub$resolve_setting("draw_uses_date_settings", "0", with_scope = TRUE)$value), "1")
+      result <- hub$run_job_draw(round, "all", keep_class, by_date,
+                                 post_id = suppressWarnings(as.integer(body$job_post_id %||% NA)))
+      return(list(ok = isTRUE(result$ok) && isTRUE(result$changed), message = result$message))
+    }
+    if (action %in% c("job_pass", "job_absent", "job_redraw")) {
       assign_id <- suppressWarnings(as.integer(body$assignment_id %||% NA))
       owner <- q("SELECT user_id, round_id FROM job_assignments WHERE id=?;", list(assign_id))
       if (!nrow(owner) || owner$round_id[1] != rid || !in_class(owner$user_id[1]))
         return(list(ok = FALSE, message = "That assignment is not on today's list for this section."))
-      result <- hub$redraw_job(assign_id, passed = identical(action, "job_pass"), scope_filter = keep_class)
+      result <- hub$redraw_job(assign_id, scope_filter = keep_class,
+                               reason = switch(action, job_pass = "passed", job_redraw = "redrawn", "absent"))
       return(list(ok = isTRUE(result$ok) && isTRUE(result$changed), message = result$message))
     }
     if (!in_class(uid) && !identical(action, "assignment"))

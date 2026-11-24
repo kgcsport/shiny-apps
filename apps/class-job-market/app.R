@@ -2982,6 +2982,17 @@ DEMOS <- list(
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 ARCADE_CSS <- "
+/* Live Tracker: keep each row on one line. On a narrow screen a table scrolls
+   sideways instead of wrapping its cells. */
+#live_tracker_tab .btn { white-space: nowrap; }
+#live_tracker_tab table th, #live_tracker_tab table td { white-space: nowrap; }
+#live_tracker_tab table td.wrap-ok { white-space: normal; }
+@media (max-width: 900px) {
+  #live_tracker_tab table { display: block; overflow-x: auto; max-width: 100%; }
+}
+#live_tracker_tab .draw-one { display: flex; flex-wrap: wrap; gap: .3rem; align-items: center; margin-top: .5rem; }
+#live_tracker_tab .draw-one-label { font-size: .8rem; color: #666; margin-right: .2rem; }
+#live_tracker_tab .draw-one .btn { padding: .15rem .45rem; font-size: .78rem; }
 body { font-family: system-ui, -apple-system, sans-serif; background: #f4f5f7;
        margin: 0; font-size: 1rem; line-height: 1.5; }
 
@@ -3640,7 +3651,10 @@ assignment_history_state <- function(outcome = "", assignment_status = "assigned
   if (identical(assignment_status, "passed_redrawn")) {
     return(list(code = "absent", label = "Passed / redrawn", finalized = TRUE))
   }
-  if (assignment_status %in% c("absent_redrawn", "absent", "redrawn")) {
+  if (identical(assignment_status, "redrawn")) {
+    return(list(code = "absent", label = "Redrawn", finalized = TRUE))
+  }
+  if (assignment_status %in% c("absent_redrawn", "absent")) {
     return(list(code = "absent", label = "Absent / redrawn", finalized = TRUE))
   }
   list(code = "outstanding", label = "Outstanding", finalized = FALSE)
@@ -4227,11 +4241,18 @@ toggle_section_reveal <- function(rid, sections, scope = "start") {
 # Hand an assigned job to another student. "Absent" also records the absence,
 # which keeps the student out of every other draw that class. "Pass" only
 # gives up this one job. Returns what happened; the caller reports it.
-redraw_job <- function(aid, passed = FALSE, scope_filter = identity) {
+redraw_job <- function(aid, passed = FALSE, scope_filter = identity, reason = NULL) {
+  # reason: "absent" (also records the absence), "passed" (the student gave the
+  # job up), or "redrawn" (the instructor reassigns it; nothing is recorded
+  # against the student).
+  reason <- if (is.null(reason)) (if (isTRUE(passed)) "passed" else "absent") else as.character(reason)
+  if (!reason %in% c("absent", "passed", "redrawn")) reason <- "absent"
+  passed <- !identical(reason, "absent")
   done <- function(message, type = "message", changed = FALSE) list(ok = !identical(type, "error"), message = message, type = type, changed = changed)
   aid <- suppressWarnings(as.integer(aid %||% 0))
   if (is.na(aid) || aid <= 0) return(done("Assignment not found.", "error"))
-  released_status <- if (isTRUE(passed)) "passed_redrawn" else "absent_redrawn"
+  released_status <- switch(reason, passed = "passed_redrawn", redrawn = "redrawn", "absent_redrawn")
+  left_how <- switch(reason, passed = "passed", redrawn = "was taken off the job", "was marked absent")
   record_absence <- function() if (!isTRUE(passed)) db_exec(
     "INSERT OR REPLACE INTO round_absences(round_id,user_id,marked_at) VALUES(?,?,CURRENT_TIMESTAMP);",
     list(old$round_id[1], old$user_id[1]))
@@ -4278,7 +4299,7 @@ redraw_job <- function(aid, passed = FALSE, scope_filter = identity) {
     record_absence()
     return(done(sprintf("%s %s. No other student bid at or below the drawn wage, so the slot stays empty.",
                         old$display_name[1] %||% old$user_id[1],
-                        if (isTRUE(passed)) "passed" else "was marked absent"), "warning", changed = TRUE))
+                        left_how), "warning", changed = TRUE))
   }
   if (!nrow(candidates)) {
     return(done("No replacement student without this job was found.", "warning"))
@@ -4297,7 +4318,7 @@ redraw_job <- function(aid, passed = FALSE, scope_filter = identity) {
     list(old$round_id[1], candidates$user_id[1], old$job_post_id[1],
          if (is.na(old$assigned_wage[1] %||% NA)) NA_real_ else abs(as.numeric(old$assigned_wage[1])),
          old$assignment_mode[1] %||% "redraw"))
-  done(sprintf(if (isTRUE(passed)) "%s passed; the job went to %s." else "Redrew %s's job to %s.",
+  done(sprintf(if (identical(reason, "passed")) "%s passed; the job went to %s." else "Redrew %s's job to %s.",
                old$display_name[1] %||% old$user_id[1],
                candidates$display_name[1] %||% candidates$user_id[1]), changed = TRUE)
 }
@@ -4305,7 +4326,11 @@ redraw_job <- function(aid, passed = FALSE, scope_filter = identity) {
 # Draw today's jobs for one class: the rule behind the Live Tracker's Draw Jobs
 # button and the fast tracker page. `round` is the class date's row,
 # `scope_filter` keeps the students of the class being drawn.
-run_job_draw <- function(round, timing_filter = "all", scope_filter = identity, uses_date_settings = FALSE) {
+run_job_draw <- function(round, timing_filter = "all", scope_filter = identity, uses_date_settings = FALSE,
+                         post_id = NULL) {
+  # With `post_id`, only that job's open slots are drawn and every other
+  # assignment for the date is left as it is.
+  single <- !is.null(post_id)
   done <- function(message, type = "message", changed = FALSE) list(ok = !identical(type, "error"), message = message, type = type, changed = changed)
   if (!nrow(round)) return(done("No selected class date.", "error"))
   rid    <- round$id[1]
@@ -4326,7 +4351,19 @@ run_job_draw <- function(round, timing_filter = "all", scope_filter = identity, 
     list(rid)),
     error = function(e) data.frame())
   timing_filter <- timing_filter %||% "all"
-  posts <- filter_posts_for_draw_timing(posts, timing_filter)
+  if (single) {
+    timing_filter <- "single"
+    posts <- posts[as.integer(posts$id) == suppressWarnings(as.integer(post_id)), , drop = FALSE]
+    if (!nrow(posts)) return(done("That job is not in the draw for this class date.", "error"))
+    filled <- tryCatch(db_query(
+      "SELECT COUNT(*) n FROM job_assignments
+       WHERE round_id=? AND job_post_id=? AND COALESCE(status,'assigned')='assigned';",
+      list(rid, as.integer(posts$id[1])))$n[1], error = function(e) 0L)
+    open_slots <- as.integer(posts$slots[1] %||% 1L) - as.integer(filled %||% 0L)
+    if (is.na(open_slots) || open_slots <= 0L)
+      return(done(sprintf("%s is already filled. Use Redraw to change who has it.", posts$job_name[1]), "warning"))
+    posts$slots <- open_slots
+  } else posts <- filter_posts_for_draw_timing(posts, timing_filter)
   if (!nrow(posts)) return(done("No active job posts marked 'In Draw' for this class date.", "error"))
   target_rid <- assignment_round_for_timing(rid, timing_filter)
   target_label <- round$label[1] %||% paste("Round", rid)
@@ -4336,6 +4373,15 @@ run_job_draw <- function(round, timing_filter = "all", scope_filter = identity, 
      WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0
      ORDER BY RANDOM();"), error=function(e)data.frame())
   students <- scope_filter(students)
+  if (single && nrow(students)) {
+    # Not a student marked absent today, and not one who already held or gave
+    # up this job.
+    out <- tryCatch(db_query(
+      "SELECT user_id FROM round_absences WHERE round_id=?
+       UNION SELECT user_id FROM job_assignments WHERE round_id=? AND job_post_id=?;",
+      list(rid, rid, as.integer(posts$id[1])))$user_id, error = function(e) character(0))
+    students <- students[!norm_key(students$user_id) %in% norm_key(out), , drop = FALSE]
+  }
   if (!nrow(students)) return(done("No eligible students found.", "error"))
   if (exclude_existing_assignments_for_timing(timing_filter, allow_multiple)) {
     already <- tryCatch(db_query(
@@ -4379,10 +4425,17 @@ run_job_draw <- function(round, timing_filter = "all", scope_filter = identity, 
            mode, assignment_timing))
   }
   freeze_class_wages(rid)
-  bid_close_note <- if (timing_filter %in% c("all", "start"))
+  bid_close_note <- if (timing_filter %in% c("all", "start") ||
+                        (single && !norm_key(posts$selection_time[1]) %in% c("end", "during", "during class")))
     close_bidding_after_draw(rid) else ""
   db_exec("UPDATE arcade_state SET assignments_revealed=0, updated_at=CURRENT_TIMESTAMP WHERE id=1;")
-  msg <- if (identical(timing_filter, "end")) {
+  msg <- if (single) {
+    who <- vapply(pairs, function(p) {
+      row <- db_query("SELECT display_name FROM users WHERE LOWER(user_id)=LOWER(?);", list(p$uid))
+      if (nrow(row)) row$display_name[1] %||% p$uid else p$uid
+    }, character(1))
+    sprintf("Drew %s for %s.", paste(who, collapse = " and "), posts$job_name[1])
+  } else if (identical(timing_filter, "end")) {
     sprintf("Drew %d end-of-class assignment%s for the lecture just completed (%s).",
             length(pairs), if (length(pairs) == 1) "" else "s", target_label)
   } else {
@@ -10397,14 +10450,24 @@ server <- function(input, output, session) {
   # which keeps the student out of every other draw that class. "Pass" only
   # gives up this one job: the student stays in the pool for cold calls and for
   # other jobs. Either way the original assignment is kept, unpaid, as a record.
-  redraw_assigned_job <- function(aid, passed = FALSE) {
+  redraw_assigned_job <- function(aid, passed = FALSE, reason = NULL) {
     req(rv$is_admin)
-    result <- redraw_job(aid, passed, scope_filter_rows)
+    result <- redraw_job(aid, passed, scope_filter_rows, reason = reason)
     if (isTRUE(result$changed)) rv$jobs_ver <- rv$jobs_ver + 1L
     showNotification(result$message, type = result$type)
   }
   observeEvent(input$redraw_absent_btn, redraw_assigned_job(input$redraw_absent_btn, passed = FALSE), ignoreNULL = TRUE)
   observeEvent(input$redraw_pass_btn,   redraw_assigned_job(input$redraw_pass_btn,   passed = TRUE),  ignoreNULL = TRUE)
+  observeEvent(input$redraw_plain_btn,  redraw_assigned_job(input$redraw_plain_btn,  reason = "redrawn"), ignoreNULL = TRUE)
+  # Draw one job on its own, leaving every other assignment for the date alone.
+  observeEvent(input$draw_one_job_btn, {
+    req(rv$is_admin)
+    round <- tryCatch(active_round_row(), error = function(e) data.frame())
+    result <- run_job_draw(round, "all", scope_filter_rows, saved_draw_uses_date_settings_for_scope(),
+                           post_id = suppressWarnings(as.integer(input$draw_one_job_btn)))
+    if (isTRUE(result$changed)) rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification(result$message, type = result$type)
+  }, ignoreNULL = TRUE)
 
   observeEvent(input$clear_assignments_btn, {
     req(rv$is_admin)
@@ -11395,11 +11458,11 @@ server <- function(input, output, session) {
                             choices = c("All timings" = "all", "Start of class" = "start",
                                         "End/post class" = "end"),
                             selected = isolate(input$draw_timing_filter) %||% "all", width = "100%")),
-              column(2,
+              column(2, style = "min-width:max-content;",
                 actionButton("run_draw_btn", "\U0001f3b2 Draw Jobs",
                              class = "btn btn-primary btn-sm",
                              title = if (mode == "random") "Draw per-section (select section above first)" else "Assign from this week\'s bids")),
-              column(2,
+              column(2, style = "min-width:max-content;",
                 actionButton("preview_draw_btn", "\U0001f441 Preview",
                              class = "btn btn-outline-secondary btn-sm",
                              title = "Preview assignments without saving")),
@@ -11437,6 +11500,22 @@ server <- function(input, output, session) {
               tags$p(style = "font-size:.8rem;color:#888;margin-top:.4rem;margin-bottom:0;",
                      sprintf("%d students assigned · %s", n_show,
                              if (revealed) "Visible to students" else "Hidden from students")),
+            {
+              # Jobs with an empty slot can be drawn one at a time.
+              open_jobs <- tryCatch(db_query(
+                "SELECT jp.id, jp.job_name, COALESCE(jp.slots,1) - (SELECT COUNT(*) FROM job_assignments ja
+                          WHERE ja.round_id=jp.round_id AND ja.job_post_id=jp.id AND COALESCE(ja.status,'assigned')='assigned') AS open
+                 FROM job_posts jp WHERE jp.round_id=? AND COALESCE(jp.active,1)=1 AND COALESCE(jp.in_draw,1)=1
+                 ORDER BY COALESCE(jp.display_order,99), jp.id;", list(round$id[1])), error = function(e) data.frame())
+              open_jobs <- open_jobs[open_jobs$open > 0, , drop = FALSE]
+              if (nrow(open_jobs)) div(class = "draw-one",
+                tags$span(class = "draw-one-label", "Draw one job:"),
+                lapply(seq_len(nrow(open_jobs)), function(i) tags$button(
+                  class = "btn btn-xs btn-outline-primary", type = "button",
+                  title = "Draw only this job; other assignments are left as they are",
+                  onclick = sprintf("Shiny.setInputValue('draw_one_job_btn',%d,{priority:'event'})", as.integer(open_jobs$id[i])),
+                  open_jobs$job_name[i])))
+            },
             uiOutput("draw_preview_table"),
             tags$hr(),
             uiOutput("job_offer_panel"),
@@ -11561,6 +11640,13 @@ server <- function(input, output, session) {
                       onclick = sprintf(
                         "if(confirm('Record a pass and redraw this job? The student stays eligible for other jobs and cold calls.')){Shiny.setInputValue('redraw_pass_btn',%d,{priority:'event'})}",
                         as.integer(r$id)), "Pass"),
+                    tags$button(
+                      class = "btn btn-xs btn-outline-warning",
+                      style = "padding:.1rem .3rem;font-size:.7rem;margin-right:.1rem;",
+                      title = "Give this job to another student without recording an absence or a pass",
+                      onclick = sprintf(
+                        "if(confirm('Redraw this job? Nothing is recorded against the student.')){Shiny.setInputValue('redraw_plain_btn',%d,{priority:'event'})}",
+                        as.integer(r$id)), "Redraw"),
                     tags$button(
                       class = "btn btn-xs btn-outline-secondary",
                       style = "padding:.1rem .3rem;font-size:.7rem;",

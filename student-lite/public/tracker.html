@@ -45,7 +45,7 @@
   .chips { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: .6rem; }
   .chips button { min-height: 2.3rem; padding: .35rem .7rem; font-weight: 500; }
   .chips button[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); }
-  .person { display: grid; grid-template-columns: 1fr auto; gap: .5rem; align-items: center;
+  .person { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; align-items: center;
             padding: .5rem 0; border-top: 1px solid var(--line); }
   .person:first-child { border-top: 0; }
   .person .name { font-weight: 600; }
@@ -53,8 +53,12 @@
   .person .acts { display: flex; gap: .3rem; flex-wrap: wrap; justify-content: flex-end; }
   .row > select { flex: 1 1 8rem; }
   .bar button { padding: .45rem .7rem; white-space: nowrap; }
+  .person .name, .person .meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .person > div:first-child { min-width: 0; }
+  .person .acts button, .row > button { white-space: nowrap; }
   .person.job { display: block; }
-  .person.job .acts { justify-content: flex-start; margin-top: .4rem; }
+  .person.job .acts { justify-content: flex-start; margin-top: .4rem; flex-wrap: nowrap; }
+  .person.job .acts button { min-width: 0; padding-left: .3rem; padding-right: .3rem; }
   .person.job .acts button { flex: 1 1 auto; }
   .person .acts button { min-width: 2.9rem; padding: .5rem .55rem; }
   .absent .name { color: var(--muted); text-decoration: line-through; }
@@ -62,7 +66,8 @@
   .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line);
          padding: .6rem .9rem calc(.6rem + env(safe-area-inset-bottom)); }
   .bar .inner { max-width: 40rem; margin: 0 auto; display: flex; gap: .7rem; align-items: center; justify-content: space-between; }
-  .bar .msg { font-size: .9rem; }
+  .bar .msg { font-size: .9rem; flex: 1 1 100%; }
+  .bar .inner { flex-wrap: wrap; row-gap: .35rem; justify-content: flex-end; }
   .bar a { color: var(--accent); font-size: .88rem; white-space: nowrap; }
   .error { color: var(--miss); font-size: .9rem; min-height: 1.2rem; margin-top: .4rem; }
   a.google { display: block; text-align: center; font-weight: 600; text-decoration: none; border-radius: 10px;
@@ -242,7 +247,8 @@
         acts.appendChild(b);
       });
       // Pass and Absent hand the job to another student, so they ask first.
-      [['job_pass', 'Pass', 'passes this job to another student'], ['job_absent', 'Absent', 'is absent; the job goes to another student']].forEach(function (o) {
+      [['job_redraw', 'Redraw', ': give this job to another student, with nothing recorded against them'],
+       ['job_pass', 'Pass', 'passes this job to another student'], ['job_absent', 'Absent', 'is absent; the job goes to another student']].forEach(function (o) {
         var b = el('button', { type: 'button', 'class': 'quiet', 'aria-label': a.name + ' ' + a.job_name + ' ' + o[1] }, o[1]);
         b.disabled = !!done;
         b.addEventListener('click', function () {
@@ -252,6 +258,18 @@
       });
       row.appendChild(left); row.appendChild(acts); box.appendChild(row);
     });
+    // Jobs with an empty slot can be drawn one at a time.
+    (state.open_jobs || []).forEach(function (j) {
+      var row = el('div', { 'class': 'person job' });
+      var left = el('div');
+      left.appendChild(el('div', { 'class': 'name' }, j.job_name));
+      left.appendChild(el('div', { 'class': 'meta' }, list.length || j.open > 1 ? j.open + ' open' : 'Not drawn yet'));
+      var acts = el('div', { 'class': 'acts' });
+      var b = el('button', { type: 'button', 'class': 'primary', 'aria-label': 'Draw ' + j.job_name }, 'Draw this job');
+      b.addEventListener('click', function () { act({ action: 'draw_job', job_post_id: j.job_post_id }); });
+      acts.appendChild(b); row.appendChild(left); row.appendChild(acts); box.appendChild(row);
+    });
+    $('jobs-none').hidden = list.length > 0 || (state.open_jobs || []).length > 0;
     var shown = state.shown || {};
     var all = shown.start && shown.end;
     $('reveal').textContent = all ? 'Hide from students' : 'Show to students';
