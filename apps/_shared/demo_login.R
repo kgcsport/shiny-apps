@@ -550,6 +550,10 @@ demo_server_init <- function(session, prod_db_path, auction_prod = NULL) {
     db_transaction = function(fun) {
       con <- get_lcon()
       DBI::dbWithTransaction(con, fun(con))
-    }
+    },
+    # The session's own connection, for handlers that run a transaction
+    # themselves. Using an app-wide connection instead would send a sandbox
+    # session's writes to the real database.
+    get_con = get_lcon
   )
 }

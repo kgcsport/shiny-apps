@@ -1803,16 +1803,19 @@ SHARED_POLL_MIN_GAP <- 3L      # at most one round of session checks per this ma
 # starting, a class date passing. The old timers caught those within seconds;
 # a round of checks once a minute keeps them from going unnoticed.
 SHARED_POLL_HEARTBEAT <- 60L
-shared_db_tick <- shiny::reactiveVal(0L)
+# The main database and the sandbox database are watched separately, and each
+# session listens only to its own. Activity in the sandbox never wakes a real
+# class's pages, and the reverse.
+shared_db_tick  <- shiny::reactiveVal(0L)   # main database
+sandbox_db_tick <- shiny::reactiveVal(0L)   # sandbox database
 .shared_poll <- new.env()
-.shared_poll$stamp <- NULL; .shared_poll$pending <- FALSE
-.shared_poll$since_emit <- SHARED_POLL_MIN_GAP; .shared_poll$sessions <- 0L
+.shared_poll$sessions <- 0L
+.shared_poll$main    <- list(stamp = NULL, pending = FALSE, since_emit = SHARED_POLL_MIN_GAP)
+.shared_poll$sandbox <- list(stamp = NULL, pending = FALSE, since_emit = SHARED_POLL_MIN_GAP)
 shared_poll_session_started <- function() .shared_poll$sessions <- .shared_poll$sessions + 1L
 shared_poll_session_ended <- function() .shared_poll$sessions <- max(0L, .shared_poll$sessions - 1L)
-# Sandbox sessions keep their records in a separate database, each on its own
-# connection, so the loop watches that file too through a connection of its
-# own. Without this a change made on one sandbox device would reach another
-# only on the once-a-minute heartbeat.
+# Sandbox sessions each use their own connection to a separate file, so the
+# loop reads that file's commit counter through a connection of its own.
 sandbox_change_stamp <- function() {
   path <- tryCatch(shared_db_path(demo = TRUE), error = function(e) "")
   if (!nzchar(path) || !file.exists(path) || identical(normalizePath(path), normalizePath(DB_PATH))) return(NA)
@@ -1824,20 +1827,27 @@ sandbox_change_stamp <- function() {
 db_change_stamp <- function() {
   version <- tryCatch(DBI::dbGetQuery(get_con(), "PRAGMA data_version;")[[1]][1], error = function(e) NA)
   changes <- tryCatch(DBI::dbGetQuery(get_con(), "SELECT total_changes() AS n;")$n[1], error = function(e) NA)
-  paste(version, changes, sandbox_change_stamp())
+  paste(version, changes)
 }
-# One step of the loop. A burst of writes is answered once per gap, and the
-# last change in a burst is never dropped: the pending flag survives until it
-# has been sent. Returns TRUE when sessions were told to re-check.
+# One step of the loop for one database. A burst of writes is answered once
+# per gap, and the last change in a burst is never dropped: the pending flag
+# survives until it has been sent. Returns TRUE when its sessions were told to
+# re-check.
+shared_db_check_channel <- function(name, stamp, tick) {
+  state <- .shared_poll[[name]]
+  if (!identical(stamp, state$stamp)) { state$stamp <- stamp; state$pending <- TRUE }
+  state$since_emit <- state$since_emit + 1L
+  if (state$since_emit >= SHARED_POLL_HEARTBEAT) state$pending <- TRUE
+  emit <- state$pending && state$since_emit >= SHARED_POLL_MIN_GAP
+  if (emit) { state$pending <- FALSE; state$since_emit <- 0L }
+  .shared_poll[[name]] <- state
+  if (emit) tick(shiny::isolate(tick()) + 1L)
+  emit
+}
+# One step of the whole loop. Returns which databases reported a change.
 shared_db_check <- function() {
-  stamp <- db_change_stamp()
-  if (!identical(stamp, .shared_poll$stamp)) { .shared_poll$stamp <- stamp; .shared_poll$pending <- TRUE }
-  .shared_poll$since_emit <- .shared_poll$since_emit + 1L
-  if (.shared_poll$since_emit >= SHARED_POLL_HEARTBEAT) .shared_poll$pending <- TRUE
-  if (!.shared_poll$pending || .shared_poll$since_emit < SHARED_POLL_MIN_GAP) return(FALSE)
-  .shared_poll$pending <- FALSE; .shared_poll$since_emit <- 0L
-  shared_db_tick(shiny::isolate(shared_db_tick()) + 1L)
-  TRUE
+  c(main = shared_db_check_channel("main", db_change_stamp(), shared_db_tick),
+    sandbox = shared_db_check_channel("sandbox", sandbox_change_stamp(), sandbox_db_tick))
 }
 if (shared_polling_enabled()) shiny::observe({
   shiny::invalidateLater(SHARED_POLL_TICK_MS, NULL)
@@ -2724,21 +2734,22 @@ freeze_class_wages <- function(round_id, query_fn = db_query, exec_fn = db_exec)
   nrow(posts)
 }
 
-compute_clearing_wage <- function(category_id, round_id, slots, job_post_id = NA_integer_) {
+compute_clearing_wage <- function(category_id, round_id, slots, job_post_id = NA_integer_,
+                                  query_fn = db_query) {
   if (is.na(category_id %||% NA) || is.na(round_id %||% NA) || is.na(slots %||% NA))
     return(NA_real_)
   n <- max(1L, as.integer(slots))
-  bids <- if (!is.na(job_post_id %||% NA)) tryCatch(db_query(
+  bids <- if (!is.na(job_post_id %||% NA)) tryCatch(query_fn(
     "SELECT min_wage FROM job_wage_bids WHERE round_id=? AND job_post_id=?
      ORDER BY min_wage ASC, submitted_at ASC;",
     list(as.integer(round_id), as.integer(job_post_id))), error = function(e) data.frame())
-  else tryCatch(db_query(
+  else tryCatch(query_fn(
     "SELECT MIN(jwb.min_wage) AS min_wage
      FROM job_wage_bids jwb JOIN job_posts jp ON jp.id=jwb.job_post_id
      WHERE jwb.round_id=? AND jp.category_id=?
      GROUP BY jwb.user_id ORDER BY min_wage ASC;",
     list(as.integer(round_id), as.integer(category_id))), error = function(e) data.frame())
-  if (!nrow(bids)) bids <- tryCatch(db_query(
+  if (!nrow(bids)) bids <- tryCatch(query_fn(
     "SELECT min_wage FROM wage_bids WHERE round_id=? AND category_id=? ORDER BY min_wage ASC;",
     list(as.integer(round_id), as.integer(category_id))), error = function(e) data.frame())
   if (!nrow(bids) || nrow(bids) < n) return(NA_real_)
@@ -3636,6 +3647,28 @@ server <- function(input, output, session) {
   .sandbox <- dm$is_demo
   db_exec  <- dm$db_exec
   db_query <- dm$db_query
+  # Handlers that run their own transaction ask for a connection. It must be
+  # this session's, so a sandbox session never writes to the real database.
+  get_con  <- dm$get_con
+
+  # The wage and bid helpers below are defined for the whole app and default to
+  # the main database. Inside a session they must use that session's database,
+  # or a sandbox draw would read and freeze the real class's wages and bids.
+  # Each is rebound here so every call in this session goes to the right place.
+  app_freeze_class_wages <- freeze_class_wages
+  freeze_class_wages <- function(round_id, query_fn = db_query, exec_fn = db_exec)
+    app_freeze_class_wages(round_id, query_fn = query_fn, exec_fn = exec_fn)
+  app_class_wage_snapshot <- class_wage_snapshot
+  class_wage_snapshot <- function(round_id, job_post_id, fallback_wage = NA_real_, query_fn = db_query)
+    app_class_wage_snapshot(round_id, job_post_id, fallback_wage, query_fn = query_fn)
+  app_volunteer_clearing_wage <- volunteer_clearing_wage
+  volunteer_clearing_wage <- function(round_id, category_id, slots, query_fn = db_query, job_post_id = NA_integer_)
+    app_volunteer_clearing_wage(round_id, category_id, slots, query_fn = query_fn, job_post_id = job_post_id)
+  app_compute_clearing_wage <- compute_clearing_wage
+  compute_clearing_wage <- function(category_id, round_id, slots, job_post_id = NA_integer_, query_fn = db_query)
+    app_compute_clearing_wage(category_id, round_id, slots, job_post_id, query_fn = query_fn)
+  app_overdue_pending_jobs <- overdue_pending_jobs
+  overdue_pending_jobs <- function(query_fn = db_query) app_overdue_pending_jobs(query_fn = query_fn)
 
   # ── Shared change detection (session side) ──────────────────────────────────
   # This session's polls no longer run timers of their own. They re-check when
@@ -3663,7 +3696,8 @@ server <- function(input, output, session) {
     if (!shared_polling_on) return(reactivePoll(intervalMillis, session, checkFunc, valueFunc))
     cookie <- reactiveVal(isolate(checkFunc()))
     observe({
-      shared_db_tick(); session_wrote()
+      if (isTRUE(.sandbox)) sandbox_db_tick() else shared_db_tick()
+      session_wrote()
       current <- checkFunc()
       if (!identical(current, isolate(cookie()))) cookie(current)
     })

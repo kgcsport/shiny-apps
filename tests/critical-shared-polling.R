@@ -84,10 +84,10 @@ shiny::testServer(app$server, {
   #    session runs no query, until the once-a-minute heartbeat asks every
   #    session to re-check so clock-driven changes are not missed.
   reset_queries()
-  quiet <- vapply(1:50, function(i) app$shared_db_check(), logical(1))
+  quiet <- vapply(1:50, function(i) app$shared_db_check()[["main"]], logical(1))
   session$elapse(50000); session$flushReact()
   stopifnot(!any(quiet), length(query_log()) == 0L)
-  beat <- vapply(1:12, function(i) app$shared_db_check(), logical(1))
+  beat <- vapply(1:12, function(i) app$shared_db_check()[["main"]], logical(1))
   session$flushReact()
   stopifnot(sum(beat) == 1L, length(query_log()) > 0L)
 
@@ -139,22 +139,37 @@ shiny::testServer(app$server, {
   stopifnot(any(grepl("flex_question", query_log())))
   tick(session, 4L)
   reset_queries()
-  quiet <- vapply(1:40, function(i) app$shared_db_check(), logical(1))
+  quiet <- vapply(1:40, function(i) app$shared_db_check()[["main"]], logical(1))
   session$elapse(40000); session$flushReact()
   stopifnot(!any(quiet), length(query_log()) == 0L)
 })
-# Sandbox sessions write to a separate database on their own connections. The
-# loop must notice those commits too, and must stay quiet when that database
-# is idle.
-sandbox_path <- app$shared_db_path(demo = TRUE)
-sandbox <- DBI::dbConnect(RSQLite::SQLite(), sandbox_path)
+# The sandbox database is watched separately from the main one. A commit in
+# the sandbox signals sandbox sessions only, and a commit in the main database
+# signals main sessions only.
+sandbox <- DBI::dbConnect(RSQLite::SQLite(), app$shared_db_path(demo = TRUE))
 DBI::dbExecute(sandbox, "CREATE TABLE IF NOT EXISTS sandbox_probe(x INTEGER);")
-for (i in 1:4) app$shared_db_check()
-stopifnot(!any(vapply(1:20, function(i) app$shared_db_check(), logical(1))))
+ticks <- function() c(main = shiny::isolate(app$shared_db_tick()), sandbox = shiny::isolate(app$sandbox_db_tick()))
+# Start both channels just after a round of checks, so the once-a-minute
+# heartbeat does not fall inside the steps below.
+settle <- function() {
+  for (i in 1:5) app$shared_db_check()
+  for (name in c("main", "sandbox")) {
+    state <- app$.shared_poll[[name]]; state$since_emit <- app$SHARED_POLL_MIN_GAP; state$pending <- FALSE
+    app$.shared_poll[[name]] <- state
+  }
+}
+settle()
+quiet <- vapply(1:20, function(i) any(app$shared_db_check()), logical(1))
+stopifnot(!any(quiet))
+before <- ticks()
 DBI::dbExecute(sandbox, "INSERT INTO sandbox_probe VALUES(1);")
-stopifnot(isTRUE(app$shared_db_check()))
-for (i in 1:4) app$shared_db_check()
-stopifnot(!any(vapply(1:20, function(i) app$shared_db_check(), logical(1))))
+stopifnot(identical(app$shared_db_check(), c(main = FALSE, sandbox = TRUE)),
+          ticks()[["sandbox"]] == before[["sandbox"]] + 1L, ticks()[["main"]] == before[["main"]])
+settle()
+before <- ticks()
+app$db_exec("INSERT INTO token_ledger(user_id,display_name,source_type,amount,earning,note) VALUES('s2@test.edu','s2','job',1,1,'main only');")
+stopifnot(identical(app$shared_db_check(), c(main = TRUE, sandbox = FALSE)),
+          ticks()[["main"]] == before[["main"]] + 1L, ticks()[["sandbox"]] == before[["sandbox"]])
 DBI::dbDisconnect(sandbox)
 
 # The loop stops working for nobody: the session count returns to zero.
