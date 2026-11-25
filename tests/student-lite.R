@@ -384,4 +384,30 @@ stopifnot(wrong$status == 409L, grepl("did not bid", wrong$json$message, fixed =
           act(prof, list(action = "draw", kind = "answer", exclude = list("ana@test.edu")))$status == 409L)
 hub$set_setting(paste0("cold_call_bidders_only::", scope), "0")
 
+# Run sheet and deviations on the tracker.
+sheet_state <- tracker_state_for(prof)$json
+step_keys <- vapply(sheet_state$run_sheet$steps, function(x) x$key, character(1))
+stopifnot(identical(step_keys, c("jobs_drawn", "jobs_shown", "cold_calls", "jobs_scored", "committed")),
+          length(sheet_state$deviation_kinds) == length(hub$DEVIATION_KINDS), length(sheet_state$practice_turns) == 0L)
+logged <- act(prof, list(action = "deviation", kind = "no_draw", note = "fire drill"))
+stopifnot(logged$status == 200L, "No job draw today" %in% unlist(logged$json$state$run_sheet$deviations),
+          act(prof, list(action = "deviation", kind = "made_up"))$status == 409L,
+          act(ta, list(action = "deviation", kind = "no_draw"), "01")$status == 403L,
+          act(cy, list(action = "deviation", kind = "no_draw"))$status == 401L,
+          hub$db_query("SELECT kind, note, logged_by FROM class_deviations WHERE round_id=?;", list(rid))$logged_by == "prof@test.edu")
+# Practice turns: a practice date with a schedule shows what is due and assigns it.
+made <- hub$generate_practice_schedule(scope, c("ana@test.edu", "cy@test.edu"), seed = 5,
+                                       jobs = c("Solo job", "Cold call: answer a question"), meetings = 1, none_n = 0)
+hub$db_exec("UPDATE weekly_rounds SET practice_no_points=1 WHERE id=?;", list(rid))
+hub$db_exec("DELETE FROM job_assignments WHERE round_id=?;", list(rid))
+practice_state <- tracker_state_for(prof)$json
+stopifnot(isTRUE(made$ok), isTRUE(practice_state$run_sheet$practice), length(practice_state$practice_turns) == made$turns,
+          all(vapply(practice_state$practice_turns, function(t) t$state, character(1)) == "due"),
+          act(prof, list(action = "draw_jobs", timing = "all"))$status == 409L)
+assigned_now <- act(prof, list(action = "assign_practice"))
+stopifnot(assigned_now$status == 200L, length(assigned_now$json$state$assignments) == made$turns,
+          all(vapply(assigned_now$json$state$practice_turns, function(t) t$state, character(1)) == "assigned"),
+          act(ta, list(action = "assign_practice"), "01")$status == 403L)
+hub$db_exec("UPDATE weekly_rounds SET practice_no_points=0 WHERE id=?;", list(rid))
+
 cat("student lite: PASS\n")

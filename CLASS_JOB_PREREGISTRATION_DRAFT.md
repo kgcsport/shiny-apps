@@ -202,9 +202,19 @@ Random assignment:
   as equal across jobs as slot counts allow; [OPTIONAL: BLOCKED ON BASELINE COMFORT-INDEX TERCILE].
 - Timing: the training meeting in which each student performs is also drawn at
   random within the student's assigned job.
-- Procedure: a seeded script generates the full schedule once. The seed, the
-  script commit, and a hash of the schedule are recorded before the first
-  training meeting. The schedule is not regenerated.
+- Procedure: the app generates the full schedule once per section from a seed
+  the instructor enters (Settings → Class day → Practice lottery;
+  `generate_practice_schedule()`). The seed, the app commit, and the SHA-256
+  hash of the schedule the app displays are recorded before the first
+  training meeting. The app refuses to regenerate a schedule.
+- Delivery: at each training meeting the app lists the practice turns due and
+  assigns them to their students. A practice job is never passed to another
+  student. A turn that is missed, or whose student is absent, stays due at the
+  next training meeting.
+- Deviations: any departure from the planned routine at a meeting (no draw, a
+  volunteer taken in place of a cold call, a practice turn moved, a drawn job
+  not run) is logged in the app at the time, with a timestamp, and the full
+  log is reported.
 - Late adds: [EXCLUDED FROM THE CONFIRMATORY SAMPLE AND GIVEN A JOB BY THE SAME
   SCRIPT / OTHER REGISTERED RULE].
 

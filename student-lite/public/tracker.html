@@ -56,6 +56,10 @@
   .person .name, .person .meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .person > div:first-child { min-width: 0; }
   .person .acts button, .row > button { white-space: nowrap; }
+  .step { display: flex; gap: .55rem; align-items: baseline; padding: .28rem 0; }
+  .step .mark { width: 1.3rem; flex: none; font-weight: 700; }
+  .step.done .mark { color: #1a6e3c; } .step.todo .mark { color: #a3312b; } .step.excused .mark { color: #8a6d00; }
+  .step .detail { color: #6b6a63; font-size: .86rem; }
   .person.job { display: block; }
   .person.job .acts { justify-content: flex-start; margin-top: .4rem; flex-wrap: nowrap; }
   .person.job .acts button { min-width: 0; padding-left: .3rem; padding-right: .3rem; }
@@ -106,6 +110,25 @@
         <select id="class-pick" aria-label="Class and section" hidden></select>
         <button class="quiet" id="logout" type="button">Sign out</button>
       </div>
+    </div>
+
+    <h2>Today's run sheet</h2>
+    <div class="card">
+      <div id="steps"></div>
+      <div id="practice-box" hidden>
+        <div class="sub" style="margin-top:.6rem;">Practice turns due</div>
+        <div id="practice-turns"></div>
+        <div class="row"><button class="primary" id="assign-practice" type="button">Assign practice turns</button></div>
+      </div>
+      <details id="deviation-box" style="margin-top:.7rem;">
+        <summary>Something went differently today</summary>
+        <div class="row">
+          <select id="deviation-kind" aria-label="What went differently"></select>
+        </div>
+        <input id="deviation-note" type="text" placeholder="Note (optional)" aria-label="Note" style="width:100%;margin-top:.45rem;">
+        <div class="row"><button class="quiet" id="deviation-save" type="button">Log it</button></div>
+        <div class="sub" id="deviation-list"></div>
+      </details>
     </div>
 
     <h2>Cold call</h2>
@@ -289,13 +312,38 @@
       : shown.start ? 'Students can see start-of-class jobs only.' : 'Jobs are hidden from students.';
     $('undo').disabled = !state.pending; $('commit').disabled = !state.pending;
   }
+  function renderSheet() {
+    var sheet = state.run_sheet || { steps: [], deviations: [] };
+    var box = $('steps'); box.textContent = '';
+    sheet.steps.forEach(function (s) {
+      var kind = s.done ? 'done' : s.excused ? 'excused' : 'todo';
+      var row = el('div', { 'class': 'step ' + kind });
+      row.appendChild(el('span', { 'class': 'mark', 'aria-hidden': 'true' }, s.done ? '✓' : s.excused ? '–' : '○'));
+      var text = el('div');
+      text.appendChild(el('span', {}, s.label + (s.done ? '' : s.excused ? ' · not needed or logged' : ' · to do')));
+      if (s.detail) text.appendChild(el('div', { 'class': 'detail' }, s.detail));
+      row.appendChild(text); box.appendChild(row);
+    });
+    var turns = state.practice_turns || [];
+    $('practice-box').hidden = !sheet.practice || !turns.length;
+    var list = $('practice-turns'); list.textContent = '';
+    var words = { due: 'not yet assigned', assigned: 'assigned, score it under Jobs today', done: 'done', missed: 'missed, carries to the next practice meeting' };
+    turns.forEach(function (t) {
+      list.appendChild(el('div', { 'class': 'step ' + (t.state === 'done' ? 'done' : 'todo') },
+        t.name + ' · ' + t.job_name + ' · ' + (words[t.state] || t.state) + (t.carried && t.state !== 'done' ? ' (carried over)' : '')));
+    });
+    $('assign-practice').disabled = !turns.some(function (t) { return t.state === 'due'; });
+    var pick = $('deviation-kind');
+    if (!pick.options.length) (state.deviation_kinds || []).forEach(function (k) { pick.appendChild(el('option', { value: k.kind }, k.label)); });
+    $('deviation-list').textContent = sheet.deviations.length ? 'Logged today: ' + sheet.deviations.join('; ') : '';
+  }
   function render(next) {
     state = next;
     $('date').textContent = state.round ? (state.round.label || state.round.class_date) : 'No class date selected';
     $('class-line').textContent = state.course + ' · ' + state.section +
       (state.round && state.round.practice ? ' · practice date, no points' : '') +
       (state.paid_volunteer_limit ? ' · one paid volunteer contribution each' : '');
-    renderCall(); renderVolunteerJobs(); renderPeople(); renderJobs();
+    renderSheet(); renderCall(); renderVolunteerJobs(); renderPeople(); renderJobs();
     if (!$('msg').textContent || /waiting in the audit|Nothing waiting/.test($('msg').textContent)) waiting();
     show('app');
   }
@@ -364,6 +412,12 @@
   $('reveal').addEventListener('click', function () { act({ action: 'reveal', timing: 'all' }); });
   $('commit').addEventListener('click', function () { act({ action: 'commit' }); });
   $('undo').addEventListener('click', function () { act({ action: 'undo' }); });
+  $('assign-practice').addEventListener('click', function () { act({ action: 'assign_practice' }); });
+  $('deviation-save').addEventListener('click', function () {
+    act({ action: 'deviation', kind: $('deviation-kind').value, note: $('deviation-note').value }).then(function (out) {
+      if (out && out.ok) $('deviation-note').value = '';
+    });
+  });
   $('search').addEventListener('input', renderPeople);
   $('class-pick').addEventListener('change', function () {
     current = classes[Number($('class-pick').value)]; etag = null; drawn = null; say('');
