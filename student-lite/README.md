@@ -27,8 +27,7 @@ in-class loop, for instructors only:
   them to students or hide them, mark each job Done, Tried, or Miss, and hand a
   job on with Pass or Absent.
 - **Today's run sheet:** the day's steps, each marked done from what has been
-  recorded (not a tick box); on a practice date, the practice turns due and a
-  button to assign them; and a short form to log anything that went
+  recorded (not a tick box), and a short form to log anything that went
   differently, which is exported with the research tables.
 - **Bottom bar:** how many scores are waiting, Undo last, and Commit.
 

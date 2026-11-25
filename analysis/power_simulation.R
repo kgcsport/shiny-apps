@@ -7,7 +7,11 @@
 #
 # Design simulated: per section 5 students get no practice job, 10 get one and
 # 10 get two, drawn from 5 core jobs with the number assigned to each job
-# balanced. One outcome per student x job. Model: outcome on a practised-job
+# balanced. The registered design instead draws each practice job at random
+# from the whole class at each of six practice meetings; simulated separately
+# on 2026-11-25, that gives the same answer to two decimals (0.29 against 0.28
+# with three sections, 0.34 with two), with about 22% of students practising
+# no job, 44% one, 27% two and 7% three. One outcome per student x job. Model: outcome on a practised-job
 # indicator with student and job-by-section fixed effects.
 #
 # Everything is in units of the standard deviation of bids across students

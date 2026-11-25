@@ -115,11 +115,6 @@
     <h2>Today's run sheet</h2>
     <div class="card">
       <div id="steps"></div>
-      <div id="practice-box" hidden>
-        <div class="sub" style="margin-top:.6rem;">Practice turns due</div>
-        <div id="practice-turns"></div>
-        <div class="row"><button class="primary" id="assign-practice" type="button">Assign practice turns</button></div>
-      </div>
       <details id="deviation-box" style="margin-top:.7rem;">
         <summary>Something went differently today</summary>
         <div class="row">
@@ -324,15 +319,6 @@
       if (s.detail) text.appendChild(el('div', { 'class': 'detail' }, s.detail));
       row.appendChild(text); box.appendChild(row);
     });
-    var turns = state.practice_turns || [];
-    $('practice-box').hidden = !sheet.practice || !turns.length;
-    var list = $('practice-turns'); list.textContent = '';
-    var words = { due: 'not yet assigned', assigned: 'assigned, score it under Jobs today', done: 'done', missed: 'missed, carries to the next practice meeting' };
-    turns.forEach(function (t) {
-      list.appendChild(el('div', { 'class': 'step ' + (t.state === 'done' ? 'done' : 'todo') },
-        t.name + ' · ' + t.job_name + ' · ' + (words[t.state] || t.state) + (t.carried && t.state !== 'done' ? ' (carried over)' : '')));
-    });
-    $('assign-practice').disabled = !turns.some(function (t) { return t.state === 'due'; });
     var pick = $('deviation-kind');
     if (!pick.options.length) (state.deviation_kinds || []).forEach(function (k) { pick.appendChild(el('option', { value: k.kind }, k.label)); });
     $('deviation-list').textContent = sheet.deviations.length ? 'Logged today: ' + sheet.deviations.join('; ') : '';
@@ -412,7 +398,6 @@
   $('reveal').addEventListener('click', function () { act({ action: 'reveal', timing: 'all' }); });
   $('commit').addEventListener('click', function () { act({ action: 'commit' }); });
   $('undo').addEventListener('click', function () { act({ action: 'undo' }); });
-  $('assign-practice').addEventListener('click', function () { act({ action: 'assign_practice' }); });
   $('deviation-save').addEventListener('click', function () {
     act({ action: 'deviation', kind: $('deviation-kind').value, note: $('deviation-note').value }).then(function (out) {
       if (out && out.ok) $('deviation-note').value = '';

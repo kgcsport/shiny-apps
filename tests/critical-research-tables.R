@@ -180,4 +180,27 @@ stopifnot(length(unique(masked$panel$rows$masked_id)) == 4L,
           !anyDuplicated(masked$panel$rows[c("masked_id", "round_id", "job_post_id")]),
           !anyDuplicated(masked$events$rows[c("event_type", "event_id", "masked_id")]))
 
+# Practice columns: blank while the class has no practice date. Once a date is
+# marked as practice, a student counts as having practised a job (matched by
+# name, on every date) if they were drawn for it, or answered that kind of cold
+# call, on a practice date.
+stopifnot(all(c("practice_assigned", "practice_jobs_n") %in% names(panel)), all(is.na(panel$practice_assigned)),
+          all(is.na(panel$practice_jobs_n)))
+busy <- app$db_query("SELECT round_id, COUNT(*) n FROM job_assignments GROUP BY round_id ORDER BY n DESC LIMIT 1;")$round_id[1]
+app$db_exec("UPDATE weekly_rounds SET practice_no_points=1 WHERE id=?;", list(busy))
+drawn <- app$db_query("SELECT DISTINCT u.display_name AS student, jp.job_name AS job FROM job_assignments ja
+                       JOIN job_posts jp ON jp.id=ja.job_post_id JOIN users u ON u.user_id=ja.user_id WHERE ja.round_id=?;", list(busy))
+called <- app$db_query("SELECT DISTINCT u.display_name AS student FROM live_score_events lse JOIN users u ON u.user_id=lse.user_id
+                        WHERE lse.round_id=? AND lse.event_kind='cold_call' AND lse.outcome='answer';", list(busy))
+expected <- unique(c(paste(drawn$student, drawn$job), if (nrow(called)) paste(called$student, "Cold call: answer a question")))
+with_practice <- read_tables(FALSE)$panel$rows
+got <- unique(paste(with_practice$student, with_practice$job)[with_practice$practice_assigned == 1])
+per_student <- tapply(with_practice$practice_jobs_n, with_practice$student, unique)
+stopifnot(nrow(drawn) > 0L, !anyNA(with_practice$practice_assigned), setequal(got, expected),
+          all(lengths(per_student) == 1L),
+          all(vapply(names(per_student), function(st) per_student[[st]] == sum(startsWith(expected, paste0(st, " "))), logical(1))),
+          # It is the job, not the date: the flag is the same on every date for that student and job.
+          all(tapply(with_practice$practice_assigned, paste(with_practice$student, with_practice$job), function(v) length(unique(v))) == 1L))
+app$db_exec("UPDATE weekly_rounds SET practice_no_points=0 WHERE id=?;", list(busy))
+
 cat("critical research tables: PASS\n")

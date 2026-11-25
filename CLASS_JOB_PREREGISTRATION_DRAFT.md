@@ -182,41 +182,30 @@ term.
 
 Random assignment:
 
-- Unit: student. Randomization is carried out separately within each section.
-- Roster: students enrolled and with a completed baseline survey at
-  [FREEZE DATE/TIME].
-- Arms: in each section, 5 students are drawn at random into a no-practice arm
-  and are assigned no practice job, 10 are assigned exactly one practice job,
-  and 10 are assigned exactly two distinct practice jobs. Practice jobs are
-  drawn at random from the five core jobs in Appendix B. If a section's roster
-  is not 25, the no-practice arm stays at 5 and the remaining students are
-  split as evenly as possible between one and two jobs, with any odd student
-  placed in the one-job arm.
-- Load: this is 30 practice turns per section, 6 per core job, which is one
-  turn per job per meeting over the six practice meetings. A student who
-  misses their meeting performs at the next practice meeting alongside that
-  meeting's scheduled student; a turn still unperformed at the end of the
-  practice period stays unperformed. Analysis is by assigned practice job,
-  whether or not it was performed.
-- Balance: the number of students assigned to each job is fixed in advance and
-  as equal across jobs as slot counts allow; [OPTIONAL: BLOCKED ON BASELINE COMFORT-INDEX TERCILE].
-- Timing: the training meeting in which each student performs is also drawn at
-  random within the student's assigned job.
-- Procedure: the app draws the full schedule once per section (Settings →
-  Class day → Practice lottery; `generate_practice_schedule()`). The seed is
-  not chosen by anyone: it is computed from the course, the section, and the
-  date of that section's first training meeting (`practice_auto_seed()`), so
-  the draw is the same whenever it is run. The app commit and the SHA-256 hash
-  of the schedule the app displays are recorded before the first training
-  meeting. The app refuses to redo a draw.
-- Delivery: at each training meeting the app lists the practice turns due and
-  assigns them to their students. A practice job is never passed to another
-  student. A turn that is missed, or whose student is absent, stays due at the
-  next training meeting.
+- Unit: student by job. Practice dates run like every later class date, with
+  one difference in the draw: every enrolled student in the section is in the
+  pool for every job, each job goes to one of them at random, and bids play no
+  part. On practice dates the app applies this rule itself
+  (`run_job_draw()`), so who practises which job is unrelated to anything a
+  student bid or said. Cold calls on practice dates are likewise drawn from
+  the whole section.
+- A student holds at most one drawn job per practice meeting.
+- Number of practice jobs: not fixed in advance. With five core jobs over six
+  practice meetings a section has about 30 practice turns for 25 students, so
+  by chance roughly one student in five practises no job, about two in five
+  practise one, and the rest two or more. Students who practise none are the
+  comparison group for the between-student analyses.
+- Treatment variable: a student is treated on a job if they were drawn for it,
+  or answered that kind of cold call, on a practice date, whether or not the
+  work was completed (`practice_assigned` in the student × job × date table).
+- Absence: a student marked absent is replaced by another random draw from
+  the whole section. Because only attending students end up practising, the
+  primary model's student fixed effects absorb differences in attendance, and
+  the randomization-inference procedure re-draws each practice job among the
+  students recorded as present at that meeting.
 - Deviations: any departure from the planned routine at a meeting (no draw, a
-  volunteer taken in place of a cold call, a practice turn moved, a drawn job
-  not run) is logged in the app at the time, with a timestamp, and the full
-  log is reported.
+  volunteer taken in place of a cold call, a drawn job not run) is logged in
+  the app at the time, with a timestamp, and the full log is reported.
 - Late adds: [EXCLUDED FROM THE CONFIRMATORY SAMPLE AND GIVEN A JOB BY THE SAME
   SCRIPT / OTHER REGISTERED RULE].
 

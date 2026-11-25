@@ -298,11 +298,6 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
       wages = list(answer = hub$cold_call_wage_for(rid, "answer"), board = hub$cold_call_wage_for(rid, "board")),
       cold_call_by_bid = hub$cold_call_bidders_only(),
       run_sheet = hub$class_run_sheet(context$scope, rid, students),
-      practice_turns = {
-        due <- hub$practice_turns_due(context$scope, rid)
-        lapply(seq_len(nrow(due)), function(i) list(name = due$display_name[i], job_name = due$job_name[i],
-                                                    state = due$state[i], carried = due$meeting_no[i] < max(due$meeting_no)))
-      },
       deviation_kinds = lapply(names(hub$DEVIATION_KINDS), function(k) list(kind = k, label = hub$DEVIATION_KINDS[[k]])),
       paid_volunteer_limit = identical(as.character(hub$resolve_setting("volunteer_paid_cap", "0", with_scope = TRUE)$value), "1"),
       students = lapply(seq_len(nrow(students)), function(i) list(
@@ -354,10 +349,6 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
     keep_class <- function(rows) {
       if (!nrow(rows)) return(rows)
       rows[hub$norm_key(rows$course) == hub$norm_key(course) & hub$norm_key(rows$section) == hub$norm_key(section), , drop = FALSE]
-    }
-    if (identical(action, "assign_practice")) {
-      result <- hub$assign_practice_turns(context$scope, rid)
-      return(list(ok = isTRUE(result$ok), message = result$message))
     }
     if (identical(action, "deviation")) {
       result <- hub$log_deviation(context$scope, rid, as.character(body$kind %||% ""), body$note %||% "", instructor$user_id)

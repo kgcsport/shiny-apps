@@ -1279,26 +1279,6 @@ db_exec("CREATE TABLE IF NOT EXISTS job_wage_bid_locks(
 # Offers of an unfilled job to the whole class at a stated wage. One row per
 # offer, and one row per student who was present for it, with that student's
 # bid at the time and whether they took it, volunteered, or passed.
-# Practice lottery (experiment sections): which students practise which jobs
-# before paid work starts, generated once from a recorded seed.
-db_exec("CREATE TABLE IF NOT EXISTS practice_arms(
-  scope_key   TEXT NOT NULL,
-  user_id     TEXT NOT NULL,
-  arm         TEXT NOT NULL,
-  seed        INTEGER,
-  schedule_hash TEXT,
-  created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (scope_key, user_id)
-);")
-db_exec("CREATE TABLE IF NOT EXISTS practice_turns(
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  scope_key     TEXT NOT NULL,
-  user_id       TEXT NOT NULL,
-  job_name      TEXT NOT NULL,
-  meeting_no    INTEGER NOT NULL,
-  assignment_id INTEGER,
-  created_at    TEXT DEFAULT CURRENT_TIMESTAMP
-);")
 # Departures from the planned class routine, recorded when they happen.
 db_exec("CREATE TABLE IF NOT EXISTS class_deviations(
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2284,6 +2264,8 @@ cold_call_bidders_only <- function()
 cold_call_eligible <- function(round_id, students, kind = NULL) {
   if (!nrow(students) || !cold_call_bidders_only()) return(students)
   rid <- as.integer(round_id)
+  # On a practice date everyone is in the pool, whatever they bid.
+  if (round_is_practice(rid)) return(students)
   posts <- tryCatch(db_query(
     "SELECT jp.id, jp.category_id, COALESCE(jp.wage_override,jc.default_wage,1) AS fallback_wage
      FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
@@ -4319,179 +4301,12 @@ filter_posts_for_draw_timing <- function(posts, timing_filter) {
   posts[keep, , drop = FALSE]
 }
 
-# ── Practice lottery, run sheet, and deviations (shared with the fast tracker) ──
-PRACTICE_DEFAULT_JOBS <- c("Note taker", "Prior lecture summary", "Reading summary",
-                           "Cold call: answer a question", "Cold call: graph/answer on board")
+# ── Run sheet and deviations (shared with the fast tracker) ─────────────────────
 DEVIATION_KINDS <- c(no_draw = "No job draw today",
                      volunteer_for_cold_call = "Took a volunteer instead of a cold call",
-                     practice_moved = "Practice turn moved or missed",
                      job_not_run = "A drawn job was not run",
                      jobs_not_shown = "Jobs were not shown to students",
                      other = "Other")
-scope_for_round <- function(round_id) {
-  row <- db_query("SELECT scope_key FROM scope_rounds WHERE round_id=? LIMIT 1;", list(as.integer(round_id)))
-  if (nrow(row)) as.character(row$scope_key[1]) else ""
-}
-practice_schedule_info <- function(scope_key) {
-  arms <- db_query("SELECT arm, seed, schedule_hash, created_at FROM practice_arms WHERE scope_key=?;", list(scope_key))
-  if (!nrow(arms)) return(NULL)
-  list(seed = arms$seed[1], hash = arms$schedule_hash[1], created_at = arms$created_at[1],
-       arms = table(arms$arm),
-       turns = db_query("SELECT COUNT(*) n FROM practice_turns WHERE scope_key=?;", list(scope_key))$n[1])
-}
-# The class's practice dates, in order.
-practice_dates_for <- function(scope_key) db_query(
-  "SELECT wr.id, wr.class_date FROM weekly_rounds wr JOIN scope_rounds sr ON sr.round_id=wr.id
-   WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=1 ORDER BY wr.class_date, wr.id;", list(scope_key))
-# The lottery's seed is not chosen by anyone: it is fixed by the class and the
-# date of its first practice meeting, so pressing the button on another day,
-# or again, cannot produce a different draw.
-practice_auto_seed <- function(scope_key, first_practice_date) {
-  hex <- digest::digest(paste("practice-lottery", norm_key(scope_key), as.character(first_practice_date), sep = "|"),
-                        algo = "sha256", serialize = FALSE)
-  as.integer(strtoi(substr(hex, 1L, 7L), base = 16L))
-}
-# Build the lottery for one class. `user_ids` is the frozen roster. `none_n`
-# students get no practice job; the rest are split evenly between one and two
-# jobs, an odd student going to the one-job arm. Jobs are balanced across
-# students, and each job's turns are spread evenly over the practice meetings.
-# The schedule is written once: a class that already has one is left alone.
-generate_practice_schedule <- function(scope_key, user_ids, seed, jobs = PRACTICE_DEFAULT_JOBS,
-                                       meetings = 6L, none_n = 5L) {
-  fail <- function(message) list(ok = FALSE, message = message)
-  user_ids <- sort(unique(tolower(trimws(as.character(user_ids)))))
-  jobs <- unique(trimws(as.character(jobs))); jobs <- jobs[nzchar(jobs)]
-  seed <- suppressWarnings(as.integer(seed)); meetings <- suppressWarnings(as.integer(meetings))
-  none_n <- suppressWarnings(as.integer(none_n))
-  if (!nzchar(scope_key %||% "")) return(fail("No class is selected."))
-  if (!is.null(practice_schedule_info(scope_key)))
-    return(fail("This class already has a practice schedule. It is generated once and not regenerated."))
-  if (is.na(seed)) return(fail("Enter a whole-number seed."))
-  if (is.na(meetings) || meetings < 1L) return(fail("Enter the number of practice meetings."))
-  if (length(jobs) < 2L) return(fail("List at least two practice jobs."))
-  if (is.na(none_n) || none_n < 0L || none_n >= length(user_ids))
-    return(fail("The no-practice group must be smaller than the class."))
-  n <- length(user_ids)
-  # The generator's draws must not depend on, or disturb, anything else random.
-  old_seed <- if (exists(".Random.seed", envir = globalenv())) get(".Random.seed", envir = globalenv()) else NULL
-  on.exit(if (is.null(old_seed)) suppressWarnings(rm(".Random.seed", envir = globalenv()))
-          else assign(".Random.seed", old_seed, envir = globalenv()), add = TRUE)
-  set.seed(seed, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
-  two_n <- (n - none_n) %/% 2L; one_n <- n - none_n - two_n
-  arm <- sample(c(rep("none", none_n), rep("one", one_n), rep("two", two_n)))
-  names(arm) <- user_ids
-  n_turns <- one_n + 2L * two_n
-  turns <- NULL
-  for (attempt in seq_len(500L)) {
-    pool <- sample(rep(sample(jobs), length.out = n_turns))
-    picked <- list(); ok <- TRUE
-    for (uid in sample(user_ids[arm != "none"])) {
-      k <- if (arm[[uid]] == "two") 2L else 1L
-      choice <- unique(pool)[seq_len(k)]
-      if (anyNA(choice)) { ok <- FALSE; break }
-      for (job in choice) pool <- pool[-match(job, pool)]
-      picked[[uid]] <- choice
-    }
-    if (!ok) next
-    turns <- data.frame(user_id = rep(names(picked), lengths(picked)), job_name = unlist(picked, use.names = FALSE),
-                        stringsAsFactors = FALSE)
-    # Meeting for each turn: within a job, a random order over the meetings.
-    for (spread in seq_len(200L)) {
-      turns$meeting_no <- NA_integer_
-      for (job in jobs) {
-        rows <- which(turns$job_name == job)
-        turns$meeting_no[rows] <- sample(rep(seq_len(meetings), length.out = length(rows)))
-      }
-      # A student with two jobs should not have both in the same meeting.
-      if (!any(duplicated(turns[c("user_id", "meeting_no")]))) break
-    }
-    break
-  }
-  if (is.null(turns)) return(fail("Could not balance the jobs across students. Try another seed."))
-  turns <- turns[order(turns$meeting_no, match(turns$job_name, jobs), turns$user_id), , drop = FALSE]
-  text <- paste(c(paste(names(arm), arm, sep = "="), paste(turns$user_id, turns$job_name, turns$meeting_no, sep = "|")),
-                collapse = "\n")
-  hash <- digest::digest(text, algo = "sha256", serialize = FALSE)
-  for (uid in names(arm)) db_exec(
-    "INSERT INTO practice_arms(scope_key,user_id,arm,seed,schedule_hash) VALUES(?,?,?,?,?);",
-    list(scope_key, uid, arm[[uid]], seed, hash))
-  for (i in seq_len(nrow(turns))) db_exec(
-    "INSERT INTO practice_turns(scope_key,user_id,job_name,meeting_no) VALUES(?,?,?,?);",
-    list(scope_key, turns$user_id[i], turns$job_name[i], as.integer(turns$meeting_no[i])))
-  list(ok = TRUE, hash = hash, seed = seed, turns = nrow(turns),
-       message = sprintf("Practice schedule saved: %d with no practice job, %d with one, %d with two; %d turns over %d meetings. Record the seed (%d) and this hash: %s",
-                         none_n, one_n, two_n, nrow(turns), meetings, seed, hash))
-}
-# Which practice meeting a class date is: its position among the class's
-# practice dates, by date. NA when the date is not a practice date.
-practice_meeting_no <- function(scope_key, round_id) {
-  dates <- db_query(
-    "SELECT wr.id FROM weekly_rounds wr JOIN scope_rounds sr ON sr.round_id=wr.id
-     WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=1
-     ORDER BY wr.class_date, wr.id;", list(scope_key))
-  hit <- match(as.integer(round_id), as.integer(dates$id))
-  if (is.na(hit)) NA_integer_ else as.integer(hit)
-}
-# Practice turns due by this meeting and not yet performed. A turn counts as
-# performed once its assignment is scored complete or tried; a missed or
-# absent turn stays due and carries to the next practice meeting.
-practice_turns_due <- function(scope_key, round_id) {
-  meeting <- practice_meeting_no(scope_key, round_id)
-  empty <- data.frame(id = integer(0), user_id = character(0), display_name = character(0), job_name = character(0),
-                      meeting_no = integer(0), state = character(0), assignment_id = integer(0), stringsAsFactors = FALSE)
-  if (is.na(meeting)) return(empty)
-  turns <- db_query(
-    "SELECT pt.id, pt.user_id, COALESCE(u.display_name, pt.user_id) AS display_name, pt.job_name, pt.meeting_no,
-            pt.assignment_id, ja.round_id AS assigned_round, COALESCE(ja.status,'') AS status,
-            COALESCE(ja.outcome,'') AS outcome,
-            (SELECT lse.outcome FROM live_score_events lse WHERE lse.job_assignment_id=ja.id
-               AND lse.committed_at IS NULL ORDER BY lse.id DESC LIMIT 1) AS queued
-     FROM practice_turns pt
-     LEFT JOIN users u ON LOWER(u.user_id)=LOWER(pt.user_id)
-     LEFT JOIN job_assignments ja ON ja.id=pt.assignment_id
-     WHERE pt.scope_key=? AND pt.meeting_no<=?
-     ORDER BY pt.meeting_no, pt.job_name, display_name;", list(scope_key, meeting))
-  if (!nrow(turns)) return(empty)
-  result <- ifelse(nzchar(turns$outcome), turns$outcome, ifelse(is.na(turns$queued), "", turns$queued))
-  here <- !is.na(turns$assigned_round) & as.integer(turns$assigned_round) == as.integer(round_id) & turns$status == "assigned"
-  turns$state <- ifelse(result %in% c("complete", "tried"), "done",
-                 ifelse(here & result == "", "assigned",
-                 ifelse(here, "missed", "due")))
-  # Performed at an earlier meeting: no longer shown.
-  keep <- !(turns$state == "done" & !here)
-  turns[keep, c("id", "user_id", "display_name", "job_name", "meeting_no", "state", "assignment_id"), drop = FALSE]
-}
-# Give today's due practice turns to their students as job assignments, so the
-# usual Done / Tried / Miss scoring applies. Students marked absent are left
-# due. Nothing is paid on a practice date.
-assign_practice_turns <- function(scope_key, round_id) {
-  rid <- as.integer(round_id)
-  due <- practice_turns_due(scope_key, rid)
-  due <- due[due$state == "due", , drop = FALSE]
-  if (!nrow(due)) return(list(ok = TRUE, changed = FALSE, message = "No practice turns are waiting to be assigned."))
-  posts <- db_query("SELECT id, job_name, COALESCE(NULLIF(selection_time,''),'any') AS timing FROM job_posts
-                     WHERE round_id=? AND COALESCE(active,1)=1;", list(rid))
-  absent <- norm_key(db_query("SELECT user_id FROM round_absences WHERE round_id=?;", list(rid))$user_id)
-  assigned <- 0L; no_post <- character(0); away <- 0L
-  for (i in seq_len(nrow(due))) {
-    post <- posts[norm_key(posts$job_name) == norm_key(due$job_name[i]), , drop = FALSE]
-    if (!nrow(post)) { no_post <- union(no_post, due$job_name[i]); next }
-    if (norm_key(due$user_id[i]) %in% absent) { away <- away + 1L; next }
-    db_exec("INSERT OR IGNORE INTO job_assignments(round_id,user_id,job_post_id,assigned_wage,assignment_mode,selection_time)
-             VALUES(?,?,?,0,'practice_lottery',?);", list(rid, due$user_id[i], as.integer(post$id[1]), post$timing[1]))
-    row <- db_query("SELECT id FROM job_assignments WHERE round_id=? AND LOWER(user_id)=LOWER(?) AND job_post_id=?;",
-                    list(rid, due$user_id[i], as.integer(post$id[1])))
-    if (!nrow(row)) next
-    db_exec("UPDATE job_assignments SET status='assigned', outcome=NULL WHERE id=? AND COALESCE(outcome,'')='';", list(as.integer(row$id[1])))
-    db_exec("UPDATE practice_turns SET assignment_id=? WHERE id=?;", list(as.integer(row$id[1]), as.integer(due$id[i])))
-    assigned <- assigned + 1L
-  }
-  notes <- c(if (away) sprintf("%d left for next time (absent)", away),
-             if (length(no_post)) sprintf("no job posted today named: %s", paste(no_post, collapse = ", ")))
-  list(ok = TRUE, changed = assigned > 0L,
-       message = paste0(sprintf("Assigned %d practice turn%s.", assigned, if (assigned == 1L) "" else "s"),
-                        if (length(notes)) paste0(" ", paste(notes, collapse = "; "), ".") else ""))
-}
 log_deviation <- function(scope_key, round_id, kind, note = "", logged_by = "") {
   if (!kind %in% names(DEVIATION_KINDS)) return(list(ok = FALSE, message = "Unknown kind of deviation."))
   note <- substr(trimws(as.character(note %||% "")), 1L, 500L)
@@ -4501,7 +4316,7 @@ log_deviation <- function(scope_key, round_id, kind, note = "", logged_by = "") 
   list(ok = TRUE, message = sprintf("Logged: %s.", DEVIATION_KINDS[[kind]]))
 }
 # Today's routine for one class, each step marked done from what is recorded,
-# not from a tick box. `students` is the class roster (user_id column).
+# not from a tick box. A practice date runs the same steps as any other. `students` is the class roster (user_id column).
 class_run_sheet <- function(scope_key, round_id, students) {
   rid <- as.integer(round_id)
   round <- db_query("SELECT COALESCE(practice_no_points,0) AS practice FROM weekly_rounds WHERE id=?;", list(rid))
@@ -4518,21 +4333,7 @@ class_run_sheet <- function(scope_key, round_id, students) {
   step <- function(key, label, done, detail = "", excused = FALSE)
     list(key = key, label = label, done = isTRUE(done), detail = detail, excused = isTRUE(excused))
   steps <- list()
-  if (practice) {
-    due <- practice_turns_due(scope_key, rid)
-    has_schedule <- !is.null(practice_schedule_info(scope_key))
-    if (has_schedule) {
-      open <- sum(due$state == "due")
-      steps[[length(steps) + 1L]] <- step("practice_assigned", "Assign today's practice turns", nrow(due) > 0L && open == 0L,
-        if (!nrow(due)) "None are due today" else sprintf("%d due, %d not yet assigned", nrow(due), open),
-        excused = !nrow(due) || "practice_moved" %in% logged)
-      steps[[length(steps) + 1L]] <- step("practice_scored", "Score each practice turn",
-        nrow(due) > 0L && all(due$state %in% c("done", "missed")),
-        sprintf("%d done, %d missed, %d still to score", sum(due$state == "done"), sum(due$state == "missed"),
-                sum(due$state == "assigned")), excused = !nrow(due))
-    } else steps[[length(steps) + 1L]] <- step("practice_schedule", "Practice schedule", FALSE,
-        "No practice schedule has been generated for this class")
-  } else {
+  {
     steps[[length(steps) + 1L]] <- step("jobs_drawn", "Draw jobs", nrow(assignments) > 0L,
       sprintf("%d job%s assigned", nrow(assignments), if (nrow(assignments) == 1L) "" else "s"), excused = "no_draw" %in% logged)
     shown <- db_query("SELECT COUNT(*) n FROM assignment_timing_reveals WHERE round_id=? AND COALESCE(revealed,0)=1;", list(rid))$n[1]
@@ -4619,19 +4420,6 @@ redraw_job <- function(aid, passed = FALSE, scope_filter = identity, reason = NU
      WHERE ja.id=?;", list(aid)),
     error = function(e) data.frame())
   if (!nrow(old)) return(done("Assignment not found.", "error"))
-  # A practice job belongs to the student the lottery gave it to. An absence
-  # is recorded and the turn waits for the next practice meeting; it is never
-  # handed to someone else.
-  if (identical(as.character(old$assignment_mode[1] %||% ""), "practice_lottery")) {
-    if (!identical(reason, "absent"))
-      return(done("Practice jobs follow the lottery schedule and are not passed on. Mark the student absent, or score a miss.", "warning"))
-    db_exec("DELETE FROM live_score_events WHERE job_assignment_id=? AND committed_at IS NULL;", list(aid))
-    db_exec("UPDATE job_assignments SET status='absent_redrawn', updated_at=datetime('now') WHERE id=?;", list(aid))
-    db_exec("INSERT OR REPLACE INTO round_absences(round_id,user_id,marked_at) VALUES(?,?,CURRENT_TIMESTAMP);",
-            list(old$round_id[1], old$user_id[1]))
-    return(done(sprintf("%s marked absent. Their practice turn waits for the next practice meeting.",
-                        old$display_name[1] %||% old$user_id[1]), changed = TRUE))
-  }
   if (!is.na(old$assigned_wage[1] %||% NA) && as.numeric(old$assigned_wage[1]) < 0) {
     return(done("This assignment has already been redrawn.", "warning"))
   }
@@ -4649,7 +4437,8 @@ redraw_job <- function(aid, passed = FALSE, scope_filter = identity, reason = NU
   # wage. With no such student the absence is recorded and the slot stays empty.
   redraw_rule <- tryCatch(db_query("SELECT wage_pricing_rule, assignment_mode FROM weekly_rounds WHERE id=?;",
                                    list(old$round_id[1])), error = function(e) data.frame())
-  random_wage_date <- nrow(redraw_rule) > 0 &&
+  # On a practice date the replacement is drawn from everyone, like the draw.
+  random_wage_date <- nrow(redraw_rule) > 0 && !round_is_practice(old$round_id[1]) &&
     identical(as.character(redraw_rule$assignment_mode[1] %||% ""), "wage_bidding") &&
     identical(normalize_wage_pricing_rule(redraw_rule$wage_pricing_rule[1] %||% "pay_as_bid"), "random_wage")
   if (random_wage_date && nrow(candidates)) {
@@ -4702,11 +4491,13 @@ run_job_draw <- function(round, timing_filter = "all", scope_filter = identity, 
   done <- function(message, type = "message", changed = FALSE) list(ok = !identical(type, "error"), message = message, type = type, changed = changed)
   if (!nrow(round)) return(done("No selected class date.", "error"))
   rid    <- round$id[1]
-  # On a practice date of a class with a practice schedule, jobs come from the
-  # lottery, so a draw (which would also clear them) is refused.
-  if (round_is_practice(rid) && !is.null(practice_schedule_info(scope_for_round(rid))))
-    return(done("This is a practice date: jobs come from the practice lottery. Use Assign practice turns.", "warning"))
   mode   <- round$assignment_mode[1] %||% "random"
+  # A practice date keeps its bid form (so baseline bids can be entered), but
+  # its draw ignores the bids: every student in the class is in the pool and
+  # each job goes to one of them at random. Who practises what is therefore
+  # unrelated to what anyone bid.
+  practice_date <- round_is_practice(rid)
+  if (practice_date) mode <- "random"
   tbrk   <- round$tiebreak_method[1] %||% "weighted_lottery"
   allow_multiple <- isTRUE(as.integer(round$allow_multiple_jobs[1] %||% 1L) == 1L)
   pricing_rule <- normalize_wage_pricing_rule(round$wage_pricing_rule[1] %||% "pay_as_bid")
@@ -4774,7 +4565,9 @@ run_job_draw <- function(round, timing_filter = "all", scope_filter = identity, 
   # per-course/section switch on, the saved draw applies the date's settings
   # for every rule. The random-wage rule always applies them.
   random_wage_date <- identical(mode, "wage_bidding") && identical(pricing_rule, "random_wage")
-  pairs <- if (random_wage_date || isTRUE(uses_date_settings))
+  pairs <- if (practice_date)
+    compute_draw_pairs(rid, "random", posts, students, allow_multiple_jobs = allow_multiple)
+  else if (random_wage_date || isTRUE(uses_date_settings))
     compute_draw_pairs(rid, mode, posts, students, tiebreak = tbrk,
                        allow_multiple_jobs = allow_multiple,
                        wage_pricing_rule = pricing_rule,
@@ -13547,7 +13340,6 @@ server <- function(input, output, session) {
         div(style = "display:flex;flex-wrap:wrap;gap:.5rem;",
           downloadButton("dl_research_panel",  "Student × job × class date", class = "btn btn-sm btn-outline-primary"),
           downloadButton("dl_research_events", "Offers and cold calls × student", class = "btn btn-sm btn-outline-primary"),
-          downloadButton("dl_practice_schedule", "Practice schedule", class = "btn btn-sm btn-outline-primary"),
           downloadButton("dl_deviations", "Class deviations", class = "btn btn-sm btn-outline-primary")
         ),
         tags$p(style = "color:#555;font-size:.84rem;margin-top:.9rem;",
@@ -14921,8 +14713,6 @@ server <- function(input, output, session) {
       round_setup = tagList(
         settings_section("round_setup"),
         settings_section("jobs", want = "jobs-wage-rules"),
-        settings_group("class-practice-lottery", "Practice lottery", hint = "Who practises which job before paid work starts",
-                       uiOutput("practice_lottery_panel")),
         settings_group("class-announcement", "Announcement for students", hint = "Shown at the top of Today",
                        open = identical(requested, "app_settings"),
                        settings_section("app_settings", want = "announcement")),
@@ -15188,14 +14978,34 @@ server <- function(input, output, session) {
     # used is at or below the drawn wage.
     random <- panel$pricing_rule == "random_wage" & panel$frozen_wage_source %in% "random_draw"
     panel$in_lottery <- ifelse(random, as.integer(!is.na(panel$bid_at_draw) & panel$bid_at_draw <= panel$frozen_wage + 1e-9), NA)
-    # Practice lottery: the student's arm, and whether this job is one the
-    # lottery assigned them to practise (blank for a class with no schedule).
-    arms <- q("SELECT user_id, arm FROM practice_arms WHERE scope_key=?;")
-    turns <- q("SELECT user_id, job_name FROM practice_turns WHERE scope_key=?;")
-    panel$practice_arm <- if (nrow(arms)) arms$arm[match(norm_key(panel$user_id), norm_key(arms$user_id))] else NA_character_
-    panel$practice_assigned <- if (nrow(arms)) as.integer(
-      paste(norm_key(panel$user_id), norm_key(panel$job)) %in% paste(norm_key(turns$user_id), norm_key(turns$job_name))) else NA_integer_
-    panel$practice_assigned[is.na(panel$practice_arm)] <- NA_integer_
+    # Practice: whether the student was drawn for this job (matched by name)
+    # on any practice date, and how many practice jobs they were drawn for.
+    # Being drawn counts whether or not the job was then performed. Blank for
+    # a class with no practice dates.
+    practised <- q(
+      "SELECT DISTINCT ja.user_id, LOWER(TRIM(jp.job_name)) AS job_key
+       FROM job_assignments ja JOIN job_posts jp ON jp.id=ja.job_post_id
+       JOIN weekly_rounds wr ON wr.id=ja.round_id JOIN scope_rounds sr ON sr.round_id=wr.id
+       WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=1;")
+    # A cold call answered on a practice date is practice at that kind of
+    # cold-call job. A pass is not.
+    practice_calls <- q(
+      "SELECT lse.user_id, lse.outcome FROM live_score_events lse
+       JOIN weekly_rounds wr ON wr.id=lse.round_id JOIN scope_rounds sr ON sr.round_id=wr.id
+       WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=1
+         AND lse.event_kind='cold_call' AND lse.outcome IN ('answer','board');")
+    cold_jobs <- unique(panel$job[norm_key(panel$category) == "cold call" | norm_key(panel$timing) %in% c("during", "during class")])
+    if (nrow(practice_calls) && length(cold_jobs)) {
+      called <- merge(unique(practice_calls), data.frame(job_key = norm_key(cold_jobs), outcome = as.character(cold_call_kind_of(cold_jobs)),
+                                                         stringsAsFactors = FALSE), by = "outcome")
+      practised <- unique(rbind(practised[c("user_id", "job_key")], called[c("user_id", "job_key")]))
+    }
+    if (any(panel$practice_date == 1)) {
+      panel$practice_assigned <- as.integer(paste(norm_key(panel$user_id), norm_key(panel$job)) %in%
+                                              paste(norm_key(practised$user_id), practised$job_key))
+      per_student <- table(norm_key(practised$user_id))
+      panel$practice_jobs_n <- as.integer(per_student[norm_key(panel$user_id)]); panel$practice_jobs_n[is.na(panel$practice_jobs_n)] <- 0L
+    } else { panel$practice_assigned <- NA_integer_; panel$practice_jobs_n <- NA_integer_ }
     panel <- panel[order(panel$class_date, panel$round_id, panel$job_post_id, panel$student), , drop = FALSE]
     panel$export_uid <- panel$user_id
     panel[c("export_uid", "student", "course", "section", "active", "round_id", "round", "class_date", "date_mode",
@@ -15205,23 +15015,8 @@ server <- function(input, output, session) {
             "assigned", "assigned_by", "assigned_wage", "assignment_status", "outcome", "tokens_awarded", "assigned_at",
             "voluntary_n", "voluntary_succeeded", "voluntary_paid", "voluntary_tokens",
             "offers_present", "offers_took", "offers_volunteered", "offers_passed",
-            "practice_arm", "practice_assigned")]
+            "practice_assigned", "practice_jobs_n")]
   }
-  # Key: scope, user_id, job. The practice lottery as generated.
-  output$dl_practice_schedule <- downloadHandler(
-    filename = function() paste0("practice_schedule_", Sys.Date(), ".csv"),
-    content = function(file) {
-      req(rv$is_admin, !rv$impersonating)
-      rows <- tryCatch(db_query(
-        "SELECT pa.user_id AS export_uid, COALESCE(u.display_name, pa.user_id) AS student, u.course, u.section,
-                pa.arm, COALESCE(pt.job_name,'') AS practice_job, pt.meeting_no, pa.seed, pa.schedule_hash, pa.created_at AS generated_at
-         FROM practice_arms pa
-         LEFT JOIN practice_turns pt ON pt.scope_key=pa.scope_key AND pt.user_id=pa.user_id
-         LEFT JOIN users u ON LOWER(u.user_id)=LOWER(pa.user_id)
-         WHERE pa.scope_key=? ORDER BY pt.meeting_no, pt.job_name, student;", list(current_scope_key())),
-        error = function(e) data.frame())
-      write_export_csv(rows, file, row.names = FALSE, na = "")
-    })
   # Key: deviation id. No student is named, so the file is the same masked or not.
   output$dl_deviations <- downloadHandler(
     filename = function() paste0("class_deviations_", Sys.Date(), ".csv"),
@@ -15235,47 +15030,6 @@ server <- function(input, output, session) {
       if (export_masked() && nrow(rows)) rows$logged_by <- NULL
       write.csv(rows, file, row.names = FALSE, na = "")
     })
-  output$practice_lottery_panel <- renderUI({
-    req(rv$is_admin)
-    rv$settings_ver
-    scope <- current_scope_key()
-    info <- practice_schedule_info(scope)
-    dates <- practice_dates_for(scope)
-    if (!is.null(info)) return(tagList(
-      tags$p(sprintf("Drawn %s (seed %s, set automatically from the class and its first practice date): %s. %d practice turns.", info$created_at, info$seed,
-                     paste(sprintf("%d %s", as.integer(info$arms), c(none = "with no practice job", one = "with one", two = "with two")[names(info$arms)]), collapse = ", "),
-                     as.integer(info$turns))),
-      tags$p(style = "font-size:.84rem;color:#555;word-break:break-all;", tags$b("Schedule hash: "), info$hash),
-      tags$p(style = "font-size:.84rem;color:#555;", "The draw is done once and cannot be redone. Record the hash before the first practice meeting."),
-      tags$p(style = "font-size:.84rem;color:#555;", "Download the schedule under Settings → Data & tools → Research tables.")))
-    if (!nrow(dates)) return(tags$p(style = "font-size:.88rem;color:#555;",
-      "Mark this class's practice dates first (Class date → practice, no points). The lottery uses them to know how many practice meetings there are."))
-    tagList(
-      tags$p(style = "font-size:.88rem;color:#555;",
-             sprintf("Draws which students practise which jobs for the active class: 5 students get no practice job and the rest are split between one and two. Turns are spread over this class's %d practice date%s. Do it once, after the roster is final; it cannot be redone.",
-                     nrow(dates), if (nrow(dates) == 1L) "" else "s")),
-      actionButton("generate_practice_btn", "Draw the practice jobs", class = "btn btn-sm btn-primary",
-                   onclick = "if(!confirm('Draw the practice jobs for this class? This is done once and cannot be redone.')) return false;"),
-      tags$details(style = "margin-top:.6rem;",
-        tags$summary(style = "cursor:pointer;font-size:.86rem;color:#555;", "Options"),
-        numericInput("practice_none_n", "Students with no practice job:", value = 5, min = 0, step = 1, width = "260px"),
-        textAreaInput("practice_jobs", "Practice jobs, one per line (must match the job names posted on practice dates):",
-                      value = paste(PRACTICE_DEFAULT_JOBS, collapse = "\n"), rows = 5, width = "100%")))
-  })
-  observeEvent(input$generate_practice_btn, {
-    req(rv$is_admin, !rv$impersonating)
-    roster <- scope_filter_rows(tryCatch(db_query(
-      "SELECT user_id, course, section FROM users
-       WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;"), error = function(e) data.frame()))
-    scope <- current_scope_key()
-    dates <- practice_dates_for(scope)
-    if (!nrow(dates)) { showNotification("Mark this class's practice dates first.", type = "warning"); return() }
-    jobs <- strsplit(input$practice_jobs %||% paste(PRACTICE_DEFAULT_JOBS, collapse = "\n"), "\n", fixed = TRUE)[[1]]
-    result <- generate_practice_schedule(scope, roster$user_id, practice_auto_seed(scope, dates$class_date[1]),
-                                         jobs, nrow(dates), input$practice_none_n %||% 5L)
-    if (isTRUE(result$ok)) rv$settings_ver <- rv$settings_ver + 1L
-    showNotification(result$message, type = if (isTRUE(result$ok)) "message" else "error", duration = if (isTRUE(result$ok)) 30 else 8)
-  }, ignoreNULL = TRUE)
   output$dl_research_panel <- downloadHandler(
     filename = function() paste0("research_student_job_date_", Sys.Date(), ".csv"),
     content  = function(file) write_export_csv(research_panel_rows(), file, row.names = FALSE, na = "")
