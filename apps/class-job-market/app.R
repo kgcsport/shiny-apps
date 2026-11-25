@@ -2264,11 +2264,8 @@ cold_call_eligible <- function(round_id, students, kind = NULL) {
   # Given the kind, only that job's bidders are eligible; it is the same job
   # whose wage cold_call_wage_for() pays.
   if (!is.null(kind) && nrow(posts)) {
-    post_names <- db_query("SELECT id, job_name, COALESCE(display_order,99) AS display_order FROM job_posts WHERE round_id=?;", list(rid))
-    post_names <- post_names[post_names$id %in% posts$id, , drop = FALSE]
-    post_names <- post_names[order(!grepl(tolower(kind), tolower(post_names$job_name), fixed = TRUE),
-                                   post_names$display_order, post_names$id), , drop = FALSE]
-    posts <- posts[posts$id == post_names$id[1], , drop = FALSE]
+    chosen <- cold_call_post_for(rid, kind)
+    posts <- posts[posts$id %in% chosen$id, , drop = FALSE]
   }
   if (!nrow(posts)) return(students[0, , drop = FALSE])
   round <- db_query("SELECT assignment_mode, wage_pricing_rule FROM weekly_rounds WHERE id=?;", list(rid))
@@ -3920,17 +3917,29 @@ account_section <- function(title, hint, ..., open=FALSE) {
 # it is queued for the Live Score Audit. The Live Tracker and the fast tracker
 # page both call these, so the two cannot disagree. Nothing here pays anyone:
 # payment happens when the audit is committed.
-cold_call_wage_for <- function(round_id, kind = "answer") {
-  post <- tryCatch(db_query(
-    "SELECT jp.id, COALESCE(jp.wage_override,jc.default_wage,1) AS fallback_wage
+# Which kind of cold call a job is, from its name. Board work is checked first:
+# "Cold call: graph/answer on board" also contains the word "answer".
+cold_call_kind_of <- function(job_name) {
+  name <- tolower(as.character(job_name %||% ""))
+  ifelse(grepl("board", name, fixed = TRUE), "board",
+         ifelse(grepl("ask", name, fixed = TRUE), "ask", "answer"))
+}
+# The cold-call job for a kind on a class date: the job of that kind if one is
+# posted, otherwise the first cold-call job.
+cold_call_post_for <- function(round_id, kind = "answer") {
+  posts <- tryCatch(db_query(
+    "SELECT jp.id, jp.job_name, COALESCE(jp.wage_override,jc.default_wage,1) AS fallback_wage
      FROM job_posts jp LEFT JOIN job_categories jc ON jc.id=jp.category_id
      WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
        AND (LOWER(COALESCE(jp.selection_time,'')) IN ('during','during class')
             OR LOWER(COALESCE(jc.name,''))='cold call')
-     ORDER BY CASE WHEN LOWER(jp.job_name) LIKE ? THEN 0 ELSE 1 END, jp.display_order, jp.id
-     LIMIT 1;",
-    list(as.integer(round_id), paste0("%", tolower(kind), "%"))),
-    error = function(e) data.frame())
+     ORDER BY jp.display_order, jp.id;", list(as.integer(round_id))), error = function(e) data.frame())
+  if (!nrow(posts)) return(posts)
+  hit <- posts[cold_call_kind_of(posts$job_name) == kind, , drop = FALSE]
+  if (nrow(hit)) hit[1, , drop = FALSE] else posts[1, , drop = FALSE]
+}
+cold_call_wage_for <- function(round_id, kind = "answer") {
+  post <- cold_call_post_for(round_id, kind)
   if (!nrow(post)) return(1)
   class_wage_snapshot(round_id, as.integer(post$id[1]),
                       as.numeric(post$fallback_wage[1] %||% 1))
@@ -14947,7 +14956,7 @@ server <- function(input, output, session) {
       pick <- function(rid, kind) {
         rows <- cold_posts[cold_posts$round_id == rid, , drop = FALSE]
         if (!nrow(rows)) return(c(NA, NA))
-        hit <- rows[grepl(kind, tolower(rows$job), fixed = TRUE), , drop = FALSE]
+        hit <- rows[cold_call_kind_of(rows$job) == kind, , drop = FALSE]
         chosen <- if (nrow(hit)) hit[1, ] else rows[1, ]
         c(chosen$job_post_id, chosen$job)
       }
@@ -15027,13 +15036,28 @@ server <- function(input, output, session) {
     filename = function() paste0("participation_events_", Sys.Date(), ".csv"),
     content = function(file) {
       rows <- tryCatch(db_query(
-        "SELECT pe.user_id AS export_uid, pe.id, wr.label AS round, u.display_name AS student,
-                u.course,u.section,pe.event_type,pe.tokens,pe.note,
+        # Voluntary contributions and cold calls are recorded by the Live
+        # Tracker as live score events; the older participation_events table
+        # is kept in the file for records made before that.
+        "SELECT lse.user_id AS export_uid, lse.id, wr.label AS round, u.display_name AS student,
+                u.course,u.section,
+                CASE lse.event_kind WHEN 'cold_call' THEN 'cold_call' ELSE 'voluntary' END AS event_type,
+                COALESCE(jp.job_name,'') AS job, lse.outcome, lse.tokens,
+                CASE WHEN lse.committed_at IS NULL THEN 0 ELSE 1 END AS committed,
+                '' AS note, lse.logged_by AS logged_by, lse.created_at AS created_at
+         FROM live_score_events lse
+         LEFT JOIN users u ON u.user_id=lse.user_id
+         LEFT JOIN weekly_rounds wr ON wr.id=lse.round_id
+         LEFT JOIN job_posts jp ON jp.id=lse.job_post_id
+         WHERE lse.event_kind IN ('participation','cold_call')
+         UNION ALL
+         SELECT pe.user_id AS export_uid, pe.id, wr.label AS round, u.display_name AS student,
+                u.course,u.section,pe.event_type,'' AS job,'' AS outcome,pe.tokens,1 AS committed,pe.note,
                 pe.logged_by,pe.created_at
          FROM participation_events pe
          LEFT JOIN users u ON u.user_id=pe.user_id
          LEFT JOIN weekly_rounds wr ON wr.id=pe.round_id
-         ORDER BY pe.created_at DESC;"), error=function(e)data.frame())
+         ORDER BY 14 DESC;"), error=function(e)data.frame())
       write_export_csv(scope_filter_rows(rows),file,row.names=FALSE)
     }
   )

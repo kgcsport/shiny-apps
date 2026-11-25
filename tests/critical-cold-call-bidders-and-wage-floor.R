@@ -49,11 +49,18 @@ post <- function(name, timing = "during") {
               list(rid, name, cc_cat, timing))
   as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1])
 }
-answer <- post("Cold call: answer a question"); board <- post("Cold call: graph/answer on board")
+# The board job is created first, as in the fall class. Its name also contains
+# the word "answer", which once made every answer resolve to the board job.
+board <- post("Cold call: graph/answer on board"); answer <- post("Cold call: answer a question")
+stopifnot(identical(as.character(app$cold_call_kind_of(c("Cold call: graph/answer on board", "Cold call: answer a question",
+                                                          "Cold call: ask a question"))), c("board", "answer", "ask")),
+          app$cold_call_post_for(rid, "answer")$id == answer, app$cold_call_post_for(rid, "board")$id == board)
 drawn <- function(post_id, wage) app$db_exec(
   "INSERT OR REPLACE INTO class_wage_snapshots(round_id,snapshot_key,job_post_id,category_id,wage,source,snapshotted_at)
    VALUES(?,?,?,?,?,'random_draw',CURRENT_TIMESTAMP);", list(rid, paste0("post:", post_id), post_id, cc_cat, wage))
 drawn(answer, 2); drawn(board, 3)
+# Each kind is paid its own job's wage.
+stopifnot(app$cold_call_wage_for(rid, "answer") == 2, app$cold_call_wage_for(rid, "board") == 3)
 bid <- function(uid, post_id, wage) app$db_exec(
   "INSERT OR REPLACE INTO job_wage_bids(round_id,job_post_id,user_id,min_wage) VALUES(?,?,?,?);", list(rid, post_id, uid, wage))
 bid("low", answer, 1.5); bid("exact", answer, 2); bid("high", answer, 3.5)
