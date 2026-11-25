@@ -6506,7 +6506,10 @@ server <- function(input, output, session) {
                   if (slots > 0) sprintf("%d / %d filled%s", fill, slots, if (full) " ✓" else "")
                   else if (fill > 0) sprintf("%d assigned", fill)
                   else "Open"),
-              if (wage_mode && !is.na(r$wage %||% NA))
+              # With the no-anchor switch on, the instructor's wage for a job is
+              # never shown to students. On random-wage dates it is the top of
+              # the draw, so showing it would reveal the ceiling.
+              if (wage_mode && !is.na(r$wage %||% NA) && (isTRUE(rv$is_admin) || !bid_anchor_hidden_for_scope()))
                 div(style = "font-size:.72rem;color:#1a6e3c;margin-top:.15rem;",
                     sprintf("Wage: %d tokens", as.integer(r$wage))),
               job_description_details(r$description, "Description")

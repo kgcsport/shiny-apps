@@ -82,8 +82,15 @@ box_is_empty <- function(box) !grepl("value=", box, fixed = TRUE) || grepl("valu
 
 # 0. Default (switch off): existing courses keep the pre-filled posted wage
 #    and the fallback volunteer wage.
+today_text <- function(output) {
+  o <- output$today_tab
+  gsub("<[^>]+>", " ", paste(as.character(if (is.list(o) && !is.null(o$html)) o$html else o), collapse = ""))
+}
 shiny::testServer(app$server, {
   set_student(rv, "s1@test.edu", "Student 1")
+  session$setInputs(arc_tabs = "Today"); session$flushReact()
+  # Switch off: Today's Job Pools shows the instructor's wage, as before.
+  stopifnot(grepl("Wage: 7 tokens", today_text(output), fixed = TRUE))
   stopifnot(!bid_anchor_hidden_for_scope(),
             grepl("value=\"7\"", bid_box(output$jm_bid_form$html, role_post), fixed = TRUE),
             grepl("7 tokens", output$jm_summary$html, fixed = TRUE))
@@ -106,6 +113,12 @@ shiny::testServer(app$server, {
   # bid exists the instructor's fallback wage (7) must not be displayed.
   stopifnot(!grepl(sprintf("wbp_%d\"", vol_post), form, fixed = TRUE),
             !grepl("value=\"7\"", form, fixed = TRUE), !grepl("7 tokens", form, fixed = TRUE))
+  # Today's Job Pools must not show the instructor's wage either: on a
+  # random-wage date that number is the top of the draw.
+  session$setInputs(arc_tabs = "Today"); session$flushReact()
+  today <- today_text(output)
+  stopifnot(grepl("Job Pools", today, fixed = TRUE), grepl("Note taker", today, fixed = TRUE),
+            !grepl("Wage: 7 tokens", today, fixed = TRUE), !grepl("7 tokens", today, fixed = TRUE))
   market <- output$jm_summary$html
   stopifnot(grepl("Volunteer Wages For This Class", market, fixed = TRUE),
             grepl("Set by bids", market, fixed = TRUE), !grepl("7 tokens", market, fixed = TRUE))
