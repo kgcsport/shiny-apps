@@ -165,7 +165,7 @@ and for the heterogeneity split, never to set wages.
 
 ### 6.1a Training period and random exposure
 
-The first [NUMBER; PLANNED AS TWO] weeks contain no purchases or token payouts.
+The first three weeks (six class meetings) contain no purchases or token payouts.
 Each training meeting is flagged as a practice date in the app, which stores
 every wage for that date as zero, so students see no wage before their first
 market bid and practising a job creates no difference in token wealth during
@@ -186,9 +186,18 @@ Random assignment:
 - Roster: students enrolled and with a completed baseline survey at
   [FREEZE DATE/TIME].
 - Arms: in each section, 5 students are drawn at random into a no-practice arm
-  and are assigned no practice job. Every other student (about 20 per section)
-  is assigned exactly two distinct jobs, drawn at random from the [J] catalog
-  jobs. If a section's roster is not 25, the no-practice arm stays at 5.
+  and are assigned no practice job, 10 are assigned exactly one practice job,
+  and 10 are assigned exactly two distinct practice jobs. Practice jobs are
+  drawn at random from the five core jobs in Appendix B. If a section's roster
+  is not 25, the no-practice arm stays at 5 and the remaining students are
+  split as evenly as possible between one and two jobs, with any odd student
+  placed in the one-job arm.
+- Load: this is 30 practice turns per section, 6 per core job, which is one
+  turn per job per meeting over the six practice meetings. A student who
+  misses their meeting performs at the next practice meeting alongside that
+  meeting's scheduled student; a turn still unperformed at the end of the
+  practice period stays unperformed. Analysis is by assigned practice job,
+  whether or not it was performed.
 - Balance: the number of students assigned to each job is fixed in advance and
   as equal across jobs as slot counts allow; [OPTIONAL: BLOCKED ON BASELINE COMFORT-INDEX TERCILE].
 - Timing: the training meeting in which each student performs is also drawn at
@@ -651,8 +660,36 @@ Locked target formula:
 
 ## Appendix B: Frozen job catalog
 
-[INSERT NAMES, PURPOSES, TIMING, SLOTS, COMPLETION CRITERIA, JOB FAMILY, BID
-CEILING, AND FALLBACK WAGE.]
+Core jobs. These five are in the practice lottery and in the primary analysis.
+
+| Job | When | Slots per meeting |
+|---|---|---|
+| Note taker | Posted after class | 1 |
+| Prior lecture summary | Start of class | 1 |
+| Reading summary | Start of class | 1 |
+| Cold call: answer a question | During class | 1 to 5 |
+| Cold call: board work | During class | 0 to 2 |
+
+Other registered jobs. Students bid on these and the bids are recorded, but
+they are not in the practice lottery or the primary analysis.
+
+| Job | When | Frequency |
+|---|---|---|
+| Policy news (short in-class presentation) | Start of class | [ABOUT WEEKLY; EXACT SCHEDULE] |
+| Discussion leader | During class | Rare; [EXACT DATES OR RULE] |
+
+Cold calls are drawn only from present students whose recorded bid on that
+cold-call job is at or below its drawn wage; answering and board work are
+separate jobs with separate bids and wages. Voluntary contributions are open
+to every student.
+
+No wage is shown to students before they bid. Each job has a fixed upper limit
+for the random-wage draw, recorded here before the term and not announced:
+[UPPER LIMIT PER JOB]. Students are told that the wage is drawn at random from
+a range fixed in advance, that the range is not announced, and that a winner
+is paid the drawn wage, not their bid.
+
+[STILL TO INSERT: PURPOSES AND COMPLETION CRITERIA PER JOB.]
 
 ## Appendix C: Frozen perk catalog
 

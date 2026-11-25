@@ -359,4 +359,29 @@ stopifnot(length(mine) == 1L, mine[[1]]$description == "Bring the handout.", min
           !any(vapply(request("GET", "/api/state", cookie = login("ana@test.edu", "ana-pass")$cookie)$json$my_jobs,
                       function(j) j$job_name == "Solo job", logical(1))))
 
+# Cold calls limited to bidders: the kind is chosen before the draw, only a
+# student whose bid cleared that job's wage is drawn, and only that kind can be
+# recorded for them.
+hub$db_exec("DELETE FROM round_absences WHERE round_id=?;", list(rid))
+hub$db_exec("DELETE FROM job_wage_bid_locks WHERE round_id=?;", list(rid))
+hub$db_exec("DELETE FROM job_wage_bids WHERE round_id=?;", list(rid))
+board_post <- new_post("Cold call: graph/answer on board", "during")
+hub$db_exec("INSERT INTO job_wage_bids(round_id,job_post_id,user_id,min_wage) VALUES(?,?,'ana@test.edu',1);", list(rid, cold_post))
+hub$db_exec("INSERT INTO job_wage_bids(round_id,job_post_id,user_id,min_wage) VALUES(?,?,'cy@test.edu',1);", list(rid, board_post))
+stopifnot(!isTRUE(tracker_state_for(prof)$json$cold_call_by_bid))
+hub$set_setting(paste0("cold_call_bidders_only::", scope), "1")
+stopifnot(isTRUE(tracker_state_for(prof)$json$cold_call_by_bid))
+for (i in 1:8) {
+  a <- act(prof, list(action = "draw", kind = "answer")); b <- act(prof, list(action = "draw", kind = "board"))
+  stopifnot(a$json$drawn$user_id == "ana@test.edu", a$json$drawn$kind == "answer",
+            b$json$drawn$user_id == "cy@test.edu", b$json$drawn$kind == "board")
+}
+before_events <- nrow(events())
+wrong <- act(prof, list(action = "cold_call", user_id = "ana@test.edu", kind = "board"))
+right <- act(prof, list(action = "cold_call", user_id = "cy@test.edu", kind = "board"))
+stopifnot(wrong$status == 409L, grepl("did not bid", wrong$json$message, fixed = TRUE), right$status == 200L,
+          nrow(events()) == before_events + 1L,
+          act(prof, list(action = "draw", kind = "answer", exclude = list("ana@test.edu")))$status == 409L)
+hub$set_setting(paste0("cold_call_bidders_only::", scope), "0")
+
 cat("student lite: PASS\n")

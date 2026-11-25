@@ -2251,7 +2251,7 @@ random_wage_floor_value <- function() {
 # Bids recorded at the date's first draw are used when they exist.
 cold_call_bidders_only <- function()
   identical(as.character(resolve_setting("cold_call_bidders_only", "0", with_scope = TRUE)$value), "1")
-cold_call_eligible <- function(round_id, students) {
+cold_call_eligible <- function(round_id, students, kind = NULL) {
   if (!nrow(students) || !cold_call_bidders_only()) return(students)
   rid <- as.integer(round_id)
   posts <- tryCatch(db_query(
@@ -2260,6 +2260,16 @@ cold_call_eligible <- function(round_id, students) {
      WHERE jp.round_id=? AND COALESCE(jp.active,1)=1
        AND (LOWER(COALESCE(jp.selection_time,'')) IN ('during','during class')
             OR LOWER(COALESCE(jc.name,''))='cold call');", list(rid)), error = function(e) data.frame())
+  # Answering and board work are separate jobs with their own bids and wages.
+  # Given the kind, only that job's bidders are eligible; it is the same job
+  # whose wage cold_call_wage_for() pays.
+  if (!is.null(kind) && nrow(posts)) {
+    post_names <- db_query("SELECT id, job_name, COALESCE(display_order,99) AS display_order FROM job_posts WHERE round_id=?;", list(rid))
+    post_names <- post_names[post_names$id %in% posts$id, , drop = FALSE]
+    post_names <- post_names[order(!grepl(tolower(kind), tolower(post_names$job_name), fixed = TRUE),
+                                   post_names$display_order, post_names$id), , drop = FALSE]
+    posts <- posts[posts$id == post_names$id[1], , drop = FALSE]
+  }
   if (!nrow(posts)) return(students[0, , drop = FALSE])
   round <- db_query("SELECT assignment_mode, wage_pricing_rule FROM weekly_rounds WHERE id=?;", list(rid))
   random_wage <- nrow(round) > 0 && identical(as.character(round$assignment_mode[1] %||% ""), "wage_bidding") &&
@@ -10317,8 +10327,14 @@ server <- function(input, output, session) {
     else showNotification(sprintf("Imported %d job%s.", imported, if (imported == 1L) "" else "s"), type = "message")
   }, ignoreNULL = TRUE)
 
-  draw_cold_call <- function(exclude_uid = "") {
+  draw_cold_call <- function(exclude_uid = "", kind = NULL) {
     req(rv$is_admin)
+    # With bidders-only cold calls the kind is chosen before the draw, and a
+    # redraw after a pass or an absence keeps it.
+    if (cold_call_bidders_only()) {
+      kind <- kind %||% rv$cold_call_kind %||% "answer"
+      rv$cold_call_kind <- kind
+    } else { kind <- NULL; rv$cold_call_kind <- NULL }
     round <- tryCatch(active_round_row(),error=function(e)data.frame())
     if(!nrow(round)){showNotification("No selected class date for a cold call.",type="warning");return()}
     rid <- as.integer(round$id[1])
@@ -10334,11 +10350,12 @@ server <- function(input, output, session) {
            WHERE ra.round_id=? AND LOWER(ra.user_id)=LOWER(u.user_id));",
       list(rid)),error=function(e)data.frame())
     pool <- scope_filter_rows(pool)
-    pool <- cold_call_eligible(rid, pool)
+    pool <- cold_call_eligible(rid, pool, kind)
     if (nrow(pool) && nzchar(exclude_uid)) pool <- pool[norm_key(pool$user_id) != norm_key(exclude_uid), , drop=FALSE]
     if(nrow(pool)) pool <- pool[sample(nrow(pool)),,drop=FALSE]
     if (!nrow(pool)) {
-      showNotification(if (cold_call_bidders_only()) "No present student bid at or below the cold-call wage. Take a volunteer instead."
+      showNotification(if (cold_call_bidders_only()) sprintf("No present student bid at or below the wage for %s. Take a volunteer instead.",
+                                                             if (identical(kind, "board")) "board work" else "an answer")
                        else "No eligible students for a cold call.", type = "warning")
       return()
     }
@@ -10350,6 +10367,11 @@ server <- function(input, output, session) {
 
   observeEvent(input$draw_cold_call_btn, draw_cold_call(), ignoreNULL = TRUE)
   observeEvent(input$slide_draw_cold_call_btn, draw_cold_call(), ignoreNULL = TRUE)
+  for (cc_kind in c("answer", "board")) local({
+    kind <- cc_kind
+    observeEvent(input[[paste0("draw_cold_call_", kind, "_btn")]], draw_cold_call(kind = kind), ignoreNULL = TRUE)
+    observeEvent(input[[paste0("slide_draw_cold_call_", kind, "_btn")]], draw_cold_call(kind = kind), ignoreNULL = TRUE)
+  })
 
   mark_cold_call_absent <- function() {
     req(rv$is_admin)
@@ -10442,6 +10464,11 @@ server <- function(input, output, session) {
     if (!nrow(round)) { showNotification("No selected class date.", type = "error"); return() }
     rid <- as.integer(round$id[1])
     uid <- drawn$user_id
+    if (cold_call_bidders_only() && !identical(rv$cold_call_kind %||% kind, kind)) {
+      showNotification(sprintf("This student was drawn for %s. Draw again for the other kind.",
+                               if (identical(rv$cold_call_kind, "board")) "board work" else "an answer"), type = "warning")
+      return()
+    }
     tokens <- queue_cold_call(rid, uid, kind, rv$user_id %||% "admin")
     rv$cold_call_last <- list(
       display_name = drawn$display_name %||% uid,
@@ -10509,10 +10536,15 @@ server <- function(input, output, session) {
         if (nzchar(drawn_name)) drawn_name else "Ready"
       ),
       div(style = "display: flex; gap: 6px; flex-wrap: wrap;",
-        actionButton("slide_draw_cold_call_btn", "Draw", class = "btn btn-sm btn-primary"),
+        if (cold_call_bidders_only()) tagList(
+          actionButton("slide_draw_cold_call_answer_btn", "Draw: answer", class = "btn btn-sm btn-primary"),
+          actionButton("slide_draw_cold_call_board_btn", "Draw: board", class = "btn btn-sm btn-primary"))
+        else actionButton("slide_draw_cold_call_btn", "Draw", class = "btn btn-sm btn-primary"),
         if (nzchar(drawn_uid)) tagList(
-          actionButton("slide_record_cold_call_answer_btn", "Answer", class = "btn btn-sm btn-success"),
-          actionButton("slide_record_cold_call_board_btn", "Board", class = "btn btn-sm btn-success"),
+          if (!cold_call_bidders_only() || !identical(rv$cold_call_kind, "board"))
+            actionButton("slide_record_cold_call_answer_btn", "Answer", class = "btn btn-sm btn-success"),
+          if (!cold_call_bidders_only() || identical(rv$cold_call_kind, "board"))
+            actionButton("slide_record_cold_call_board_btn", "Board", class = "btn btn-sm btn-success"),
           actionButton("slide_cold_call_pass_btn", "Pass & Redraw", class = "btn btn-sm btn-warning"),
           actionButton("slide_cold_call_recession_btn", "Recession — Fire & Redraw", class = "btn btn-sm btn-danger"),
           actionButton("slide_cold_call_absent_btn", "Absent & Redraw", class = "btn btn-sm btn-warning"),
@@ -11461,7 +11493,10 @@ server <- function(input, output, session) {
           drawn_name <- if (is.list(drawn)) drawn$display_name %||% drawn_uid else ""
           tagList(
             div(style = "display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;",
-              actionButton("draw_cold_call_btn", "Draw",
+              if (cold_call_bidders_only()) tagList(
+                actionButton("draw_cold_call_answer_btn", "Draw for an answer", class = "btn btn-sm btn-primary"),
+                actionButton("draw_cold_call_board_btn", "Draw for board work", class = "btn btn-sm btn-primary"))
+              else actionButton("draw_cold_call_btn", "Draw",
                            class = "btn btn-sm btn-primary"),
               if (nzchar(drawn_uid)) {
                 span(style = "font-weight:700;",
@@ -11472,10 +11507,12 @@ server <- function(input, output, session) {
             ),
             if (nzchar(drawn_uid)) {
               div(style = "display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.6rem;",
-                actionButton("record_cold_call_answer_btn", "Answer",
-                             class = "btn btn-sm btn-outline-success"),
-                actionButton("record_cold_call_board_btn", "Board Work",
-                             class = "btn btn-sm btn-outline-success"),
+                if (!cold_call_bidders_only() || !identical(rv$cold_call_kind, "board"))
+                  actionButton("record_cold_call_answer_btn", "Answer",
+                               class = "btn btn-sm btn-outline-success"),
+                if (!cold_call_bidders_only() || identical(rv$cold_call_kind, "board"))
+                  actionButton("record_cold_call_board_btn", "Board Work",
+                               class = "btn btn-sm btn-outline-success"),
                 actionButton("cold_call_pass_btn", "Pass & Redraw",
                              class = "btn btn-sm btn-outline-warning"),
                 actionButton("cold_call_recession_btn", "Recession — Fire & Redraw",

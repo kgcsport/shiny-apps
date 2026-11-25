@@ -296,6 +296,7 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
       round = list(label = round$label[1] %||% "", class_date = round$class_date[1] %||% "",
                    practice = isTRUE(as.integer(round$practice_no_points[1] %||% 0L) == 1L)),
       wages = list(answer = hub$cold_call_wage_for(rid, "answer"), board = hub$cold_call_wage_for(rid, "board")),
+      cold_call_by_bid = hub$cold_call_bidders_only(),
       paid_volunteer_limit = identical(as.character(hub$resolve_setting("volunteer_paid_cap", "0", with_scope = TRUE)$value), "1"),
       students = lapply(seq_len(nrow(students)), function(i) list(
         user_id = students$user_id[i], name = students$display_name[i],
@@ -332,12 +333,16 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
       hub$close_bidding_after_draw(rid)
       skip <- hub$norm_key(as.character(unlist(body$exclude %||% character(0))))
       pool <- students[!hub$norm_key(students$user_id) %in% c(absent, skip), , drop = FALSE]
-      pool <- hub$cold_call_eligible(rid, pool)
-      if (!nrow(pool)) return(list(ok = FALSE, message = if (hub$cold_call_bidders_only())
-        "No present student bid at or below the cold-call wage. Take a volunteer instead."
+      by_bid <- hub$cold_call_bidders_only()
+      kind <- if (by_bid) as.character(body$kind %||% "answer") else NULL
+      if (by_bid && !kind %in% c("answer", "board")) return(list(ok = FALSE, message = "Unknown cold-call kind."))
+      pool <- hub$cold_call_eligible(rid, pool, kind)
+      if (!nrow(pool)) return(list(ok = FALSE, message = if (by_bid)
+        sprintf("No present student bid at or below the wage for %s. Take a volunteer instead.",
+                if (identical(kind, "board")) "board work" else "an answer")
         else "No students are available to call."))
       pick <- pool[sample.int(nrow(pool), 1L), ]
-      return(list(ok = TRUE, drawn = list(user_id = pick$user_id, name = pick$display_name)))
+      return(list(ok = TRUE, drawn = list(user_id = pick$user_id, name = pick$display_name, kind = kind)))
     }
     keep_class <- function(rows) {
       if (!nrow(rows)) return(rows)
@@ -391,6 +396,12 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
     if (identical(action, "cold_call")) {
       kind <- as.character(body$kind %||% "")
       if (kind %in% c("answer", "board")) {
+        # With bidders-only cold calls, only a student whose bid cleared that
+        # kind's wage can be paid for it, whatever the page sent.
+        if (hub$cold_call_bidders_only() &&
+            !nrow(hub$cold_call_eligible(rid, students[hub$norm_key(students$user_id) == hub$norm_key(uid), , drop = FALSE], kind)))
+          return(list(ok = FALSE, message = sprintf("%s did not bid at or below the wage for %s.", name_of(uid),
+                                                    if (kind == "board") "board work" else "an answer")))
         tokens <- hub$queue_cold_call(rid, uid, kind, instructor$user_id)
         return(list(ok = TRUE, message = sprintf("%s: %s recorded.", name_of(uid), if (kind == "answer") "answer" else "board work")))
       }

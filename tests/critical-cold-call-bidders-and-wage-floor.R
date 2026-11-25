@@ -67,6 +67,10 @@ app$set_setting("cold_call_bidders_only", "1")
 # On: a bid at or below the drawn wage of some cold-call job. No bid, or only
 # bids above the wage, means not called.
 stopifnot(app$cold_call_bidders_only(), identical(who(), c("boardonly", "exact", "low")))
+# Answering and board work are separate jobs: given the kind, only that job's
+# bids and drawn wage count.
+who_for <- function(kind) sort(app$cold_call_eligible(rid, students, kind)$user_id)
+stopifnot(identical(who_for("answer"), c("exact", "low")), identical(who_for("board"), "boardonly"))
 # Bids recorded at the date's first draw are used; a later change is ignored.
 app$db_exec("INSERT INTO job_wage_bid_locks(round_id,job_post_id,user_id,min_wage,submitted_at) SELECT round_id,job_post_id,user_id,min_wage,CURRENT_TIMESTAMP FROM job_wage_bids WHERE round_id=?;", list(rid))
 bid("high", answer, 0.5)

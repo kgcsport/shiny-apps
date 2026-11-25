@@ -110,7 +110,13 @@
 
     <h2>Cold call</h2>
     <div class="card">
-      <div id="drawn-empty"><button class="primary draw" id="draw" type="button">Draw a student</button></div>
+      <div id="drawn-empty">
+        <button class="primary draw" id="draw" type="button">Draw a student</button>
+        <div class="row" id="draw-kinds" hidden>
+          <button class="primary" id="draw-answer" type="button">Draw for an answer</button>
+          <button class="primary" id="draw-board" type="button">Draw for board work</button>
+        </div>
+      </div>
       <div id="drawn" hidden>
         <div class="sub">Called</div>
         <div class="called" id="drawn-name" tabindex="-1"></div>
@@ -188,6 +194,12 @@
 
   function renderCall() {
     $('drawn').hidden = !drawn; $('drawn-empty').hidden = !!drawn;
+    // With cold calls limited to bidders, the kind is chosen before the draw
+    // and only that kind can be recorded.
+    var byBid = !!(state && state.cold_call_by_bid);
+    $('draw').hidden = byBid; $('draw-kinds').hidden = !byBid;
+    $('cc-answer').hidden = !!(byBid && drawn && drawn.kind === 'board');
+    $('cc-board').hidden = !!(byBid && drawn && drawn.kind !== 'board');
     if (drawn) $('drawn-name').textContent = drawn.name;
     if (state && state.wages && state.round)
       $('drawn-pay').textContent = state.round.practice ? 'Practice date: nothing is paid'
@@ -314,8 +326,10 @@
     }).catch(function () { say('Could not save. Check your connection and try again.'); return null; })
       .then(function (out) { busy = false; return out; });
   }
-  function draw(exclude) {
-    return act({ action: 'draw', exclude: exclude || [] }).then(function (out) {
+  var drawKind = 'answer';
+  function draw(exclude, kind) {
+    if (kind) drawKind = kind;
+    return act({ action: 'draw', exclude: exclude || [], kind: drawKind }).then(function (out) {
       if (out && out.ok && out.drawn) { drawn = out.drawn; renderCall(); waiting(); $('drawn-name').focus(); }
     });
   }
@@ -330,6 +344,8 @@
   }
 
   $('draw').addEventListener('click', function () { draw([]); });
+  $('draw-answer').addEventListener('click', function () { draw([], 'answer'); });
+  $('draw-board').addEventListener('click', function () { draw([], 'board'); });
   $('cc-answer').addEventListener('click', function () { recordCall('answer'); });
   $('cc-board').addEventListener('click', function () { recordCall('board'); });
   $('cc-pass').addEventListener('click', function () { recordCall('pass'); });

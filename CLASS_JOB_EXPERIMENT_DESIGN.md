@@ -169,9 +169,9 @@ quantity are specified.
 The app should display remaining paid volunteer slots. A volunteer queue or
 instructor draw is cleaner than paying whoever speaks first.
 
-## Two-Week Feedback Phase
+## Three-Week Practice Phase
 
-During the first two weeks there is no bidding, buying, selling, or payout.
+During the first three weeks (six meetings) there is no buying, selling, or payout; baseline bids are collected but assign nothing.
 Students experience representative jobs and receive one outcome plus at most
 two diagnostic tags.
 

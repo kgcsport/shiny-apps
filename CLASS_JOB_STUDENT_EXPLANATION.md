@@ -8,9 +8,9 @@ Our class needs real work: explaining graphs, summarizing ideas, asking useful
 questions, checking evidence, and helping the class make connections. You will
 have opportunities to do these jobs and earn participation points.
 
-During the first two weeks, we will practice the jobs. Practice jobs are
-assigned by lottery: most students are drawn for two practice jobs and a few
-for none, so whether and what you practice is a matter of chance. No points
+During the first three weeks, we will practice the jobs. Practice jobs are
+assigned by lottery: some students are drawn for two practice jobs, some for
+one, and a few for none, so whether and what you practice is a matter of chance. No points
 are paid during this practice period. Practice work is paid at the end of the term, at
 the average wage the same job earned in the other section of the course. You will be asked what you would need to be paid
 for each job, but those early answers do not assign any jobs. You will receive
