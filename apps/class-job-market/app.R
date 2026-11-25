@@ -4339,6 +4339,18 @@ practice_schedule_info <- function(scope_key) {
        arms = table(arms$arm),
        turns = db_query("SELECT COUNT(*) n FROM practice_turns WHERE scope_key=?;", list(scope_key))$n[1])
 }
+# The class's practice dates, in order.
+practice_dates_for <- function(scope_key) db_query(
+  "SELECT wr.id, wr.class_date FROM weekly_rounds wr JOIN scope_rounds sr ON sr.round_id=wr.id
+   WHERE sr.scope_key=? AND COALESCE(wr.practice_no_points,0)=1 ORDER BY wr.class_date, wr.id;", list(scope_key))
+# The lottery's seed is not chosen by anyone: it is fixed by the class and the
+# date of its first practice meeting, so pressing the button on another day,
+# or again, cannot produce a different draw.
+practice_auto_seed <- function(scope_key, first_practice_date) {
+  hex <- digest::digest(paste("practice-lottery", norm_key(scope_key), as.character(first_practice_date), sep = "|"),
+                        algo = "sha256", serialize = FALSE)
+  as.integer(strtoi(substr(hex, 1L, 7L), base = 16L))
+}
 # Build the lottery for one class. `user_ids` is the frozen roster. `none_n`
 # students get no practice job; the rest are split evenly between one and two
 # jobs, an odd student going to the one-job arm. Jobs are balanced across
@@ -15226,34 +15238,41 @@ server <- function(input, output, session) {
   output$practice_lottery_panel <- renderUI({
     req(rv$is_admin)
     rv$settings_ver
-    info <- practice_schedule_info(current_scope_key())
+    scope <- current_scope_key()
+    info <- practice_schedule_info(scope)
+    dates <- practice_dates_for(scope)
     if (!is.null(info)) return(tagList(
-      tags$p(sprintf("Generated %s with seed %s: %s. %d practice turns.", info$created_at, info$seed,
+      tags$p(sprintf("Drawn %s (seed %s, set automatically from the class and its first practice date): %s. %d practice turns.", info$created_at, info$seed,
                      paste(sprintf("%d %s", as.integer(info$arms), c(none = "with no practice job", one = "with one", two = "with two")[names(info$arms)]), collapse = ", "),
                      as.integer(info$turns))),
       tags$p(style = "font-size:.84rem;color:#555;word-break:break-all;", tags$b("Schedule hash: "), info$hash),
-      tags$p(style = "font-size:.84rem;color:#555;", "The schedule is generated once and is not regenerated. Record the seed and the hash before the first practice meeting."),
+      tags$p(style = "font-size:.84rem;color:#555;", "The draw is done once and cannot be redone. Record the hash before the first practice meeting."),
       tags$p(style = "font-size:.84rem;color:#555;", "Download the schedule under Settings → Data & tools → Research tables.")))
+    if (!nrow(dates)) return(tags$p(style = "font-size:.88rem;color:#555;",
+      "Mark this class's practice dates first (Class date → practice, no points). The lottery uses them to know how many practice meetings there are."))
     tagList(
       tags$p(style = "font-size:.88rem;color:#555;",
-             "Assigns practice jobs by lottery for the active class: a no-practice group, and the rest split between one and two practice jobs. Generate it once, after the roster is final. Practice dates are the class dates marked as practice (no points)."),
-      fluidRow(
-        column(3, numericInput("practice_seed", "Seed:", value = NA, step = 1)),
-        column(3, numericInput("practice_meetings", "Practice meetings:", value = 6, min = 1, step = 1)),
-        column(3, numericInput("practice_none_n", "Students with no practice job:", value = 5, min = 0, step = 1))),
-      textAreaInput("practice_jobs", "Practice jobs, one per line (must match the job names posted on practice dates):",
-                    value = paste(PRACTICE_DEFAULT_JOBS, collapse = "\n"), rows = 5, width = "100%"),
-      actionButton("generate_practice_btn", "Generate the practice schedule", class = "btn btn-sm btn-primary",
-                   onclick = "if(!confirm('Generate the practice schedule for this class? It cannot be regenerated.')) return false;"))
+             sprintf("Draws which students practise which jobs for the active class: 5 students get no practice job and the rest are split between one and two. Turns are spread over this class's %d practice date%s. Do it once, after the roster is final; it cannot be redone.",
+                     nrow(dates), if (nrow(dates) == 1L) "" else "s")),
+      actionButton("generate_practice_btn", "Draw the practice jobs", class = "btn btn-sm btn-primary",
+                   onclick = "if(!confirm('Draw the practice jobs for this class? This is done once and cannot be redone.')) return false;"),
+      tags$details(style = "margin-top:.6rem;",
+        tags$summary(style = "cursor:pointer;font-size:.86rem;color:#555;", "Options"),
+        numericInput("practice_none_n", "Students with no practice job:", value = 5, min = 0, step = 1, width = "260px"),
+        textAreaInput("practice_jobs", "Practice jobs, one per line (must match the job names posted on practice dates):",
+                      value = paste(PRACTICE_DEFAULT_JOBS, collapse = "\n"), rows = 5, width = "100%")))
   })
   observeEvent(input$generate_practice_btn, {
     req(rv$is_admin, !rv$impersonating)
     roster <- scope_filter_rows(tryCatch(db_query(
       "SELECT user_id, course, section FROM users
        WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;"), error = function(e) data.frame()))
-    result <- generate_practice_schedule(current_scope_key(), roster$user_id, input$practice_seed,
-                                         strsplit(input$practice_jobs %||% "", "\n", fixed = TRUE)[[1]],
-                                         input$practice_meetings, input$practice_none_n)
+    scope <- current_scope_key()
+    dates <- practice_dates_for(scope)
+    if (!nrow(dates)) { showNotification("Mark this class's practice dates first.", type = "warning"); return() }
+    jobs <- strsplit(input$practice_jobs %||% paste(PRACTICE_DEFAULT_JOBS, collapse = "\n"), "\n", fixed = TRUE)[[1]]
+    result <- generate_practice_schedule(scope, roster$user_id, practice_auto_seed(scope, dates$class_date[1]),
+                                         jobs, nrow(dates), input$practice_none_n %||% 5L)
     if (isTRUE(result$ok)) rv$settings_ver <- rv$settings_ver + 1L
     showNotification(result$message, type = if (isTRUE(result$ok)) "message" else "error", duration = if (isTRUE(result$ok)) 30 else 8)
   }, ignoreNULL = TRUE)

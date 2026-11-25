@@ -202,11 +202,13 @@ Random assignment:
   as equal across jobs as slot counts allow; [OPTIONAL: BLOCKED ON BASELINE COMFORT-INDEX TERCILE].
 - Timing: the training meeting in which each student performs is also drawn at
   random within the student's assigned job.
-- Procedure: the app generates the full schedule once per section from a seed
-  the instructor enters (Settings → Class day → Practice lottery;
-  `generate_practice_schedule()`). The seed, the app commit, and the SHA-256
-  hash of the schedule the app displays are recorded before the first
-  training meeting. The app refuses to regenerate a schedule.
+- Procedure: the app draws the full schedule once per section (Settings →
+  Class day → Practice lottery; `generate_practice_schedule()`). The seed is
+  not chosen by anyone: it is computed from the course, the section, and the
+  date of that section's first training meeting (`practice_auto_seed()`), so
+  the draw is the same whenever it is run. The app commit and the SHA-256 hash
+  of the schedule the app displays are recorded before the first training
+  meeting. The app refuses to redo a draw.
 - Delivery: at each training meeting the app lists the practice turns due and
   assigns them to their students. A practice job is never passed to another
   student. A turn that is missed, or whose student is absent, stays due at the

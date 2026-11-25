@@ -66,6 +66,11 @@ m1 <- new_date("Practice 1", "2027-01-19", 1L); m2 <- new_date("Practice 2", "20
 paid <- new_date("Paid 1", "2027-02-09", 0L)
 stopifnot(app$practice_meeting_no(scope, m1) == 1L, app$practice_meeting_no(scope, m2) == 2L,
           is.na(app$practice_meeting_no(scope, paid)), identical(app$scope_for_round(m1), scope))
+# The seed is fixed by the class and its first practice date, not chosen.
+auto <- app$practice_auto_seed(scope, "2027-01-19")
+stopifnot(nrow(app$practice_dates_for(scope)) == 2L, app$practice_dates_for(scope)$class_date[1] == "2027-01-19",
+          is.integer(auto), !is.na(auto), auto > 0L, identical(auto, app$practice_auto_seed(toupper(scope), "2027-01-19")),
+          auto != app$practice_auto_seed("econ 101::02", "2027-01-19"), auto != app$practice_auto_seed(scope, "2027-01-21"))
 students <- data.frame(user_id = roster, stringsAsFactors = FALSE)
 due <- app$practice_turns_due(scope, m1)
 stopifnot(nrow(due) == 5L, all(due$state == "due"), all(due$meeting_no == 1L), nrow(app$practice_turns_due(scope, paid)) == 0L)
