@@ -35,6 +35,8 @@ Commands:
             commit that changed the app.
   lite      Start/update the fast pages (/student-lite/) and reload nginx
   lite-down Stop the fast pages
+
+Backups are a separate script: scripts/backup.sh (see its header).
 EOF
 }
 

@@ -26,7 +26,7 @@ Reservation Wages in an Introductory Course
 - Expected enrollment: about 25 students per section, about 50 in total
 - Meetings: two per week per section for 12 weeks (24 meetings); [DAYS AND
   LENGTH]
-- Registration repository/platform: [PLATFORM AND URL]
+- Registration repository/platform: AEA RCT Registry, registered no later than the week before the first class meeting. [URL]
 - Planned registration date: [DATE]
 
 The primary study consists of two sections of the same introductory course.
@@ -183,7 +183,12 @@ in the other section of the course, and a try earns one point. A job that was
 not run in the other section earns that section's average across all jobs.
 Because the wage comes from the other section, no bid a student places can
 change their own practice pay. The two sections are run as separate markets
-in the app for this reason. Students are told this rule at the start of the
+in the app for this reason. The Data Science section has no second section
+and its jobs differ from the Introductory course's, so its practice work is
+paid at the average wage the same job paid in that section itself. Under the
+random-wage rule the wage paid is the drawn wage, which no bid can raise, so
+a student's own bids have at most a negligible effect on that average.
+Students are told this rule at the start of the
 term.
 
 Random assignment:
@@ -212,8 +217,10 @@ Random assignment:
 - Deviations: any departure from the planned routine at a meeting (no draw, a
   volunteer taken in place of a cold call, a drawn job not run) is logged in
   the app at the time, with a timestamp, and the full log is reported.
-- Late adds: [EXCLUDED FROM THE CONFIRMATORY SAMPLE AND GIVEN A JOB BY THE SAME
-  SCRIPT / OTHER REGISTERED RULE].
+- Adds and drops: students who add the course are kept in the sample; adds
+  happen within the practice period, so an added student enters the practice
+  draws from their first meeting. Students who drop are kept up to their last
+  class meeting. The number of each is reported by section.
 
 Students are told that training jobs are assigned by lottery. Students
 practise their assigned job and receive one outcome plus at most two
@@ -359,7 +366,7 @@ other non-earning ledger entries do not reduce gross earnings.
 ### 6.5 Participation-grade mapping
 
 - Course-grade weight: 15 percentage points
-- Full-credit threshold: [T] gross points
+- Full-credit threshold: 30 gross points
 - Mapping below the threshold:
 
 ```text
@@ -452,9 +459,13 @@ outcomes are observed.
 ### Primary outcome
 
 - `first_bid_ij`: the student's bid for job `j` on file at the first bid lock
-  after the market opens, in participation points. With no bid ceiling, bids
-  above the [95TH] percentile of their section and job are set to that
-  percentile. The percentile is fixed here, before any data are seen.
+  after the market opens, in participation points. Each job's random wage is
+  drawn up to a fixed upper limit of 10 points, so a bid above 10 can never
+  win: bids above 10 are recorded as 10. A job left blank is a decision not
+  to enter the market for that job and is likewise recorded as 10. The share
+  of bids that are blank and the share above 10 are reported by arm, and the
+  primary model is re-estimated as a censored regression and with those bids
+  dropped.
 
 ### Secondary outcomes
 
@@ -678,12 +689,12 @@ Core jobs. These five are in the practice lottery and in the primary analysis.
 | Cold call: board work | During class | 0 to 2 |
 
 Other registered jobs. Students bid on these and the bids are recorded, but
-they are not in the practice lottery or the primary analysis.
+they are not in the primary analysis.
 
 | Job | When | Frequency |
 |---|---|---|
-| Policy news (short in-class presentation) | Start of class | [ABOUT WEEKLY; EXACT SCHEDULE] |
-| Discussion leader | During class | Rare; [EXACT DATES OR RULE] |
+| Policy news (short in-class presentation, prepared in advance) | Start of class | Once a week, every week |
+| Odd job (a one-off role, described on the day, such as a role in a class game) | Varies | Occasional |
 
 Cold calls are drawn only from present students whose recorded bid on that
 cold-call job is at or below its drawn wage; answering and board work are
@@ -692,7 +703,7 @@ to every student.
 
 No wage is shown to students before they bid. Each job has a fixed upper limit
 for the random-wage draw, recorded here before the term and not announced:
-[UPPER LIMIT PER JOB]. Students are told that the wage is drawn at random from
+10 points for every job. Students are told that the wage is drawn at random from
 a range fixed in advance, that the range is not announced, and that a winner
 is paid the drawn wage, not their bid.
 
@@ -700,7 +711,29 @@ is paid the drawn wage, not their bid.
 
 ## Appendix C: Frozen perk catalog
 
-[INSERT PRICES, WINDOWS, CAPS, ELIGIBILITY, REFUND RULES, AND DELIVERY RULES.]
+One rule sets every price: price in points = rate x the percentage points of
+course grade the perk is worth, so a point buys the same expected grade gain
+through any perk. The rate is 10 points per percentage point (a typical
+student's 40 points for the term buy 4 percentage points). The app computes
+the prices from these inputs (`price_formula()`).
+
+- Assignment extension: problem sets are 15% of the grade, six sets of 100
+  points, 2 points lost per hour late, so an hour is worth 0.05 percentage
+  points on every set. Price: 0.5 points per hour (12 points for 24 hours).
+- Exam question preview: the final is 25% of the grade; students answer 10 of
+  12 five-point questions; 24 candidate questions are posted. A revealed
+  question appears on the exam with probability 6 / (11 + k), where k is the
+  number revealed. The price of the k-th reveal is the pool's combined
+  expected grade gain from it: [N] x 25 x [PREVIEW GAIN, PROVISIONALLY 0.20]
+  / 10 x 66 / ((11 + k)(10 + k)) x 10 points, rounded up. Pool: [SECTION OR
+  COURSE].
+- Grade reweighting: [ON OR OFF]. If on: [2 points per percentage point of
+  weight moved / the larger of that and 10 x the student's own grade gain],
+  at most 5 percentage points of weight per student.
+- Voluntary contribution: 1 point, at most one paid per class meeting.
+- Pass Insurance: not offered.
+- No purchases are possible during the practice period. No other purchase
+  windows or deadlines apply.
 
 ## Appendix D: Diagnostic-tag dictionary
 

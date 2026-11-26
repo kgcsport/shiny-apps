@@ -63,3 +63,4 @@ google_application_credentials.json
 **/*.quarto_ipynb
 brown-bag-research-infrastructure*
 _metadata.yml
+appdata/backups/

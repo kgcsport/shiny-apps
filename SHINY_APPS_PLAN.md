@@ -166,6 +166,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-11-26** — Spring decisions (Kyle). A blank bid means not entering the market for that job and is treated as above the limit. Data Science practice work is paid from that section's own average wage for the job. Adds and drops stay in the sample; adds happen within the practice period. Policy news runs every week and students bid on it; discussion leader is dropped; one-off roles are posted as a generic "Odd job". No purchase windows or deadlines for perks. Reweighting stays in the app with its pricing toggle. Registration: AEA RCT Registry or OSF, by the week before the semester. The IRB form will be updated. Two freeze dates: a feature freeze and a full freeze. Treated as accepted, because they were listed and not objected to: upper wage limit 10 for every job, full credit at 30 points, volunteer wage 1, price rate 10 points per grade point.
+
 - **2026-11-26** — Reweighting is priced per student, and the exam-question fund can be pooled by section or by course (Kyle). **Must remain unchanged:** with both switches at their defaults, reweight prices follow the schedule alone and each section has its own question pool, as before. **New behavior:** (1) `reweight_price_by_gain` (per section, in the Price formula panel): a reweight costs the larger of the schedule price and rate x the student's own grade gain from that request, computed from recorded grades with the same code that previews the reweight; the schedule price is the floor, so a request made before the relevant grades exist is never cheaper than standard. (2) `flex_pool_level` (stored for the course): "course" pools contributions and reveals across all sections under one key and prices each question for the whole course's enrolment; contributions already made stay with the pool they were made in. Both are set in the Price formula panel and saved by Apply. The exam-question prices already follow the panel's parameters. **Verification:** `tests/critical-price-formula.R`.
 
 - **2026-11-26** — One formula sets the perk prices (Kyle: "a simple formula with the parameters I set that determines everything"; final exam is 25% of the grade). price = rate x percentage points of course grade the perk is worth; rate = points a typical student has to spend / grade points those should buy. **Must remain unchanged:** every class's prices until its instructor presses Apply; how a purchase is charged. **New behavior:** Settings → Tokens & spending → Price formula holds the parameters, previews the prices, and on Apply writes the three settings the app already charges from: extension pricing (now allowed to be proportional to hours, exponent 1), the exam-question cost formula for the section, and the reweight cost formula. Extension and reweight prices are stored at the level Settings is saving to; the question formula and the parameters are stored for the section. Reweighting uses an assumed score gap, not each student's own. **Verification:** `tests/critical-price-formula.R`.
@@ -565,6 +567,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-11-26** (Claude Code) — Wrote the decisions into the preregistration (primary-outcome rule for blank and above-limit bids, Data Science practice pay, adds and drops, job table, limit 10, threshold 30, perk price appendix). Added `SPRING_REHEARSAL_PLAN.md` and `scripts/backup.sh` (nightly copy made by the database, 30 days kept, optional off-server copy with rclone, and a restore check). Only the script's syntax and its database-copy step were checked here; it has not been run against Docker, cron, or rclone. The repo already has Drive backup code in another app, but it only runs while that app is open.
 
 - **2026-11-26** (Claude Code) — Built per-student reweight pricing and the section-or-course question pool, with tests: a 30-point score gap prices a 5-point reweight at 15 against the standard 10; an even student and an unhelpful move pay 10; the student's own preview shows 15; the course pool uses one key and the whole course's enrolment. All suites pass. Not checked in a browser. Not checked: a student in a second section contributing to a course pool end to end.
 
@@ -1107,6 +1111,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 3. Publish the PS6 Cloudflare Worker assignment, then enable the preconfigured PS6 and PS6 corrections extension products in Settings → Spending Options → Assignment Extensions.
 
 ## Questions for Kyle
+
+- **Exam questions and sections (2026-11-26).** Students in different sections can share a revealed question. Either pool the fund across the course, or keep section pools and write a separate question set and exam for each section.
+- **Preview gain (2026-11-26).** How much better does a student do on an exam question for having seen it beforehand? Provisionally 20 points out of 100.
 
 - **Perk price schedule inputs (2026-11-26).** Needed to turn the pricing principle into numbers: the final exam's weight in the course grade; the rule for how a revealed question's chance of appearing declines (proposed: 0.5 x 12 / (11 + number revealed)); and the points charged per hour of extension, which sets the level of every other price.
 
