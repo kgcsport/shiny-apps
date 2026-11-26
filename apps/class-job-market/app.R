@@ -2375,7 +2375,8 @@ extension_pricing_settings <- function(setting_getter = get_setting) {
   step_hours  <- number_setting("extension_step_hours", 1)
   if (base_hours <= 0) base_hours <- 24
   if (base_tokens <= 0) base_tokens <- 3
-  if (exponent <= 1) exponent <- 1.35
+  # 1 is allowed: a price that rises in step with the hours bought.
+  if (exponent < 1) exponent <- 1.35
   if (step_hours <= 0) step_hours <- 1
   if (max_hours < step_hours) max_hours <- max(168, step_hours)
 
@@ -2389,6 +2390,56 @@ extension_pricing_settings <- function(setting_getter = get_setting) {
        max_hours=max_hours, step_hours=step_hours, shortcuts=shortcuts)
 }
 
+# ── One formula for every perk price ───────────────────────────────────────────
+# price in points = rate x percentage points of course grade the perk is worth,
+# so a point buys the same expected grade gain whichever perk it is spent on.
+# The numbers below are the instructor's; see analysis/price_schedule.R.
+PRICE_FORMULA_DEFAULTS <- list(
+  typical_points_on_hand = 40, grade_points_a_term_buys = 4,
+  problem_set_weight = 15, problem_sets = 6, problem_set_points = 100, late_points_per_hour = 2,
+  final_weight = 25, exam_questions = 12, exam_answer = 10, questions_posted = 24,
+  preview_gain = 20, decline = 11, reweight_gap = 20)
+PRICE_FORMULA_LABELS <- c(
+  typical_points_on_hand = "Points a typical student has to spend in a term",
+  grade_points_a_term_buys = "Percentage points of course grade those points should buy",
+  problem_set_weight = "Problem sets: percent of course grade", problem_sets = "Number of problem sets",
+  problem_set_points = "Points per problem set", late_points_per_hour = "Points lost per hour late",
+  final_weight = "Final exam: percent of course grade", exam_questions = "Questions on the final",
+  exam_answer = "Questions a student answers", questions_posted = "Questions posted to reveal",
+  preview_gain = "Percent of a question's credit a preview adds",
+  decline = "How slowly a revealed question's chance falls (larger = slower)",
+  reweight_gap = "Reweighting: assumed score gap between the two categories (percent)")
+price_formula_params <- function() {
+  saved <- tryCatch(jsonlite::fromJSON(resolve_setting("price_formula_params", "{}", with_scope = TRUE)$value),
+                    error = function(e) list())
+  params <- PRICE_FORMULA_DEFAULTS
+  for (name in intersect(names(saved), names(params))) {
+    value <- suppressWarnings(as.numeric(saved[[name]]))
+    if (length(value) == 1L && is.finite(value) && value > 0) params[[name]] <- value
+  }
+  params
+}
+# Everything the formula implies, plus the three settings the app already
+# charges from: extension pricing, the exam-question cost formula (q = already
+# revealed, N = class size), and the reweight cost formula (n = points of weight).
+price_formula <- function(p = price_formula_params(), class_size = 25) {
+  rate <- p$typical_points_on_hand / p$grade_points_a_term_buys
+  hour_worth <- p$problem_set_weight * p$late_points_per_hour / (p$problem_sets * p$problem_set_points)
+  start <- p$exam_questions / p$questions_posted
+  chance <- function(k) start * (p$decline + 1) / (p$decline + k)
+  question_worth <- p$final_weight * (p$preview_gain / 100) / p$exam_answer
+  k <- seq_len(as.integer(p$questions_posted))
+  added <- diff(c(0, k * chance(k)))
+  num <- function(x) format(signif(x, 8), scientific = FALSE, trim = TRUE)
+  list(rate = rate, extension_per_hour = rate * hour_worth,
+       extension = list(base_hours = 24, base_tokens = rate * hour_worth * 24, exponent = 1),
+       questions = data.frame(k = k, chance = chance(k), known_on_exam = k * chance(k),
+                              section_price = pmax(1, ceiling(rate * question_worth * added * class_size - 1e-9))),
+       question_formula = sprintf("%s * N * %s / ((%s + q) * (%s + q))", num(rate * question_worth),
+                                  num(start * (p$decline + 1) * p$decline), num(p$decline + 1), num(p$decline)),
+       reweight_per_point = rate * p$reweight_gap / 100,
+       reweight_formula = sprintf("%s * n", num(rate * p$reweight_gap / 100)))
+}
 extension_cost_for_hours <- function(hours, settings = extension_pricing_settings()) {
   hours <- suppressWarnings(as.numeric(hours))
   if (!length(hours) || is.na(hours) || !is.finite(hours) || hours <= 0) return(NA_real_)
@@ -11178,6 +11229,62 @@ server <- function(input, output, session) {
         paste(sprintf("%g hours = %d tokens", examples, as.integer(costs)), collapse="  ·  "))
   })
 
+  output$price_formula_panel <- renderUI({
+    req(rv$is_admin)
+    rv$settings_ver
+    p <- price_formula_params()
+    # The number boxes are built once; only the preview below redraws as you type.
+    tagList(
+      tags$p(style = "font-size:.88rem;color:#555;",
+             "One rule sets every price: price = rate × the percentage points of course grade the perk is worth. Change a number and the prices below update. Nothing is charged differently until you press Apply."),
+      fluidRow(lapply(names(PRICE_FORMULA_LABELS), function(name) column(4,
+        numericInput(paste0("pf_", name), PRICE_FORMULA_LABELS[[name]], value = p[[name]], min = 0, step = 1, width = "100%")))),
+      uiOutput("price_formula_preview"),
+      actionButton("apply_price_formula_btn", "Apply these prices", class = "btn btn-sm btn-primary",
+                   onclick = "if(!confirm('Replace the extension, exam-question and reweight prices with these?')) return false;"))
+  })
+  output$price_formula_preview <- renderUI({
+    req(rv$is_admin)
+    rv$settings_ver
+    p <- price_formula_params()
+    for (name in names(p)) { typed <- suppressWarnings(as.numeric(input[[paste0("pf_", name)]])); if (length(typed) == 1L && is.finite(typed) && typed > 0) p[[name]] <- typed }
+    size <- max(1L, tryCatch(flex_roster_size(), error = function(e) 25L))
+    f <- price_formula(p, size)
+    shown <- f$questions[f$questions$k %in% c(1, 2, 3, 5, 8, 12, 18, 24), , drop = FALSE]
+    tagList(
+      tags$p(tags$b(sprintf("Rate: %s points per percentage point of course grade.", format(round(f$rate, 2), nsmall = 0)))),
+      tags$ul(
+        tags$li(sprintf("Extension: %s points per hour (%s for 24 hours), on any problem set.",
+                        format(round(f$extension_per_hour, 2)), format(ceiling(f$extension_per_hour * 24)))),
+        tags$li(sprintf("Reweighting: %s points per percentage point of weight moved.", format(round(f$reweight_per_point, 2)))),
+        tags$li(sprintf("Exam questions for a class of %d (price for the whole section):", size))),
+      tags$table(class = "table table-sm", style = "max-width:520px;",
+        tags$thead(tags$tr(tags$th("Question"), tags$th("Chance it appears"), tags$th("Known on exam"), tags$th("Section price"))),
+        tags$tbody(lapply(seq_len(nrow(shown)), function(i) tags$tr(
+          tags$td(shown$k[i]), tags$td(sprintf("%.0f%%", 100 * shown$chance[i])),
+          tags$td(sprintf("%.1f", shown$known_on_exam[i])), tags$td(shown$section_price[i]))))))
+  })
+  observeEvent(input$apply_price_formula_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    p <- price_formula_params()
+    for (name in names(p)) {
+      typed <- suppressWarnings(as.numeric(input[[paste0("pf_", name)]]))
+      if (length(typed) != 1L || !is.finite(typed) || typed <= 0) {
+        showNotification(sprintf("Enter a positive number for: %s", PRICE_FORMULA_LABELS[[name]]), type = "error"); return()
+      }
+      p[[name]] <- typed
+    }
+    f <- price_formula(p, max(1L, tryCatch(flex_roster_size(), error = function(e) 25L)))
+    set_scoped_setting("price_formula_params", as.character(jsonlite::toJSON(p, auto_unbox = TRUE)))
+    set_setting("extension_base_hours", as.character(f$extension$base_hours))
+    set_setting("extension_base_tokens", as.character(f$extension$base_tokens))
+    set_setting("extension_cost_exponent", "1")
+    set_scoped_setting("flex_cost_schedule", f$question_formula)
+    set_setting("reweight_cost_schedule", f$reweight_formula)
+    rv$extensions_ver <- rv$extensions_ver + 1L; rv$settings_ver <- rv$settings_ver + 1L
+    showNotification("Prices applied: extensions, exam questions and reweighting now follow the formula.", type = "message")
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$save_extension_pricing_btn, {
     req(rv$is_admin)
     vals <- c(
@@ -11189,8 +11296,8 @@ server <- function(input, output, session) {
     if (any(!is.finite(vals)) || any(vals <= 0)) {
       showNotification("All pricing values must be positive numbers.", type="error"); return()
     }
-    if (vals["exponent"] <= 1) {
-      showNotification("The exponent must be greater than 1 so pricing is convex.", type="error"); return()
+    if (vals["exponent"] < 1) {
+      showNotification("The exponent must be 1 (price proportional to hours) or greater.", type="error"); return()
     }
     if (vals["step_hours"] > vals["max_hours"]) {
       showNotification("The slider increment cannot exceed the maximum hours.", type="error"); return()
@@ -14738,6 +14845,8 @@ server <- function(input, output, session) {
       students = settings_section("students", want = "roster"),
       token_admin = tagList(
         settings_section("token_admin"),
+        settings_group("tokens-price-formula", "Price formula", hint = "One rule for extension, exam-question and reweight prices",
+                       uiOutput("price_formula_panel")),
         settings_group("tokens-spending", "What students can spend tokens on",
                        hint = "Availability, extensions, exam questions, grade reweighting, Pass Insurance",
                        open = identical(requested, "spending"),

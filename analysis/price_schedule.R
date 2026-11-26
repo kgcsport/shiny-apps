@@ -25,7 +25,7 @@ you_set <- list(
   problem_sets         = 6,
   problem_set_points   = 100,
   late_points_per_hour = 2,
-  final_weight         = 30, # percent of course grade   <-- CONFIRM
+  final_weight         = 25, # percent of course grade
   exam_questions       = 12, # on the exam
   exam_answer          = 10, # the student answers this many
   questions_posted     = 24, # available to reveal
