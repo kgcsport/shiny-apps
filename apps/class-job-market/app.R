@@ -2547,14 +2547,38 @@ rw_points_requested <- function(uid) {
   val <- suppressWarnings(as.numeric(val %||% 0))
   if (!is.finite(val) || val < 0) 0 else as.integer(val)
 }
-rw_cost_for_request <- function(uid, points, schedule_text = NULL) {
+# Charging each student for their own gain from a reweight, for the class in
+# force. Off by default: the reweight schedule alone sets the price.
+reweight_priced_by_gain <- function()
+  identical(as.character(resolve_setting("reweight_price_by_gain", "0", with_scope = TRUE)$value), "1")
+# How many percentage points this request would add to the student's own
+# course grade, from the grades recorded so far. NA when it cannot be told.
+rw_gain_for_request <- function(uid, from, to, points, level = "category") {
+  if (!nzchar(from %||% "") || !nzchar(to %||% "") || identical(from, to)) return(NA_real_)
+  now <- tryCatch(compute_student_grade(uid)$overall, error = function(e) NA_real_)
+  request <- data.frame(id = NA_integer_, level = level %||% "category", from_category = from, to_category = to,
+                        points = as.integer(points), stringsAsFactors = FALSE)
+  then <- tryCatch(compute_student_grade(uid, preview_reweight = request)$overall, error = function(e) NA_real_)
+  gain <- suppressWarnings(as.numeric(then) - as.numeric(now))
+  if (length(gain) != 1L || !is.finite(gain)) NA_real_ else gain
+}
+# With `from` and `to` given and per-student pricing on, the price is the
+# larger of the schedule price and rate x the student's own gain. The schedule
+# price stays as the floor, so a reweight bought before the grades that would
+# reveal a large gain are recorded is never cheaper than the standard price.
+rw_cost_for_request <- function(uid, points, schedule_text = NULL, from = NULL, to = NULL, level = "category") {
   points <- suppressWarnings(as.integer(points))
   if (!is.finite(points) || points < 1L) return(NA_real_)
   prior <- rw_points_requested(uid)
   before <- if (prior > 0L) rw_cost_for_n(prior, schedule_text) else 0
   after <- rw_cost_for_n(prior + points, schedule_text)
   if (!is.finite(after) || !is.finite(before)) return(NA_real_)
-  max(0, after - before)
+  cost <- max(0, after - before)
+  if (!is.null(from) && !is.null(to) && reweight_priced_by_gain()) {
+    gain <- rw_gain_for_request(uid, from, to, points, level)
+    if (is.finite(gain) && gain > 0) cost <- max(cost, ceiling(price_formula()$rate * gain - 1e-9))
+  }
+  cost
 }
 get_rw_max_points <- function() {
   as.integer(tryCatch(get_setting("grade_reweight_max_points", "5"), error=function(e)"5") %||% 5L)
@@ -5797,15 +5821,26 @@ server <- function(input, output, session) {
     isTRUE(as.integer(raw %||% 0L) == 1L)
   }
 
+  # The exam-question fund is pooled by section (the default) or across every
+  # section of the course. The choice is stored for the course, so its sections
+  # cannot disagree.
+  flex_pool_is_course <- function() {
+    course <- norm_key(scoped_course())
+    nzchar(course) && identical(as.character(raw_get_setting(setting_level_key("flex_pool_level", "course", course), "section")), "course")
+  }
+  flex_fund_key <- function()
+    if (flex_pool_is_course()) paste0(norm_key(scoped_course()), "::course-pool") else current_scope_key()
   flex_roster_size <- function() {
     students <- tryCatch(db_query(
       "SELECT user_id,course,section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0;"),
       error=function(e)data.frame())
+    if (flex_pool_is_course())
+      return(max(1L, sum(norm_key(students$course) == norm_key(scoped_course()))))
     max(1L, nrow(scope_filter_rows(students)))
   }
 
   flex_question_state <- function() {
-    key <- current_scope_key()
+    key <- flex_fund_key()
     course <- scoped_course()
     questions <- tryCatch(db_query(
       "SELECT fq.id, fq.question_text, fq.order_index, fq.exam_tag, fq.course,
@@ -5857,7 +5892,7 @@ server <- function(input, output, session) {
          FROM flex_questions WHERE COALESCE(active,1)=1;"),
         error=function(e)data.frame(n=0,ts=""))
       paste(c1$n[1] %||% 0, c1$ts[1] %||% "", c2$n[1] %||% 0,
-            c2$ts[1] %||% "", flex_cost_schedule_for_scope(), current_scope_key(), sep="|")
+            c2$ts[1] %||% "", flex_cost_schedule_for_scope(), flex_fund_key(), sep="|")
     },
     valueFunc = flex_question_state
   )
@@ -7761,7 +7796,8 @@ server <- function(input, output, session) {
     req(rv$authed)
     pts  <- as.integer(input$rw_points %||% 1)
     prior <- rw_points_requested(rv$user_id)
-    cost <- rw_cost_for_request(rv$user_id, pts) %||% 0
+    cost <- rw_cost_for_request(rv$user_id, pts, from = input$rw_from %||% "", to = input$rw_to %||% "",
+                                level = input$rw_level %||% "category") %||% 0
     if (is.na(cost)) cost <- 0
     bal  <- token_bal()
     div(style = "font-size:.86rem;color:#555;margin:.4rem 0 .6rem;",
@@ -8299,7 +8335,7 @@ server <- function(input, output, session) {
       return()
     }
     pts <- point_check$points
-    cost <- rw_cost_for_request(rv$user_id, pts) %||% 0
+    cost <- rw_cost_for_request(rv$user_id, pts, from = from, to = to, level = level) %||% 0
     if (is.na(cost)) cost <- 0
     bal  <- isolate(token_bal())
     if (cost <= 0) { showNotification("Cost not configured for that point value.", type = "error"); return() }
@@ -11239,6 +11275,14 @@ server <- function(input, output, session) {
              "One rule sets every price: price = rate × the percentage points of course grade the perk is worth. Change a number and the prices below update. Nothing is charged differently until you press Apply."),
       fluidRow(lapply(names(PRICE_FORMULA_LABELS), function(name) column(4,
         numericInput(paste0("pf_", name), PRICE_FORMULA_LABELS[[name]], value = p[[name]], min = 0, step = 1, width = "100%")))),
+      checkboxInput("pf_reweight_by_gain",
+                    "Reweighting: charge each student for their own grade gain when that is more than the standard price — this course / section",
+                    value = reweight_priced_by_gain(), width = "100%"),
+      selectInput("pf_question_pool", "Exam questions are bought and revealed:",
+                  choices = c("Section by section" = "section", "By the whole course, all sections together" = "course"),
+                  selected = if (flex_pool_is_course()) "course" else "section", width = "420px"),
+      tags$p(style = "font-size:.82rem;color:#777;margin-top:-.4rem;",
+             "Choose this before any question is funded. Contributions already made stay with the pool they were made in."),
       uiOutput("price_formula_preview"),
       actionButton("apply_price_formula_btn", "Apply these prices", class = "btn btn-sm btn-primary",
                    onclick = "if(!confirm('Replace the extension, exam-question and reweight prices with these?')) return false;"))
@@ -11248,7 +11292,12 @@ server <- function(input, output, session) {
     rv$settings_ver
     p <- price_formula_params()
     for (name in names(p)) { typed <- suppressWarnings(as.numeric(input[[paste0("pf_", name)]])); if (length(typed) == 1L && is.finite(typed) && typed > 0) p[[name]] <- typed }
-    size <- max(1L, tryCatch(flex_roster_size(), error = function(e) 25L))
+    pool <- input$pf_question_pool %||% (if (flex_pool_is_course()) "course" else "section")
+    roster <- tryCatch(db_query(
+      "SELECT user_id,course,section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0;"),
+      error = function(e) data.frame())
+    size <- max(1L, if (identical(pool, "course")) sum(norm_key(roster$course) == norm_key(scoped_course()))
+                    else nrow(scope_filter_rows(roster)))
     f <- price_formula(p, size)
     shown <- f$questions[f$questions$k %in% c(1, 2, 3, 5, 8, 12, 18, 24), , drop = FALSE]
     tagList(
@@ -11257,9 +11306,10 @@ server <- function(input, output, session) {
         tags$li(sprintf("Extension: %s points per hour (%s for 24 hours), on any problem set.",
                         format(round(f$extension_per_hour, 2)), format(ceiling(f$extension_per_hour * 24)))),
         tags$li(sprintf("Reweighting: %s points per percentage point of weight moved.", format(round(f$reweight_per_point, 2)))),
-        tags$li(sprintf("Exam questions for a class of %d (price for the whole section):", size))),
+        tags$li(sprintf("Exam questions, pooled %s: %d students share each price below.",
+                        if (identical(pool, "course")) "across the course" else "by section", size))),
       tags$table(class = "table table-sm", style = "max-width:520px;",
-        tags$thead(tags$tr(tags$th("Question"), tags$th("Chance it appears"), tags$th("Known on exam"), tags$th("Section price"))),
+        tags$thead(tags$tr(tags$th("Question"), tags$th("Chance it appears"), tags$th("Known on exam"), tags$th("Pool price"))),
         tags$tbody(lapply(seq_len(nrow(shown)), function(i) tags$tr(
           tags$td(shown$k[i]), tags$td(sprintf("%.0f%%", 100 * shown$chance[i])),
           tags$td(sprintf("%.1f", shown$known_on_exam[i])), tags$td(shown$section_price[i]))))))
@@ -11274,6 +11324,14 @@ server <- function(input, output, session) {
       }
       p[[name]] <- typed
     }
+    # Where questions are pooled is stored for the course, before the class
+    # size used for their price is counted.
+    pool <- if (identical(input$pf_question_pool, "course")) "course" else "section"
+    if (nzchar(norm_key(scoped_course())))
+      raw_set_setting(setting_level_key("flex_pool_level", "course", norm_key(scoped_course())), pool)
+    if (!is.null(input$pf_reweight_by_gain))
+      set_scoped_setting("reweight_price_by_gain", if (isTRUE(input$pf_reweight_by_gain)) "1" else "0")
+    rv$flex_ver <- (rv$flex_ver %||% 0L) + 1L
     f <- price_formula(p, max(1L, tryCatch(flex_roster_size(), error = function(e) 25L)))
     set_scoped_setting("price_formula_params", as.character(jsonlite::toJSON(p, auto_unbox = TRUE)))
     set_setting("extension_base_hours", as.character(f$extension$base_hours))
@@ -13608,7 +13666,7 @@ server <- function(input, output, session) {
       ))
 
     } else if (act == "flex_questions") {
-      scope_key <- current_scope_key()
+      scope_key <- flex_fund_key()
       scope_course <- scoped_course()
       fqs <- tryCatch(db_query(
         "SELECT fq.id, fq.question_text, fq.order_index, COALESCE(fq.active,1) AS active, fq.exam_tag, fq.course,
@@ -15354,7 +15412,7 @@ server <- function(input, output, session) {
        LEFT JOIN flex_question_scope_state fqs
          ON fqs.question_id=fqc.question_id AND fqs.scope_key=fqc.scope_key
        WHERE fqc.scope_key=?
-       ORDER BY fqc.contributed_at DESC;",list(current_scope_key())), error=function(e)data.frame()),
+       ORDER BY fqc.contributed_at DESC;",list(flex_fund_key())), error=function(e)data.frame()),
       file, row.names = FALSE)
   )
   output$dl_app_bids <- downloadHandler(
