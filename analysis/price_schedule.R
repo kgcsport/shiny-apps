@@ -37,6 +37,8 @@ you_set <- list(
 
 p <- you_set
 rate <- p$typical_points_on_hand / p$grade_points_a_term_buys          # points per percentage point
+# In the app this is one number, "Points that buy 1 percentage point of course
+# grade" (Settings -> Tokens & spending -> Economy settings).
 price <- function(grade_points) rate * grade_points
 show <- function(x) format(round(x, 1), nsmall = 1)
 

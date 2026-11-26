@@ -2251,6 +2251,13 @@ random_wage_grid <- function(max_wage, step = 0.5, floor_wage = 0) {
 # The lowest wage a random-wage draw may produce, for the class in force. The
 # wage paid never depends on anyone's bid, so a floor leaves a truthful bid
 # optimal; bids below the floor are simply all eligible.
+# One upper limit for every job's random-wage draw, for the class in force.
+# 0 means none is set and each job's own wage is the top of its draw.
+wage_upper_limit_value <- function() {
+  value <- suppressWarnings(as.numeric(resolve_setting("wage_upper_limit", "0", with_scope = TRUE)$value))
+  if (is.finite(value) && value > 0) value else 0
+}
+random_wage_top <- function(job_wage) { limit <- wage_upper_limit_value(); if (limit > 0) limit else job_wage }
 random_wage_floor_value <- function() {
   value <- suppressWarnings(as.numeric(resolve_setting("random_wage_floor", "0", with_scope = TRUE)$value))
   if (is.finite(value) && value > 0) value else 0
@@ -2395,13 +2402,12 @@ extension_pricing_settings <- function(setting_getter = get_setting) {
 # so a point buys the same expected grade gain whichever perk it is spent on.
 # The numbers below are the instructor's; see analysis/price_schedule.R.
 PRICE_FORMULA_DEFAULTS <- list(
-  typical_points_on_hand = 40, grade_points_a_term_buys = 4,
+  rate = 10,
   problem_set_weight = 15, problem_sets = 6, problem_set_points = 100, late_points_per_hour = 2,
   final_weight = 25, exam_questions = 12, exam_answer = 10, questions_posted = 24,
   preview_gain = 20, decline = 11, reweight_gap = 20)
 PRICE_FORMULA_LABELS <- c(
-  typical_points_on_hand = "Points a typical student has to spend in a term",
-  grade_points_a_term_buys = "Percentage points of course grade those points should buy",
+  rate = "Points that buy 1 percentage point of course grade",
   problem_set_weight = "Problem sets: percent of course grade", problem_sets = "Number of problem sets",
   problem_set_points = "Points per problem set", late_points_per_hour = "Points lost per hour late",
   final_weight = "Final exam: percent of course grade", exam_questions = "Questions on the final",
@@ -2413,6 +2419,9 @@ price_formula_params <- function() {
   saved <- tryCatch(jsonlite::fromJSON(resolve_setting("price_formula_params", "{}", with_scope = TRUE)$value),
                     error = function(e) list())
   params <- PRICE_FORMULA_DEFAULTS
+  # Saved before the rate was a single number.
+  if (is.null(saved$rate) && !is.null(saved$typical_points_on_hand) && !is.null(saved$grade_points_a_term_buys))
+    saved$rate <- suppressWarnings(as.numeric(saved$typical_points_on_hand) / as.numeric(saved$grade_points_a_term_buys))
   for (name in intersect(names(saved), names(params))) {
     value <- suppressWarnings(as.numeric(saved[[name]]))
     if (length(value) == 1L && is.finite(value) && value > 0) params[[name]] <- value
@@ -2423,7 +2432,7 @@ price_formula_params <- function() {
 # charges from: extension pricing, the exam-question cost formula (q = already
 # revealed, N = class size), and the reweight cost formula (n = points of weight).
 price_formula <- function(p = price_formula_params(), class_size = 25) {
-  rate <- p$typical_points_on_hand / p$grade_points_a_term_buys
+  rate <- p$rate
   hour_worth <- p$problem_set_weight * p$late_points_per_hour / (p$problem_sets * p$problem_set_points)
   start <- p$exam_questions / p$questions_posted
   chance <- function(k) start * (p$decline + 1) / (p$decline + k)
@@ -2738,6 +2747,21 @@ apply_grade_reweight_requests <- function(cats, all_items, requests = data.frame
   }
   list(cats = cats, items = all_items)
 }
+# Earned points that give a student full participation credit. A class may set
+# its own number; otherwise it is the participation category's maximum, as
+# before. It is read for the student's own course and section.
+participation_full_credit_for <- function(uid, category_max) {
+  fallback <- suppressWarnings(as.numeric(category_max %||% 100))
+  who <- tryCatch(db_query("SELECT course, section FROM users WHERE LOWER(user_id)=LOWER(?);", list(uid)),
+                  error = function(e) data.frame())
+  if (!nrow(who) || !nzchar(norm_key(who$course[1])) || !nzchar(norm_key(who$section[1]))) return(fallback)
+  mapped <- tryCatch(db_query("SELECT scope_key FROM section_scope_memberships WHERE course_key=? AND section_key=? LIMIT 1;",
+                              list(norm_key(who$course[1]), norm_key(who$section[1])))$scope_key, error = function(e) character(0))
+  scope <- if (length(mapped) && nzchar(mapped[1] %||% "")) mapped[1] else section_scope_key(who$course[1], who$section[1])
+  value <- with_setting_context(list(course = norm_key(who$course[1]), sections = norm_key(who$section[1]), scope = scope, level = "auto"),
+                                suppressWarnings(as.numeric(resolve_setting("participation_full_credit", "0", with_scope = TRUE)$value)))
+  if (length(value) == 1L && is.finite(value) && value > 0) value else fallback
+}
 gross_participation_tokens <- function(uid) {
   earned <- db_query(
     "SELECT COALESCE(SUM(amount),0) total FROM token_ledger
@@ -2790,7 +2814,7 @@ compute_student_grade <- function(uid, exclude_assignments = character(0),
       if (!is_excluded) {
         if (identical(r$source %||% "manual", "participation")) {
           score <- earned
-          max_score <- as.numeric(r$max_points %||% 100)
+          max_score <- participation_full_credit_for(uid, r$max_points)
           grade_pct <- participation_grade_pct(score, max_score)
         } else if (nrow(matched)) {
           score <- as.numeric(matched$score[1])
@@ -2972,7 +2996,7 @@ freeze_class_wages <- function(round_id, query_fn = db_query, exec_fn = db_exec)
          VALUES(?,?,?,?,?,'random_draw',CURRENT_TIMESTAMP)
          ON CONFLICT(round_id,snapshot_key) DO NOTHING;",
         list(as.integer(round_id), paste0("post:", as.integer(post$id)), as.integer(post$id),
-             as.integer(post$category_id), draw_random_wage(wage)))
+             as.integer(post$category_id), draw_random_wage(random_wage_top(wage))))
       next
     }
     if (auction_priced) {
@@ -4318,7 +4342,7 @@ compute_draw_pairs <- function(rid, mode, posts, students, tiebreak = "weighted_
         }
         if (identical(pricing_rule, "random_wage")) {
           wage <- if (isTRUE(persist_random_wage)) class_wage_snapshot(rid, as.integer(p$id), NA_real_)
-                  else draw_random_wage(p$wage %||% NA)
+                  else draw_random_wage(random_wage_top(p$wage %||% NA))
           drawn <- random_wage_winners(post_bids, wage, n)
           if (!isTRUE(allow_multiple_jobs)) assigned_ids <- c(assigned_ids, drawn)
           for (uid in drawn)
@@ -11272,9 +11296,21 @@ server <- function(input, output, session) {
     # The number boxes are built once; only the preview below redraws as you type.
     tagList(
       tags$p(style = "font-size:.88rem;color:#555;",
-             "One rule sets every price: price = rate × the percentage points of course grade the perk is worth. Change a number and the prices below update. Nothing is charged differently until you press Apply."),
-      fluidRow(lapply(names(PRICE_FORMULA_LABELS), function(name) column(4,
-        numericInput(paste0("pf_", name), PRICE_FORMULA_LABELS[[name]], value = p[[name]], min = 0, step = 1, width = "100%")))),
+             "The few numbers that set this class's economy. Every perk price is rate × the percentage points of course grade the perk is worth. Change a number and the prices below update. Nothing changes for students until you press Apply."),
+      tags$h6(style = "font-weight:700;margin-top:.4rem;", "Earning"),
+      fluidRow(
+        column(4, numericInput("econ_wage_upper_limit", "Upper wage limit, every job (0 = each job's own wage)",
+                               value = wage_upper_limit_value(), min = 0, step = 0.5, width = "100%")),
+        column(4, numericInput("econ_full_credit", "Earned points for full participation credit (0 = the gradebook's number)",
+                               value = suppressWarnings(as.numeric(get_scoped_setting("participation_full_credit", "0"))), min = 0, step = 1, width = "100%")),
+        column(4, numericInput("econ_volunteer_wage", "Set wage for a voluntary contribution (0 = the class's volunteer wage)",
+                               value = volunteer_flat_wage(), min = 0, step = 0.5, width = "100%"))),
+      tags$h6(style = "font-weight:700;", "Spending"),
+      fluidRow(column(4, numericInput("pf_rate", PRICE_FORMULA_LABELS[["rate"]], value = p$rate, min = 0, step = 1, width = "100%"))),
+      tags$details(style = "margin-bottom:.6rem;",
+        tags$summary(style = "cursor:pointer;font-size:.88rem;color:#555;", "Course facts and exam assumptions"),
+        fluidRow(lapply(setdiff(names(PRICE_FORMULA_LABELS), "rate"), function(name) column(4,
+          numericInput(paste0("pf_", name), PRICE_FORMULA_LABELS[[name]], value = p[[name]], min = 0, step = 1, width = "100%"))))),
       checkboxInput("pf_reweight_by_gain",
                     "Reweighting: charge each student for their own grade gain when that is more than the standard price — this course / section",
                     value = reweight_priced_by_gain(), width = "100%"),
@@ -11284,8 +11320,8 @@ server <- function(input, output, session) {
       tags$p(style = "font-size:.82rem;color:#777;margin-top:-.4rem;",
              "Choose this before any question is funded. Contributions already made stay with the pool they were made in."),
       uiOutput("price_formula_preview"),
-      actionButton("apply_price_formula_btn", "Apply these prices", class = "btn btn-sm btn-primary",
-                   onclick = "if(!confirm('Replace the extension, exam-question and reweight prices with these?')) return false;"))
+      actionButton("apply_price_formula_btn", "Apply", class = "btn btn-sm btn-primary",
+                   onclick = "if(!confirm('Apply these numbers to this class? This replaces its wage limit, full-credit points, volunteer wage and perk prices.')) return false;"))
   })
   output$price_formula_preview <- renderUI({
     req(rv$is_admin)
@@ -11332,6 +11368,13 @@ server <- function(input, output, session) {
     if (!is.null(input$pf_reweight_by_gain))
       set_scoped_setting("reweight_price_by_gain", if (isTRUE(input$pf_reweight_by_gain)) "1" else "0")
     rv$flex_ver <- (rv$flex_ver %||% 0L) + 1L
+    # Earning side: a box left at 0 or empty keeps the earlier behaviour.
+    earning <- c(wage_upper_limit = "econ_wage_upper_limit", participation_full_credit = "econ_full_credit",
+                 volunteer_flat_wage = "econ_volunteer_wage")
+    for (key in names(earning)) {
+      typed <- suppressWarnings(as.numeric(input[[earning[[key]]]]))
+      if (length(typed) == 1L && is.finite(typed) && typed >= 0) set_scoped_setting(key, as.character(typed))
+    }
     f <- price_formula(p, max(1L, tryCatch(flex_roster_size(), error = function(e) 25L)))
     set_scoped_setting("price_formula_params", as.character(jsonlite::toJSON(p, auto_unbox = TRUE)))
     set_setting("extension_base_hours", as.character(f$extension$base_hours))
@@ -11340,7 +11383,7 @@ server <- function(input, output, session) {
     set_scoped_setting("flex_cost_schedule", f$question_formula)
     set_setting("reweight_cost_schedule", f$reweight_formula)
     rv$extensions_ver <- rv$extensions_ver + 1L; rv$settings_ver <- rv$settings_ver + 1L
-    showNotification("Prices applied: extensions, exam questions and reweighting now follow the formula.", type = "message")
+    showNotification("Applied: wage limit, full-credit points, volunteer wage and perk prices now follow these numbers.", type = "message")
   }, ignoreNULL = TRUE)
 
   observeEvent(input$save_extension_pricing_btn, {
@@ -13024,9 +13067,6 @@ server <- function(input, output, session) {
         checkboxInput("cold_call_bidders_only_input",
                       "Draw paid cold calls only from students who bid on a cold-call job (at or below the drawn wage on random-wage dates); volunteering stays open to everyone — this course / section",
                       value = cold_call_bidders_only(), width = "100%"),
-        numericInput("volunteer_flat_wage_input",
-                     "Set wage for a voluntary contribution (0 = use the class's volunteer wage) — this course / section",
-                     value = volunteer_flat_wage(), min = 0, step = 0.5, width = "420px"),
         numericInput("random_wage_floor_input",
                      "Lowest wage a random-wage draw can produce (0 = no floor) — this course / section",
                      value = random_wage_floor_value(), min = 0, step = 0.5, width = "420px"),
@@ -14903,7 +14943,7 @@ server <- function(input, output, session) {
       students = settings_section("students", want = "roster"),
       token_admin = tagList(
         settings_section("token_admin"),
-        settings_group("tokens-price-formula", "Price formula", hint = "One rule for extension, exam-question and reweight prices",
+        settings_group("tokens-price-formula", "Economy settings", hint = "Wage limit, full-credit points, volunteer wage and perk prices in one place",
                        uiOutput("price_formula_panel")),
         settings_group("tokens-spending", "What students can spend tokens on",
                        hint = "Availability, extensions, exam questions, grade reweighting, Pass Insurance",
@@ -15574,7 +15614,7 @@ server <- function(input, output, session) {
             if (is_part) {
               earned <- as.numeric(stu$tokens_earned %||% 0)
               cells[col_idx] <- as.character(earned)
-              pct <- participation_grade_pct(earned, as.numeric(r$max_points %||% 100))
+              pct <- participation_grade_pct(earned, participation_full_credit_for(stu$user_id, r$max_points))
               if (!is.na(pct)) {
                 item_pcts <- c(item_pcts, pct)
                 item_wts  <- c(item_wts, item_wt)
@@ -17158,9 +17198,6 @@ server <- function(input, output, session) {
       set_scoped_setting("bid_no_anchor", if (isTRUE(input$bid_no_anchor_input)) "1" else "0")
     if (!is.null(input$cold_call_bidders_only_input))
       set_scoped_setting("cold_call_bidders_only", if (isTRUE(input$cold_call_bidders_only_input)) "1" else "0")
-    flat_in <- suppressWarnings(as.numeric(input$volunteer_flat_wage_input %||% NA))
-    if (is.finite(flat_in) && flat_in >= 0)
-      set_scoped_setting("volunteer_flat_wage", as.character(round(flat_in * 2) / 2))
     floor_in <- suppressWarnings(as.numeric(input$random_wage_floor_input %||% NA))
     if (is.finite(floor_in) && floor_in >= 0)
       set_scoped_setting("random_wage_floor", as.character(round(floor_in * 2) / 2))

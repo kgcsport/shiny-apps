@@ -16,26 +16,29 @@ what you saw; do not work around it.
 
 ## 1. Settings (10 minutes)
 
-Settings → Class day → Wage and bidding rules, for the sandbox section:
+Settings → Tokens & spending → Economy settings, for the sandbox section:
+
+- [ ] Upper wage limit 10, full participation credit 30, volunteer wage 1,
+      rate 10. The preview shows 0.5 points per extension hour.
+- [ ] Reweighting pricing and the exam-question pool are set the way you
+      registered them. Press Apply.
+
+Settings → Class day → Wage and bidding rules:
 
 - [ ] Wage auction pricing is the random-wage rule.
 - [ ] "Hide instructor wages from students until they bid" is on.
 - [ ] "Pay each student for at most one voluntary contribution per class" is on.
 - [ ] "Draw paid cold calls only from students who bid" is on.
-- [ ] "Set wage for a voluntary contribution" is 1.
 - [ ] "Lowest wage a random-wage draw can produce" is 0.
 
 Settings → Jobs:
 
-- [ ] The five core jobs, policy news, and the volunteer jobs are posted, each
-      with a wage of 10 (the top of the draw).
+- [ ] The five core jobs, policy news, and the volunteer jobs are posted. Their
+      own wage numbers no longer matter: the upper wage limit sets the draw.
 
-Settings → Tokens & spending:
+Settings → Tokens & spending → What students can spend tokens on:
 
-- [ ] Price formula shows a rate of 10 and 0.5 points per extension hour.
-      Press Apply.
-- [ ] Pass Insurance is off. Reweighting is set the way you registered it.
-- [ ] The participation category's full-credit points are 30 (Settings → Grades).
+- [ ] Pass Insurance is off. Reweighting is on or off as registered.
 
 As the student:
 

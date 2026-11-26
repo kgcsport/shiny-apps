@@ -17,7 +17,7 @@ near <- function(a, b) isTRUE(all.equal(as.numeric(a), as.numeric(b), tolerance 
 
 # ── The arithmetic, with the registered inputs ───────────────────────────────
 f <- app$price_formula(app$PRICE_FORMULA_DEFAULTS, class_size = 25)
-stopifnot(near(f$rate, 10),                              # 40 points buy 4 grade points
+stopifnot(near(f$rate, 10),                              # 10 points buy 1 grade point
           near(f$extension_per_hour, 0.5),               # 15% x 2/600 = 0.05 points of grade per hour
           near(f$extension$base_tokens, 12), f$extension$exponent == 1,
           near(f$reweight_per_point, 2),
@@ -32,7 +32,7 @@ stopifnot(identical(as.integer(by_formula), as.integer(f$questions$section_price
           app$question_cost_for_n(1, f$question_formula, 50L) == 125L,          # scales with class size
           near(app$rw_cost_for_n(5, f$reweight_formula), 10), near(app$rw_cost_for_n(1, f$reweight_formula), 2))
 # Changing an input moves every price in step.
-double_rate <- app$PRICE_FORMULA_DEFAULTS; double_rate$grade_points_a_term_buys <- 2
+double_rate <- app$PRICE_FORMULA_DEFAULTS; double_rate$rate <- 20
 g <- app$price_formula(double_rate, 25)
 stopifnot(near(g$rate, 20), near(g$extension_per_hour, 1), near(g$reweight_per_point, 4), g$questions$section_price[1] == 125L)
 
@@ -58,7 +58,7 @@ shiny::testServer(app$server, {
   stopifnot(grepl("apply_price_formula_btn", html, fixed = TRUE), grepl("pf_final_weight", html, fixed = TRUE),
             grepl("Rate: 10 points", preview, fixed = TRUE), !grepl("pf_final_weight", preview, fixed = TRUE))
   # Typing a number redraws the preview, not the boxes.
-  session$setInputs(pf_grade_points_a_term_buys = 2)
+  session$setInputs(pf_rate = 20)
   stopifnot(grepl("Rate: 20 points", paste(as.character(output$price_formula_preview$html), collapse = ""), fixed = TRUE))
 })
 stopifnot(identical(app$extension_pricing_settings(), before$ext), identical(app$get_setting("flex_cost_schedule"), before$flex))
@@ -68,6 +68,7 @@ shiny::testServer(app$server, {
   set_admin(rv)
   inputs <- stats::setNames(as.list(unlist(app$PRICE_FORMULA_DEFAULTS)), paste0("pf_", names(app$PRICE_FORMULA_DEFAULTS)))
   do.call(session$setInputs, inputs)
+  session$setInputs(econ_wage_upper_limit = 10, econ_full_credit = 30, econ_volunteer_wage = 1)
   session$setInputs(apply_price_formula_btn = 1L)
 })
 after <- app$with_setting_context(list(course = "econ 101", sections = "01", scope = "econ 101::01", level = "auto"),
@@ -77,6 +78,20 @@ after <- app$with_setting_context(list(course = "econ 101", sections = "01", sco
 stopifnot(after$ext$exponent == 1, near(after$ext$base_tokens, 12), after$day == 12, after$six == 3, after$one == 1,
           identical(after$flex, f$question_formula), identical(after$rw, f$reweight_formula),
           near(after$params$final_weight, 25))
+# ── The earning numbers applied with it ──────────────────────────────────────
+# Upper wage limit: one top for every job's random draw, whatever the job says.
+stopifnot(app$wage_upper_limit_value() == 0, app$random_wage_top(4) == 4)          # outside the class: unchanged
+set.seed(3)
+stopifnot(app$with_setting_context(list(course = "econ 101", sections = "01", scope = "econ 101::01", level = "auto"), {
+  draws <- vapply(1:300, function(i) app$draw_random_wage(app$random_wage_top(4)), numeric(1))
+  app$wage_upper_limit_value() == 10 && app$volunteer_flat_wage() == 1 && max(draws) == 10 && min(draws) == 0.5
+}))
+# Full credit: 30 points for this class's students; another class keeps the gradebook's number.
+app$db_exec("INSERT OR REPLACE INTO users(user_id,display_name,pw_hash,is_admin,course,section,active,is_demo) VALUES('other@test.edu','Other','',0,'ECON 999','01',1,0);")
+stopifnot(app$participation_full_credit_for("s@test.edu", 100) == 30, app$participation_full_credit_for("other@test.edu", 100) == 100,
+          app$participation_full_credit_for("nobody@test.edu", 100) == 100,
+          near(app$participation_grade_pct(15, app$participation_full_credit_for("s@test.edu", 100)), 50))
+
 # ── Reweighting priced by each student's own gain ────────────────────────────
 for (tbl in c("grade_reweight_requests", "student_grades", "gradebook_item_names", "gradebook_categories"))
   app$db_exec(sprintf("DELETE FROM %s;", tbl))
@@ -133,6 +148,11 @@ look("course")
 # Course-wide: one pool for both sections, priced for all five students.
 stopifnot(pool_seen$course$course, pool_seen$course$key == "econ 101::course-pool", pool_seen$course$size == 5L,
           app$question_cost_for_n(1, f$question_formula, 5L) == 13L, app$question_cost_for_n(1, f$question_formula, 2L) == 5L)
+
+# Parameters saved before the rate was one number still give the same rate.
+app$set_setting("price_formula_params", '{"typical_points_on_hand":60,"grade_points_a_term_buys":4}')
+stopifnot(near(app$price_formula_params()$rate, 15))
+app$set_setting("price_formula_params", "{}")
 
 # A student's session cannot apply it.
 app$set_setting("reweight_cost_schedule", "1:2")
