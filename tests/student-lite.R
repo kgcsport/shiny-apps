@@ -403,4 +403,11 @@ stopifnot(practice_draw$status == 200L, isTRUE(practice_draw$json$state$run_shee
           all(practice_jobs$assigned_wage == 0))
 hub$db_exec("UPDATE weekly_rounds SET practice_no_points=0 WHERE id=?;", list(rid))
 
+# The page is told which wage rule the date uses, so its explanation matches.
+rule_of <- function() request("GET", "/api/state", cookie = cy$cookie)$json$round$random_wage
+hub$db_exec("UPDATE weekly_rounds SET assignment_mode='wage_bidding', wage_pricing_rule='pay_as_bid' WHERE id=?;", list(rid))
+stopifnot(identical(rule_of(), FALSE))
+hub$db_exec("UPDATE weekly_rounds SET wage_pricing_rule='random_wage' WHERE id=?;", list(rid))
+stopifnot(identical(rule_of(), TRUE))
+
 cat("student lite: PASS\n")

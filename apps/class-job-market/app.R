@@ -3786,6 +3786,15 @@ SETTINGS_PAGES <- c("Class day" = "round_setup", "Jobs" = "jobs", "People" = "st
                     "Tokens & spending" = "token_admin", "Grades" = "gradebook",
                     "Policy project" = "policy_rubrics", "Data & tools" = "exports")
 SETTINGS_DEFAULT_PAGE <- "round_setup"
+# One line of help for each Settings page, shown under the page selector.
+SETTINGS_PAGE_HELP <- c(
+  round_setup = "Set up a class meeting: the date and whether it is a practice date, how jobs are given out, when bidding locks, and the wage and bidding rules.",
+  jobs = "The jobs students can bid on for the selected date, the job types, and the templates copied into each new date.",
+  students = "The roster: add or archive students, fix a course or section, reset a password, or view the app as a student.",
+  token_admin = "Economy settings (wage limit, full credit, volunteer wage, perk prices), point awards and corrections, and which perks students can buy.",
+  gradebook = "Grade categories and their weights, grade uploads, and gradebook downloads.",
+  policy_rubrics = "Policy project rubrics, due dates, and which students are on which team.",
+  exports = "Download the class's records. Tick the mask box before downloading anything you will share or analyse.")
 settings_page_for <- function(section) switch(as.character(section %||% SETTINGS_DEFAULT_PAGE),
   spending = "token_admin", game_controls = "round_setup", app_settings = "round_setup",
   sandbox_demo = "exports", as.character(section %||% SETTINGS_DEFAULT_PAGE))
@@ -12543,7 +12552,7 @@ server <- function(input, output, session) {
     tagList(
       wellPanel(tags$strong("Active scope: "), paste(c(scoped_course(), scoped_sections()), collapse=" / "), tags$p(style="color:#666;font-size:.82rem;margin:.25rem 0 .4rem;", "Roster, jobs, market controls, tracker choices, exports, Flex funding, and spending options use this scope."), actionButton("open_scope_picker_btn", "Change scope", class="btn btn-sm btn-outline-primary")),
       uiOutput("setting_level_panel"),
-      tutorial_note("How to configure the app", c("Class day: the class date, allocation and bidding, the bid lock, wage rules, the Today announcement, and games.", "Jobs: posts for the selected class date, job types, and templates.", "People: add, archive, restore, or view as a student; administrator access.", "Tokens & spending: audited awards and corrections, and what students can buy.", "Grades: categories, uploads, and downloads.", "Policy project: rubrics, due dates, and team assignments.", "Data & tools: exports, research tables, the app name, and links to other apps.")),
+      tutorial_note("How to configure the app", c("The full guide is docs/class-job-market/INSTRUCTOR_GUIDE.md in the repository; a student FAQ sits beside it.", "Class day: the class date, allocation and bidding, the bid lock, wage rules, the Today announcement, and games.", "Jobs: posts for the selected class date, job types, and templates.", "People: add, archive, restore, or view as a student; administrator access.", "Tokens & spending: audited awards and corrections, and what students can buy.", "Grades: categories, uploads, and downloads.", "Policy project: rubrics, due dates, and team assignments.", "Data & tools: exports, research tables, the app name, and links to other apps.")),
       wellPanel(selectInput("config_action", "Settings page:", width = "100%",
                             choices = SETTINGS_PAGES, selected = SETTINGS_DEFAULT_PAGE),
         uiOutput("config_panel"))
@@ -14929,6 +14938,7 @@ server <- function(input, output, session) {
 
     requested <- as.character(input$config_action %||% SETTINGS_DEFAULT_PAGE)
     page <- settings_page_for(requested)
+    tagList(if (page %in% names(SETTINGS_PAGE_HELP)) div(class = "tab-howto", SETTINGS_PAGE_HELP[[page]]),
     switch(page,
       round_setup = tagList(
         settings_section("round_setup"),
@@ -14957,7 +14967,7 @@ server <- function(input, output, session) {
         settings_group("tools-app-name", "App name", settings_section("app_settings", want = "app-name")),
         settings_group("tools-other-apps", "Other apps", open = identical(requested, "sandbox_demo"),
                        settings_section("sandbox_demo"))),
-      settings_section(page))
+      settings_section(page)))
   })
 
   # Team and component determine which rubric/assessment is loaded. The

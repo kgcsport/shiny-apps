@@ -185,7 +185,11 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
     list(student = list(name = user$display_name, course = user$course, section = user$section),
          my_jobs = my_jobs, jobs_not_shown = sum(!visible),
          wallet = list(earned = as.numeric(wallet$earned[1]), on_hand = as.numeric(wallet$on_hand[1])),
-         round = if (nrow(round)) list(label = round$label[1] %||% "", class_date = round$class_date[1] %||% "") else NULL,
+         round = if (nrow(round)) list(label = round$label[1] %||% "", class_date = round$class_date[1] %||% "",
+                                       # Which explanation of the wage the page should show.
+                                       random_wage = identical(as.character(round$assignment_mode[1] %||% ""), "wage_bidding") &&
+                                         identical(hub$normalize_wage_pricing_rule(round$wage_pricing_rule[1] %||% "pay_as_bid"), "random_wage"),
+                                       practice = practice) else NULL,
          bidding = bidding_status(round), no_anchor = no_anchor, jobs = jobs)
   }
   save_bids <- function(user, bids) {

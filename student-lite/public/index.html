@@ -93,6 +93,19 @@
       <button class="quiet" id="logout" type="button">Sign out</button>
     </div>
 
+    <details class="help" style="margin:.2rem 0 .2rem;">
+      <summary class="sub" style="cursor:pointer;">How this works</summary>
+      <div class="card" style="margin-top:.4rem;font-size:.92rem;">
+        <p style="margin:0 0 .5rem;"><strong>Your bid</strong> is the fewest points you would accept to do a job. Jobs pay you.</p>
+        <div id="help-random" hidden>
+          <p style="margin:0 0 .5rem;">Each class a wage is drawn at random for each job. If your bid is at or below it you are in the pool, and one person in the pool is picked. Whoever is picked is paid the drawn wage, not their bid.</p>
+          <p style="margin:0 0 .5rem;">So bid the lowest amount you would honestly accept. A higher bid cannot raise your pay. A job left blank means you are not in the market for it.</p>
+        </div>
+        <p id="help-practice" style="margin:0 0 .5rem;" hidden>Today is a practice class: jobs are given at random to anyone in the class, and no points are paid today.</p>
+        <p style="margin:0;">Earned points count toward participation. Spending points does not lower your grade.</p>
+      </div>
+    </details>
+
     <h2>Your points</h2>
     <div class="wallet">
       <div class="card tile"><div class="num" id="earned">–</div><div class="lab">Earned, counts toward participation</div></div>
@@ -153,6 +166,8 @@
     $('where').textContent = [state.student.course, state.student.section].filter(Boolean).join(' · ');
     $('earned').textContent = points(state.wallet.earned);
     $('on-hand').textContent = points(state.wallet.on_hand);
+    $('help-random').hidden = !(state.round && state.round.random_wage);
+    $('help-practice').hidden = !(state.round && state.round.practice);
     // The student's own jobs for today, once the instructor has shown them.
     var mine = state.my_jobs || [], waitingJobs = state.jobs_not_shown || 0;
     var box = $('my-jobs'); box.textContent = '';

@@ -95,6 +95,10 @@ shiny::testServer(app$server, {
     html <- page_html(old)
     if (!nzchar(html)) stop("Old Settings address renders nothing: ",old)
   }
+  # Every page opens with its one line of help.
+  stopifnot(setequal(names(app$SETTINGS_PAGE_HELP), unname(app$SETTINGS_PAGES)))
+  for (id in unname(app$SETTINGS_PAGES)) if (!grepl(app$SETTINGS_PAGE_HELP[[id]], gsub("&amp;", "&", page_html(id)), fixed = TRUE))
+    stop("Settings page ", id, " is missing its help line.")
   # No input id is rendered twice on any page.
   for (id in unname(app$SETTINGS_PAGES)) {
     ids <- regmatches(page_html(id), gregexpr('id="[^"]+"', page_html(id)))[[1]]

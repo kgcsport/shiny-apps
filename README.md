@@ -193,3 +193,9 @@ file sizes. Override paths with `APPDATA=/path/to/appdata` or
 
 See `MULTI_TENANT_TODO.md` for the (not yet started) plan to let other
 professors run their own classes on one shared deployment.
+
+## Class Job Market documentation
+
+- [Instructor guide](docs/class-job-market/INSTRUCTOR_GUIDE.md): how the economy works, each page, a class day, and common questions.
+- [Student FAQ](docs/class-job-market/STUDENT_FAQ.md).
+- [Spring rehearsal plan](SPRING_REHEARSAL_PLAN.md).
