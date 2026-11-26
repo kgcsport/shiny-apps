@@ -41,7 +41,13 @@ catalog.
 
 ## 3. Institutional review and consent
 
-- Institutional determination: exempt; [PROTOCOL NUMBER AND DETERMINATION DATE]
+- Institutional determination: exempt from IRB review under 45 CFR 46.104(d)(1),
+  confirmed by the institution's IRB on 2026-11-15 for the project titled
+  "Measuring Willingness to Participate in Class Through a Classroom Economy".
+  The confirmation carries no protocol number. The exemption is tied to the
+  answers on the determination form; a design change that would alter any of
+  those answers requires a new form. [CONFIRM THE FORM STILL MATCHES: RANDOM
+  WAGE WITH AN UNANNOUNCED RANGE, THREE PRACTICE WEEKS, MASKED EXPORTS.]
 - Consent procedure: [PROCEDURE]
 - Person obtaining consent: [PERSON]
 - Timing relative to grading: [TIMING]

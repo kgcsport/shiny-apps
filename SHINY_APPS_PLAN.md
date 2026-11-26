@@ -560,6 +560,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-26** (Claude Code) — Recorded the IRB exempt determination (45 CFR 46.104(d)(1), confirmed 2026-11-15, no protocol number) in the preregistration. Ran the currency budget for Kyle's proposal of one upper limit of 10 for every job and a threshold of 30, with his weekly job counts: jobs and cold calls alone give about 5.4 paid turns and 31 points per student (half reach 30); paying volunteers the day's drawn wage roughly doubles that (mean 65, 94% reach 30). Open: how volunteers are paid on random-wage dates, and whether the threshold moves.
+
 - **2026-11-25** (Claude Code) — Removed the practice lottery and made practice-date draws a plain random draw from the whole class. Over 120 test picks, students who had not bid were drawn as often as the two who bid lowest; nothing is paid; a paid date in the same test still draws only from bidders. A separate simulation of the daily-draw design gave the same power as the fixed arms (smallest detectable effect 0.29 against 0.28 with three sections). All suites pass. Not rerun in a browser after the removal.
 
 - **2026-11-25** (Claude Code) — Simplified the practice lottery after Kyle asked why it needed a seed. The seed is now computed from the class and the date of its first practice meeting (`practice_auto_seed()`), and the number of practice meetings is the number of dates marked as practice, so the Settings panel is one button with the no-practice count and job names under Options. Decision (Kyle): the seed is automatic. An automatic seed also removes any choice of seed by the instructor. Test extended; checked in a browser that no seed field is shown and the draw completes.
@@ -1093,6 +1095,9 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 3. Publish the PS6 Cloudflare Worker assignment, then enable the preconfigured PS6 and PS6 corrections extension products in Settings → Spending Options → Assignment Extensions.
 
 ## Questions for Kyle
+
+- **Volunteer pay on random-wage dates (2026-11-26).** With one upper limit of 10 for every job, paying each volunteer the day's drawn cold-call wage puts about as many points into the class as all jobs and cold calls together. Options: a flat small volunteer wage, pay only volunteers whose bid is at or below the drawn wage, or keep the drawn wage and raise the threshold.
+- **IRB form (2026-11-26).** Does the exempt determination form describe the design as it now stands (random wage from an unannounced range, three practice weeks)? If not, a new form is needed.
 
 - **Full-credit points (2026-11-25).** How many earned points give full participation credit in spring (the gradebook's participation "max points")? The upper wage limits and the currency budget are sized from it.
 - **Wage floor value (2026-11-24).** The floor is built but unset. Bids below the floor are all treated alike, so it should sit below most students' true minimum.
