@@ -86,6 +86,27 @@ stopifnot(identical(who(), c("boardonly", "exact", "low")))
 app$db_exec("UPDATE weekly_rounds SET wage_pricing_rule='pay_as_bid' WHERE id=?;", list(rid))
 app$db_exec("DELETE FROM job_wage_bid_locks;")
 stopifnot(identical(who(), c("boardonly", "exact", "high", "low")))
+# A set wage for unprompted volunteering. Off by default: the volunteer is paid
+# the class's volunteer wage. On: that wage whatever the day's draw was, a try
+# never pays more than a success, and the one-paid-per-class limit still holds.
+app$db_exec("INSERT INTO job_categories(name,default_wage,description,voluntary,in_draw) VALUES('Volunteer',4,'',1,0);")
+vol_cat <- as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1])
+app$db_exec("INSERT INTO job_posts(round_id,job_name,category_id,slots,wage_override,voluntary,in_draw,selection_time,active) VALUES(?,'Volunteer: answer',?,99,4,1,0,'volunteer',1);", list(rid, vol_cat))
+vol_post <- as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1])
+round_row <- app$db_query("SELECT * FROM weekly_rounds WHERE id=?;", list(rid))
+volunteer <- function(uid, outcome, capped = FALSE) app$queue_volunteer_event(round_row, vol_post, uid, outcome, "prof", pay_capped = capped)$tokens
+before_flat <- volunteer("low", "succeed")
+stopifnot(app$volunteer_flat_wage() == 0, before_flat > 1)
+app$set_setting("volunteer_flat_wage", "1")
+stopifnot(app$volunteer_flat_wage() == 1, volunteer("exact", "succeed") == 1, volunteer("high", "try") == 1, volunteer("nobid", "miss") == 0,
+          volunteer("exact", "succeed", capped = TRUE) == 0)
+app$set_setting("volunteer_flat_wage", "0.5")
+stopifnot(volunteer("boardonly", "succeed") == 0.5, volunteer("boardonly", "try") == 0.5)
+# A cold call is prompted and keeps its own job's wage.
+stopifnot(app$cold_call_wage_for(rid, "answer") == 2, app$cold_call_wage_for(rid, "board") == 3)
+app$set_setting("volunteer_flat_wage", "0")
+stopifnot(volunteer("low", "succeed") == before_flat)
+
 # With no cold-call job posted, nobody is eligible rather than everybody.
 app$db_exec("UPDATE job_posts SET active=0 WHERE round_id=?;", list(rid))
 stopifnot(nrow(app$cold_call_eligible(rid, students)) == 0L)

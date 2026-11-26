@@ -3969,6 +3969,14 @@ queue_cold_call <- function(round_id, user_id, kind, logged_by = "admin") {
 
 # round_row is the class date's row from weekly_rounds. pay_capped is the
 # course/section's one-paid-contribution-per-class switch.
+# A set wage for unprompted volunteering, for the class in force. 0 means none
+# is set and a volunteer is paid the class's volunteer wage as before. A cold
+# call is prompted and stays tied to the bid-based wage; a volunteer chooses to
+# speak, so a set wage keeps volunteering from following the random draw.
+volunteer_flat_wage <- function() {
+  value <- suppressWarnings(as.numeric(resolve_setting("volunteer_flat_wage", "0", with_scope = TRUE)$value))
+  if (is.finite(value) && value > 0) value else 0
+}
 queue_volunteer_event <- function(round_row, post_id, user_id, outcome_type, logged_by = "admin",
                                   pay_capped = FALSE) {
   rid <- as.integer(round_row$id[1])
@@ -3994,7 +4002,9 @@ queue_volunteer_event <- function(round_row, post_id, user_id, outcome_type, log
                                   query_fn = db_query, job_post_id = post_id)
     if (!is.na(cw)) wage_val <- cw
   }
-  uncapped <- switch(outcome_type, succeed = wage_val, try = 1, miss = 0, 0)
+  flat <- volunteer_flat_wage()
+  if (flat > 0) wage_val <- flat
+  uncapped <- switch(outcome_type, succeed = wage_val, try = if (flat > 0) min(1, flat) else 1, miss = 0, 0)
   tokens <- uncapped
   if (isTRUE(pay_capped) && is.finite(tokens) && tokens > 0) {
     paid <- db_query(
@@ -6818,6 +6828,8 @@ server <- function(input, output, session) {
                 # Before any bid exists there is no market wage to show. With the
                 # no-anchor switch on, the instructor's fallback wage is withheld.
                 w  <- if (!is.na(cw)) cw else as.numeric(vp$fallback_wage %||% 1)
+                # A set volunteer wage is what is paid, so it is what is shown.
+                if (volunteer_flat_wage() > 0) { w <- volunteer_flat_wage(); cw <- w }
                 div(style = "display:flex;justify-content:space-between;font-size:.88rem;padding:.15rem 0;",
                     span(vp$job_name %||% ""),
                     span(style = "font-weight:600;",
@@ -12847,6 +12859,9 @@ server <- function(input, output, session) {
         checkboxInput("cold_call_bidders_only_input",
                       "Draw paid cold calls only from students who bid on a cold-call job (at or below the drawn wage on random-wage dates); volunteering stays open to everyone — this course / section",
                       value = cold_call_bidders_only(), width = "100%"),
+        numericInput("volunteer_flat_wage_input",
+                     "Set wage for a voluntary contribution (0 = use the class's volunteer wage) — this course / section",
+                     value = volunteer_flat_wage(), min = 0, step = 0.5, width = "420px"),
         numericInput("random_wage_floor_input",
                      "Lowest wage a random-wage draw can produce (0 = no floor) — this course / section",
                      value = random_wage_floor_value(), min = 0, step = 0.5, width = "420px"),
@@ -16976,6 +16991,9 @@ server <- function(input, output, session) {
       set_scoped_setting("bid_no_anchor", if (isTRUE(input$bid_no_anchor_input)) "1" else "0")
     if (!is.null(input$cold_call_bidders_only_input))
       set_scoped_setting("cold_call_bidders_only", if (isTRUE(input$cold_call_bidders_only_input)) "1" else "0")
+    flat_in <- suppressWarnings(as.numeric(input$volunteer_flat_wage_input %||% NA))
+    if (is.finite(flat_in) && flat_in >= 0)
+      set_scoped_setting("volunteer_flat_wage", as.character(round(flat_in * 2) / 2))
     floor_in <- suppressWarnings(as.numeric(input$random_wage_floor_input %||% NA))
     if (is.finite(floor_in) && floor_in >= 0)
       set_scoped_setting("random_wage_floor", as.character(round(floor_in * 2) / 2))
