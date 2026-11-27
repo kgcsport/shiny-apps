@@ -2258,6 +2258,14 @@ wage_upper_limit_value <- function() {
   if (is.finite(value) && value > 0) value else 0
 }
 random_wage_top <- function(job_wage) { limit <- wage_upper_limit_value(); if (limit > 0) limit else job_wage }
+# The top of the draw for asking a question, for the class in force. A student
+# can ask a question every class at no risk, so this is kept far below the job
+# limit: otherwise questions alone would reach full credit. 0 means none is
+# set and the question draw uses the same range as the jobs.
+question_wage_top_value <- function() {
+  value <- suppressWarnings(as.numeric(resolve_setting("question_wage_top", "0", with_scope = TRUE)$value))
+  if (is.finite(value) && value > 0) value else 0
+}
 random_wage_floor_value <- function() {
   value <- suppressWarnings(as.numeric(resolve_setting("random_wage_floor", "0", with_scope = TRUE)$value))
   if (is.finite(value) && value > 0) value else 0
@@ -3013,7 +3021,7 @@ freeze_class_wages <- function(round_id, query_fn = db_query, exec_fn = db_exec)
          ON CONFLICT(round_id,snapshot_key) DO NOTHING;",
         list(as.integer(round_id), paste0("post:", as.integer(post$id)), as.integer(post$id),
              if (is.na(post$category_id %||% NA)) NA_integer_ else as.integer(post$category_id),
-             draw_random_wage(random_wage_top(wage))))
+             draw_random_wage(if (question_wage_top_value() > 0) question_wage_top_value() else random_wage_top(wage))))
       next
     }
     if (auction_priced) {
@@ -4140,7 +4148,9 @@ queue_volunteer_event <- function(round_row, post_id, user_id, outcome_type, log
   flat <- if (fill_in) 0 else volunteer_flat_wage()
   if (fill_in) wage_val <- cold_call_wage_for(rid, as.character(cold_call_kind_of(job_name)))
   if (flat > 0) wage_val <- flat
-  uncapped <- switch(outcome_type, succeed = wage_val, try = if (flat > 0) min(1, flat) else 1, miss = 0, 0)
+  # An answer that is right or a fair try is paid the cold call's wage in full.
+  uncapped <- switch(outcome_type, succeed = wage_val,
+                     try = if (fill_in) wage_val else if (flat > 0) min(1, flat) else min(1, wage_val), miss = 0, 0)
   tokens <- uncapped
   if (isTRUE(pay_capped) && !fill_in && is.finite(tokens) && tokens > 0) {
     paid <- db_query(
@@ -11347,7 +11357,10 @@ server <- function(input, output, session) {
                                value = wage_upper_limit_value(), min = 0, step = 0.5, width = "100%")),
         column(4, numericInput("econ_full_credit", "Earned points for full participation credit (0 = the gradebook's number)",
                                value = suppressWarnings(as.numeric(get_scoped_setting("participation_full_credit", "0"))), min = 0, step = 1, width = "100%")),
-        column(4, numericInput("econ_volunteer_wage", "Set wage for a voluntary contribution (0 = the class's volunteer wage)",
+        column(4, numericInput("econ_question_top", "Asking a question: top of its wage draw (0 = same range as jobs)",
+                               value = question_wage_top_value(), min = 0, step = 0.5, width = "100%"))),
+      fluidRow(
+        column(4, numericInput("econ_volunteer_wage", "Or a set wage for asking a question (0 = draw it)",
                                value = volunteer_flat_wage(), min = 0, step = 0.5, width = "100%"))),
       tags$h6(style = "font-weight:700;", "Spending"),
       fluidRow(column(4, numericInput("pf_rate", PRICE_FORMULA_LABELS[["rate"]], value = p$rate, min = 0, step = 1, width = "100%"))),
@@ -11414,7 +11427,7 @@ server <- function(input, output, session) {
     rv$flex_ver <- (rv$flex_ver %||% 0L) + 1L
     # Earning side: a box left at 0 or empty keeps the earlier behaviour.
     earning <- c(wage_upper_limit = "econ_wage_upper_limit", participation_full_credit = "econ_full_credit",
-                 volunteer_flat_wage = "econ_volunteer_wage")
+                 volunteer_flat_wage = "econ_volunteer_wage", question_wage_top = "econ_question_top")
     for (key in names(earning)) {
       typed <- suppressWarnings(as.numeric(input[[earning[[key]]]]))
       if (length(typed) == 1L && is.finite(typed) && typed >= 0) set_scoped_setting(key, as.character(typed))

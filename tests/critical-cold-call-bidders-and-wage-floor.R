@@ -123,7 +123,8 @@ stopifnot(give(vol_post, "low") == 2, give(fill_board, "low") == 3,       # two 
           give(ask, "low") == 1,                                           # the question: the set wage, still paid
           give(ask, "low") == 0,                                           # a second question the same class: unpaid
           give(vol_post, "low") == 2,                                      # another fill-in is still paid
-          give(vol_post, "exact", "try") == 1, give(vol_post, "exact", "miss") == 0)
+          give(vol_post, "exact", "try") == 2,                             # a fair try at an answer is paid in full
+          give(vol_post, "exact", "miss") == 0)
 # With no set wage, asking a question has its own wage drawn for the date: fixed
 # once drawn, on the half-point grid, independent of the cold-call wages, and
 # drawn for a question job but not for the fill-in jobs.
@@ -141,12 +142,19 @@ stopifnot(snap(ask)$wage == question_wage$wage,                             # no
 seen <- vapply(1:60, function(i) { app$db_exec("DELETE FROM class_wage_snapshots WHERE round_id=? AND job_post_id=?;", list(rid, ask))
   app$freeze_class_wages(rid); snap(ask)$wage }, numeric(1))
 stopifnot(length(unique(seen)) >= 5L, min(seen) >= 0.5, max(seen) <= 4)
+# Questions cannot be farmed: their draw has its own, much lower top.
+app$set_setting("question_wage_top", "1.5")
+capped <- vapply(1:60, function(i) { app$db_exec("DELETE FROM class_wage_snapshots WHERE round_id=? AND job_post_id=?;", list(rid, ask))
+  app$freeze_class_wages(rid); snap(ask)$wage }, numeric(1))
+stopifnot(app$question_wage_top_value() == 1.5, max(capped) == 1.5, min(capped) == 0.5,
+          give(vol_post, "nobid") == 2)                                     # the cold-call wage is untouched
+app$set_setting("question_wage_top", "0")
 app$set_setting("volunteer_flat_wage", "1")
 
 # On a practice date, or a date without the random-wage rule, nothing is a fill-in.
 app$db_exec("UPDATE weekly_rounds SET wage_pricing_rule='pay_as_bid' WHERE id=?;", list(rid))
 round_row <- app$db_query("SELECT * FROM weekly_rounds WHERE id=?;", list(rid))
-stopifnot(give(vol_post, "nobid") == 1, give(vol_post, "nobid") == 0)      # the set wage and the limit apply again
+stopifnot(give(vol_post, "fresh") == 1, give(vol_post, "fresh") == 0)      # the set wage and the limit apply again
 app$set_setting("volunteer_flat_wage", "0")
 
 # With no cold-call job posted, nobody is eligible rather than everybody.
