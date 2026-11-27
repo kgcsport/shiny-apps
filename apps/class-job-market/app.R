@@ -2258,14 +2258,6 @@ wage_upper_limit_value <- function() {
   if (is.finite(value) && value > 0) value else 0
 }
 random_wage_top <- function(job_wage) { limit <- wage_upper_limit_value(); if (limit > 0) limit else job_wage }
-# The top of the draw for asking a question, for the class in force. A student
-# can ask a question every class at no risk, so this is kept far below the job
-# limit: otherwise questions alone would reach full credit. 0 means none is
-# set and the question draw uses the same range as the jobs.
-question_wage_top_value <- function() {
-  value <- suppressWarnings(as.numeric(resolve_setting("question_wage_top", "0", with_scope = TRUE)$value))
-  if (is.finite(value) && value > 0) value else 0
-}
 random_wage_floor_value <- function() {
   value <- suppressWarnings(as.numeric(resolve_setting("random_wage_floor", "0", with_scope = TRUE)$value))
   if (is.finite(value) && value > 0) value else 0
@@ -3005,23 +2997,6 @@ freeze_class_wages <- function(round_id, query_fn = db_query, exec_fn = db_exec)
          ON CONFLICT(round_id,snapshot_key) DO NOTHING;",
         list(as.integer(round_id), paste0("post:", as.integer(post$id)), as.integer(post$id),
              as.integer(post$category_id), draw_random_wage(random_wage_top(wage))))
-      next
-    }
-    # Under the random-wage rule, unprompted volunteering (asking a question)
-    # gets its own drawn wage for the date. Nobody bids on it: a student who
-    # chooses to speak is never committed to anything by a bid, so a bid would
-    # carry no information. A volunteer job named for answering or board work
-    # is a cold-call fill-in and is paid from the cold-call job instead.
-    if (random_wage_rule && wage_mode && is_voluntary_post[i] &&
-        (grepl("ask", tolower(post$job_name %||% ""), fixed = TRUE) ||
-         !grepl("answer|board", tolower(post$job_name %||% "")))) {
-      exec_fn(
-        "INSERT INTO class_wage_snapshots(round_id,snapshot_key,job_post_id,category_id,wage,source,snapshotted_at)
-         VALUES(?,?,?,?,?,'random_draw',CURRENT_TIMESTAMP)
-         ON CONFLICT(round_id,snapshot_key) DO NOTHING;",
-        list(as.integer(round_id), paste0("post:", as.integer(post$id)), as.integer(post$id),
-             if (is.na(post$category_id %||% NA)) NA_integer_ else as.integer(post$category_id),
-             draw_random_wage(if (question_wage_top_value() > 0) question_wage_top_value() else random_wage_top(wage))))
       next
     }
     if (auction_priced) {
@@ -4083,6 +4058,12 @@ cold_call_post_for <- function(round_id, kind = "answer") {
   hit <- posts[cold_call_kind_of(posts$job_name) == kind, , drop = FALSE]
   if (nrow(hit)) hit[1, , drop = FALSE] else posts[1, , drop = FALSE]
 }
+# A fair try pays half of what the completed work would have paid.
+try_pay <- function(wage) {
+  wage <- suppressWarnings(as.numeric(wage))
+  if (!length(wage) || !is.finite(wage[1]) || wage[1] <= 0) return(0)
+  round(wage[1] / 2, 2)
+}
 cold_call_wage_for <- function(round_id, kind = "answer") {
   post <- cold_call_post_for(round_id, kind)
   if (!nrow(post)) return(1)
@@ -4148,9 +4129,12 @@ queue_volunteer_event <- function(round_row, post_id, user_id, outcome_type, log
   flat <- if (fill_in) 0 else volunteer_flat_wage()
   if (fill_in) wage_val <- cold_call_wage_for(rid, as.character(cold_call_kind_of(job_name)))
   if (flat > 0) wage_val <- flat
-  # An answer that is right or a fair try is paid the cold call's wage in full.
-  uncapped <- switch(outcome_type, succeed = wage_val,
-                     try = if (fill_in) wage_val else if (flat > 0) min(1, flat) else min(1, wage_val), miss = 0, 0)
+  # Asking a question (unprompted volunteering) on a random-wage date pays one
+  # token, or the set volunteer wage if the class has one, whether the question
+  # is scored as a success or a try. Everything else: a fair try pays half.
+  question <- random_wage_date && !fill_in
+  if (question && flat <= 0) wage_val <- 1
+  uncapped <- switch(outcome_type, succeed = wage_val, try = if (question) wage_val else try_pay(wage_val), miss = 0, 0)
   tokens <- uncapped
   if (isTRUE(pay_capped) && !fill_in && is.finite(tokens) && tokens > 0) {
     paid <- db_query(
@@ -4194,7 +4178,7 @@ queue_assignment_score <- function(assign_id, outcome, logged_by = "admin") {
   dname <- row$display_name[1] %||% uid
   # Complete jobs pay the wage snapshotted on the assignment.
   wage  <- as.numeric(row$assigned_wage[1] %||% 0)
-  tokens_to_award <- switch(outcome, complete = wage, tried = 1, missed = 0, 0)
+  tokens_to_award <- switch(outcome, complete = wage, tried = try_pay(wage), missed = 0, 0)
   db_exec(
     "INSERT INTO live_score_events(round_id, user_id, job_assignment_id, event_kind,
             outcome, tokens, logged_by)
@@ -4254,10 +4238,10 @@ token_credit <- function(uid, dname, amount, earning, source_type, source_id = N
     final_wage <- as.numeric(cur$assigned_wage[1] %||% 0)
     tokens_to_award <- switch(outcome,
       complete = final_wage,
-      tried = 1,
+      tried = try_pay(final_wage),
       missed = 0,
       tokens_to_award)
-    if (practice_date) tokens_to_award <- 0 # no points, including the usual 1 for a try
+    if (practice_date) tokens_to_award <- 0 # no points, including the usual half wage for a try
     db_exec(
       "UPDATE job_assignments SET outcome=?, tokens_awarded=?, tokens_credited=?,
               updated_at=datetime('now') WHERE id=?;",
@@ -5150,7 +5134,7 @@ server <- function(input, output, session) {
   # (rule "job") or all jobs (rule "all") paid on the ordinary dates in the
   # same course/section, or (rule "other") that job's average wage in the
   # other sections of the same course, which no bid of the student's own can
-  # move. A try pays 1, as on ordinary dates. Returns one row per payable
+  # move. A try pays half of that, as on ordinary dates. Returns one row per payable
   # piece of work, including ones already paid.
   practice_pay_rows <- function(rule = "job") {
     scope <- current_scope_key()
@@ -5219,7 +5203,7 @@ server <- function(input, output, session) {
              paste0("all jobs", where, " (no wage for this job there)"))
     # With no wage to average, a completed job has no price yet: amount is NA
     # and it is not payable until wages exist.
-    work$amount <- ifelse(work$outcome == "complete", round_token_spend(job_wage), 1)
+    work$amount <- ifelse(work$outcome == "complete", round_token_spend(job_wage), round_token_spend(job_wage / 2))
     paid <- tryCatch(db_query(
       "SELECT source_type, source_id FROM token_ledger
        WHERE source_type IN ('practice_pay_job','practice_pay_event');"),
@@ -6993,11 +6977,18 @@ server <- function(input, output, session) {
                 w  <- if (!is.na(cw)) cw else as.numeric(vp$fallback_wage %||% 1)
                 # A set volunteer wage is what is paid, so it is what is shown.
                 if (volunteer_flat_wage() > 0) { w <- volunteer_flat_wage(); cw <- w }
+                # On a random-wage date a question pays one token (or the set
+                # wage); stepping in to answer pays that day's cold-call wage,
+                # which is never shown to students.
+                vname <- tolower(vp$job_name %||% "")
+                random_day <- random_wage_date(jp$round)
+                steps_in <- random_day && !grepl("ask", vname, fixed = TRUE) && grepl("answer|board", vname)
+                if (random_day && !steps_in) { w <- if (volunteer_flat_wage() > 0) volunteer_flat_wage() else 1; cw <- w }
                 div(style = "display:flex;justify-content:space-between;font-size:.88rem;padding:.15rem 0;",
                     span(vp$job_name %||% ""),
                     span(style = "font-weight:600;",
-                         if (bid_anchor_hidden_for_scope() && random_wage_date(jp$round) && volunteer_flat_wage() <= 0) "Drawn each class"
-                         else if (is.na(cw) && bid_anchor_hidden_for_scope()) "Set by bids" else sprintf("%g tokens", w)))
+                         if (steps_in) "The day's wage for that cold call"
+                         else if (is.na(cw) && bid_anchor_hidden_for_scope()) "Set by bids" else sprintf("%g token%s", w, if (w == 1) "" else "s")))
               })
             )
           )
@@ -10542,7 +10533,7 @@ server <- function(input, output, session) {
             "Row %d: repeatable cold-call/volunteer jobs require an outcome", i))
           next
         }
-        tokens <- switch(outcome, complete = wage, tried = 1, missed = 0, 0)
+        tokens <- switch(outcome, complete = wage, tried = try_pay(wage), missed = 0, 0)
         if (identical(event_kind, "participation")) tokens <- volunteer_capped_tokens(tokens, rid, uid)
         stored_outcome <- if (identical(event_kind, "participation")) {
           switch(outcome, complete = "succeed", tried = "try", missed = "miss", outcome)
@@ -10574,7 +10565,7 @@ server <- function(input, output, session) {
         list(rid, uid, as.integer(pm$id[1]), as.numeric(pm$wage[1] %||% 0), rid_row$assignment_mode[1] %||% "manual"))
       aid <- if (nrow(old)) as.integer(old$id[1]) else as.integer(db_query("SELECT last_insert_rowid() AS id;")$id[1])
       if (nzchar(outcome)) {
-        tokens <- switch(outcome, complete = wage, tried = 1, missed = 0, 0)
+        tokens <- switch(outcome, complete = wage, tried = try_pay(wage), missed = 0, 0)
         db_exec("INSERT INTO live_score_events(round_id,user_id,job_assignment_id,event_kind,outcome,tokens,logged_by) VALUES(?,?,?,'assignment',?,?,?);",
                 list(rid, uid, aid, outcome, tokens, rv$user_id %||% "admin"))
       }
@@ -11357,10 +11348,7 @@ server <- function(input, output, session) {
                                value = wage_upper_limit_value(), min = 0, step = 0.5, width = "100%")),
         column(4, numericInput("econ_full_credit", "Earned points for full participation credit (0 = the gradebook's number)",
                                value = suppressWarnings(as.numeric(get_scoped_setting("participation_full_credit", "0"))), min = 0, step = 1, width = "100%")),
-        column(4, numericInput("econ_question_top", "Asking a question: top of its wage draw (0 = same range as jobs)",
-                               value = question_wage_top_value(), min = 0, step = 0.5, width = "100%"))),
-      fluidRow(
-        column(4, numericInput("econ_volunteer_wage", "Or a set wage for asking a question (0 = draw it)",
+        column(4, numericInput("econ_volunteer_wage", "Tokens for asking a question, once per class (0 = 1 token)",
                                value = volunteer_flat_wage(), min = 0, step = 0.5, width = "100%"))),
       tags$h6(style = "font-weight:700;", "Spending"),
       fluidRow(column(4, numericInput("pf_rate", PRICE_FORMULA_LABELS[["rate"]], value = p$rate, min = 0, step = 1, width = "100%"))),
@@ -11427,7 +11415,7 @@ server <- function(input, output, session) {
     rv$flex_ver <- (rv$flex_ver %||% 0L) + 1L
     # Earning side: a box left at 0 or empty keeps the earlier behaviour.
     earning <- c(wage_upper_limit = "econ_wage_upper_limit", participation_full_credit = "econ_full_credit",
-                 volunteer_flat_wage = "econ_volunteer_wage", question_wage_top = "econ_question_top")
+                 volunteer_flat_wage = "econ_volunteer_wage")
     for (key in names(earning)) {
       typed <- suppressWarnings(as.numeric(input[[earning[[key]]]]))
       if (length(typed) == 1L && is.finite(typed) && typed >= 0) set_scoped_setting(key, as.character(typed))
@@ -12062,12 +12050,12 @@ server <- function(input, output, session) {
                            sprintf("Pending: %s", switch(poc, complete = "complete", tried = "tried", missed = "missed", poc)))
                     } else if (ta == 1L && nzchar(oc)) {
                       awarded_amt <- switch(oc,
-                        complete = wage, tried = 1, missed = 0, 0)
+                        complete = wage, tried = try_pay(wage), missed = 0, 0)
                       span(style = "color:#888;font-size:.82rem;",
-                           sprintf("%s (+%d)",
+                           sprintf("%s (+%s)",
                                    switch(oc, complete = "✓", tried = "~",
                                           missed = "✗", oc),
-                                   as.integer(awarded_amt)))
+                                   format(as.numeric(awarded_amt))))
                     } else {
                       tagList(
                         tags$button(

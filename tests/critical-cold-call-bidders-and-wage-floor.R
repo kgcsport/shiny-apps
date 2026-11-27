@@ -86,76 +86,43 @@ stopifnot(identical(who(), c("boardonly", "exact", "low")))
 app$db_exec("UPDATE weekly_rounds SET wage_pricing_rule='pay_as_bid' WHERE id=?;", list(rid))
 app$db_exec("DELETE FROM job_wage_bid_locks;")
 stopifnot(identical(who(), c("boardonly", "exact", "high", "low")))
-# A set wage for unprompted volunteering. Off by default: the volunteer is paid
-# the class's volunteer wage. On: that wage whatever the day's draw was, a try
-# never pays more than a success, and the one-paid-per-class limit still holds.
+# ── Volunteering, fill-ins, and tries ────────────────────────────────────────
+stopifnot(app$try_pay(4) == 2, app$try_pay(3) == 1.5, app$try_pay(1) == 0.5, app$try_pay(0) == 0, app$try_pay(NA) == 0)
 app$db_exec("INSERT INTO job_categories(name,default_wage,description,voluntary,in_draw) VALUES('Volunteer',4,'',1,0);")
 vol_cat <- as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1])
-app$db_exec("INSERT INTO job_posts(round_id,job_name,category_id,slots,wage_override,voluntary,in_draw,selection_time,active) VALUES(?,'Volunteer: answer',?,99,4,1,0,'volunteer',1);", list(rid, vol_cat))
-vol_post <- as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1])
-round_row <- app$db_query("SELECT * FROM weekly_rounds WHERE id=?;", list(rid))
-volunteer <- function(uid, outcome, capped = FALSE) app$queue_volunteer_event(round_row, vol_post, uid, outcome, "prof", pay_capped = capped)$tokens
-before_flat <- volunteer("low", "succeed")
-stopifnot(app$volunteer_flat_wage() == 0, before_flat > 1)
-app$set_setting("volunteer_flat_wage", "1")
-stopifnot(app$volunteer_flat_wage() == 1, volunteer("exact", "succeed") == 1, volunteer("high", "try") == 1, volunteer("nobid", "miss") == 0,
-          volunteer("exact", "succeed", capped = TRUE) == 0)
-app$set_setting("volunteer_flat_wage", "0.5")
-stopifnot(volunteer("boardonly", "succeed") == 0.5, volunteer("boardonly", "try") == 0.5)
-# A cold call is prompted and keeps its own job's wage.
-stopifnot(app$cold_call_wage_for(rid, "answer") == 2, app$cold_call_wage_for(rid, "board") == 3)
-app$set_setting("volunteer_flat_wage", "0")
-stopifnot(volunteer("low", "succeed") == before_flat)
-
-# Volunteering means asking a question. Stepping in to answer, or to work at
-# the board, on a random-wage date fills a cold call nobody's bid cleared: it
-# pays that cold-call job's drawn wage (answer 2, board 3), whatever the set
-# volunteer wage is, and does not use up the one paid contribution.
-app$db_exec("UPDATE weekly_rounds SET wage_pricing_rule='random_wage' WHERE id=?;", list(rid))
-app$db_exec("DELETE FROM live_score_events;")
-round_row <- app$db_query("SELECT * FROM weekly_rounds WHERE id=?;", list(rid))
 vpost <- function(name) { app$db_exec("INSERT INTO job_posts(round_id,job_name,category_id,slots,wage_override,voluntary,in_draw,selection_time,active) VALUES(?,?,?,99,4,1,0,'volunteer',1);", list(rid, name, vol_cat))
   as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1]) }
-ask <- vpost("Volunteer: ask a question"); fill_board <- vpost("Volunteer: graph/answer on board")
-give <- function(post, uid, outcome = "succeed") app$queue_volunteer_event(round_row, post, uid, outcome, "prof", pay_capped = TRUE)$tokens
-app$set_setting("volunteer_flat_wage", "1")
-stopifnot(give(vol_post, "low") == 2, give(fill_board, "low") == 3,       # two fill-ins, both paid at the drawn wage
-          give(ask, "low") == 1,                                           # the question: the set wage, still paid
-          give(ask, "low") == 0,                                           # a second question the same class: unpaid
-          give(vol_post, "low") == 2,                                      # another fill-in is still paid
-          give(vol_post, "exact", "try") == 2,                             # a fair try at an answer is paid in full
-          give(vol_post, "exact", "miss") == 0)
-# With no set wage, asking a question has its own wage drawn for the date: fixed
-# once drawn, on the half-point grid, independent of the cold-call wages, and
-# drawn for a question job but not for the fill-in jobs.
-app$set_setting("volunteer_flat_wage", "0")
-app$db_exec("DELETE FROM live_score_events;")
-app$freeze_class_wages(rid)
-snap <- function(post) app$db_query("SELECT wage, source FROM class_wage_snapshots WHERE round_id=? AND job_post_id=?;", list(rid, post))
-question_wage <- snap(ask)
-stopifnot(nrow(question_wage) == 1L, question_wage$source == "random_draw", question_wage$wage >= 0.5, question_wage$wage <= 4,
-          question_wage$wage %% 0.5 == 0, !identical(snap(fill_board)$source, "random_draw"))
-app$freeze_class_wages(rid)
-stopifnot(snap(ask)$wage == question_wage$wage,                             # not redrawn
-          give(ask, "high") == question_wage$wage, give(ask, "high") == 0,  # paid the drawn wage, once per class
-          give(vol_post, "high") == 2)                                      # a fill-in is still the cold call's wage
-seen <- vapply(1:60, function(i) { app$db_exec("DELETE FROM class_wage_snapshots WHERE round_id=? AND job_post_id=?;", list(rid, ask))
-  app$freeze_class_wages(rid); snap(ask)$wage }, numeric(1))
-stopifnot(length(unique(seen)) >= 5L, min(seen) >= 0.5, max(seen) <= 4)
-# Questions cannot be farmed: their draw has its own, much lower top.
-app$set_setting("question_wage_top", "1.5")
-capped <- vapply(1:60, function(i) { app$db_exec("DELETE FROM class_wage_snapshots WHERE round_id=? AND job_post_id=?;", list(rid, ask))
-  app$freeze_class_wages(rid); snap(ask)$wage }, numeric(1))
-stopifnot(app$question_wage_top_value() == 1.5, max(capped) == 1.5, min(capped) == 0.5,
-          give(vol_post, "nobid") == 2)                                     # the cold-call wage is untouched
-app$set_setting("question_wage_top", "0")
-app$set_setting("volunteer_flat_wage", "1")
+fill_answer <- vpost("Volunteer: answer a question"); fill_board <- vpost("Volunteer: graph/answer on board"); ask <- vpost("Volunteer: ask a question")
+round_now <- function() app$db_query("SELECT * FROM weekly_rounds WHERE id=?;", list(rid))
+give <- function(post, uid, outcome = "succeed") app$queue_volunteer_event(round_now(), post, uid, outcome, "prof", pay_capped = TRUE)$tokens
 
-# On a practice date, or a date without the random-wage rule, nothing is a fill-in.
-app$db_exec("UPDATE weekly_rounds SET wage_pricing_rule='pay_as_bid' WHERE id=?;", list(rid))
-round_row <- app$db_query("SELECT * FROM weekly_rounds WHERE id=?;", list(rid))
-stopifnot(give(vol_post, "fresh") == 1, give(vol_post, "fresh") == 0)      # the set wage and the limit apply again
+# A date without the random-wage rule: a volunteer is paid the class's
+# volunteer wage, a try pays half of it, one paid contribution per class.
+full <- give(fill_answer, "low")
+stopifnot(full > 0, give(ask, "exact", "try") == app$try_pay(full), give(ask, "low") == 0)
+
+# A random-wage date.
+app$db_exec("UPDATE weekly_rounds SET wage_pricing_rule='random_wage' WHERE id=?;", list(rid))
+app$db_exec("DELETE FROM live_score_events;")
+# Asking a question: one token, always, once per class. No wage is drawn for it.
+stopifnot(give(ask, "low") == 1, give(ask, "low") == 0,                 # the second question that class is unpaid
+          give(ask, "exact", "try") == 1, give(ask, "high", "miss") == 0)
+app$freeze_class_wages(rid)
+stopifnot(!identical(app$db_query("SELECT source FROM class_wage_snapshots WHERE round_id=? AND job_post_id=?;", list(rid, ask))$source, "random_draw"))
+# Stepping in to answer or work at the board fills a cold call nobody's bid
+# cleared: the cold call's drawn wage (answer 2, board 3) if right, half for a
+# fair try, nothing for a miss. It is not limited to once per class and does
+# not use up the paid question.
+stopifnot(give(fill_answer, "low") == 2, give(fill_board, "low") == 3, give(fill_answer, "low") == 2,
+          give(fill_answer, "exact", "try") == 1, give(fill_board, "exact", "try") == 1.5, give(fill_answer, "exact", "miss") == 0,
+          give(ask, "nobid") == 1)
+# A class may set another amount for a question; fill-ins are unaffected.
+app$set_setting("volunteer_flat_wage", "2")
+stopifnot(give(ask, "boardonly") == 2, give(fill_answer, "boardonly") == 2, give(fill_board, "boardonly") == 3)
 app$set_setting("volunteer_flat_wage", "0")
+# A cold call is prompted and keeps its own job's wage.
+stopifnot(app$cold_call_wage_for(rid, "answer") == 2, app$cold_call_wage_for(rid, "board") == 3)
+app$db_exec("UPDATE weekly_rounds SET wage_pricing_rule='pay_as_bid' WHERE id=?;", list(rid))
 
 # With no cold-call job posted, nobody is eligible rather than everybody.
 app$db_exec("UPDATE job_posts SET active=0 WHERE round_id=?;", list(rid))
