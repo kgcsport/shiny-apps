@@ -161,8 +161,8 @@ stopifnot(app$db_query("SELECT assigned_wage w FROM job_assignments WHERE id=?;"
 
 # 5. End-of-term practice pay. Each job's own average: Recap = mean(4, 6) = 5,
 #    the cold call and volunteer answer have no later wage so they use the
-#    all-job average mean(4, 6, 2) = 4, a try pays half (Note taker's own
-#    average is 2, so 1; the volunteer answer uses 4, so 2), a miss pays nothing.
+#    all-job average mean(4, 6, 2) = 4, a try pays 1 point by default, or half
+#    when the class sets that (the volunteer answer uses 4, so 2), a miss pays nothing.
 shiny::testServer(app$server, {
   set_admin(rv)
   own <- practice_pay_rows("job")
@@ -172,14 +172,18 @@ shiny::testServer(app$server, {
             pay(own, "s2@test.edu", "Note taker") == 1,
             pay(own, "s3@test.edu", "Example scout") == 4,
             pay(own, "s2@test.edu", "Volunteer answer") == 4,
-            pay(own, "s3@test.edu", "Volunteer answer") == 2,
+            pay(own, "s3@test.edu", "Volunteer answer") == 1,
+            { app$set_setting("try_pay_points", "0")
+              half <- practice_pay_rows("job")
+              app$set_setting("try_pay_points", "1")
+              pay(half, "s3@test.edu", "Volunteer answer") == 2 && pay(half, "s2@test.edu", "Note taker") == 1 },
             pay(own, "s1@test.edu", "Cold call: answer") == 4,
             !any(own$outcome == "missed"))
   pooled <- practice_pay_rows("all")
-  stopifnot(pay(pooled, "s1@test.edu", "Recap") == 4, pay(pooled, "s2@test.edu", "Note taker") == 2)
+  stopifnot(pay(pooled, "s1@test.edu", "Recap") == 4, pay(pooled, "s2@test.edu", "Note taker") == 1)
   # Nothing is credited by a preview.
   session$setInputs(practice_pay_rule = "job", practice_pay_preview_btn = 1L)
-  stopifnot(grepl("6 items to pay, 20 tokens in total", output$practice_pay_preview$html, fixed = TRUE),
+  stopifnot(grepl("6 items to pay, 19 tokens in total", output$practice_pay_preview$html, fixed = TRUE),
             nrow(db_query("SELECT id FROM token_ledger WHERE source_type LIKE 'practice_pay%';")) == 0L)
   session$setInputs(practice_pay_commit_btn = 1L)
   stopifnot(all(practice_pay_rows("job")$already_paid))
@@ -189,7 +193,7 @@ shiny::testServer(app$server, {
   session$setInputs(practice_pay_commit_btn = 3L)
 })
 practice_pay <- ledger("source_type LIKE 'practice_pay%'")
-stopifnot(nrow(practice_pay) == 6L, sum(practice_pay$amount) == 20, all(practice_pay$earning == 1L),
+stopifnot(nrow(practice_pay) == 6L, sum(practice_pay$amount) == 19, all(practice_pay$earning == 1L),
           !any(duplicated(practice_pay[, c("source_type", "source_id")])),
           sum(practice_pay$amount[practice_pay$user_id == "s1@test.edu"]) == 9)
 

@@ -174,8 +174,8 @@ stopifnot(identical(s2$outcome, c("succeed", "succeed", "try")), identical(s2$to
 volunteer("s3@test.edu", "miss", 1L); volunteer("s3@test.edu", "try", 2L)
 volunteer("s3@test.edu", "succeed", 3L)
 s3 <- events("s3@test.edu")
-# A fair try pays half the volunteer wage (7), and is the one paid contribution.
-stopifnot(identical(s3$outcome, c("miss", "try", "succeed")), identical(s3$tokens, c(0, 3.5, 0)))
+# A fair try pays 1 point (the default rule), and is the one paid contribution.
+stopifnot(identical(s3$outcome, c("miss", "try", "succeed")), identical(s3$tokens, c(0, 1, 0)))
 # The rule is per class date: a new date pays again.
 app$db_exec("INSERT INTO live_score_events(round_id,user_id,job_post_id,event_kind,outcome,tokens,logged_by)
              VALUES(?,?,?,'participation','succeed',3,'fixture');", list(round_id + 1000L, "s3@test.edu", vol_post))

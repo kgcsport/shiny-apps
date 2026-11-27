@@ -3791,7 +3791,7 @@ SETTINGS_PAGE_HELP <- c(
   round_setup = "Set up a class meeting: the date and whether it is a practice date, how jobs are given out, when bidding locks, and the wage and bidding rules.",
   jobs = "The jobs students can bid on for the selected date, the job types, and the templates copied into each new date.",
   students = "The roster: add or archive students, fix a course or section, reset a password, or view the app as a student.",
-  token_admin = "Economy settings (wage limit, full credit, volunteer wage, perk prices), point awards and corrections, and which perks students can buy.",
+  token_admin = "Economy settings (wage limit, full credit, volunteer wage, pay for a try, perk prices), point awards and corrections, and which perks students can buy.",
   gradebook = "Grade categories and their weights, grade uploads, and gradebook downloads.",
   policy_rubrics = "Policy project rubrics, due dates, and which students are on which team.",
   exports = "Download the class's records. Tick the mask box before downloading anything you will share or analyse.")
@@ -4065,8 +4065,16 @@ cold_call_post_for <- function(round_id, kind = "answer") {
   hit <- posts[cold_call_kind_of(posts$job_name) %in% kind, , drop = FALSE]
   if (nrow(hit)) hit[1, , drop = FALSE] else posts[1, , drop = FALSE]
 }
-# A fair try pays half of what the completed work would have paid.
+# What a fair try pays, for the class in force: a set whole number of points
+# whatever the job's wage (1 unless the class sets another), or, when the class
+# sets 0, half of what the completed work would have paid.
+try_pay_points <- function() {
+  value <- suppressWarnings(as.numeric(resolve_setting("try_pay_points", "1", with_scope = TRUE)$value))
+  if (length(value) == 1L && is.finite(value) && value >= 0) round(value) else 1
+}
 try_pay <- function(wage) {
+  points <- try_pay_points()
+  if (points > 0) return(points)
   wage <- suppressWarnings(as.numeric(wage))
   if (!length(wage) || !is.finite(wage[1]) || wage[1] <= 0) return(0)
   round(wage[1] / 2, 2)
@@ -4137,7 +4145,7 @@ queue_volunteer_event <- function(round_row, post_id, user_id, outcome_type, log
   if (flat > 0) wage_val <- flat
   # Asking a question (unprompted volunteering) on a random-wage date pays one
   # token, or the set volunteer wage if the class has one, whether the question
-  # is scored as a success or a try. Everything else: a fair try pays half.
+  # is scored as a success or a try. Everything else follows try_pay().
   question <- random_wage_date && !fill_in
   if (question && flat <= 0) wage_val <- 1
   uncapped <- switch(outcome_type, succeed = wage_val, try = if (question) wage_val else try_pay(wage_val), miss = 0, 0)
@@ -4247,7 +4255,7 @@ token_credit <- function(uid, dname, amount, earning, source_type, source_id = N
       tried = try_pay(final_wage),
       missed = 0,
       tokens_to_award)
-    if (practice_date) tokens_to_award <- 0 # no points, including the usual half wage for a try
+    if (practice_date) tokens_to_award <- 0 # no points, including the usual pay for a try
     db_exec(
       "UPDATE job_assignments SET outcome=?, tokens_awarded=?, tokens_credited=?,
               updated_at=datetime('now') WHERE id=?;",
@@ -5140,7 +5148,7 @@ server <- function(input, output, session) {
   # (rule "job") or all jobs (rule "all") paid on the ordinary dates in the
   # same course/section, or (rule "other") that job's average wage in the
   # other sections of the same course, which no bid of the student's own can
-  # move. A try pays half of that, as on ordinary dates. Returns one row per payable
+  # move. A try is paid by the class's try rule, as on ordinary dates. Returns one row per payable
   # piece of work, including ones already paid.
   practice_pay_rows <- function(rule = "job") {
     scope <- current_scope_key()
@@ -5209,7 +5217,9 @@ server <- function(input, output, session) {
              paste0("all jobs", where, " (no wage for this job there)"))
     # With no wage to average, a completed job has no price yet: amount is NA
     # and it is not payable until wages exist.
-    work$amount <- ifelse(work$outcome == "complete", round_token_spend(job_wage), round_token_spend(job_wage / 2))
+    try_points <- try_pay_points()
+    work$amount <- ifelse(work$outcome == "complete", round_token_spend(job_wage),
+                          if (try_points > 0) ifelse(is.na(job_wage), NA_real_, try_points) else round_token_spend(job_wage / 2))
     paid <- tryCatch(db_query(
       "SELECT source_type, source_id FROM token_ledger
        WHERE source_type IN ('practice_pay_job','practice_pay_event');"),
@@ -11354,7 +11364,9 @@ server <- function(input, output, session) {
         column(4, numericInput("econ_full_credit", "Earned points for full participation credit (0 = the gradebook's number)",
                                value = suppressWarnings(as.numeric(get_scoped_setting("participation_full_credit", "0"))), min = 0, step = 1, width = "100%")),
         column(4, numericInput("econ_volunteer_wage", "Tokens for asking a question, once per class (0 = 1 token)",
-                               value = volunteer_flat_wage(), min = 0, step = 0.5, width = "100%"))),
+                               value = volunteer_flat_wage(), min = 0, step = 0.5, width = "100%")),
+        column(4, numericInput("econ_try_pay_points", "Points for a fair try, whole number (0 = half the job's wage)",
+                               value = try_pay_points(), min = 0, step = 1, width = "100%"))),
       tags$h6(style = "font-weight:700;", "Spending"),
       fluidRow(column(4, numericInput("pf_rate", PRICE_FORMULA_LABELS[["rate"]], value = p$rate, min = 0, step = 1, width = "100%"))),
       tags$details(style = "margin-bottom:.6rem;",
@@ -11371,7 +11383,7 @@ server <- function(input, output, session) {
              "Choose this before any question is funded. Contributions already made stay with the pool they were made in."),
       uiOutput("price_formula_preview"),
       actionButton("apply_price_formula_btn", "Apply", class = "btn btn-sm btn-primary",
-                   onclick = "if(!confirm('Apply these numbers to this class? This replaces its wage limit, full-credit points, volunteer wage and perk prices.')) return false;"))
+                   onclick = "if(!confirm('Apply these numbers to this class? This replaces its wage limit, full-credit points, volunteer wage, pay for a try and perk prices.')) return false;"))
   })
   output$price_formula_preview <- renderUI({
     req(rv$is_admin)
@@ -11420,9 +11432,10 @@ server <- function(input, output, session) {
     rv$flex_ver <- (rv$flex_ver %||% 0L) + 1L
     # Earning side: a box left at 0 or empty keeps the earlier behaviour.
     earning <- c(wage_upper_limit = "econ_wage_upper_limit", participation_full_credit = "econ_full_credit",
-                 volunteer_flat_wage = "econ_volunteer_wage")
+                 volunteer_flat_wage = "econ_volunteer_wage", try_pay_points = "econ_try_pay_points")
     for (key in names(earning)) {
       typed <- suppressWarnings(as.numeric(input[[earning[[key]]]]))
+      if (identical(key, "try_pay_points")) typed <- round(typed)
       if (length(typed) == 1L && is.finite(typed) && typed >= 0) set_scoped_setting(key, as.character(typed))
     }
     f <- price_formula(p, max(1L, tryCatch(flex_roster_size(), error = function(e) 25L)))
@@ -11433,7 +11446,7 @@ server <- function(input, output, session) {
     set_scoped_setting("flex_cost_schedule", f$question_formula)
     set_setting("reweight_cost_schedule", f$reweight_formula)
     rv$extensions_ver <- rv$extensions_ver + 1L; rv$settings_ver <- rv$settings_ver + 1L
-    showNotification("Applied: wage limit, full-credit points, volunteer wage and perk prices now follow these numbers.", type = "message")
+    showNotification("Applied: wage limit, full-credit points, volunteer wage, pay for a try and perk prices now follow these numbers.", type = "message")
   }, ignoreNULL = TRUE)
 
   observeEvent(input$save_extension_pricing_btn, {
@@ -14904,7 +14917,7 @@ server <- function(input, output, session) {
         ),
         settings_group("tokens-practice-pay", "Practice-date pay",
         tags$p(style = "color:#555;font-size:.88rem;",
-               "Practice dates pay nothing at the time. At the end of the term, pay completed practice work at the average wage from the ordinary class dates in this course / section. A try pays 1 token. Each piece of work can be paid once."),
+               "Practice dates pay nothing at the time. At the end of the term, pay completed practice work at the average wage from the ordinary class dates in this course / section. A try is paid by the class's rule for a fair try. Each piece of work can be paid once."),
         div(class = "spend-form-box",
           selectInput("practice_pay_rule", "Wage for a completed practice job:", width = "420px",
                       choices = c("That job's average wage in the other section(s) of this course" = "other",
@@ -14994,7 +15007,7 @@ server <- function(input, output, session) {
       students = settings_section("students", want = "roster"),
       token_admin = tagList(
         settings_section("token_admin"),
-        settings_group("tokens-price-formula", "Economy settings", hint = "Wage limit, full-credit points, volunteer wage and perk prices in one place",
+        settings_group("tokens-price-formula", "Economy settings", hint = "Wage limit, full-credit points, volunteer wage, pay for a try and perk prices in one place",
                        uiOutput("price_formula_panel")),
         settings_group("tokens-spending", "What students can spend tokens on",
                        hint = "Availability, extensions, exam questions, grade reweighting, Pass Insurance",
