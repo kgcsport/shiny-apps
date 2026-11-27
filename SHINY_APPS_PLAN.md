@@ -166,6 +166,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-11-27** — Exam question funds: Kyle's answers to the draft contract. (1) The gradebook is meant to be per course; the code has one for the whole app, so this is now a requirement, not a description (see Questions for Kyle). (2) A question is course-wide unless Kyle marks it for one section. (3) Prices are exam-specific and Kyle can change them; a price moves as more questions are bought. The final is 25% of the grade and the 10 of 12 answered questions are 50 points of it. (4) Every price count is within one exam, within the course or the course and section. This applies to every class, not spring only; prices already locked stay as they are. Nothing built yet.
+
 - **2026-11-27** — A fair try pays half the wage, including for the last two weeks of fall (Kyle). This supersedes the entry below that made a set whole number the default. **History:** a try paid half the wage, rounded to a whole token, until commit `4f7a4d5` on 2026-09-09 made it a flat 1 (see the 2026-09-09 entry); Kyle says a flat 1 was never the planned rule. **Changes existing behavior, at Kyle's direction:** from the next promotion a fall try pays half the job's wage, the same amount as before at a wage of 2 and different at any other wage (10 instead of 1 on a job won at 20, 0.5 instead of 1 at a wage of 1). Nothing already paid changes. **Alternative per class:** `try_pay_rule = lowest` (Economy settings, "A fair try pays") pays the lowest wage a random-wage draw can produce, 0.5 or the wage floor, never more than the job's wage. The set-whole-number option is removed: any flat amount above the lowest draw lets a try pay more than completing the job. Both remaining rules keep a truthful bid optimal. **Verification:** `tests/critical-cold-call-bidders-and-wage-floor.R`, `tests/critical-bid-anchor-volunteer-cap.R`, `tests/critical-practice-dates.R`.
 
 - **2026-11-27** — A fair try pays a set whole number of points or half the wage, chosen per class (Kyle). This supersedes the entry below that made half pay the only rule. **Unchanged from before this week:** the default is 1 point for a try whatever the job's wage, so the fall class is paid as it was on 2026-11-11 with no setting touched. **New:** `try_pay_points` (Settings → Tokens & spending → Economy settings, "Points for a fair try") takes any whole number; 0 means half of what the completed work would have paid. It is read for the class in force and can differ by section. One rule, `try_pay()`, still covers assigned jobs, voluntary contributions, cold-call fill-ins, the bulk job import, and end-of-term practice pay. Asking a question on a random-wage date still pays its one token for a success or a try. **Known consequence:** with a set number, a try can pay more than completing a job whose wage is below that number (a random-wage draw starts at 0.5). **Verification:** `tests/critical-cold-call-bidders-and-wage-floor.R` (default, another number, half, a section's own rule), `tests/critical-bid-anchor-volunteer-cap.R`, `tests/critical-practice-dates.R`.
@@ -1144,19 +1146,16 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-0. Kyle answers the four "Exam question funds" questions; then build the contract's fixture and migration test first.
+0. Kyle answers the two remaining "Exam question funds" questions (gradebook order, total points on the final); then build the contract's fixture and migration test first.
 1. Build and stage an immutable image containing the consolidated policy-project grading workspace and the Live Tracker reveal-status line (reveal a section's start-of-class jobs and confirm the line under Draw Jobs reads "Visible to students (start of class)" while that section's students see the job), then verify the instructor's assignment view is read-only and Settings can select a team, show its members, switch among question/presentation/progress/brief, display each stored submission, and save or release feedback; also recheck Participation, item rename/weight save, reweight approval, the affected student grade, and both policy milestone dates before production promotion.
 2. Define the per-course source contract for loading `course_data` from the course page or GitHub, including repository/path configuration, caching, authentication, validation, and failure behavior; then replace the duplicated policy-date defaults with that source.
 3. Publish the PS6 Cloudflare Worker assignment, then enable the preconfigured PS6 and PS6 corrections extension products in Settings → Spending Options → Assignment Extensions.
 
 ## Questions for Kyle
 
-- **Exam question funds (2026-11-27).** Needed before the contract above is built.
-  1. **The gradebook is one structure for the whole app, not per course.** Intro and Data Science would share the same exam items. Is mapping to an item in that shared gradebook enough, or must the gradebook become per course first (a larger change)?
-  2. **Section-only questions under a course-wide pool.** Proposed: a section-only question is always funded and revealed by its own section, whatever the pool setting.
-  3. **Prices per exam.** The Economy settings formula has one set of exam facts (final worth 25%, answer 10 of 12, 24 posted). A midterm with a different weight would need its own facts for its price to match its worth. One set per exam, or the formula for the final only?
-  4. **When.** Proposed: spring only. In fall the count that sets the next price would restart for each exam, changing the next price for a pool that has reveals in more than one exam.
-
+- **Exam question funds (2026-11-27).** Kyle's answers are recorded in the Decision Log. Still open:
+  1. **Gradebook per course.** Kyle expects the gradebook to be per course. In the code it is one structure for the whole app (`gradebook_categories` and `gradebook_item_names` have no course). Build the per-course gradebook before the exam funds, or build the funds against the shared gradebook now and move both when the gradebook is split?
+  2. **Total points on the final.** The price formula treats the 10 answered questions as the whole exam (each worth 2.5 points of course grade). Kyle says they are 50 points of the exam. If the exam is out of 100, each is worth 1.25, and question prices from the formula are twice what the pricing rule implies.
 - **Exam questions and sections (2026-11-26).** Students in different sections can share a revealed question. Either pool the fund across the course, or keep section pools and write a separate question set and exam for each section.
 - **Preview gain (2026-11-26).** How much better does a student do on an exam question for having seen it beforehand? Provisionally 20 points out of 100.
 
@@ -1236,8 +1235,8 @@ If the intended behavior or a scope decision is ambiguous, stop and ask rather t
 
 ## Exam Question Funds By Exam: Change Contract (draft, 2026-11-27)
 
-Requested by Kyle. Not built. Nothing here is to be implemented until the four
-questions under Questions for Kyle ("Exam question funds") are answered.
+Requested by Kyle. Not built. Kyle's answers are in the Decision Log
+(2026-11-27); two questions remain under Questions for Kyle.
 
 ### How it works today
 
