@@ -2999,6 +2999,23 @@ freeze_class_wages <- function(round_id, query_fn = db_query, exec_fn = db_exec)
              as.integer(post$category_id), draw_random_wage(random_wage_top(wage))))
       next
     }
+    # Under the random-wage rule, unprompted volunteering (asking a question)
+    # gets its own drawn wage for the date. Nobody bids on it: a student who
+    # chooses to speak is never committed to anything by a bid, so a bid would
+    # carry no information. A volunteer job named for answering or board work
+    # is a cold-call fill-in and is paid from the cold-call job instead.
+    if (random_wage_rule && wage_mode && is_voluntary_post[i] &&
+        (grepl("ask", tolower(post$job_name %||% ""), fixed = TRUE) ||
+         !grepl("answer|board", tolower(post$job_name %||% "")))) {
+      exec_fn(
+        "INSERT INTO class_wage_snapshots(round_id,snapshot_key,job_post_id,category_id,wage,source,snapshotted_at)
+         VALUES(?,?,?,?,?,'random_draw',CURRENT_TIMESTAMP)
+         ON CONFLICT(round_id,snapshot_key) DO NOTHING;",
+        list(as.integer(round_id), paste0("post:", as.integer(post$id)), as.integer(post$id),
+             if (is.na(post$category_id %||% NA)) NA_integer_ else as.integer(post$category_id),
+             draw_random_wage(random_wage_top(wage))))
+      next
+    }
     if (auction_priced) {
       cleared <- volunteer_clearing_wage(
         as.integer(round_id), as.integer(post$category_id),
@@ -6969,7 +6986,8 @@ server <- function(input, output, session) {
                 div(style = "display:flex;justify-content:space-between;font-size:.88rem;padding:.15rem 0;",
                     span(vp$job_name %||% ""),
                     span(style = "font-weight:600;",
-                         if (is.na(cw) && bid_anchor_hidden_for_scope()) "Set by bids" else sprintf("%g tokens", w)))
+                         if (bid_anchor_hidden_for_scope() && random_wage_date(jp$round) && volunteer_flat_wage() <= 0) "Drawn each class"
+                         else if (is.na(cw) && bid_anchor_hidden_for_scope()) "Set by bids" else sprintf("%g tokens", w)))
               })
             )
           )
