@@ -37,11 +37,11 @@ Kyle corrected these more than once. Do not drift from them.
   for that cold call: paid its drawn wage.
 - **Volunteering means asking a question, nothing else.** It pays one token,
   once per class. Nobody bids on it and no wage is drawn for it.
-- **A fair try pays a set whole number of points, or half.** Each class has
-  one number (Settings → Tokens & spending → Economy settings): 1 by default,
-  which is what the fall class has always paid; 0 means half of what the
-  finished work would have paid. A miss pays nothing. Kyle chose this on
-  2026-11-27 after half pay had briefly been the only rule.
+- **A fair try pays half** of what the finished work would have paid. A miss
+  pays nothing. A class may choose the lowest wage a draw can produce (0.5, or
+  the wage floor) for a try instead (Settings → Tokens & spending → Economy
+  settings). From 2026-09-09 until this session the app paid a flat 1 for a
+  try; that was not the intended rule and is gone.
 - **Practice dates** (first three weeks) run exactly like any other date,
   except everybody is in the pool whatever they bid, and no points are paid:
   students get feedback. There is no separate lottery, schedule, seed, or
@@ -112,8 +112,8 @@ Kyle corrected these more than once. Do not drift from them.
 5. **Reweighting in spring:** on or off, and flat or per-student pricing.
 6. **Freeze dates:** a feature freeze and a full freeze. The first class date
    is not known to this document.
-7. **Try pay in spring:** 1 point, another whole number, or half. The app
-   default is 1. Not chosen for the experiment sections yet.
+7. **Try pay in spring:** half the wage (the default) or the lowest draw. Not
+   chosen for the experiment sections yet.
 
 ## What Kyle still has to supply
 

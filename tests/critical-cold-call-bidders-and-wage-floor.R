@@ -98,20 +98,23 @@ app$db_exec("UPDATE weekly_rounds SET wage_pricing_rule='pay_as_bid' WHERE id=?;
 app$db_exec("DELETE FROM job_wage_bid_locks;")
 stopifnot(identical(who(), c("boardonly", "exact", "high", "low")))
 # ── Volunteering, fill-ins, and tries ────────────────────────────────────────
-# A fair try pays 1 point whatever the wage unless the class sets otherwise:
-# another whole number, or 0 for half the job's wage.
-stopifnot(app$try_pay_points() == 1, app$try_pay(4) == 1, app$try_pay(20) == 1, app$try_pay(0.5) == 1, app$try_pay(NA) == 1)
-app$set_setting("try_pay_points", "3")
-stopifnot(app$try_pay(4) == 3, app$try_pay(1) == 3)
-app$set_setting("try_pay_points", "2.6")   # stored by hand: read as a whole number
-stopifnot(app$try_pay(4) == 3)
-# A section can choose half pay without changing another's rule.
-app$set_setting("try_pay_points", "1")
-app$with_setting_context(section_02("section"), app$set_setting("try_pay_points", "0"))
-stopifnot(app$with_setting_context(section_02("auto"), app$try_pay(4)) == 2, app$try_pay(4) == 1)
-# The rest of this file runs under the half-pay rule.
-app$set_setting("try_pay_points", "0")
-stopifnot(app$try_pay(4) == 2, app$try_pay(3) == 1.5, app$try_pay(1) == 0.5, app$try_pay(0) == 0, app$try_pay(NA) == 0)
+# A fair try pays half the wage unless the class chooses the lowest wage a
+# draw can produce. Neither ever pays more than completing the job.
+stopifnot(app$try_pay_rule() == "half",
+          app$try_pay(4) == 2, app$try_pay(3) == 1.5, app$try_pay(1) == 0.5, app$try_pay(20) == 10, app$try_pay(0) == 0, app$try_pay(NA) == 0)
+app$set_setting("try_pay_rule", "lowest")
+stopifnot(app$try_pay(4) == 0.5, app$try_pay(20) == 0.5, app$try_pay(0.5) == 0.5, app$try_pay(0) == 0, app$try_pay(NA) == 0)
+app$set_setting("random_wage_floor", "2")     # with a floor, the lowest draw is the floor
+stopifnot(app$try_pay(4) == 2, app$try_pay(1.5) == 1.5)
+app$set_setting("random_wage_floor", "0")
+app$set_setting("try_pay_rule", "something else")   # anything unrecognised is half
+stopifnot(app$try_pay_rule() == "half")
+# A section can choose its own rule without changing another's.
+app$set_setting("try_pay_rule", "half")
+app$with_setting_context(section_02("section"), app$set_setting("try_pay_rule", "lowest"))
+# Section 02 still has the wage floor of 3 saved above, so its lowest draw is 3.
+stopifnot(app$with_setting_context(section_02("auto"), app$try_pay(4)) == 3,
+          app$with_setting_context(section_02("auto"), app$try_pay(2)) == 2, app$try_pay(4) == 2)
 app$db_exec("INSERT INTO job_categories(name,default_wage,description,voluntary,in_draw) VALUES('Volunteer',4,'',1,0);")
 vol_cat <- as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1])
 vpost <- function(name) { app$db_exec("INSERT INTO job_posts(round_id,job_name,category_id,slots,wage_override,voluntary,in_draw,selection_time,active) VALUES(?,?,?,99,4,1,0,'volunteer',1);", list(rid, name, vol_cat))

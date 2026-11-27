@@ -4065,18 +4065,21 @@ cold_call_post_for <- function(round_id, kind = "answer") {
   hit <- posts[cold_call_kind_of(posts$job_name) %in% kind, , drop = FALSE]
   if (nrow(hit)) hit[1, , drop = FALSE] else posts[1, , drop = FALSE]
 }
-# What a fair try pays, for the class in force: a set whole number of points
-# whatever the job's wage (1 unless the class sets another), or, when the class
-# sets 0, half of what the completed work would have paid.
-try_pay_points <- function() {
-  value <- suppressWarnings(as.numeric(resolve_setting("try_pay_points", "1", with_scope = TRUE)$value))
-  if (length(value) == 1L && is.finite(value) && value >= 0) round(value) else 1
-}
+# What a fair try pays, for the class in force. Either half of what the
+# completed work would have paid (the default), or the lowest wage a
+# random-wage draw can produce: 0.5, or the class's wage floor if it has one.
+# Both rise with or stay below the wage, so a try never pays more than
+# completing the job.
+try_pay_rule <- function()
+  if (identical(as.character(resolve_setting("try_pay_rule", "half", with_scope = TRUE)$value), "lowest")) "lowest" else "half"
 try_pay <- function(wage) {
-  points <- try_pay_points()
-  if (points > 0) return(points)
   wage <- suppressWarnings(as.numeric(wage))
   if (!length(wage) || !is.finite(wage[1]) || wage[1] <= 0) return(0)
+  if (identical(try_pay_rule(), "lowest")) {
+    # The draw moves in half-point steps from 0.5, or from the floor rounded up to a step.
+    lowest <- max(0.5, ceiling(random_wage_floor_value() / 0.5 - 1e-9) * 0.5)
+    return(min(wage[1], lowest))
+  }
   round(wage[1] / 2, 2)
 }
 cold_call_wage_for <- function(round_id, kind = "answer") {
@@ -5217,9 +5220,9 @@ server <- function(input, output, session) {
              paste0("all jobs", where, " (no wage for this job there)"))
     # With no wage to average, a completed job has no price yet: amount is NA
     # and it is not payable until wages exist.
-    try_points <- try_pay_points()
-    work$amount <- ifelse(work$outcome == "complete", round_token_spend(job_wage),
-                          if (try_points > 0) ifelse(is.na(job_wage), NA_real_, try_points) else round_token_spend(job_wage / 2))
+    # With no wage to price from, a try has no price yet either.
+    try_wage <- ifelse(is.na(job_wage), NA_real_, vapply(job_wage, try_pay, numeric(1)))
+    work$amount <- ifelse(work$outcome == "complete", round_token_spend(job_wage), round_token_spend(try_wage))
     paid <- tryCatch(db_query(
       "SELECT source_type, source_id FROM token_ledger
        WHERE source_type IN ('practice_pay_job','practice_pay_event');"),
@@ -11365,8 +11368,9 @@ server <- function(input, output, session) {
                                value = suppressWarnings(as.numeric(get_scoped_setting("participation_full_credit", "0"))), min = 0, step = 1, width = "100%")),
         column(4, numericInput("econ_volunteer_wage", "Tokens for asking a question, once per class (0 = 1 token)",
                                value = volunteer_flat_wage(), min = 0, step = 0.5, width = "100%")),
-        column(4, numericInput("econ_try_pay_points", "Points for a fair try, whole number (0 = half the job's wage)",
-                               value = try_pay_points(), min = 0, step = 1, width = "100%"))),
+        column(4, selectInput("econ_try_pay_rule", "A fair try pays",
+                              choices = c("Half the job's wage" = "half", "The lowest wage a draw can produce" = "lowest"),
+                              selected = try_pay_rule(), width = "100%"))),
       tags$h6(style = "font-weight:700;", "Spending"),
       fluidRow(column(4, numericInput("pf_rate", PRICE_FORMULA_LABELS[["rate"]], value = p$rate, min = 0, step = 1, width = "100%"))),
       tags$details(style = "margin-bottom:.6rem;",
@@ -11432,10 +11436,11 @@ server <- function(input, output, session) {
     rv$flex_ver <- (rv$flex_ver %||% 0L) + 1L
     # Earning side: a box left at 0 or empty keeps the earlier behaviour.
     earning <- c(wage_upper_limit = "econ_wage_upper_limit", participation_full_credit = "econ_full_credit",
-                 volunteer_flat_wage = "econ_volunteer_wage", try_pay_points = "econ_try_pay_points")
+                 volunteer_flat_wage = "econ_volunteer_wage")
+    if (!is.null(input$econ_try_pay_rule))
+      set_scoped_setting("try_pay_rule", if (identical(input$econ_try_pay_rule, "lowest")) "lowest" else "half")
     for (key in names(earning)) {
       typed <- suppressWarnings(as.numeric(input[[earning[[key]]]]))
-      if (identical(key, "try_pay_points")) typed <- round(typed)
       if (length(typed) == 1L && is.finite(typed) && typed >= 0) set_scoped_setting(key, as.character(typed))
     }
     f <- price_formula(p, max(1L, tryCatch(flex_roster_size(), error = function(e) 25L)))
