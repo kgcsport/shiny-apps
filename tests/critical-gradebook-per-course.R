@@ -44,6 +44,11 @@ before <- overall()
 stopifnot(all(is.finite(before)), near(app$compute_student_grade("a2@test.edu")$overall, 0.4 * 80 + 0.6 * 90))
 
 # ── Migration: every course gets its own copy and no grade moves ─────────────
+# Both steps run at startup: grades get their student's home course, and each
+# course gets its own gradebook.
+stopifnot(all(is.na(app$db_query("SELECT course FROM student_grades;")$course)))
+app$assign_grade_courses()
+stopifnot(identical(app$db_query("SELECT DISTINCT course FROM student_grades ORDER BY course;")$course, c("data 210", "econ 101")))
 app$migrate_gradebooks_per_course()
 cats <- app$db_query("SELECT id, name, weight, COALESCE(course,'') course FROM gradebook_categories ORDER BY id;")
 stopifnot(identical(sort(unique(cats$course)), c("", "data 210", "econ 101")),
@@ -114,5 +119,36 @@ shiny::testServer(app$server, {
 stopifnot(identical(sort(own("ECON 999")$name), c("Exams", "Labs", "Problem Sets")), all(own("ECON 999")$course == "econ 999"),
           sum(is.na(app$db_query("SELECT course FROM gradebook_categories;")$course)) == 2L,   # the shared gradebook is as it was
           near(app$compute_student_grade("n1@test.edu")$overall, 0.4 * 50 + 0.6 * 100))
+
+# ── A student in two courses has a separate grade in each ────────────────────
+# a2's home course is ECON 101. Add them to DATA 210, where "Final" is also an item.
+app$db_exec("INSERT OR IGNORE INTO user_environments(user_id,course,section) VALUES('a2@test.edu','DATA 210','01');")
+shiny::testServer(app$server, {
+  as_admin(rv, "DATA 210"); session$flushReact()
+  app$upsert_student_grade("a2@test.edu", "Final", 33, 100, 33)
+  app$upsert_student_grade("a2@test.edu", "PS1", 44, 100, 44)
+  app$upsert_student_grade("a2@test.edu", "PS1", 55, 100, 55)          # saving again replaces, within the course
+  seen$a2_in_data <- app$compute_student_grade("a2@test.edu")$overall
+})
+a2 <- app$db_query("SELECT course, assignment_name, grade_pct FROM student_grades WHERE user_id='a2@test.edu' ORDER BY course, assignment_name;")
+stopifnot(identical(a2$course, c("data 210", "data 210", "econ 101", "econ 101")),
+          identical(a2$assignment_name, c("Final", "PS1", "Final Exam", "PS1")), identical(a2$grade_pct, c(33, 55, 90, 80)),
+          near(seen$a2_in_data, 0.4 * 55 + 0.6 * 33),                           # DATA 210's weights and DATA 210's grades
+          near(overall()[["a2@test.edu"]], after[["a2@test.edu"]]))             # the home-course grade has not moved
+# A grade written with no course counts for the student's home course.
+app$db_exec("INSERT INTO student_grades(user_id,assignment_name,score,max_score,grade_pct) VALUES('b1@test.edu','Extra',1,1,100);")
+stopifnot(is.na(app$db_query("SELECT course FROM student_grades WHERE assignment_name='Extra';")$course))
+# Clearing or deleting grades in one course leaves the others.
+count <- function(course) app$db_query("SELECT COUNT(*) n FROM student_grades WHERE COALESCE(course,'')=?;", list(course))$n[1]
+econ_n <- count("econ 101")
+shiny::testServer(app$server, {
+  as_admin(rv, "DATA 210"); session$flushReact()
+  session$setInputs(delete_grade_assignments = "PS1", delete_grade_assignments_btn = 1L); session$flushReact()
+  seen$data_after_delete <- count("data 210")
+  session$setInputs(clear_grades_btn = 1L); session$flushReact()
+})
+stopifnot(seen$data_after_delete == 2L,       # d1's Final and a2's Final remain; both PS1 grades are gone
+          count("data 210") == 0L, count("econ 101") == econ_n, econ_n >= 6L,
+          near(overall()[["a2@test.edu"]], after[["a2@test.edu"]]))
 
 cat("critical gradebook per course: PASS\n")

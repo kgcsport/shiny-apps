@@ -959,15 +959,27 @@ db_exec("CREATE TABLE IF NOT EXISTS student_grades(
   week_tag        TEXT,
   uploaded_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );")
-# A grade is the current value for one student and assignment, not an attempt
-# history. Repair legacy duplicates by keeping the most recently inserted row.
+# A grade belongs to one student in one course. Grades recorded before courses
+# were told apart are given the student's home course, once.
+ensure_column("student_grades", "course TEXT")
+assign_grade_courses <- function() db_exec(
+  "UPDATE OR IGNORE student_grades SET course=COALESCE(
+     (SELECT LOWER(TRIM(COALESCE(u.course,''))) FROM users u WHERE LOWER(u.user_id)=LOWER(student_grades.user_id)), '')
+   WHERE course IS NULL;")
+assign_grade_courses()
+# A row written without a course (an older script, a hand insert) is read as
+# belonging to the student's home course, and is given it at the next start.
+# A grade is the current value for one student, course and assignment, not an
+# attempt history. Repair legacy duplicates by keeping the most recently
+# inserted row.
 db_exec("DELETE FROM student_grades
          WHERE id NOT IN (
            SELECT MAX(id) FROM student_grades
-           GROUP BY LOWER(user_id), LOWER(assignment_name)
+           GROUP BY COALESCE(course,''), LOWER(user_id), LOWER(assignment_name)
          );")
-db_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_student_grades_student_assignment
-         ON student_grades(user_id COLLATE NOCASE, assignment_name COLLATE NOCASE);")
+db_exec("DROP INDEX IF EXISTS idx_student_grades_student_assignment;")
+db_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_student_grades_course_student_assignment
+         ON student_grades(COALESCE(course,''), user_id COLLATE NOCASE, assignment_name COLLATE NOCASE);")
 db_exec("CREATE TABLE IF NOT EXISTS assessment_grade_imports(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   assessment_name TEXT NOT NULL,
@@ -1036,10 +1048,10 @@ mark_grade_override <- function(user_id, assignment_name, reason = "Manual grade
 
 upsert_student_grade <- function(user_id, assignment_name, score = NA_real_,
                                  max_score = NA_real_, grade_pct = NA_real_,
-                                 week_tag = NA_character_) {
+                                 week_tag = NA_character_, course = gradebook_course(user_id)) {
   db_exec(
-    "INSERT INTO student_grades(user_id, assignment_name, score, max_score, grade_pct, week_tag)
-     VALUES(?,?,?,?,?,?)
+    "INSERT INTO student_grades(user_id, assignment_name, score, max_score, grade_pct, week_tag, course)
+     VALUES(?,?,?,?,?,?,?)
      ON CONFLICT DO UPDATE SET
        user_id=excluded.user_id,
        assignment_name=excluded.assignment_name,
@@ -1048,7 +1060,7 @@ upsert_student_grade <- function(user_id, assignment_name, score = NA_real_,
        grade_pct=excluded.grade_pct,
        week_tag=excluded.week_tag,
        uploaded_at=CURRENT_TIMESTAMP;",
-    list(user_id, assignment_name, score, max_score, grade_pct, week_tag)
+    list(user_id, assignment_name, score, max_score, grade_pct, week_tag, norm_key(course))
   )
 }
 
@@ -2845,8 +2857,8 @@ compute_student_grade <- function(uid, exclude_assignments = character(0),
     "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
     error = function(e) data.frame())
   grades    <- tryCatch(db_query(
-    "SELECT assignment_name, score, max_score, grade_pct FROM student_grades WHERE user_id=?;",
-    list(uid)), error = function(e) data.frame())
+    "SELECT assignment_name, score, max_score, grade_pct FROM student_grades WHERE user_id=? AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=?;",
+    list(uid, gradebook_course(uid))), error = function(e) data.frame())
 
   exam_drops <- tryCatch(db_query(
     "SELECT assignment_name, transfer_to, note FROM gradebook_exam_drops WHERE LOWER(user_id)=LOWER(?);",
@@ -8701,13 +8713,13 @@ server <- function(input, output, session) {
       if (nzchar(form$gradebook_item)) {
         for (student_id in form$members$user_id) db_exec(
           "INSERT INTO student_grades(
-             user_id,assignment_name,score,max_score,grade_pct,week_tag,uploaded_at
-           ) VALUES(?,?,?,?,?,'Policy project',CURRENT_TIMESTAMP)
+             user_id,assignment_name,score,max_score,grade_pct,week_tag,uploaded_at,course
+           ) VALUES(?,?,?,?,?,'Policy project',CURRENT_TIMESTAMP,?)
            ON CONFLICT DO UPDATE SET
              score=excluded.score,max_score=excluded.max_score,
              grade_pct=excluded.grade_pct,week_tag=excluded.week_tag,
              uploaded_at=CURRENT_TIMESTAMP;",
-          list(student_id,form$gradebook_item,form$final_score,100,form$final_score))
+          list(student_id,form$gradebook_item,form$final_score,100,form$final_score,norm_key(form$course)))
         rv$gradebook_ver <- rv$gradebook_ver + 1L
       }
     }
@@ -9089,8 +9101,8 @@ server <- function(input, output, session) {
                 ps.original_deadline ASC;"), error=function(e) data.frame())
     grade_rows <- tryCatch(db_query(
       "SELECT assignment_name FROM student_grades
-       WHERE LOWER(user_id)=LOWER(?) AND grade_pct IS NOT NULL;",
-      list(rv$user_id)), error=function(e)data.frame())
+       WHERE LOWER(user_id)=LOWER(?) AND grade_pct IS NOT NULL AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=?;",
+      list(rv$user_id, gradebook_course(rv$user_id))), error=function(e)data.frame())
     pending_problem_sets <- account_pending_problem_sets(
       problem_sets, grade_rows, rv$assignment_progress, rv$assignment_schedules,
       rv$assignment_worker_available)
@@ -14217,7 +14229,8 @@ server <- function(input, output, session) {
         "SELECT sg.user_id, u.display_name, u.course, u.section, sg.assignment_name,
                 sg.score, sg.max_score, sg.grade_pct, sg.week_tag
          FROM student_grades sg LEFT JOIN users u ON u.user_id=sg.user_id
-         ORDER BY u.section, u.display_name, sg.assignment_name;"),
+         WHERE COALESCE(NULLIF(sg.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(sg.user_id)),'')=?
+         ORDER BY u.section, u.display_name, sg.assignment_name;", list(gradebook_course())),
         error = function(e) data.frame())
       grade_rows <- scope_filter_rows(grade_rows)
       rw_costs_str  <- tryCatch(get_setting("reweight_cost_schedule", "1:2,2:5,3:9,4:14,5:20"),
@@ -14472,7 +14485,7 @@ server <- function(input, output, session) {
           column(2, tags$br(),
                  actionButton("clear_grades_btn", "Clear All",
                               class = "btn btn-sm btn-outline-danger",
-                              onclick = "if(!confirm('Delete all grade records?')) return false;"))
+                              onclick = "if(!confirm('Delete all grade records for this course?')) return false;"))
         ),
 
         tags$p(style="color:#777;font-size:.8rem;margin:.5rem 0;",
@@ -14637,7 +14650,7 @@ server <- function(input, output, session) {
             div(style="border:1px solid #e7caca;border-radius:5px;padding:.55rem .7rem;margin:.55rem 0 .8rem;background:#fffafa;",
             tags$strong("Remove raw assignment rows"),
             tags$p(style="color:#666;font-size:.8rem;margin:.25rem 0 .45rem;",
-                   "Select assignment names to delete from student_grades for all students. This is useful for stray duplicates such as ‘PS 1’; it does not alter the configured category item ‘PS1’."),
+                   "Select assignment names to delete from this course's grades for all of its students. This is useful for stray duplicates such as ‘PS 1’; it does not alter the configured category item ‘PS1’."),
             selectizeInput("delete_grade_assignments", NULL, choices=raw_assignment_choices, multiple=TRUE,
                            options=list(placeholder="Choose one or more raw assignment names…"), width="100%"),
             actionButton("delete_grade_assignments_btn", "Delete selected raw rows",
@@ -15683,7 +15696,7 @@ server <- function(input, output, session) {
       }, error = function(e) data.frame())
       grade_rows_dl <- tryCatch(db_query(
         "SELECT sg.user_id, sg.assignment_name, sg.score, sg.max_score, sg.grade_pct, sg.week_tag
-         FROM student_grades sg;"),
+         FROM student_grades sg WHERE COALESCE(NULLIF(sg.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(sg.user_id)),'')=?;", list(gradebook_course())),
         error = function(e) data.frame())
       if (!nrow(cats) || !nrow(students)) { write.csv(data.frame(), file, row.names=FALSE); return() }
 
@@ -16310,7 +16323,7 @@ server <- function(input, output, session) {
         if (isTRUE(submitted)) 100 else if (isTRUE(scan_ok)) 50 else 0
       } else pct
       protected <- db_query("SELECT 1 FROM assignment_grade_sync_override WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(roster$user_id[hit[1]], item))
-      existing <- db_query("SELECT 1 FROM student_grades WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(roster$user_id[hit[1]], item))
+      existing <- db_query("SELECT 1 FROM student_grades WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=? LIMIT 1;", list(roster$user_id[hit[1]], item, gradebook_course(roster$user_id[hit[1]])))
       if (nrow(protected) || (assignment_key(item) %in% protected_items && nrow(existing))) { skipped <- skipped + 1L; next }
       upsert_student_grade(roster$user_id[hit[1]], item, suppressWarnings(as.numeric(r$score[1] %||% NA_real_)), suppressWarnings(as.numeric(r$maxPoints[1] %||% 100)), grade_pct, title)
       synced <- synced + 1L
@@ -16796,7 +16809,7 @@ server <- function(input, output, session) {
       if (is.na(pct) && !is.na(scr) && !is.na(mx) && mx > 0) pct <- round(100 * scr / mx, 2)
       if (is.na(pct) || pct < 0 || pct > 100) { n_invalid <- n_invalid + 1L; next }
       if (!isTRUE(input$grade_upload_overwrite)) {
-        already <- tryCatch(db_query("SELECT 1 FROM student_grades WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(uid, canonical_asgn)), error=function(e) data.frame())
+        already <- tryCatch(db_query("SELECT 1 FROM student_grades WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=? LIMIT 1;", list(uid, canonical_asgn, gradebook_course(uid))), error=function(e) data.frame())
         if (nrow(already)) next
       }
       upsert_student_grade(
@@ -16821,8 +16834,8 @@ server <- function(input, output, session) {
     existing <- tryCatch(db_query(
       "SELECT score, max_score, grade_pct, COALESCE(week_tag,'') AS week_tag
        FROM student_grades
-       WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?)
-       ORDER BY id DESC LIMIT 1;", list(uid, assignment)), error = function(e) data.frame())
+       WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=?
+       ORDER BY id DESC LIMIT 1;", list(uid, assignment, gradebook_course(uid))), error = function(e) data.frame())
     catalog <- manual_grade_catalog()
     configured_max <- catalog$max_score[match(norm_key(assignment), norm_key(catalog$assignment))]
     if (!length(configured_max) || is.na(configured_max)) configured_max <- 100
@@ -16892,9 +16905,14 @@ server <- function(input, output, session) {
     deleted <- 0L
     overrides <- 0L
     for (item in items) {
-      before <- tryCatch(db_query("SELECT COUNT(*) AS n FROM student_grades WHERE LOWER(assignment_name)=LOWER(?);", list(item))$n[1], error=function(e)0L)
-      db_exec("DELETE FROM student_grades WHERE LOWER(assignment_name)=LOWER(?);", list(item))
-      db_exec("DELETE FROM assignment_grade_sync_override WHERE LOWER(assignment_name)=LOWER(?);", list(item))
+      # Only this course's grades: another course may use the same name.
+      gb_course <- gradebook_course()
+      before <- tryCatch(db_query("SELECT COUNT(*) AS n FROM student_grades WHERE LOWER(assignment_name)=LOWER(?) AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=?;", list(item, gb_course))$n[1], error=function(e)0L)
+      db_exec("DELETE FROM student_grades WHERE LOWER(assignment_name)=LOWER(?) AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=?;", list(item, gb_course))
+      db_exec("DELETE FROM assignment_grade_sync_override WHERE LOWER(assignment_name)=LOWER(?)
+               AND LOWER(user_id) IN (SELECT LOWER(user_id) FROM users WHERE LOWER(TRIM(COALESCE(course,'')))=?
+                                      UNION SELECT LOWER(user_id) FROM user_environments WHERE LOWER(TRIM(course))=?);",
+              list(item, gb_course, gb_course))
       deleted <- deleted + as.integer(before %||% 0L)
     }
     rv$gradebook_ver <- rv$gradebook_ver + 1L
@@ -16942,8 +16960,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$clear_grades_btn, {
     req(rv$is_admin)
-    db_exec("DELETE FROM student_grades;")
-    showNotification("All grade records cleared.", type="message")
+    # Only the course in the banner. Other courses' grades are not touched.
+    db_exec("DELETE FROM student_grades WHERE COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=?;", list(gradebook_course()))
+    showNotification("All grade records for this course cleared.", type="message")
     rv$gradebook_ver <- rv$gradebook_ver + 1L
   }, ignoreNULL=TRUE)
 
@@ -17052,7 +17071,7 @@ server <- function(input, output, session) {
       rename_in <- function(table, column, where = "", filter = "", args = list())
         db_exec(sprintf("UPDATE OR IGNORE %s SET %s=? WHERE LOWER(%s)=LOWER(?)%s%s;", table, column, column, where, filter),
                 c(list(nm, old_name), args))
-      rename_in("student_grades", "assignment_name", filter = by_student, args = student_args)
+      rename_in("student_grades", "assignment_name", filter = if (nzchar(gb_course)) " AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=?" else "", args = course_args)
       rename_in("assignment_grade_sync_override", "assignment_name", filter = by_student, args = student_args)
       rename_in("assessment_grade_imports", "gradebook_item", filter = by_course, args = course_args)
       rename_in("policy_rubric_assessments", "gradebook_item", filter = by_course, args = course_args)
