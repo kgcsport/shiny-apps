@@ -578,6 +578,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-27** (Claude Code) — Wrote `HANDOFF.md` at Kyle's request so a new session can start without the long chat: how the class runs, settled and open decisions, what exists, what is unverified, and how to run the tests. Note for whoever picks this up: the preregistration, rehearsal plan, and app defaults still carry limit 10 / threshold 30 / rate 10, which Kyle has since moved away from (toward a threshold of 100 and a 40-point extension) without settling the wage limit.
+
 - **2026-11-27** (Claude Code) — Built the half-pay rule and the one-token question; removed the question wage draw and its setting. Three tests updated for the new amounts. All suites pass. Not looked at in a browser.
 
 - **2026-11-27** (Claude Code) — Built both rules with tests; all suites pass. Correction to yesterday's note that a drawn question wage "adds little": that held only if questions stayed as rare as in fall. Budget with every answer paid (about 14 a class, as in fall), threshold 100, question top 3, 30% asking each class: average participation grade 74% at a job limit of 12, 80% at 15, 83% at 18. The new Economy settings box was not looked at in a browser.
