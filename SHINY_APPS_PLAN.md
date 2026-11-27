@@ -584,6 +584,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-27** (Claude Code) — Wrote the draft change contract for exam question funds by exam (section below the non-regression protocol) and four questions for Kyle. No code changed.
+
 - **2026-11-27** (Claude Code) — Replaced the try-pay number with a two-way rule: half the wage (default) or the lowest draw. The 37 suites in `HANDOFF.md` pass. The Economy settings box was not looked at in a browser.
 
 - **2026-11-27** (Claude Code) — Made try pay a per-class setting with 1 point as the default and 0 meaning half, and added the box to Economy settings. Three tests updated. The 37 suites in `HANDOFF.md` pass. The Economy settings box was not looked at in a browser. `docs/class-job-market/INSTRUCTOR_GUIDE.md` and `STUDENT_FAQ.md`, named in `HANDOFF.md`, are not in the repository, so they were not updated.
@@ -1142,11 +1144,18 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
+0. Kyle answers the four "Exam question funds" questions; then build the contract's fixture and migration test first.
 1. Build and stage an immutable image containing the consolidated policy-project grading workspace and the Live Tracker reveal-status line (reveal a section's start-of-class jobs and confirm the line under Draw Jobs reads "Visible to students (start of class)" while that section's students see the job), then verify the instructor's assignment view is read-only and Settings can select a team, show its members, switch among question/presentation/progress/brief, display each stored submission, and save or release feedback; also recheck Participation, item rename/weight save, reweight approval, the affected student grade, and both policy milestone dates before production promotion.
 2. Define the per-course source contract for loading `course_data` from the course page or GitHub, including repository/path configuration, caching, authentication, validation, and failure behavior; then replace the duplicated policy-date defaults with that source.
 3. Publish the PS6 Cloudflare Worker assignment, then enable the preconfigured PS6 and PS6 corrections extension products in Settings → Spending Options → Assignment Extensions.
 
 ## Questions for Kyle
+
+- **Exam question funds (2026-11-27).** Needed before the contract above is built.
+  1. **The gradebook is one structure for the whole app, not per course.** Intro and Data Science would share the same exam items. Is mapping to an item in that shared gradebook enough, or must the gradebook become per course first (a larger change)?
+  2. **Section-only questions under a course-wide pool.** Proposed: a section-only question is always funded and revealed by its own section, whatever the pool setting.
+  3. **Prices per exam.** The Economy settings formula has one set of exam facts (final worth 25%, answer 10 of 12, 24 posted). A midterm with a different weight would need its own facts for its price to match its worth. One set per exam, or the formula for the final only?
+  4. **When.** Proposed: spring only. In fall the count that sets the next price would restart for each exam, changing the next price for a pool that has reveals in more than one exam.
 
 - **Exam questions and sections (2026-11-26).** Students in different sections can share a revealed question. Either pool the fund across the course, or keep section pools and write a separate question set and exam for each section.
 - **Preview gain (2026-11-26).** How much better does a student do on an exam question for having seen it beforehand? Provisionally 20 points out of 100.
@@ -1224,6 +1233,104 @@ If the intended behavior or a scope decision is ambiguous, stop and ask rather t
 - **2026-10-28** — Standalone Bonus Pot now uses the Classroom Economy red banner and the same closed-by-default, two-dropdown class/section picker. The picker is session-local and restricted to the signed-in user’s authorized environments; it never silently changes the shared live round. A selected section only accepts play when Bonus Pot is active for that scope, while an authorized instructor can explicitly apply round settings from the standalone admin panel.
 
 - **2026-10-28** — Token Admin’s individual adjustment roster includes active non-demo administrator accounts (including the signed-in administrator), but bulk and crew awards remain student-only. The adjustment handler verifies the target is inside the administrator’s current authorized class/section scope before writing the audited ledger correction.
+
+## Exam Question Funds By Exam: Change Contract (draft, 2026-11-27)
+
+Requested by Kyle. Not built. Nothing here is to be implemented until the four
+questions under Questions for Kyle ("Exam question funds") are answered.
+
+### How it works today
+
+- Candidate questions are loaded per course. Every section of the course sees
+  the same list in one fixed order (`flex_questions`).
+- Students do not choose a question. They contribute to one shared fund for the
+  next locked question; at the price it is revealed to the pool and the fund
+  moves on (`flex_question_contributions`, `flex_question_scope_state`).
+- The pool is the section (default) or the whole course (`flex_pool_level`).
+- The price of the n-th reveal comes from the class's schedule or formula, with
+  n counted across every active question in the pool, and is locked at the
+  first contribution.
+- "Exam" on a question is free text, used only to switch a batch on or off. It
+  is not tied to the gradebook.
+
+### Scope
+
+1. Every question belongs to one exam, chosen from the gradebook's items, and
+   to a course, and optionally to one section (blank means every section).
+2. Each pool has a separate fund for each exam: its own next question, its own
+   progress, and its own price sequence starting at the first reveal.
+3. The student page (Spend → Candidate Question Fund) shows one block per exam
+   that has active questions, each with its own progress bar, contribute box,
+   and revealed list.
+4. Instructor settings: the exam is a dropdown of gradebook items instead of a
+   text box; a section dropdown is added; the CSV upload takes `exam` and
+   optional `section` columns and rejects a row whose exam is not a gradebook
+   item, naming the row.
+5. Exports gain `exam` and `section` columns.
+
+Out of scope: how prices are computed from a count and a class size; the
+section-or-course pool switch; choosing which questions appear on an exam;
+the Spend tab's place in navigation and its card.
+
+### Must remain unchanged
+
+- Every existing contribution, revealed question, and locked price. No ledger
+  row is recomputed or refunded. A question revealed to a pool stays revealed
+  to that pool.
+- A partly funded question keeps its locked price and what has been paid in.
+- An existing question whose exam text does not match a gradebook item is not
+  stranded: it stays visible and fundable under its existing text, and the
+  instructor sees a list of such questions to fix.
+- The pool choice, the spending switches, and the masked and unmasked export
+  columns that exist now.
+- Students in one section never see a question revealed only to another pool.
+- The sandbox stays separate.
+- Inactive questions stay hidden, as now.
+
+### Dependency check before building
+
+- Every reader of `flex_fund_key()`, `flex_question_state()`, `flex_poll`, the
+  Today page's funding line, the Spend card's status text, the contribute
+  handler, the exam-batch switch, both exports, and `price_formula()`.
+- The student-page preservation test and the frozen student navigation: the
+  contribute box's input id changes from one box to one per exam, so the test
+  is updated on purpose, with Kyle's agreement.
+- The gradebook is one structure for the whole app, not one per course (see the
+  questions). An exam is stored as the gradebook item's category and position,
+  so renaming the item does not break the link.
+
+### Test cases
+
+A realistic SQLite fixture: one course with two sections, a second course, two
+exams in the gradebook, and fall-style history (revealed questions, one partly
+funded question with a locked price, contributions from both sections).
+
+1. Migration: after startup on the fixture, the revealed set, each pool's
+   contribution total, and the partly funded question's price and progress are
+   identical to before.
+2. Section pools, one exam: section 01 funds its first question; it is revealed
+   in 01 only; 02's fund is unmoved; each price uses its own section's size.
+3. Two exams active: each has its own progress; a contribution to one does not
+   move the other; each exam's first reveal is priced as the first.
+4. A section-only question is visible and fundable only in its section; a
+   course-wide question in both.
+5. Course pool: both sections pay into one fund per exam and both see the
+   reveal.
+6. Upload: a row naming an exam that is not a gradebook item is rejected and
+   named; nothing from the file is saved.
+7. Renaming the gradebook item keeps its questions attached.
+8. An unmatched legacy question stays fundable and appears in the fix list.
+9. Two students contribute the last tokens at the same moment: the question is
+   revealed once and nobody is charged past the price.
+10. A student in another course sees none of it. A sandbox session writes
+    nothing to the real database.
+11. Both exports carry `exam` and `section`, masked and unmasked.
+12. The whole path is driven through the student contribute handler and the
+    instructor forms, not helper functions alone.
+
+Then: focused test plus smoke and student-page tests, staged image, and a
+browser check of the student Spend page and the instructor question settings
+before promotion.
 
 ## Frozen Navigation Consolidation Plan (2026-10-28)
 
