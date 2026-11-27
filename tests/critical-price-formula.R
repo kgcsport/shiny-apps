@@ -22,19 +22,22 @@ stopifnot(near(f$rate, 10),                              # 10 points buy 1 grade
           near(f$extension$base_tokens, 12), f$extension$exponent == 1,
           near(f$reweight_per_point, 2),
           nrow(f$questions) == 24L, near(f$questions$chance[1], 0.5), near(f$questions$chance[24], 6 / 35),
-          # First reveal: 25 students x 25% x 0.20 / 10 x 0.5 expected appearances x 10 points = 62.5 -> 63.
-          f$questions$section_price[1] == 63L, f$questions$section_price[24] == 7L,
+          # First reveal: 25 students x 25% x half the exam x 0.20 / 10 x 0.5 expected appearances x 10 points = 31.25 -> 32.
+          f$questions$section_price[1] == 32L, f$questions$section_price[24] == 4L,
+          # If the questions were the whole exam, each would be worth twice as much.
+          { whole <- app$PRICE_FORMULA_DEFAULTS; whole$question_share <- 100
+            app$price_formula(whole, 25)$questions$section_price[1] == 63L },
           all(diff(f$questions$section_price) <= 0), all(diff(f$questions$chance) < 0),
           all(diff(f$questions$known_on_exam) > 0), f$questions$known_on_exam[24] < 4.2)
 # The formulas handed to the app charge exactly the table's prices.
 by_formula <- vapply(1:24, function(k) app$question_cost_for_n(k, f$question_formula, 25L), integer(1))
 stopifnot(identical(as.integer(by_formula), as.integer(f$questions$section_price)),
-          app$question_cost_for_n(1, f$question_formula, 50L) == 125L,          # scales with class size
+          app$question_cost_for_n(1, f$question_formula, 50L) == 63L,          # scales with class size
           near(app$rw_cost_for_n(5, f$reweight_formula), 10), near(app$rw_cost_for_n(1, f$reweight_formula), 2))
 # Changing an input moves every price in step.
 double_rate <- app$PRICE_FORMULA_DEFAULTS; double_rate$rate <- 20
 g <- app$price_formula(double_rate, 25)
-stopifnot(near(g$rate, 20), near(g$extension_per_hour, 1), near(g$reweight_per_point, 4), g$questions$section_price[1] == 125L)
+stopifnot(near(g$rate, 20), near(g$extension_per_hour, 1), near(g$reweight_per_point, 4), g$questions$section_price[1] == 63L)
 
 # ── Until applied, the class's prices are what they were ─────────────────────
 before <- list(ext = app$extension_pricing_settings(), flex = app$get_setting("flex_cost_schedule"),
@@ -147,7 +150,7 @@ shiny::testServer(app$server, {
 look("course")
 # Course-wide: one pool for both sections, priced for all five students.
 stopifnot(pool_seen$course$course, pool_seen$course$key == "econ 101::course-pool", pool_seen$course$size == 5L,
-          app$question_cost_for_n(1, f$question_formula, 5L) == 13L, app$question_cost_for_n(1, f$question_formula, 2L) == 5L)
+          app$question_cost_for_n(1, f$question_formula, 5L) == 7L, app$question_cost_for_n(1, f$question_formula, 2L) == 3L)
 
 # Parameters saved before the rate was one number still give the same rate.
 app$set_setting("price_formula_params", '{"typical_points_on_hand":60,"grade_points_a_term_buys":4}')

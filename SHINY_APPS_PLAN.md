@@ -166,6 +166,10 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Decision Log
 
+- **2026-11-27** — One gradebook per course (Kyle). **Contract.** *Must remain unchanged:* every student's computed grade at the moment of migration; category names, weights, items, item weights, drop-lowest and participation settings; approved reweights, exam drops and policy-rubric links (all keyed by name); grades already recorded; the Grades settings page and its controls. *New behavior:* `gradebook_categories` has a `course`. At startup every course that has students gets its own copy of the shared gradebook (`migrate_gradebooks_per_course()`), and from then on reading, adding, editing, renaming and deleting on Settings → Grades touch only the course in the banner; all sections of a course share it. A course with no categories of its own (one created after startup) follows the shared gradebook until its Grades page is opened or a category is added, when it gets its own copy. The shared rows stay as the starting point for new courses. Renaming an item in a course's gradebook renames grades, drops, reweights, sync overrides, assessment imports and rubric links only for that course. A student's grade uses the course of the session viewing it, or the student's home course outside a session. *Not changed:* grades are still stored by student and item name (see Questions for Kyle); the sandbox database, which follows the shared gradebook if its table has no `course` column. **Verification:** `Rscript tests/critical-gradebook-per-course.R` (a shared-gradebook database with two courses and three sections: grades identical after migration and after a second run; a weight change, an item rename and a new category in one course leave the other course's items, grades and exam drop alone; a later course follows the shared gradebook and gets a copy on first edit), with `critical-grade-reweighting`, `critical-gradebook-ux`, `critical-price-formula` and the smoke test. Not staged and not looked at in a browser.
+
+- **2026-11-27** — The price formula counts the answered exam questions as part of the exam, not all of it (Kyle: they are half the exam, five points each when ten are answered, ten each when five are). New fact `question_share`, 50 by default: a question is worth exam weight x share / questions answered. **Effect:** question prices from the formula are half what they were (first reveal for 25 students: 32, was 63). Nothing changes for a class until Apply is pressed in Economy settings; a schedule already applied keeps its prices. **Verification:** `Rscript tests/critical-price-formula.R`; `analysis/price_schedule.R` updated to match.
+
 - **2026-11-27** — Exam question funds: Kyle's answers to the draft contract. (1) The gradebook is meant to be per course; the code has one for the whole app, so this is now a requirement, not a description (see Questions for Kyle). (2) A question is course-wide unless Kyle marks it for one section. (3) Prices are exam-specific and Kyle can change them; a price moves as more questions are bought. The final is 25% of the grade and the 10 of 12 answered questions are 50 points of it. (4) Every price count is within one exam, within the course or the course and section. This applies to every class, not spring only; prices already locked stay as they are. Nothing built yet.
 
 - **2026-11-27** — A fair try pays half the wage, including for the last two weeks of fall (Kyle). This supersedes the entry below that made a set whole number the default. **History:** a try paid half the wage, rounded to a whole token, until commit `4f7a4d5` on 2026-09-09 made it a flat 1 (see the 2026-09-09 entry); Kyle says a flat 1 was never the planned rule. **Changes existing behavior, at Kyle's direction:** from the next promotion a fall try pays half the job's wage, the same amount as before at a wage of 2 and different at any other wage (10 instead of 1 on a job won at 20, 0.5 instead of 1 at a wage of 1). Nothing already paid changes. **Alternative per class:** `try_pay_rule = lowest` (Economy settings, "A fair try pays") pays the lowest wage a random-wage draw can produce, 0.5 or the wage floor, never more than the job's wage. The set-whole-number option is removed: any flat amount above the lowest draw lets a try pay more than completing the job. Both remaining rules keep a truthful bid optimal. **Verification:** `tests/critical-cold-call-bidders-and-wage-floor.R`, `tests/critical-bid-anchor-volunteer-cap.R`, `tests/critical-practice-dates.R`.
@@ -585,6 +589,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 - **2026-08-26** — Some-session jobs (discussion lead, cold calls) are seeded as templates with Auto-copy OFF rather than deleted or always-on; the instructor toggles them per round.
 
 ## Work Log
+
+- **2026-11-27** (Claude Code) — Built the per-course gradebook with its migration and `tests/critical-gradebook-per-course.R`, scoped item renames to the course, and added the questions' share of the exam to the price formula. The suites in `HANDOFF.md` plus the new one pass. Not staged; the Grades page was not looked at in a browser. Exam question funds by exam are still unbuilt.
 
 - **2026-11-27** (Claude Code) — Wrote the draft change contract for exam question funds by exam (section below the non-regression protocol) and four questions for Kyle. No code changed.
 
@@ -1146,16 +1152,15 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Next actions
 
-0. Kyle answers the two remaining "Exam question funds" questions (gradebook order, total points on the final); then build the contract's fixture and migration test first.
+0. Stage an image and check Settings → Grades in a browser for two courses (edit a weight in one, confirm the other is unchanged) before promoting the per-course gradebook. Then build exam question funds by exam, starting with the contract's fixture and migration test.
 1. Build and stage an immutable image containing the consolidated policy-project grading workspace and the Live Tracker reveal-status line (reveal a section's start-of-class jobs and confirm the line under Draw Jobs reads "Visible to students (start of class)" while that section's students see the job), then verify the instructor's assignment view is read-only and Settings can select a team, show its members, switch among question/presentation/progress/brief, display each stored submission, and save or release feedback; also recheck Participation, item rename/weight save, reweight approval, the affected student grade, and both policy milestone dates before production promotion.
 2. Define the per-course source contract for loading `course_data` from the course page or GitHub, including repository/path configuration, caching, authentication, validation, and failure behavior; then replace the duplicated policy-date defaults with that source.
 3. Publish the PS6 Cloudflare Worker assignment, then enable the preconfigured PS6 and PS6 corrections extension products in Settings → Spending Options → Assignment Extensions.
 
 ## Questions for Kyle
 
-- **Exam question funds (2026-11-27).** Kyle's answers are recorded in the Decision Log. Still open:
-  1. **Gradebook per course.** Kyle expects the gradebook to be per course. In the code it is one structure for the whole app (`gradebook_categories` and `gradebook_item_names` have no course). Build the per-course gradebook before the exam funds, or build the funds against the shared gradebook now and move both when the gradebook is split?
-  2. **Total points on the final.** The price formula treats the 10 answered questions as the whole exam (each worth 2.5 points of course grade). Kyle says they are 50 points of the exam. If the exam is out of 100, each is worth 1.25, and question prices from the formula are twice what the pricing rule implies.
+- **A student in two courses (2026-11-27).** Grades are stored by student and item name, not by course. A student enrolled in two courses that both have an item called, say, "Final" has one grade for both. Is anyone in two of the spring courses?
+- **Gradebook sync script (2026-11-27).** `scripts/sync-cloudflare-gradebook.R` matches Worker rows to gradebook items by name across every course's gradebook. That is right while only Econ 342 uses it. Will a spring course use it?
 - **Exam questions and sections (2026-11-26).** Students in different sections can share a revealed question. Either pool the fund across the course, or keep section pools and write a separate question set and exam for each section.
 - **Preview gain (2026-11-26).** How much better does a student do on an exam question for having seen it beforehand? Provisionally 20 points out of 100.
 
@@ -1236,7 +1241,7 @@ If the intended behavior or a scope decision is ambiguous, stop and ask rather t
 ## Exam Question Funds By Exam: Change Contract (draft, 2026-11-27)
 
 Requested by Kyle. Not built. Kyle's answers are in the Decision Log
-(2026-11-27); two questions remain under Questions for Kyle.
+(2026-11-27). The per-course gradebook it depends on is built.
 
 ### How it works today
 
@@ -1294,9 +1299,8 @@ the Spend tab's place in navigation and its card.
 - The student-page preservation test and the frozen student navigation: the
   contribute box's input id changes from one box to one per exam, so the test
   is updated on purpose, with Kyle's agreement.
-- The gradebook is one structure for the whole app, not one per course (see the
-  questions). An exam is stored as the gradebook item's category and position,
-  so renaming the item does not break the link.
+- An exam is stored as the course gradebook item's category and position, so
+  renaming the item does not break the link.
 
 ### Test cases
 

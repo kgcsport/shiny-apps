@@ -84,7 +84,7 @@ Kyle corrected these more than once. Do not drift from them.
 | Pass Insurance | Off |
 | Perk prices | One rule: price = rate x percentage points of course grade the perk is worth |
 | Extension | Problem sets are 15% of the grade, six sets of 100 points, 2 points off per hour late, so an hour is worth 0.05 grade points |
-| Final exam | 25% of the grade; students answer 10 of 12 five-point questions; 24 candidate questions posted to reveal; a revealed question appears with chance 6 / (11 + number revealed) |
+| Final exam | 25% of the grade; the choose-some questions are half the exam (usually 10 of 12 at five points, sometimes 5 of 6 at ten); 24 candidate questions posted to reveal; a revealed question appears with chance 6 / (11 + number revealed) |
 | Reweighting | Stays in the app with an on/off switch and a toggle between a flat price and each student's own gain; cap of 5 points of weight |
 | Perk windows | None. No purchases during practice |
 | IRB | Exempt under 45 CFR 46.104(d)(1), confirmed 2026-11-15, no protocol number. Kyle will update the form: the design changed since he filed it |
@@ -131,6 +131,7 @@ Kyle corrected these more than once. Do not drift from them.
 - Settings in seven pages; each opens with one line of help.
 - Three levels of settings: section, course, app-wide. Economy settings save
   for the section.
+- **One gradebook per course** (built 2026-11-27, not yet staged or promoted): each course has its own categories, weights and items; sections share their course's.
 - **Economy settings** (Settings → Tokens & spending): upper wage limit,
   full-credit points, tokens for asking a question, the price rate, course
   facts, the reweight pricing toggle, and the question pool choice. Apply

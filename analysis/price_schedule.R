@@ -26,6 +26,7 @@ you_set <- list(
   problem_set_points   = 100,
   late_points_per_hour = 2,
   final_weight         = 25, # percent of course grade
+  question_share       = 0.50, # share of the exam's points that come from these questions
   exam_questions       = 12, # on the exam
   exam_answer          = 10, # the student answers this many
   questions_posted     = 24, # available to reveal
@@ -55,7 +56,7 @@ for (h in c(6, 12, 24, 48)) cat(sprintf("  %2d hours: %s points\n", h, show(pric
 # Exam questions: chance a revealed question appears, given k revealed in all.
 start <- p$exam_questions / p$questions_posted
 chance <- function(k) start * (p$decline + 1) / (p$decline + k)
-question_worth <- p$final_weight * p$preview_gain / p$exam_answer        # per student, if it appears
+question_worth <- p$final_weight * p$question_share * p$preview_gain / p$exam_answer        # per student, if it appears
 k <- seq_len(p$questions_posted)
 added <- diff(c(0, k * chance(k)))                                       # extra expected known questions
 section_price <- price(question_worth * added * p$section_size)

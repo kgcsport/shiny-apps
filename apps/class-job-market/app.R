@@ -946,6 +946,9 @@ db_exec("CREATE TABLE IF NOT EXISTS gradebook_item_names(
 );")
 ensure_column("gradebook_item_names", "item_weight REAL")
 ensure_column("gradebook_categories", "drop_lowest INTEGER DEFAULT 0")
+# Each course has its own gradebook. A category with no course belongs to the
+# shared gradebook, which a course follows until it has categories of its own.
+ensure_column("gradebook_categories", "course TEXT")
 db_exec("CREATE TABLE IF NOT EXISTS student_grades(
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id         TEXT NOT NULL,
@@ -2404,13 +2407,15 @@ extension_pricing_settings <- function(setting_getter = get_setting) {
 PRICE_FORMULA_DEFAULTS <- list(
   rate = 10,
   problem_set_weight = 15, problem_sets = 6, problem_set_points = 100, late_points_per_hour = 2,
-  final_weight = 25, exam_questions = 12, exam_answer = 10, questions_posted = 24,
+  final_weight = 25, question_share = 50, exam_questions = 12, exam_answer = 10, questions_posted = 24,
   preview_gain = 20, decline = 11, reweight_gap = 20)
 PRICE_FORMULA_LABELS <- c(
   rate = "Points that buy 1 percentage point of course grade",
   problem_set_weight = "Problem sets: percent of course grade", problem_sets = "Number of problem sets",
   problem_set_points = "Points per problem set", late_points_per_hour = "Points lost per hour late",
-  final_weight = "Final exam: percent of course grade", exam_questions = "Questions on the final",
+  final_weight = "Final exam: percent of course grade",
+  question_share = "Percent of the exam's points that come from these questions",
+  exam_questions = "Questions on the final",
   exam_answer = "Questions a student answers", questions_posted = "Questions posted to reveal",
   preview_gain = "Percent of a question's credit a preview adds",
   decline = "How slowly a revealed question's chance falls (larger = slower)",
@@ -2436,7 +2441,9 @@ price_formula <- function(p = price_formula_params(), class_size = 25) {
   hour_worth <- p$problem_set_weight * p$late_points_per_hour / (p$problem_sets * p$problem_set_points)
   start <- p$exam_questions / p$questions_posted
   chance <- function(k) start * (p$decline + 1) / (p$decline + k)
-  question_worth <- p$final_weight * (p$preview_gain / 100) / p$exam_answer
+  # The answered questions are only part of the exam (half, by default), so one
+  # question is worth that share of the exam's weight divided among them.
+  question_worth <- p$final_weight * (p$question_share / 100) * (p$preview_gain / 100) / p$exam_answer
   k <- seq_len(as.integer(p$questions_posted))
   added <- diff(c(0, k * chance(k)))
   num <- function(x) format(signif(x, 8), scientific = FALSE, trim = TRUE)
@@ -2650,10 +2657,68 @@ gradebook_item_specs <- function(cat_row, inames_df = data.frame()) {
   }))
 }
 
+# ── One gradebook per course ───────────────────────────────────────────────────
+# Whose gradebook applies: the course of the session running the code, or,
+# outside a session, the home course of the student being graded.
+gradebook_course <- function(uid = NULL) {
+  course <- norm_key(setting_context()$course %||% "")
+  if (!nzchar(course) && !is.null(uid)) {
+    home <- tryCatch(db_query("SELECT course FROM users WHERE LOWER(user_id)=LOWER(?);", list(uid))$course,
+                     error = function(e) character(0))
+    if (length(home) && !is.na(home[1])) course <- norm_key(home[1])
+  }
+  course
+}
+# A course's grade categories: its own if it has any, otherwise the shared ones.
+gradebook_categories_for <- function(course = gradebook_course()) {
+  all <- tryCatch(db_query("SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
+                  error = function(e) data.frame())
+  if (!nrow(all)) return(all)
+  owner <- if ("course" %in% names(all)) ifelse(is.na(all$course), "", norm_key(all$course)) else rep("", nrow(all))
+  course <- norm_key(course)
+  own <- all[nzchar(course) & owner == course, , drop = FALSE]
+  if (nrow(own)) own else all[!nzchar(owner), , drop = FALSE]
+}
+# Give a course its own copy of the shared gradebook, with the same categories,
+# weights, items and item weights, so nobody's grade changes. Does nothing for
+# a course that already has categories of its own. Returns how many categories
+# were copied.
+ensure_course_gradebook <- function(course) {
+  course <- norm_key(course)
+  if (!nzchar(course)) return(0L)
+  all <- tryCatch(db_query("SELECT * FROM gradebook_categories ORDER BY display_order, id;"), error = function(e) data.frame())
+  if (!nrow(all) || !"course" %in% names(all)) return(0L)
+  owner <- ifelse(is.na(all$course), "", norm_key(all$course))
+  if (any(owner == course)) return(0L)
+  shared <- all[!nzchar(owner), , drop = FALSE]
+  for (i in seq_len(nrow(shared))) {
+    r <- shared[i, ]
+    db_exec(
+      "INSERT INTO gradebook_categories(name,weight,item_count,item_prefix,max_points,source,display_order,drop_lowest,course)
+       SELECT name,weight,item_count,item_prefix,max_points,source,display_order,drop_lowest,? FROM gradebook_categories WHERE id=?;",
+      list(course, as.integer(r$id)))
+    new_id <- as.integer(db_query("SELECT MAX(id) id FROM gradebook_categories WHERE course=?;", list(course))$id[1])
+    db_exec(
+      "INSERT INTO gradebook_item_names(category_id,item_index,item_name,item_weight)
+       SELECT ?,item_index,item_name,item_weight FROM gradebook_item_names WHERE category_id=?;",
+      list(new_id, as.integer(r$id)))
+  }
+  nrow(shared)
+}
+# Every course that has students gets its own gradebook. Run at startup.
+migrate_gradebooks_per_course <- function() {
+  courses <- tryCatch(db_query(
+    "SELECT DISTINCT course FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0 AND TRIM(COALESCE(course,''))<>''
+     UNION SELECT DISTINCT course FROM user_environments WHERE TRIM(COALESCE(course,''))<>'';")$course,
+    error = function(e) character(0))
+  for (course in unique(norm_key(courses))) ensure_course_gradebook(course)
+  invisible(length(unique(norm_key(courses))))
+}
+tryCatch(migrate_gradebooks_per_course(), error = function(e) message("migrate_gradebooks_per_course: ", conditionMessage(e)))
+
 # Returns a named list suitable for selectInput grouped choices: list(CatName = c(item1, item2, ...))
 get_all_gradebook_items <- function() {
-  cats   <- tryCatch(db_query("SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
-                     error = function(e) data.frame())
+  cats   <- gradebook_categories_for()
   inames <- tryCatch(db_query("SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
                      error = function(e) data.frame())
   if (!nrow(cats)) return(list())
@@ -2681,9 +2746,7 @@ parse_event_types <- function() {
 
 parse_grade_categories <- function() {
   # Primary source: gradebook_categories table (same as gradebook builder)
-  gb <- tryCatch(db_query(
-    "SELECT name, weight FROM gradebook_categories ORDER BY display_order, id;"),
-    error = function(e) data.frame())
+  gb <- gradebook_categories_for()
   if (nrow(gb)) return(gb[, c("name","weight"), drop=FALSE])
   # Legacy fallback: JSON stored in labor_settings
   default_json <- '[{"name":"Homework","weight":33},{"name":"Midterm","weight":33},{"name":"Final","weight":34}]'
@@ -2777,9 +2840,7 @@ participation_grade_pct <- function(earned, target) {
 
 compute_student_grade <- function(uid, exclude_assignments = character(0),
                                   preview_reweight = data.frame()) {
-  cats      <- tryCatch(db_query(
-    "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
-    error = function(e) data.frame())
+  cats      <- gradebook_categories_for(gradebook_course(uid))
   inames_df <- tryCatch(db_query(
     "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
     error = function(e) data.frame())
@@ -14146,9 +14207,9 @@ server <- function(input, output, session) {
 
     } else if (act == "gradebook") {
       rv$gradebook_ver
-      cats <- tryCatch(db_query(
-        "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
-        error = function(e) data.frame())
+      # Everything edited on this page belongs to this course alone.
+      ensure_course_gradebook(gradebook_course())
+      cats <- gradebook_categories_for()
       inames <- tryCatch(db_query(
         "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
         error = function(e) data.frame())
@@ -15543,9 +15604,7 @@ server <- function(input, output, session) {
     filename = function() paste0("gradebook_upload_template_", Sys.Date(), ".csv"),
     content  = function(file) {
       sec <- isolate(input$gb_template_section %||% "current_scope")
-      cats <- tryCatch(db_query(
-        "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
-        error = function(e) data.frame())
+      cats <- gradebook_categories_for()
       inames_df <- tryCatch(db_query(
         "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
         error = function(e) data.frame())
@@ -15607,9 +15666,7 @@ server <- function(input, output, session) {
     filename = function() paste0("gradebook_filled_", Sys.Date(), ".csv"),
     content  = function(file) {
       sec   <- isolate(input$gb_template_section %||% "current_scope")
-      cats  <- tryCatch(db_query(
-        "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
-        error = function(e) data.frame())
+      cats  <- gradebook_categories_for()
       inames_df <- tryCatch(db_query(
         "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
         error = function(e) data.frame())
@@ -16265,9 +16322,7 @@ server <- function(input, output, session) {
     })
   }
   manual_grade_catalog <- function() {
-    cats <- tryCatch(db_query(
-      "SELECT * FROM gradebook_categories ORDER BY display_order, id;"),
-      error = function(e) data.frame())
+    cats <- gradebook_categories_for()
     inames <- tryCatch(db_query(
       "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
       error = function(e) data.frame())
@@ -16930,13 +16985,17 @@ server <- function(input, output, session) {
     ord <- tryCatch(
       as.integer(db_query("SELECT COALESCE(MAX(display_order),0)+1 n FROM gradebook_categories;")$n[1]),
       error = function(e) 1L)
+    # A new category belongs to this course. If the course was still following
+    # the shared gradebook, it gets its own copy first.
+    gb_course <- gradebook_course()
+    ensure_course_gradebook(gb_course)
     db_exec(
-      "INSERT INTO gradebook_categories(name,weight,item_count,item_prefix,max_points,source,display_order)
-       VALUES(?,?,?,?,?,?,?);",
+      "INSERT INTO gradebook_categories(name,weight,item_count,item_prefix,max_points,source,display_order,course)
+       VALUES(?,?,?,?,?,?,?,?);",
       list(nm, weight, count,
            if (nzchar(prefix)) prefix else NA_character_,
            if (!is.na(maxpts)) maxpts else 100,
-           source, ord))
+           source, ord, if (nzchar(gb_course)) gb_course else NA_character_))
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification(sprintf("Category '%s' added.", nm), type = "message")
   })
@@ -16980,24 +17039,28 @@ server <- function(input, output, session) {
       return()
     }
     if (nzchar(old_name) && !identical(tolower(old_name), tolower(nm))) {
-      rename_columns <- list(
-        c("student_grades", "assignment_name"),
-        c("assessment_grade_imports", "gradebook_item"),
-        c("assignment_grade_sync_log", "gradebook_item"),
-        c("assignment_grade_sync_override", "assignment_name"),
-        c("policy_rubric_assessments", "gradebook_item")
-      )
-      for (target in rename_columns)
-        db_exec(sprintf("UPDATE OR IGNORE %s SET %s=? WHERE LOWER(%s)=LOWER(?);",
-                        target[1], target[2], target[2]), list(nm, old_name))
-      db_exec("UPDATE gradebook_exam_drops SET assignment_name=? WHERE LOWER(assignment_name)=LOWER(?);",
-              list(nm, old_name))
-      db_exec("UPDATE gradebook_exam_drops SET transfer_to=? WHERE LOWER(transfer_to)=LOWER(?);",
-              list(nm, old_name))
-      db_exec("UPDATE grade_reweight_requests SET from_category=? WHERE COALESCE(level,'category')='assignment' AND LOWER(from_category)=LOWER(?);",
-              list(nm, old_name))
-      db_exec("UPDATE grade_reweight_requests SET to_category=? WHERE COALESCE(level,'category')='assignment' AND LOWER(to_category)=LOWER(?);",
-              list(nm, old_name))
+      # Records that name this item follow the rename. For a course's own
+      # gradebook only that course's students and records are touched, so a
+      # same-named item in another course keeps its grades.
+      gb_course <- if (nrow(category) && "course" %in% names(category) && !is.na(category$course[1])) norm_key(category$course[1]) else ""
+      by_student <- if (nzchar(gb_course))
+        " AND LOWER(user_id) IN (SELECT LOWER(user_id) FROM users WHERE LOWER(TRIM(COALESCE(course,'')))=?
+                                 UNION SELECT LOWER(user_id) FROM user_environments WHERE LOWER(TRIM(course))=?)" else ""
+      by_course <- if (nzchar(gb_course)) " AND LOWER(TRIM(COALESCE(course,'')))=?" else ""
+      student_args <- if (nzchar(gb_course)) list(gb_course, gb_course) else list()
+      course_args <- if (nzchar(gb_course)) list(gb_course) else list()
+      rename_in <- function(table, column, where = "", filter = "", args = list())
+        db_exec(sprintf("UPDATE OR IGNORE %s SET %s=? WHERE LOWER(%s)=LOWER(?)%s%s;", table, column, column, where, filter),
+                c(list(nm, old_name), args))
+      rename_in("student_grades", "assignment_name", filter = by_student, args = student_args)
+      rename_in("assignment_grade_sync_override", "assignment_name", filter = by_student, args = student_args)
+      rename_in("assessment_grade_imports", "gradebook_item", filter = by_course, args = course_args)
+      rename_in("policy_rubric_assessments", "gradebook_item", filter = by_course, args = course_args)
+      rename_in("assignment_grade_sync_log", "gradebook_item")
+      rename_in("gradebook_exam_drops", "assignment_name", filter = by_student, args = student_args)
+      rename_in("gradebook_exam_drops", "transfer_to", filter = by_student, args = student_args)
+      rename_in("grade_reweight_requests", "from_category", " AND COALESCE(level,'category')='assignment'", by_student, student_args)
+      rename_in("grade_reweight_requests", "to_category", " AND COALESCE(level,'category')='assignment'", by_student, student_args)
     }
     # Keep the open category and all sibling inputs in place for rapid subitem editing.
     # Other gradebook views reload from SQLite when revisited.
