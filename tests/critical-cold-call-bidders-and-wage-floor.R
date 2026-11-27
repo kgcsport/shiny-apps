@@ -49,12 +49,23 @@ post <- function(name, timing = "during") {
               list(rid, name, cc_cat, timing))
   as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1])
 }
+# A job's kind comes from its whole name, never from part of it. A name that
+# only contains "ask", "answer" or "board" has no kind.
+kind <- function(name) as.character(app$cold_call_kind_of(name))
+stopifnot(identical(kind(c("Cold call: graph/answer on board", "Cold call: answer a question", "Volunteer: ask a question",
+                           "Volunteer: answer a question", "Volunteer: graph/answer on board")),
+                    c("board", "answer", "ask", "answer", "board")),
+          identical(kind(c("  cold call: ANSWER a question ", "COLD CALL: GRAPH/ANSWER ON BOARD")), c("answer", "board")),
+          all(is.na(kind(c("Cold call: board task", "Task: answer a question", "Cold call: ask a question",
+                           "Cold call: answer", "Whiteboard monitor", "Basket of answers", "")))))
+# With no job of the kind by its exact name, the first cold-call job is used.
+first <- post("Cold call: board task"); second <- post("Task: answer a question")
+stopifnot(app$cold_call_post_for(rid, "answer")$id == first, app$cold_call_post_for(rid, "board")$id == first)
+app$db_exec("DELETE FROM job_posts WHERE id IN (?,?);", list(first, second))
 # The board job is created first, as in the fall class. Its name also contains
 # the word "answer", which once made every answer resolve to the board job.
 board <- post("Cold call: graph/answer on board"); answer <- post("Cold call: answer a question")
-stopifnot(identical(as.character(app$cold_call_kind_of(c("Cold call: graph/answer on board", "Cold call: answer a question",
-                                                          "Cold call: ask a question"))), c("board", "answer", "ask")),
-          app$cold_call_post_for(rid, "answer")$id == answer, app$cold_call_post_for(rid, "board")$id == board)
+stopifnot(app$cold_call_post_for(rid, "answer")$id == answer, app$cold_call_post_for(rid, "board")$id == board)
 drawn <- function(post_id, wage) app$db_exec(
   "INSERT OR REPLACE INTO class_wage_snapshots(round_id,snapshot_key,job_post_id,category_id,wage,source,snapshotted_at)
    VALUES(?,?,?,?,?,'random_draw',CURRENT_TIMESTAMP);", list(rid, paste0("post:", post_id), post_id, cc_cat, wage))

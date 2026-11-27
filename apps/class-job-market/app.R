@@ -4037,13 +4037,20 @@ account_section <- function(title, hint, ..., open=FALSE) {
 # it is queued for the Live Score Audit. The Live Tracker and the fast tracker
 # page both call these, so the two cannot disagree. Nothing here pays anyone:
 # payment happens when the audit is committed.
-# Which kind of cold call a job is, from its name. Board work is checked first:
-# "Cold call: graph/answer on board" also contains the word "answer".
-cold_call_kind_of <- function(job_name) {
-  name <- tolower(as.character(job_name %||% ""))
-  ifelse(grepl("board", name, fixed = TRUE), "board",
-         ifelse(grepl("ask", name, fixed = TRUE), "ask", "answer"))
-}
+# Which kind of cold call a job is. The job's whole name must be one of the
+# names below (letter case and outer spaces aside); a job with any other name
+# has no kind (NA). Part of a name never counts, so a renamed job is not
+# mistaken for one of these.
+COLD_CALL_JOB_KINDS <- c(
+  "cold call: answer a question"     = "answer",
+  "volunteer: answer a question"     = "answer",
+  "cold call: graph/answer on board" = "board",
+  "volunteer: graph/answer on board" = "board",
+  "volunteer: ask a question"        = "ask")
+cold_call_kind_of <- function(job_name)
+  unname(COLD_CALL_JOB_KINDS[tolower(trimws(as.character(job_name %||% "")))])
+# The names of the jobs that are an answer or board work, for SQL.
+COLD_CALL_FILL_IN_NAMES_SQL <- paste0("'", names(COLD_CALL_JOB_KINDS)[COLD_CALL_JOB_KINDS %in% c("answer", "board")], "'", collapse = ",")
 # The cold-call job for a kind on a class date: the job of that kind if one is
 # posted, otherwise the first cold-call job.
 cold_call_post_for <- function(round_id, kind = "answer") {
@@ -4055,7 +4062,7 @@ cold_call_post_for <- function(round_id, kind = "answer") {
             OR LOWER(COALESCE(jc.name,''))='cold call')
      ORDER BY jp.display_order, jp.id;", list(as.integer(round_id))), error = function(e) data.frame())
   if (!nrow(posts)) return(posts)
-  hit <- posts[cold_call_kind_of(posts$job_name) == kind, , drop = FALSE]
+  hit <- posts[cold_call_kind_of(posts$job_name) %in% kind, , drop = FALSE]
   if (nrow(hit)) hit[1, , drop = FALSE] else posts[1, , drop = FALSE]
 }
 # A fair try pays half of what the completed work would have paid.
@@ -4121,13 +4128,12 @@ queue_volunteer_event <- function(round_row, post_id, user_id, outcome_type, log
   # job, so it pays that job's drawn wage and is not subject to the set
   # volunteer wage or the one-paid-contribution limit. Unprompted volunteering
   # (asking a question, or any other volunteer job) follows those two rules.
-  job_name <- tolower(as.character(db_query("SELECT job_name FROM job_posts WHERE id=?;", list(post_id))$job_name[1] %||% ""))
+  job_kind <- cold_call_kind_of(db_query("SELECT job_name FROM job_posts WHERE id=?;", list(post_id))$job_name[1] %||% "")
   random_wage_date <- identical(round_row$assignment_mode[1] %||% "random", "wage_bidding") &&
     identical(normalize_wage_pricing_rule(round_row$wage_pricing_rule[1] %||% "pay_as_bid"), "random_wage")
-  fill_in <- random_wage_date && !round_is_practice(rid) && !grepl("ask", job_name, fixed = TRUE) &&
-    (grepl("answer", job_name, fixed = TRUE) || grepl("board", job_name, fixed = TRUE))
+  fill_in <- random_wage_date && !round_is_practice(rid) && job_kind %in% c("answer", "board")
   flat <- if (fill_in) 0 else volunteer_flat_wage()
-  if (fill_in) wage_val <- cold_call_wage_for(rid, as.character(cold_call_kind_of(job_name)))
+  if (fill_in) wage_val <- cold_call_wage_for(rid, job_kind)
   if (flat > 0) wage_val <- flat
   # Asking a question (unprompted volunteering) on a random-wage date pays one
   # token, or the set volunteer wage if the class has one, whether the question
@@ -4142,10 +4148,10 @@ queue_volunteer_event <- function(round_row, post_id, user_id, outcome_type, log
        WHERE round_id=? AND LOWER(user_id)=LOWER(?) AND event_kind='participation'
          AND COALESCE(tokens,0) > 0;", list(rid, as.character(user_id)))
     # Fill-ins paid earlier in the class do not use up the one paid contribution.
-    if (random_wage_date && as.integer(paid$n[1] %||% 0L) > 0L) paid <- db_query(
+    if (random_wage_date && as.integer(paid$n[1] %||% 0L) > 0L) paid <- db_query(sprintf(
       "SELECT COUNT(*) n FROM live_score_events lse JOIN job_posts jp ON jp.id=lse.job_post_id
        WHERE lse.round_id=? AND LOWER(lse.user_id)=LOWER(?) AND lse.event_kind='participation' AND COALESCE(lse.tokens,0) > 0
-         AND (LOWER(jp.job_name) LIKE '%ask%' OR (LOWER(jp.job_name) NOT LIKE '%answer%' AND LOWER(jp.job_name) NOT LIKE '%board%'));",
+         AND LOWER(TRIM(jp.job_name)) NOT IN (%s);", COLD_CALL_FILL_IN_NAMES_SQL),
       list(rid, as.character(user_id)))
     if (as.integer(paid$n[1] %||% 0L) > 0L) tokens <- 0
   }
@@ -6980,9 +6986,8 @@ server <- function(input, output, session) {
                 # On a random-wage date a question pays one token (or the set
                 # wage); stepping in to answer pays that day's cold-call wage,
                 # which is never shown to students.
-                vname <- tolower(vp$job_name %||% "")
                 random_day <- random_wage_date(jp$round)
-                steps_in <- random_day && !grepl("ask", vname, fixed = TRUE) && grepl("answer|board", vname)
+                steps_in <- random_day && cold_call_kind_of(vp$job_name %||% "") %in% c("answer", "board")
                 if (random_day && !steps_in) { w <- if (volunteer_flat_wage() > 0) volunteer_flat_wage() else 1; cw <- w }
                 div(style = "display:flex;justify-content:space-between;font-size:.88rem;padding:.15rem 0;",
                     span(vp$job_name %||% ""),
@@ -15341,7 +15346,7 @@ server <- function(input, output, session) {
       pick <- function(rid, kind) {
         rows <- cold_posts[cold_posts$round_id == rid, , drop = FALSE]
         if (!nrow(rows)) return(c(NA, NA))
-        hit <- rows[cold_call_kind_of(rows$job) == kind, , drop = FALSE]
+        hit <- rows[cold_call_kind_of(rows$job) %in% kind, , drop = FALSE]
         chosen <- if (nrow(hit)) hit[1, ] else rows[1, ]
         c(chosen$job_post_id, chosen$job)
       }
