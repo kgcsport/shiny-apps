@@ -107,6 +107,29 @@ stopifnot(app$cold_call_wage_for(rid, "answer") == 2, app$cold_call_wage_for(rid
 app$set_setting("volunteer_flat_wage", "0")
 stopifnot(volunteer("low", "succeed") == before_flat)
 
+# Volunteering means asking a question. Stepping in to answer, or to work at
+# the board, on a random-wage date fills a cold call nobody's bid cleared: it
+# pays that cold-call job's drawn wage (answer 2, board 3), whatever the set
+# volunteer wage is, and does not use up the one paid contribution.
+app$db_exec("UPDATE weekly_rounds SET wage_pricing_rule='random_wage' WHERE id=?;", list(rid))
+app$db_exec("DELETE FROM live_score_events;")
+round_row <- app$db_query("SELECT * FROM weekly_rounds WHERE id=?;", list(rid))
+vpost <- function(name) { app$db_exec("INSERT INTO job_posts(round_id,job_name,category_id,slots,wage_override,voluntary,in_draw,selection_time,active) VALUES(?,?,?,99,4,1,0,'volunteer',1);", list(rid, name, vol_cat))
+  as.integer(app$db_query("SELECT last_insert_rowid() id;")$id[1]) }
+ask <- vpost("Volunteer: ask a question"); fill_board <- vpost("Volunteer: graph/answer on board")
+give <- function(post, uid, outcome = "succeed") app$queue_volunteer_event(round_row, post, uid, outcome, "prof", pay_capped = TRUE)$tokens
+app$set_setting("volunteer_flat_wage", "1")
+stopifnot(give(vol_post, "low") == 2, give(fill_board, "low") == 3,       # two fill-ins, both paid at the drawn wage
+          give(ask, "low") == 1,                                           # the question: the set wage, still paid
+          give(ask, "low") == 0,                                           # a second question the same class: unpaid
+          give(vol_post, "low") == 2,                                      # another fill-in is still paid
+          give(vol_post, "exact", "try") == 1, give(vol_post, "exact", "miss") == 0)
+# On a practice date, or a date without the random-wage rule, nothing is a fill-in.
+app$db_exec("UPDATE weekly_rounds SET wage_pricing_rule='pay_as_bid' WHERE id=?;", list(rid))
+round_row <- app$db_query("SELECT * FROM weekly_rounds WHERE id=?;", list(rid))
+stopifnot(give(vol_post, "high") == 1, give(vol_post, "high") == 0)        # the set wage and the limit apply again
+app$set_setting("volunteer_flat_wage", "0")
+
 # With no cold-call job posted, nobody is eligible rather than everybody.
 app$db_exec("UPDATE job_posts SET active=0 WHERE round_id=?;", list(rid))
 stopifnot(nrow(app$cold_call_eligible(rid, students)) == 0L)

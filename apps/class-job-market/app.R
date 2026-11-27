@@ -4110,15 +4110,32 @@ queue_volunteer_event <- function(round_row, post_id, user_id, outcome_type, log
                                   query_fn = db_query, job_post_id = post_id)
     if (!is.na(cw)) wage_val <- cw
   }
-  flat <- volunteer_flat_wage()
+  # On a random-wage date, a student who steps in to answer or to work at the
+  # board is filling a cold call nobody's bid cleared. That is the cold-call
+  # job, so it pays that job's drawn wage and is not subject to the set
+  # volunteer wage or the one-paid-contribution limit. Unprompted volunteering
+  # (asking a question, or any other volunteer job) follows those two rules.
+  job_name <- tolower(as.character(db_query("SELECT job_name FROM job_posts WHERE id=?;", list(post_id))$job_name[1] %||% ""))
+  random_wage_date <- identical(round_row$assignment_mode[1] %||% "random", "wage_bidding") &&
+    identical(normalize_wage_pricing_rule(round_row$wage_pricing_rule[1] %||% "pay_as_bid"), "random_wage")
+  fill_in <- random_wage_date && !round_is_practice(rid) && !grepl("ask", job_name, fixed = TRUE) &&
+    (grepl("answer", job_name, fixed = TRUE) || grepl("board", job_name, fixed = TRUE))
+  flat <- if (fill_in) 0 else volunteer_flat_wage()
+  if (fill_in) wage_val <- cold_call_wage_for(rid, as.character(cold_call_kind_of(job_name)))
   if (flat > 0) wage_val <- flat
   uncapped <- switch(outcome_type, succeed = wage_val, try = if (flat > 0) min(1, flat) else 1, miss = 0, 0)
   tokens <- uncapped
-  if (isTRUE(pay_capped) && is.finite(tokens) && tokens > 0) {
+  if (isTRUE(pay_capped) && !fill_in && is.finite(tokens) && tokens > 0) {
     paid <- db_query(
       "SELECT COUNT(*) n FROM live_score_events
        WHERE round_id=? AND LOWER(user_id)=LOWER(?) AND event_kind='participation'
          AND COALESCE(tokens,0) > 0;", list(rid, as.character(user_id)))
+    # Fill-ins paid earlier in the class do not use up the one paid contribution.
+    if (random_wage_date && as.integer(paid$n[1] %||% 0L) > 0L) paid <- db_query(
+      "SELECT COUNT(*) n FROM live_score_events lse JOIN job_posts jp ON jp.id=lse.job_post_id
+       WHERE lse.round_id=? AND LOWER(lse.user_id)=LOWER(?) AND lse.event_kind='participation' AND COALESCE(lse.tokens,0) > 0
+         AND (LOWER(jp.job_name) LIKE '%ask%' OR (LOWER(jp.job_name) NOT LIKE '%answer%' AND LOWER(jp.job_name) NOT LIKE '%board%'));",
+      list(rid, as.character(user_id)))
     if (as.integer(paid$n[1] %||% 0L) > 0L) tokens <- 0
   }
   db_exec(
