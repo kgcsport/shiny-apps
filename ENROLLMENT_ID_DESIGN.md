@@ -93,9 +93,21 @@ The app then files a grade with two exact lookups and no guessing:
 The extension push to the Worker gains `offeringId` and uses the same email.
 The admin token moves from one app-wide secret to one per offering.
 
-I have not seen the Worker's code; it is not in this repository. Whether it
-can send `offeringId` and `itemKey`, and whether `externalId` is always the
-sign-in email, needs checking there.
+**What the Worker already does** (read 2026-11-28 in the private PubEcon
+repository, `assignments/`, commit `ff01878`):
+
+- Assignments and students each carry a `course_id`; a student is unique per
+  course and `external_id`. One Worker can already hold several courses.
+- Each assignment has a `gradebook_key` (PS1 to PS6 were filled from titles).
+- A student who signs in with Google is stored with `external_id` equal to
+  their email.
+- The export already sends `courseId`, `gradebookKey`, `externalId` and
+  `studentEmail` on every row.
+
+So most of the Worker's side exists. The gap is on the app's side: the sync
+ignores `courseId`, re-derives the item from the title, and falls back to the
+display name. Phase 2 is mainly making the app use what is already sent, and
+agreeing that `courseId` is the offering ID and `gradebookKey` the item key.
 
 ## Getting there without breaking the running class
 
@@ -145,6 +157,22 @@ and redoing them.
 
 ## Still needed from Kyle
 
-- The repository that holds the Worker's code, so the sync contract can be
-  checked against what the Worker sends.
-- One Worker per course or one for all (question 3 above).
+- One Worker per course or one for all (question 3 above). The Worker can
+  already hold several courses.
+- Whether to move the Worker's code into this repository (see below).
+
+## Moving the Worker's code here
+
+This repository is public; PubEcon is private. The Worker's runtime code
+(`src/`, `migrations/`, `static/`, `test/`, about 30 small files) holds no
+secrets or student data: the database ID is a placeholder and tokens come from
+GitHub secrets. Before it is public: remove the two personal email addresses
+in its README, and rename the `vassar.edu` addresses in its tests if the
+institution should not be named.
+
+Its build scripts are a different matter. They read problem sets, a preamble
+and a Quarto filter from the rest of PubEcon, and the deploy workflow and its
+secrets live there. Course content and solutions must stay private. A clean
+split: the runtime and tests move here; the scripts that turn a course's
+problem sets into assignments stay with each course's private repository and
+are pointed at the Worker.
