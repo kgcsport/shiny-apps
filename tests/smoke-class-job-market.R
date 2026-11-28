@@ -27,6 +27,8 @@ wanted <- c("seed_class_job_defaults", "get_setting", "bid_lock_status",
             "close_bidding_after_draw", "overdue_pending_jobs", "assignment_round_for_timing",
             "reveal_timings_for_scope", "assignment_reveal_timing", "assignment_is_revealed",
             "rw_points_requested", "rw_pending_request", "get_rw_max_points", "rw_remaining_points", "validate_rw_request_points", "norm_key",
+            # a reweight request belongs to a course
+            "row_course_sql", "gradebook_course",
             "round_bid_datetime_value",
             "round_bid_window_values", "round_bid_window_status",
             "validate_ticket_allocation", "order_job_posts_for_clearing",

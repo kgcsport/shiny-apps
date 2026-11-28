@@ -132,6 +132,12 @@ a row by offering, email and item key. The old matching is kept only for rows
 whose course ID is not an offering here, and is counted each run. Removing it
 waits until a live sync shows no such rows and no name matches.
 
+Phases 3 and 4 were built the same day for reweights, exam drops,
+manual-grade marks and tokens: each carries a course and is read for the
+banner course. They are keyed by course name, not yet by enrollment ID; moving
+them to the ID, and doing the same for problem sets, extension purchases and
+the instructor rosters, is what remains.
+
 For a new course's Worker assignments to link, each assignment's `course-id`
 must be the offering ID (for ECON 102 in spring: `econ102-2027-spring`) and its
 `gradebook-key` must be the gradebook item's key.

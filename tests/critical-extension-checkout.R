@@ -9,7 +9,7 @@ on.exit(dbDisconnect(con), add = TRUE)
 get_con <- function() con
 dbExecute(con, "CREATE TABLE token_ledger(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, display_name TEXT,
-  source_type TEXT, source_id INTEGER, amount REAL, earning INTEGER, note TEXT
+  source_type TEXT, source_id INTEGER, amount REAL, earning INTEGER, note TEXT, course TEXT
 );")
 dbExecute(con, "CREATE TABLE extension_purchases(
   id INTEGER PRIMARY KEY AUTOINCREMENT, problem_set_id INTEGER, user_id TEXT,
@@ -28,10 +28,13 @@ for (expr in expressions) {
   }
 }
 stopifnot(exists("record_extension_purchase", helper, inherits = FALSE))
+# The purchase is recorded for the student's course; this fixture has one.
+helper$gradebook_course <- function(uid = NULL) "econ 342"
 
 saved <- helper$record_extension_purchase(
   "student@example.edu", "Student", 4L, 24, 8, "approved", "PS4 extension")
 stopifnot(saved$purchase_id == 1L, saved$ledger_id == 1L)
+stopifnot(identical(dbGetQuery(con, "SELECT course FROM token_ledger;")$course, "econ 342"))
 ledger <- dbGetQuery(con, "SELECT user_id,source_type,source_id,amount FROM token_ledger;")
 purchase <- dbGetQuery(con, "SELECT problem_set_id,user_id,hours,cost,ledger_id,approval_status FROM extension_purchases;")
 stopifnot(nrow(ledger) == 1L, nrow(purchase) == 1L,

@@ -52,6 +52,7 @@ enrolled <- function(offering_id) tryCatch(db_query("SELECT u.user_id,u.display_
 db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_override(user_id TEXT NOT NULL,assignment_name TEXT NOT NULL,reason TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(user_id COLLATE NOCASE,assignment_name COLLATE NOCASE));")
 db_exec("CREATE TABLE IF NOT EXISTS assignment_grade_sync_log(assignment_id TEXT PRIMARY KEY,assignment_title TEXT,gradebook_item TEXT,policy TEXT,last_synced_at TEXT,status TEXT DEFAULT 'pending',error TEXT,rows_synced INTEGER DEFAULT 0);")
 upsert <- function(uid,item,score,mx,pct,title,course) db_exec("INSERT INTO student_grades(user_id,assignment_name,score,max_score,grade_pct,week_tag,course) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET score=excluded.score,max_score=excluded.max_score,grade_pct=excluded.grade_pct,week_tag=excluded.week_tag,uploaded_at=CURRENT_TIMESTAMP;",list(uid,item,score,mx,pct,title,course))
+override_has_course <- "course" %in% dbListFields(con, "assignment_grade_sync_override")
 total<-0L; skipped<-0L; unmatched_key<-0L; unmatched_student<-0L; by_name<-0L; unlinked<-0L
 # A row whose courseId is one of this app's offerings is filed for that
 # offering's course: the student by sign-in email among its enrollments, the
@@ -77,7 +78,10 @@ if (nrow(rows)) for (i in seq_len(nrow(rows))) {
   if (!length(item_hit)) { unmatched_key <- unmatched_key + 1L; next }
   item <- catalog$assignment[item_hit[1]]
   if (compact(item) %in% excluded_items) { skipped <- skipped + 1L; next }
-  protected <- db_query("SELECT 1 FROM assignment_grade_sync_override WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(uid, item))
+  # A manual-grade mark protects the grade in its own course.
+  protected <- if (override_has_course)
+    db_query("SELECT 1 FROM assignment_grade_sync_override WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) AND course IN (?, '') LIMIT 1;", list(uid, item, course %||% ""))
+  else db_query("SELECT 1 FROM assignment_grade_sync_override WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(uid, item))
   if (nrow(protected)) { skipped <- skipped + 1L; next }
   submitted <- identical(as.character(r$status[1] %||% ""), "submitted") && nzchar(as.character(r$submittedAt[1] %||% ""))
   scan <- nzchar(as.character(r$scanVerifiedAt[1] %||% "")); pct <- suppressWarnings(as.numeric(r$gradePct[1] %||% NA))

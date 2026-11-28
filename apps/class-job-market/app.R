@@ -49,6 +49,12 @@ nonempty_values <- function(x) {
   x[!is.na(x) & nzchar(x)]
 }
 norm_key <- function(x) tolower(trimws(as.character(x %||% "")))
+# SQL for the course a record belongs to: the course stored on it, or, for a
+# record written without one, its student's home course. `alias` is the table
+# or alias the record is read from; it must have user_id and course columns.
+row_course_sql <- function(alias) sprintf(
+  "COALESCE(NULLIF(%s.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(%s.user_id)),'')",
+  alias, alias)
 normalize_scope_sections <- function(x) {
   x <- trimws(as.character(x %||% character(0)))
   sort(unique(x[!is.na(x) & nzchar(x)]))
@@ -272,10 +278,10 @@ record_extension_purchase <- function(user_id, display_name, problem_set_id,
 
   DBI::dbWithTransaction(get_con(), {
     wrote_ledger <- DBI::dbExecute(get_con(),
-      "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
-       VALUES(?,?,?,?,?,?,?);",
+      "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note,course)
+       VALUES(?,?,?,?,?,?,?,?);",
       params = list(user_id, display_name, "extension", problem_set_id,
-                    -abs(cost), 0L, note))
+                    -abs(cost), 0L, note, gradebook_course(user_id)))
     if (!identical(as.integer(wrote_ledger), 1L))
       stop("Could not record the token debit.")
     ledger_id <- DBI::dbGetQuery(get_con(), "SELECT last_insert_rowid() AS id;")$id[1]
@@ -645,13 +651,18 @@ ensure_column("grade_reweight_requests", "reviewed_at TEXT")
 ensure_column("grade_reweight_requests", "reviewed_by TEXT")
 ensure_column("grade_reweight_requests", "rejection_note TEXT")
 ensure_column("grade_reweight_requests", "refund_ledger_id INTEGER")
-# A student may have one request awaiting review.  This database guard closes
-# the double-click / two-browser race that UI validation alone cannot prevent.
-db_exec("CREATE TRIGGER IF NOT EXISTS grade_reweight_one_pending_per_student
+# A request belongs to one student in one course.
+ensure_column("grade_reweight_requests", "course TEXT")
+# A student may have one request awaiting review in a course.  This database
+# guard closes the double-click / two-browser race that UI validation alone
+# cannot prevent.
+db_exec("DROP TRIGGER IF EXISTS grade_reweight_one_pending_per_student;")
+db_exec("CREATE TRIGGER IF NOT EXISTS grade_reweight_one_pending_per_student_course
   BEFORE INSERT ON grade_reweight_requests
   WHEN COALESCE(NEW.status,'pending')='pending' AND EXISTS(
     SELECT 1 FROM grade_reweight_requests
     WHERE LOWER(user_id)=LOWER(NEW.user_id) AND COALESCE(status,'pending')='pending'
+      AND COALESCE(course,'')=COALESCE(NEW.course,'')
   )
   BEGIN SELECT RAISE(ABORT, 'A pending grade-reweight request already exists for this student.'); END;")
 db_exec("CREATE TABLE IF NOT EXISTS public_goods(
@@ -773,6 +784,17 @@ db_exec("CREATE TABLE IF NOT EXISTS token_ledger(
   note TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );")
+# A ledger entry belongs to one student in one course: each course has its own
+# balance. An entry written without a course (by an older writer or another
+# app) counts for the student's home course.
+ensure_column("token_ledger", "course TEXT")
+# Entries and requests recorded before courses were told apart, or written
+# since without a course, are given their student's home course.
+assign_record_courses <- function() for (table in c("token_ledger", "grade_reweight_requests")) db_exec(sprintf(
+  "UPDATE %s SET course=COALESCE(
+     (SELECT LOWER(TRIM(COALESCE(u.course,''))) FROM users u WHERE LOWER(u.user_id)=LOWER(%s.user_id)), '')
+   WHERE course IS NULL;", table, table))
+assign_record_courses()
 recover_completed_extension_refunds()
 
 # Seed fake data for demo account (only if token_ledger is empty for demo)
@@ -1049,11 +1071,36 @@ db_exec("CREATE TABLE IF NOT EXISTS gradebook_exam_drops(
   PRIMARY KEY(user_id COLLATE NOCASE, assignment_name COLLATE NOCASE)
 );")
 db_exec("INSERT OR IGNORE INTO labor_settings(key,value) VALUES('assignment_grade_policy','final_score');")
+# A manual-grade mark and an exam drop each belong to one student in one
+# course. Tables made before that are rebuilt once with the course in the key;
+# every existing row keeps its values and takes its student's home course.
+rekey_by_course <- function(table, columns) {
+  made <- tryCatch(db_query("SELECT sql FROM sqlite_master WHERE type='table' AND name=?;", list(table))$sql[1], error = function(e) NA_character_)
+  if (is.na(made) || grepl("course", made, fixed = TRUE)) return(invisible(FALSE))
+  names <- sub(" .*$", "", columns)
+  con <- get_con()
+  DBI::dbWithTransaction(con, {
+    DBI::dbExecute(con, sprintf("CREATE TABLE %s_by_course(course TEXT NOT NULL DEFAULT '', %s,
+      PRIMARY KEY(course, user_id COLLATE NOCASE, assignment_name COLLATE NOCASE));", table, paste(columns, collapse = ", ")))
+    DBI::dbExecute(con, sprintf(
+      "INSERT OR IGNORE INTO %s_by_course(course, %s)
+       SELECT COALESCE((SELECT LOWER(TRIM(COALESCE(u.course,''))) FROM users u WHERE LOWER(u.user_id)=LOWER(old.user_id)),''), %s FROM %s old;",
+      table, paste(names, collapse = ","), paste(names, collapse = ","), table))
+    DBI::dbExecute(con, sprintf("DROP TABLE %s;", table))
+    DBI::dbExecute(con, sprintf("ALTER TABLE %s_by_course RENAME TO %s;", table, table))
+  })
+  invisible(TRUE)
+}
+rekey_by_course("assignment_grade_sync_override",
+                c("user_id TEXT NOT NULL", "assignment_name TEXT NOT NULL", "reason TEXT", "created_at TEXT DEFAULT CURRENT_TIMESTAMP"))
+rekey_by_course("gradebook_exam_drops",
+                c("user_id TEXT NOT NULL", "assignment_name TEXT NOT NULL", "transfer_to TEXT NOT NULL", "note TEXT",
+                  "created_at TEXT DEFAULT CURRENT_TIMESTAMP", "updated_at TEXT DEFAULT CURRENT_TIMESTAMP"))
 
-mark_grade_override <- function(user_id, assignment_name, reason = "Manual grade") {
-  db_exec("INSERT INTO assignment_grade_sync_override(user_id,assignment_name,reason)
-           VALUES(?,?,?) ON CONFLICT(user_id,assignment_name) DO UPDATE SET reason=excluded.reason,created_at=CURRENT_TIMESTAMP;",
-          list(user_id, assignment_name, reason))
+mark_grade_override <- function(user_id, assignment_name, reason = "Manual grade", course = gradebook_course(user_id)) {
+  db_exec("INSERT INTO assignment_grade_sync_override(course,user_id,assignment_name,reason)
+           VALUES(?,?,?,?) ON CONFLICT(course,user_id,assignment_name) DO UPDATE SET reason=excluded.reason,created_at=CURRENT_TIMESTAMP;",
+          list(norm_key(course), user_id, assignment_name, reason))
 }
 
 upsert_student_grade <- function(user_id, assignment_name, score = NA_real_,
@@ -2579,9 +2626,9 @@ rw_cost_for_n <- function(n, schedule_text = NULL) {
 rw_points_requested <- function(uid) {
   if (is.null(uid) || !length(uid) || !nzchar(trimws(as.character(uid[1])))) return(0)
   val <- tryCatch(db_query(
-    "SELECT COALESCE(SUM(points),0) AS total FROM grade_reweight_requests
-     WHERE LOWER(user_id)=LOWER(?) AND COALESCE(status,'pending') <> 'rejected';",
-    list(uid[1]))$total[1], error=function(e) 0)
+    sprintf("SELECT COALESCE(SUM(points),0) AS total FROM grade_reweight_requests
+     WHERE LOWER(user_id)=LOWER(?) AND COALESCE(status,'pending') <> 'rejected' AND %s=?;", row_course_sql("grade_reweight_requests")),
+    list(uid[1], gradebook_course(uid[1])))$total[1], error=function(e) 0)
   val <- suppressWarnings(as.numeric(val %||% 0))
   if (!is.finite(val) || val < 0) 0 else as.integer(val)
 }
@@ -2627,9 +2674,10 @@ rw_remaining_points <- function(uid) {
 rw_pending_request <- function(uid) {
   if (is.null(uid) || !length(uid) || !nzchar(trimws(as.character(uid[1])))) return(data.frame())
   tryCatch(db_query(
-    "SELECT id, points, cost, created_at FROM grade_reweight_requests
-     WHERE LOWER(user_id)=LOWER(?) AND COALESCE(status,'pending')='pending'
-     ORDER BY created_at DESC LIMIT 1;", list(uid[1])), error=function(e) data.frame())
+    sprintf("SELECT id, points, cost, created_at FROM grade_reweight_requests
+     WHERE LOWER(user_id)=LOWER(?) AND COALESCE(status,'pending')='pending' AND %s=?
+     ORDER BY created_at DESC LIMIT 1;", row_course_sql("grade_reweight_requests")),
+    list(uid[1], gradebook_course(uid[1]))), error=function(e) data.frame())
 }
 validate_rw_request_points <- function(uid, points) {
   points <- suppressWarnings(as.integer(points))
@@ -2787,7 +2835,7 @@ import_worker_grades <- function(rows, course = gradebook_course(), policy = "fi
     grade_pct <- if (identical(policy, "split_half")) {
       if (isTRUE(submitted)) 100 else if (isTRUE(scan_ok)) 50 else 0
     } else pct
-    protected <- db_query("SELECT 1 FROM assignment_grade_sync_override WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(uid, item))
+    protected <- db_query("SELECT 1 FROM assignment_grade_sync_override WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) AND course=? LIMIT 1;", list(uid, item, course))
     existing <- db_query("SELECT 1 FROM student_grades WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=? LIMIT 1;", list(uid, item, course))
     if (nrow(protected) || (gradebook_key_of(item) %in% protected_items && nrow(existing))) { count[["skipped"]] <- count[["skipped"]] + 1L; next }
     upsert_student_grade(uid, item, suppressWarnings(as.numeric(r$score[1] %||% NA_real_)),
@@ -3051,11 +3099,17 @@ participation_full_credit_for <- function(uid, category_max) {
                                 suppressWarnings(as.numeric(resolve_setting("participation_full_credit", "0", with_scope = TRUE)$value)))
   if (length(value) == 1L && is.finite(value) && value > 0) value else fallback
 }
+# A student's balance in a course: everything earned less everything spent there.
+token_balance_in_course <- function(uid, course = gradebook_course(uid)) {
+  tryCatch(as.numeric(db_query(paste0(
+    "SELECT COALESCE(SUM(amount),0) t FROM token_ledger WHERE user_id=? AND ", row_course_sql("token_ledger"), "=?;"),
+    list(uid, norm_key(course)))$t[1] %||% 0), error = function(e) 0)
+}
 gross_participation_tokens <- function(uid) {
-  earned <- db_query(
+  earned <- db_query(paste0(
     "SELECT COALESCE(SUM(amount),0) total FROM token_ledger
-     WHERE user_id=? AND earning=1 AND amount>0;",
-    list(uid))
+     WHERE user_id=? AND earning=1 AND amount>0 AND ", row_course_sql("token_ledger"), "=?;"),
+    list(uid, gradebook_course(uid)))
   as.numeric(earned$total[1] %||% 0)
 }
 
@@ -3075,8 +3129,8 @@ compute_student_grade <- function(uid, exclude_assignments = character(0),
     list(uid, gradebook_course(uid))), error = function(e) data.frame())
 
   exam_drops <- tryCatch(db_query(
-    "SELECT assignment_name, transfer_to, note FROM gradebook_exam_drops WHERE LOWER(user_id)=LOWER(?);",
-    list(uid)), error = function(e) data.frame())
+    "SELECT assignment_name, transfer_to, note FROM gradebook_exam_drops WHERE LOWER(user_id)=LOWER(?) AND course=?;",
+    list(uid, gradebook_course(uid))), error = function(e) data.frame())
 
   if (!nrow(cats)) return(list(cats = data.frame(), items = data.frame(), overall = NA_real_))
   excluded_keys <- tolower(trimws(as.character(exclude_assignments %||% character(0))))
@@ -3124,11 +3178,11 @@ compute_student_grade <- function(uid, exclude_assignments = character(0),
     }
   }
 
-  approved_reweights <- tryCatch(db_query(
+  approved_reweights <- tryCatch(db_query(sprintf(
     "SELECT id, COALESCE(level,'category') AS level, from_category, to_category, points
      FROM grade_reweight_requests
-     WHERE LOWER(user_id)=LOWER(?) AND COALESCE(status,'pending')='approved'
-     ORDER BY id;", list(uid)), error = function(e) data.frame())
+     WHERE LOWER(user_id)=LOWER(?) AND COALESCE(status,'pending')='approved' AND %s=?
+     ORDER BY id;", row_course_sql("grade_reweight_requests")), list(uid, gradebook_course(uid))), error = function(e) data.frame())
   requests <- if (nrow(preview_reweight)) rbind(approved_reweights, preview_reweight) else approved_reweights
   adjusted <- apply_grade_reweight_requests(cats, all_items, requests)
   cats <- adjusted$cats
@@ -4506,11 +4560,11 @@ round_is_practice <- function(round_id) {
 
 token_credit <- function(uid, dname, amount, earning, source_type, source_id = NA, note = "") {
   db_exec(
-    "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
-     VALUES(?,?,?,?,?,?,?);",
+    "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note,course)
+     VALUES(?,?,?,?,?,?,?,?);",
     list(uid, dname, source_type,
          if (is.na(source_id)) NA_integer_ else as.integer(source_id),
-         amount, as.integer(earning), note))
+         amount, as.integer(earning), note, gradebook_course(uid)))
   tryCatch(db_query("SELECT last_insert_rowid() AS id;")$id[1], error = function(e) NA_integer_)
 }
 
@@ -4595,11 +4649,13 @@ token_credit <- function(uid, dname, amount, earning, source_type, source_id = N
         error=function(e) data.frame()),
       lowest_tokens = tryCatch(db_query(
         paste0("SELECT user_id, COALESCE(SUM(amount),0) AS val FROM token_ledger WHERE user_id IN (",
-               uid_placeholders, ") AND earning=1 GROUP BY user_id;"), as.list(uids)),
+               uid_placeholders, ") AND earning=1 AND ", row_course_sql("token_ledger"), "=? GROUP BY user_id;"),
+        c(as.list(uids), list(gradebook_course()))),
         error=function(e) data.frame()),
       weighted_lottery = tryCatch(db_query(
         paste0("SELECT user_id, COALESCE(SUM(amount),0) AS val FROM token_ledger WHERE user_id IN (",
-               uid_placeholders, ") AND earning=1 GROUP BY user_id;"), as.list(uids)),
+               uid_placeholders, ") AND earning=1 AND ", row_course_sql("token_ledger"), "=? GROUP BY user_id;"),
+        c(as.list(uids), list(gradebook_course()))),
         error=function(e) data.frame()),
       most_misses = tryCatch(db_query(
         paste0("SELECT user_id, COUNT(*) AS val FROM job_assignments WHERE user_id IN (",
@@ -6052,9 +6108,9 @@ server <- function(input, output, session) {
         list(uid, as.integer(round_id)))$n[1], error = function(e) 0L)
       if (as.integer(already %||% 0L) > 0L) next
       db_exec(
-        "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note) SELECT user_id,display_name,'coordination_contrib',?,?,0,? FROM users WHERE user_id=?;",
+        "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note,course) SELECT user_id,display_name,'coordination_contrib',?,?,0,?,? FROM users WHERE user_id=?;",
         list(as.integer(round_id), -amount,
-             sprintf("Bonus Pot contribution: round %d, section %s", as.integer(round_id), section), uid))
+             sprintf("Bonus Pot contribution: round %d, section %s", as.integer(round_id), section), gradebook_course(uid), uid))
       posted <- posted + 1L
     }
     posted
@@ -6096,8 +6152,8 @@ server <- function(input, output, session) {
     meta <- sprintf("round=%d section=%s denominator=%s", round_id, section,
                     if (identical(mode, "threshold")) paste0("threshold-", threshold, "-", denom) else if (!is.na(enrolled) && as.integer(enrolled)>0L) paste0("enrolled-", enrolled) else paste0("submitters-", denom))
     for (uid in as.character(recipients$user_id)) {
-      db_exec("INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note) SELECT user_id,display_name,'coordination_grant',?,?,1,? FROM users WHERE user_id=?;",
-              list(round_id, share, paste("Bonus Pot payout", meta), uid))
+      db_exec("INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note,course) SELECT user_id,display_name,'coordination_grant',?,?,1,?,? FROM users WHERE user_id=?;",
+              list(round_id, share, paste("Bonus Pot payout", meta), gradebook_course(uid), uid))
       db_exec("INSERT INTO olig_payouts(round,user_id,game,payout,meta,section) VALUES(?,?, 'bonus',?,?,?);",
               list(round_id, uid, share, meta, section))
     }
@@ -6158,14 +6214,12 @@ server <- function(input, output, session) {
     valueFunc = function() {
       if (is.null(rv$user_id)) return(list(
         ledger = data.frame(), tokens_earned = 0, tokens_on_hand = 0))
-      ledger <- tryCatch(db_query(
+      ledger <- tryCatch(db_query(paste0(
         "SELECT amount, source_type, note, created_at, earning
-         FROM token_ledger WHERE user_id=? ORDER BY created_at DESC LIMIT 60;",
-        list(rv$user_id)), error = function(e) data.frame())
+         FROM token_ledger WHERE user_id=? AND ", row_course_sql("token_ledger"), "=? ORDER BY created_at DESC LIMIT 60;"),
+        list(rv$user_id, gradebook_course(rv$user_id))), error = function(e) data.frame())
       earned <- gross_participation_tokens(rv$user_id)
-      on_hand <- tryCatch(as.numeric(db_query(
-        "SELECT COALESCE(SUM(amount),0) t FROM token_ledger WHERE user_id=?;",
-        list(rv$user_id))$t[1] %||% 0), error = function(e) 0)
+      on_hand <- token_balance_in_course(rv$user_id)
       list(ledger = ledger, tokens_earned = earned, tokens_on_hand = on_hand)
     }
   )
@@ -6407,14 +6461,14 @@ server <- function(input, output, session) {
         students=data.frame(), subs=data.frame(), assignments=data.frame(),
         round=data.frame(), revealed=FALSE, section_reveals=data.frame(),
         pending_scores=data.frame()))
-      students <- tryCatch(db_query(
+      students <- tryCatch(db_query(paste0(
         "SELECT u.user_id, u.display_name, u.course, u.section,
                 COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned,
                 COALESCE(SUM(tl.amount),0) AS tokens_on_hand
          FROM users u
-         LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
+         LEFT JOIN token_ledger tl ON tl.user_id=u.user_id AND ", row_course_sql("tl"), "=?
          WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
-         GROUP BY u.user_id ORDER BY u.course, u.section, u.display_name;"),
+         GROUP BY u.user_id ORDER BY u.course, u.section, u.display_name;"), list(gradebook_course())),
         error = function(e) data.frame())
       ja_cols <- tryCatch(db_query("PRAGMA table_info(job_assignments);")$name,
                           error = function(e) character(0))
@@ -6804,9 +6858,7 @@ server <- function(input, output, session) {
     if (amount <= 0) return(0)
     leftover <- consume_pending_tokens(uid, amount)
     if (leftover > 0) {
-      cur_bal <- tryCatch(as.numeric(db_query(
-        "SELECT COALESCE(SUM(amount),0) t FROM token_ledger WHERE user_id=?;",
-        list(uid))$t[1] %||% 0), error = function(e) 0)
+      cur_bal <- token_balance_in_course(uid)
       ledger_deduct <- min(leftover, max(0, cur_bal))
       if (ledger_deduct > 0)
         token_credit(uid, dname, -ledger_deduct, 0L, source_type, note = note)
@@ -6913,9 +6965,9 @@ server <- function(input, output, session) {
     if (inserted != 1L) stop("Could not record the insurance claim.")
     claim_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
     credited <- DBI::dbExecute(connection,
-      "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
-       VALUES(?,?,'insurance_claim',?,?,0,?);",
-      params = list(uid, dname, claim_id, benefit, paste("Pass Insurance payout after", event_label)))
+      "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note,course)
+       VALUES(?,?,'insurance_claim',?,?,0,?,?);",
+      params = list(uid, dname, claim_id, benefit, paste("Pass Insurance payout after", event_label), gradebook_course(uid)))
     if (credited != 1L) stop("Could not pay the insurance claim.")
     ledger_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
     linked <- DBI::dbExecute(connection, "UPDATE insurance_claims SET ledger_id=? WHERE id=?;",
@@ -8544,10 +8596,10 @@ server <- function(input, output, session) {
        LEFT JOIN problem_sets ps ON ps.id=ep.problem_set_id
        WHERE ep.user_id=? ORDER BY ep.purchased_at DESC LIMIT 20;",
       list(rv$user_id)), error = function(e) data.frame())
-    rows <- tryCatch(db_query(
+    rows <- tryCatch(db_query(paste0(
       "SELECT amount, source_type, note, created_at FROM token_ledger
-       WHERE user_id=? AND earning=0 ORDER BY created_at DESC LIMIT 20;",
-      list(rv$user_id)), error = function(e) data.frame())
+       WHERE user_id=? AND earning=0 AND ", row_course_sql("token_ledger"), "=? ORDER BY created_at DESC LIMIT 20;"),
+      list(rv$user_id, gradebook_course(rv$user_id))), error = function(e) data.frame())
     purchase_ui <- if (nrow(purchases)) tagList(
       tags$h6(style="font-weight:700;color:#951829;margin-top:.2rem;", "Extension purchases"),
       tags$p(style="color:#666;font-size:.82rem;", "Before the original deadline, you can refund an extension directly. After the deadline, request a refund here; your instructor must approve it before tokens are restored and the extension is removed from the assignment portal."),
@@ -8683,9 +8735,9 @@ server <- function(input, output, session) {
       params = list(product_id, uid))
     if (nrow(existing))
       return(list(message = "You already purchased this policy.", type = "warning"))
-    balance <- DBI::dbGetQuery(connection,
-      "SELECT COALESCE(SUM(amount),0) AS balance FROM token_ledger WHERE user_id=?;",
-      params = list(uid))$balance[1]
+    balance <- DBI::dbGetQuery(connection, paste0(
+      "SELECT COALESCE(SUM(amount),0) AS balance FROM token_ledger WHERE user_id=? AND ", row_course_sql("token_ledger"), "=?;"),
+      params = list(uid, gradebook_course(uid)))$balance[1]
     if (balance < premium)
       return(list(message = sprintf("Not enough tokens (need %s, have %s).",
                                     fmt_token_amount(premium), fmt_token_amount(balance)), type = "error"))
@@ -8697,10 +8749,10 @@ server <- function(input, output, session) {
     if (premium > 0) {
       purchase_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
       debited <- DBI::dbExecute(connection,
-        "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
-         VALUES(?,?,'insurance_premium',?,?,0,?);",
+        "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note,course)
+         VALUES(?,?,'insurance_premium',?,?,0,?,?);",
         params = list(uid, dname, purchase_id, -premium,
-                      sprintf("Pass-insurance premium for class date %s", product$round_id[1])))
+                      sprintf("Pass-insurance premium for class date %s", product$round_id[1]), gradebook_course(uid)))
       if (debited != 1L) stop("Could not record the premium debit.")
       ledger_id <- DBI::dbGetQuery(connection, "SELECT last_insert_rowid() AS id;")$id[1]
       linked <- DBI::dbExecute(connection, "UPDATE insurance_purchases SET ledger_id=? WHERE id=?;",
@@ -8824,9 +8876,9 @@ server <- function(input, output, session) {
     lid <- token_debit(rv$user_id, rv$name, cost, "grade_reweight", NA,
                        note = sprintf("[%s] %s → %s, %d pt", level, from, to, pts))
     inserted <- db_exec(
-      "INSERT INTO grade_reweight_requests(user_id,from_category,to_category,points,cost,ledger_id,level)
-       VALUES(?,?,?,?,?,?,?);",
-      list(rv$user_id, from, to, pts, cost, as.integer(lid %||% NA_integer_), level))
+      "INSERT INTO grade_reweight_requests(user_id,from_category,to_category,points,cost,ledger_id,level,course)
+       VALUES(?,?,?,?,?,?,?,?);",
+      list(rv$user_id, from, to, pts, cost, as.integer(lid %||% NA_integer_), level, gradebook_course(rv$user_id)))
     if (!identical(as.integer(inserted), 1L)) {
       token_credit(rv$user_id, rv$name, cost, 0L, "grade_reweight_refund", as.integer(lid %||% NA_integer_),
                    "Automatic refund: another grade-reweight request is already pending")
@@ -8896,9 +8948,7 @@ server <- function(input, output, session) {
       showNotification("That question was just unlocked for the class.", type="message"); return()
     }
 
-    bal <- tryCatch(as.numeric(db_query(
-      "SELECT COALESCE(SUM(amount),0) t FROM token_ledger WHERE user_id=?;",
-      list(rv$user_id))$t[1] %||% 0), error=function(e) 0)
+    bal <- token_balance_in_course(rv$user_id)
     amount <- clamp_token_spend(requested, bal, remaining)
     if (amount < TOKEN_SPEND_STEP) {
       showNotification("Not enough spendable tokens.", type = "error"); return()
@@ -13186,10 +13236,10 @@ server <- function(input, output, session) {
             if (inserted != 1L) next
             dividend_id <- query("SELECT last_insert_rowid() id;")$id[1]
             credited <- execute(
-              "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
-               VALUES(?,?,'insurance_dividend',?,?,0,?);",
+              "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note,course)
+               VALUES(?,?,'insurance_dividend',?,?,0,?,?);",
               list(uid, roster$display_name[i] %||% uid, dividend_id, accounting$dividend_each,
-                   sprintf("Equal class dividend from pass insurance market %d", product_id)))
+                   sprintf("Equal class dividend from pass insurance market %d", product_id), gradebook_course(uid)))
             if (credited != 1L) stop("Could not pay the insurance dividend.")
             ledger_id <- query("SELECT last_insert_rowid() id;")$id[1]
             linked <- execute("UPDATE insurance_dividends SET ledger_id=? WHERE id=?;", list(ledger_id, dividend_id))
@@ -13859,12 +13909,12 @@ server <- function(input, output, session) {
         paste0("SELECT u.user_id, u.display_name, u.course, u.section,
                 COALESCE(active,1) AS active, COALESCE(is_admin,0) AS is_admin
                 ,COALESCE((SELECT SUM(tl.amount) FROM token_ledger tl
-                           WHERE LOWER(tl.user_id)=LOWER(u.user_id)),0) AS tokens_on_hand
+                           WHERE LOWER(tl.user_id)=LOWER(u.user_id) AND ", row_course_sql("tl"), "=?),0) AS tokens_on_hand
                 ,COALESCE((SELECT SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END)
-                           FROM token_ledger tl WHERE LOWER(tl.user_id)=LOWER(u.user_id)),0) AS gross_tokens
+                           FROM token_ledger tl WHERE LOWER(tl.user_id)=LOWER(u.user_id) AND ", row_course_sql("tl"), "=?),0) AS gross_tokens
          FROM users u WHERE COALESCE(u.is_demo,0)=0
          ", if (hide_archived) "AND COALESCE(active,1)=1 " else "",
-         "ORDER BY course, section, display_name;")),
+         "ORDER BY course, section, display_name;"), list(gradebook_course(), gradebook_course())),
         error = function(e) data.frame())
       # Settings → Students
       if (!is_super_admin()) students <- scope_filter_rows(students)
@@ -15061,7 +15111,7 @@ server <- function(input, output, session) {
               drop_items <- unique(as.character(gradebook_target_rows$assignment %||% character(0)))
               final_idx <- which(tolower(trimws(drop_items)) == "final")
               final_default <- if (length(final_idx)) drop_items[final_idx[1]] else if (length(drop_items)) drop_items[1] else ""
-              existing_drops <- tryCatch(scope_filter_rows(db_query("SELECT d.user_id,d.assignment_name,d.transfer_to,d.note,d.updated_at,u.display_name,u.course,u.section FROM gradebook_exam_drops d LEFT JOIN users u ON LOWER(u.user_id)=LOWER(d.user_id) ORDER BY u.section,u.display_name,d.assignment_name;")), error=function(e)data.frame())
+              existing_drops <- tryCatch(scope_filter_rows(db_query("SELECT d.user_id,d.assignment_name,d.transfer_to,d.note,d.updated_at,u.display_name,u.course,u.section FROM gradebook_exam_drops d LEFT JOIN users u ON LOWER(u.user_id)=LOWER(d.user_id) WHERE d.course=? ORDER BY u.section,u.display_name,d.assignment_name;", list(gradebook_course()))), error=function(e)data.frame())
               tags$details(
                 style="margin:.55rem 0 .8rem;background:#fff8e8;border:1px solid #ead7a5;border-radius:8px;padding:.65rem .8rem;",
                 tags$summary(style="cursor:pointer;color:#7c5b00;font-weight:700;", "Student exam-drop adjustment"),
@@ -15133,13 +15183,14 @@ server <- function(input, output, session) {
                 ),
                 # Reweight requests per student
                 {
-                  rw_rows <- tryCatch(db_query(
+                  rw_rows <- tryCatch(db_query(sprintf(
                     "SELECT r.id, u.display_name, COALESCE(r.level,'category') AS level,
                             r.from_category, r.to_category,
                             r.points, r.cost, r.status, r.created_at, r.rejection_note
                      FROM grade_reweight_requests r
                      LEFT JOIN users u ON u.user_id=r.user_id
-                     ORDER BY r.created_at DESC LIMIT 50;"),
+                     WHERE %s=?
+                     ORDER BY r.created_at DESC LIMIT 50;", row_course_sql("r")), list(gradebook_course())),
                     error = function(e) data.frame())
                   if (nrow(rw_rows)) {
                     tags$details(style = "margin-top:.4rem;",
@@ -15236,13 +15287,13 @@ server <- function(input, output, session) {
       scope_choices <- c("All authorized classes / sections"="__all__",
                          admin_account_scope_choices())
       selected_account_scopes <- selected_admin_account_scope_keys()
-      students <- tryCatch(db_query(
+      students <- tryCatch(db_query(paste0(
         "SELECT u.user_id, u.display_name, u.course, u.section, u.is_admin,
                 COALESCE(SUM(tl.amount),0) AS tokens_on_hand
          FROM users u
-         LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
+         LEFT JOIN token_ledger tl ON tl.user_id=u.user_id AND ", row_course_sql("tl"), "=?
          WHERE COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0
-         GROUP BY u.user_id ORDER BY u.course, u.section, u.display_name;"),
+         GROUP BY u.user_id ORDER BY u.course, u.section, u.display_name;"), list(gradebook_course())),
         error = function(e) data.frame())
       students <- filter_admin_account_scope_rows(students, include_self=TRUE)
       if (nrow(students)) {
@@ -15540,13 +15591,14 @@ server <- function(input, output, session) {
 
   output$rw_requests_panel <- renderUI({
     req(rv$is_admin)
-    rows <- tryCatch(db_query(
+    rows <- tryCatch(db_query(sprintf(
       "SELECT r.id, u.display_name, COALESCE(r.level,'category') AS level,
               r.from_category, r.to_category, r.points,
               r.cost, r.status, r.created_at
        FROM grade_reweight_requests r
        LEFT JOIN users u ON u.user_id=r.user_id
-       ORDER BY r.created_at DESC LIMIT 30;"),
+       WHERE %s=?
+       ORDER BY r.created_at DESC LIMIT 30;", row_course_sql("r")), list(gradebook_course())),
       error = function(e) data.frame())
     if (!nrow(rows))
       return(div(style = "color:#999;font-size:.88rem;", "No requests yet."))
@@ -15872,11 +15924,12 @@ server <- function(input, output, session) {
   output$dl_tokens <- downloadHandler(
     filename=function() paste0("token_ledger_",Sys.Date(),".csv"),
     content=function(file){
-      rows <- tryCatch(db_query(
+      rows <- tryCatch(db_query(paste0(
         "SELECT tl.user_id,u.display_name,u.course,u.section,tl.amount,tl.earning,
                 tl.source_type,tl.note,tl.created_at
          FROM token_ledger tl LEFT JOIN users u ON u.user_id=tl.user_id
-         ORDER BY tl.created_at DESC;"),error=function(e)data.frame())
+         WHERE ", row_course_sql("tl"), "=?
+         ORDER BY tl.created_at DESC;"), list(gradebook_course())),error=function(e)data.frame())
       write_export_csv(scope_filter_rows(rows),file,row.names=FALSE)
     })
   output$dl_students <- downloadHandler(
@@ -15961,13 +16014,14 @@ server <- function(input, output, session) {
   output$dl_reweight_requests <- downloadHandler(
     filename = function() paste0("reweight_requests_", Sys.Date(), ".csv"),
     content = function(file) {
-      rows <- tryCatch(db_query(
+      rows <- tryCatch(db_query(sprintf(
         "SELECT r.user_id AS export_uid,r.id,u.display_name AS student,u.course,u.section,
                 COALESCE(r.level,'category') AS level,r.from_category,r.to_category,
                 r.points,r.cost,r.status,r.created_at
          FROM grade_reweight_requests r
          LEFT JOIN users u ON u.user_id=r.user_id
-         ORDER BY r.created_at DESC;"), error=function(e)data.frame())
+         WHERE %s=?
+         ORDER BY r.created_at DESC;", row_course_sql("r")), list(gradebook_course())), error=function(e)data.frame())
       write_export_csv(scope_filter_rows(rows),file,row.names=FALSE)
     }
   )
@@ -16090,8 +16144,11 @@ server <- function(input, output, session) {
       students <- tryCatch({
         q_base <- "SELECT u.user_id,u.display_name,u.course,u.section,
                           COALESCE(SUM(CASE WHEN tl.earning=1 AND tl.amount>0 THEN tl.amount ELSE 0 END),0) AS tokens_earned
-                   FROM users u LEFT JOIN token_ledger tl ON tl.user_id=u.user_id
+                   FROM users u LEFT JOIN token_ledger tl ON tl.user_id=u.user_id AND TL_COURSE_HERE
                    WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.active,1)=1 AND COALESCE(u.is_demo,0)=0"
+        # Earnings in this course only. The course is written into the query
+        # because the three forms below take different parameters.
+        q_base <- sub("TL_COURSE_HERE", paste0(row_course_sql("tl"), "='", gsub("'", "''", gradebook_course(), fixed = TRUE), "'"), q_base, fixed = TRUE)
         if (identical(sec,"current_scope"))
           scope_filter_rows(db_query(paste0(q_base," GROUP BY u.user_id ORDER BY u.section,u.display_name;")))
         else if (identical(sec,"all"))
@@ -16769,7 +16826,7 @@ server <- function(input, output, session) {
       showNotification("Choose a student, an exam item, and a different final item.", type="error"); return()
     }
     if (!nzchar(note)) { showNotification("Add a brief note for this exam-drop adjustment.", type="error"); return() }
-    db_exec("INSERT INTO gradebook_exam_drops(user_id,assignment_name,transfer_to,note,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(user_id,assignment_name) DO UPDATE SET transfer_to=excluded.transfer_to,note=excluded.note,updated_at=CURRENT_TIMESTAMP;", list(uid,assignment,transfer_to,note))
+    db_exec("INSERT INTO gradebook_exam_drops(course,user_id,assignment_name,transfer_to,note,updated_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(course,user_id,assignment_name) DO UPDATE SET transfer_to=excluded.transfer_to,note=excluded.note,updated_at=CURRENT_TIMESTAMP;", list(gradebook_course(),uid,assignment,transfer_to,note))
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification(sprintf("Dropped %s for %s; its weight now goes to %s.", assignment, uid, transfer_to), type="message")
   }, ignoreNULL=TRUE)
@@ -16780,7 +16837,7 @@ server <- function(input, output, session) {
     uid <- trimws(as.character(ev$user_id %||% "")); assignment <- trimws(as.character(ev$assignment %||% ""))
     roster <- tryCatch(scope_filter_rows(db_query("SELECT user_id,course,section FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1;")), error=function(e)data.frame())
     if (!nzchar(uid) || !nzchar(assignment) || !uid %in% roster$user_id) return()
-    db_exec("DELETE FROM gradebook_exam_drops WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?);", list(uid,assignment))
+    db_exec("DELETE FROM gradebook_exam_drops WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) AND course=?;", list(uid,assignment,gradebook_course()))
     rv$gradebook_ver <- rv$gradebook_ver + 1L
     showNotification("Exam-drop adjustment removed; the original grade now counts again.", type="message")
   }, ignoreNULL=TRUE)
@@ -17269,10 +17326,8 @@ server <- function(input, output, session) {
       gb_course <- gradebook_course()
       before <- tryCatch(db_query("SELECT COUNT(*) AS n FROM student_grades WHERE LOWER(assignment_name)=LOWER(?) AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=?;", list(item, gb_course))$n[1], error=function(e)0L)
       db_exec("DELETE FROM student_grades WHERE LOWER(assignment_name)=LOWER(?) AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=?;", list(item, gb_course))
-      db_exec("DELETE FROM assignment_grade_sync_override WHERE LOWER(assignment_name)=LOWER(?)
-               AND LOWER(user_id) IN (SELECT LOWER(user_id) FROM users WHERE LOWER(TRIM(COALESCE(course,'')))=?
-                                      UNION SELECT LOWER(user_id) FROM user_environments WHERE LOWER(TRIM(course))=?);",
-              list(item, gb_course, gb_course))
+      db_exec("DELETE FROM assignment_grade_sync_override WHERE LOWER(assignment_name)=LOWER(?) AND course=?;",
+              list(item, gb_course))
       deleted <- deleted + as.integer(before %||% 0L)
     }
     rv$gradebook_ver <- rv$gradebook_ver + 1L
@@ -17422,24 +17477,21 @@ server <- function(input, output, session) {
       # gradebook only that course's students and records are touched, so a
       # same-named item in another course keeps its grades.
       gb_course <- if (nrow(category) && "course" %in% names(category) && !is.na(category$course[1])) norm_key(category$course[1]) else ""
-      by_student <- if (nzchar(gb_course))
-        " AND LOWER(user_id) IN (SELECT LOWER(user_id) FROM users WHERE LOWER(TRIM(COALESCE(course,'')))=?
-                                 UNION SELECT LOWER(user_id) FROM user_environments WHERE LOWER(TRIM(course))=?)" else ""
       by_course <- if (nzchar(gb_course)) " AND LOWER(TRIM(COALESCE(course,'')))=?" else ""
-      student_args <- if (nzchar(gb_course)) list(gb_course, gb_course) else list()
       course_args <- if (nzchar(gb_course)) list(gb_course) else list()
       rename_in <- function(table, column, where = "", filter = "", args = list())
         db_exec(sprintf("UPDATE OR IGNORE %s SET %s=? WHERE LOWER(%s)=LOWER(?)%s%s;", table, column, column, where, filter),
                 c(list(nm, old_name), args))
       rename_in("student_grades", "assignment_name", filter = if (nzchar(gb_course)) " AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=?" else "", args = course_args)
-      rename_in("assignment_grade_sync_override", "assignment_name", filter = by_student, args = student_args)
+      rename_in("assignment_grade_sync_override", "assignment_name", filter = by_course, args = course_args)
       rename_in("assessment_grade_imports", "gradebook_item", filter = by_course, args = course_args)
       rename_in("policy_rubric_assessments", "gradebook_item", filter = by_course, args = course_args)
       rename_in("assignment_grade_sync_log", "gradebook_item")
-      rename_in("gradebook_exam_drops", "assignment_name", filter = by_student, args = student_args)
-      rename_in("gradebook_exam_drops", "transfer_to", filter = by_student, args = student_args)
-      rename_in("grade_reweight_requests", "from_category", " AND COALESCE(level,'category')='assignment'", by_student, student_args)
-      rename_in("grade_reweight_requests", "to_category", " AND COALESCE(level,'category')='assignment'", by_student, student_args)
+      rename_in("gradebook_exam_drops", "assignment_name", filter = by_course, args = course_args)
+      rename_in("gradebook_exam_drops", "transfer_to", filter = by_course, args = course_args)
+      by_request <- if (nzchar(gb_course)) paste0(" AND ", row_course_sql("grade_reweight_requests"), "=?") else ""
+      rename_in("grade_reweight_requests", "from_category", " AND COALESCE(level,'category')='assignment'", by_request, course_args)
+      rename_in("grade_reweight_requests", "to_category", " AND COALESCE(level,'category')='assignment'", by_request, course_args)
     }
     # Keep the open category and all sibling inputs in place for rapid subitem editing.
     # Other gradebook views reload from SQLite when revisited.
@@ -17584,13 +17636,13 @@ server <- function(input, output, session) {
         for (i in seq_len(nrow(due))) {
           r <- due[i, ]
           DBI::dbExecute(connection,
-            "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note)
-             SELECT ?,?,?,?,?,1,? WHERE NOT EXISTS (
+            "INSERT INTO token_ledger(user_id,display_name,source_type,source_id,amount,earning,note,course)
+             SELECT ?,?,?,?,?,1,?,? WHERE NOT EXISTS (
                SELECT 1 FROM token_ledger WHERE source_type=? AND source_id=?);",
             params = list(r$user_id, r$display_name, r$source_type, as.integer(r$source_id), as.numeric(r$amount),
                           sprintf("Practice-date pay: %s (%s, %s)", r$job_label, r$outcome,
                                   if (r$outcome == "complete") paste("average wage,", r$basis) else "try"),
-                          r$source_type, as.integer(r$source_id)))
+                          gradebook_course(r$user_id), r$source_type, as.integer(r$source_id)))
         }
       })
       TRUE

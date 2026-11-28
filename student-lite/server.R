@@ -144,8 +144,10 @@ lite_new_app <- function(hub, secure_cookie = FALSE) {
        LEFT JOIN wage_bids wb ON wb.round_id=jp.round_id AND wb.category_id=jp.category_id AND wb.user_id=?
        WHERE jp.round_id=?;", list(user$user_id, user$user_id, rid)) else data.frame()
     no_anchor <- identical(as.character(scoped_setting("bid_no_anchor", scope, "0")), "1")
-    wallet <- q("SELECT COALESCE(SUM(CASE WHEN earning=1 AND amount>0 THEN amount ELSE 0 END),0) earned,
-                        COALESCE(SUM(amount),0) on_hand FROM token_ledger WHERE user_id=?;", list(user$user_id))
+    # Points earned and held in this course only.
+    wallet <- q(paste0("SELECT COALESCE(SUM(CASE WHEN earning=1 AND amount>0 THEN amount ELSE 0 END),0) earned,
+                        COALESCE(SUM(amount),0) on_hand FROM token_ledger WHERE user_id=? AND ",
+                       hub$row_course_sql("token_ledger"), "=?;"), list(user$user_id, hub$norm_key(user$course)))
     jobs <- lapply(seq_len(nrow(posts)), function(i) {
       post <- posts[i, ]
       bid <- mine$min_wage[mine$job_post_id == post$job_post_id]
