@@ -25,9 +25,9 @@ Records are tied together by text that was never meant to be an ID.
 
 ```
 course_offerings(
-  offering_id   TEXT PRIMARY KEY,   -- e.g. econ342-2026fa, written once, never changed
+  offering_id   TEXT PRIMARY KEY,   -- e.g. econ342-2026-fall, the Worker's course-id; written once, never changed
   course        TEXT NOT NULL,      -- the name shown and used today, e.g. ECON 342
-  term          TEXT NOT NULL,      -- e.g. 2026fa
+  term          TEXT NOT NULL,      -- e.g. 2026-fall
   active        INTEGER DEFAULT 1,
   worker_origin TEXT                -- this offering's Cloudflare Worker, if it has one
 )
@@ -76,8 +76,8 @@ says which offering each row is for). The export the app reads carries, per
 row:
 
 ```
-offeringId    econ342-2027sp
-itemKey       ps3
+courseId      econ102-2027-spring   (the offering ID)
+gradebookKey  ps3                   (the item key)
 externalId    the student's sign-in email
 assignmentId  the Worker's own ID, kept for the log
 score, maxPoints, gradePct, status, submittedAt   (as now)
@@ -126,8 +126,15 @@ database. None changes what a student in one course sees.
 5. **Terms.** Start each new term as a new offering instead of reusing the
    course name and archiving students.
 
-Phase 1 was built on 2026-11-28 (`course_offerings`, `enrollments`,
-`sync_enrollments()`, `tests/critical-enrollments.R`).
+Phases 1 and 2 were built on 2026-11-28: `course_offerings`, `enrollments`
+and `sync_enrollments()`; item keys; and `import_worker_grades()`, which files
+a row by offering, email and item key. The old matching is kept only for rows
+whose course ID is not an offering here, and is counted each run. Removing it
+waits until a live sync shows no such rows and no name matches.
+
+For a new course's Worker assignments to link, each assignment's `course-id`
+must be the offering ID (for ECON 102 in spring: `econ102-2027-spring`) and its
+`gradebook-key` must be the gradebook item's key.
 
 Phases 1 and 2 are what a second course needs to use the sync. Phases 3 to 5
 only matter once a student is in two courses or a course runs a second term in

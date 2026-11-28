@@ -39,12 +39,12 @@ rows <- function() app$db_query(
   "SELECT e.enrollment_id, e.offering_id, LOWER(e.user_id) user_id, e.section, e.status
    FROM enrollments e ORDER BY e.offering_id, LOWER(e.user_id);")
 first <- rows()
-stopifnot(identical(offerings$offering_id, c("data210-2026fa", "econ342-2026fa")),
-          identical(offerings$course, c("data 210", "econ 342")), all(offerings$term == "2026fa"),
+stopifnot(identical(offerings$offering_id, c("data210-2026-fall", "econ342-2026-fall")),
+          identical(offerings$course, c("data 210", "econ 342")), all(offerings$term == "2026-fall"),
           # One enrollment per student per course; no instructor, no demo account.
           identical(paste(first$offering_id, first$user_id),
-                    c("data210-2026fa ann@test.edu", "data210-2026fa dee@test.edu",
-                      "econ342-2026fa ann@test.edu", "econ342-2026fa bo@test.edu", "econ342-2026fa cy@test.edu")),
+                    c("data210-2026-fall ann@test.edu", "data210-2026-fall dee@test.edu",
+                      "econ342-2026-fall ann@test.edu", "econ342-2026-fall bo@test.edu", "econ342-2026-fall cy@test.edu")),
           # Ann's home section, not the stale one; Bo's section; Cy is inactive.
           identical(first$section, c("01", "01", "01", "02", "01")),
           identical(first$status, c("active", "active", "active", "active", "inactive")),
@@ -61,28 +61,40 @@ app$db_exec("UPDATE users SET active=1 WHERE user_id='cy@test.edu';")
 app$sync_enrollments()
 moved <- rows()
 stopifnot(identical(moved$enrollment_id, first$enrollment_id),
-          moved$section[moved$offering_id == "econ342-2026fa" & moved$user_id == "ann@test.edu"] == "02",
+          moved$section[moved$offering_id == "econ342-2026-fall" & moved$user_id == "ann@test.edu"] == "02",
           moved$status[moved$user_id == "cy@test.edu"] == "active")
 
 # ── A new term ────────────────────────────────────────────────────────────────
-app$raw_set_setting("current_term", "2027 SP")
-stopifnot(app$current_term() == "2027sp")
+app$raw_set_setting("current_term", " 2027 Spring ")
+stopifnot(app$current_term() == "2027-spring")
 person("eve@test.edu", "ECON 102", "01")                   # a course new this term
 person("fay@test.edu", "DATA 210", "01")                   # a new student in a course taught before
 app$sync_enrollments()
 spring <- rows()
 stopifnot(identical(sort(app$db_query("SELECT offering_id FROM course_offerings;")$offering_id),
-                    c("data210-2026fa", "data210-2027sp", "econ102-2027sp", "econ342-2026fa")),
-          spring$offering_id[spring$user_id == "eve@test.edu"] == "econ102-2027sp",
-          spring$offering_id[spring$user_id == "fay@test.edu"] == "data210-2027sp",
+                    c("data210-2026-fall", "data210-2027-spring", "econ102-2027-spring", "econ342-2026-fall")),
+          spring$offering_id[spring$user_id == "eve@test.edu"] == "econ102-2027-spring",
+          spring$offering_id[spring$user_id == "fay@test.edu"] == "data210-2027-spring",
           # Fall's students stay in fall's offerings with the IDs they had.
           { kept <- spring[spring$enrollment_id %in% first$enrollment_id, ]; kept <- kept[order(kept$enrollment_id), ]
             was <- moved[order(moved$enrollment_id), ]; rownames(kept) <- rownames(was) <- NULL
             identical(kept, was) },
           nrow(spring) == nrow(first) + 2L)
 
+# The term is set from Settings; anything but year-season is refused.
+shiny::testServer(app$server, {
+  rv$authed <- TRUE; rv$user_id <- "prof@test.edu"; rv$name <- "Prof"; rv$is_admin <- TRUE; rv$admin_role <- "super_admin"
+  rv$course <- "ECON 342"; rv$section <- "01"; rv$active_course <- "ECON 342"; rv$active_section <- "01"; rv$active_sections <- "01"
+  rv$impersonating <- FALSE; session$flushReact()
+  session$setInputs(current_term_input = "spring 27", save_current_term_btn = 1L); session$flushReact()
+  stopifnot(app$current_term() == "2027-spring")
+  session$setInputs(current_term_input = "2027-Summer", save_current_term_btn = 2L); session$flushReact()
+  stopifnot(app$current_term() == "2027-summer")
+})
+app$raw_set_setting("current_term", "2027-spring")
+
 # Two course names that reduce to the same letters get different offering IDs.
 stopifnot(app$offering_for("ECON-102") != app$offering_for("ECON 102"),
-          app$offering_for("ECON-102") == "econ102-2027sp-2", app$offering_for("econ 102") == "econ102-2027sp")
+          app$offering_for("ECON-102") == "econ102-2027-spring-2", app$offering_for("econ 102") == "econ102-2027-spring")
 
 cat("critical enrollments: PASS\n")

@@ -16,8 +16,10 @@ required <- c(
 missing <- required[!vapply(required, grepl, logical(1), x = source_text, fixed = TRUE)]
 if (length(missing)) stop("Gradebook UX contract missing: ", paste(missing, collapse = " | "))
 
-filter_pos <- regexpr("if (nzchar(selected_key) && !identical(worker_key, selected_key))", source_text, fixed = TRUE)[1]
-write_pos <- regexpr("upsert_student_grade(roster$user_id[hit[1]]", source_text, fixed = TRUE)[1]
+# The matching lives in import_worker_grades(); its behavior is tested in
+# critical-worker-grade-sync.R.
+filter_pos <- regexpr("if (nzchar(only_key) && !identical(row_key, only_key))", source_text, fixed = TRUE)[1]
+write_pos <- regexpr("upsert_student_grade(uid, item, suppressWarnings(as.numeric(r$score[1]", source_text, fixed = TRUE)[1]
 if (filter_pos < 1L || write_pos < 1L || filter_pos > write_pos)
   stop("Selected Cloudflare assignment must be filtered before any grade write.")
 

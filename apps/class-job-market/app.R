@@ -945,6 +945,10 @@ db_exec("CREATE TABLE IF NOT EXISTS gradebook_item_names(
   UNIQUE(category_id, item_index)
 );")
 ensure_column("gradebook_item_names", "item_weight REAL")
+# A short fixed key for an item, e.g. ps3. Empty means the key is the item's
+# name reduced to letters and digits. It is stored when an item is renamed, so
+# the key outlives the name.
+ensure_column("gradebook_item_names", "item_key TEXT")
 ensure_column("gradebook_categories", "drop_lowest INTEGER DEFAULT 0")
 # Each course has its own gradebook. A category with no course belongs to the
 # shared gradebook, which a course follows until it has categories of its own.
@@ -2659,14 +2663,114 @@ gradebook_item_specs <- function(cat_row, inames_df = data.frame()) {
     custom <- nrow(ov) && "item_weight" %in% names(ov) &&
       !is.na(suppressWarnings(as.numeric(ov$item_weight[1])))
     wt <- if (custom) suppressWarnings(as.numeric(ov$item_weight[1])) else equal_weight
+    stored_key <- if (nrow(ov) && "item_key" %in% names(ov)) as.character(ov$item_key[1]) else NA_character_
     data.frame(
       item_index = i,
       item_name = nm,
       item_weight = wt,
       custom_weight = custom,
+      item_key = if (!is.na(stored_key) && nzchar(stored_key)) stored_key else gradebook_key_of(nm),
       stringsAsFactors = FALSE
     )
   }))
+}
+# An item key: letters and digits only, lower case.
+gradebook_key_of <- function(x) gsub("[^a-z0-9]", "", tolower(trimws(as.character(x %||% ""))))
+
+# ── Grades from the assignments Worker ─────────────────────────────────────────
+# Every gradable item in a course's gradebook, with its key.
+manual_grade_catalog <- function(course = gradebook_course()) {
+  empty <- data.frame(assignment = character(0), max_score = numeric(0), item_key = character(0), stringsAsFactors = FALSE)
+  cats <- gradebook_categories_for(course)
+  inames <- tryCatch(db_query(
+    "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
+    error = function(e) data.frame())
+  if (!nrow(cats)) return(empty)
+  rows <- lapply(seq_len(nrow(cats)), function(i) {
+    category <- cats[i, ]
+    if (identical(category$source %||% "manual", "participation")) return(NULL)
+    specs <- gradebook_item_specs(category, inames)
+    if (!nrow(specs)) return(NULL)
+    data.frame(assignment = as.character(specs$item_name),
+               max_score = rep(as.numeric(category$max_points %||% 100), nrow(specs)),
+               item_key = as.character(specs$item_key),
+               stringsAsFactors = FALSE)
+  })
+  rows <- Filter(Negate(is.null), rows)
+  if (!length(rows)) return(empty)
+  do.call(rbind, rows)
+}
+# The gradebook key a Worker row names: its gradebookKey, or failing that its
+# title. "Problem set 3: ..." and "PS 3" both mean ps3.
+worker_row_item_key <- function(row) {
+  raw <- tolower(trimws(as.character(row$gradebookKey[1] %||% "")))
+  source <- if (nzchar(raw)) raw else as.character(row$assignmentTitle[1] %||% "")
+  hit <- regmatches(source, regexpr("(problem\\s*set|ps)\\s*[0-9]+", source, ignore.case = TRUE, perl = TRUE))
+  number <- regmatches(gradebook_key_of(hit), regexpr("[0-9]+$", gradebook_key_of(hit)))
+  if (length(number) && nzchar(number)) paste0("ps", number) else gradebook_key_of(source)
+}
+# File the Worker's grade rows for one course. A row whose courseId is one of
+# this course's offerings is matched exactly: the student by sign-in email
+# among that offering's enrollments, the item by key in this course's
+# gradebook. A row for another course's offering is left for that course. A
+# row whose courseId is no offering at all is matched as it always was (any
+# active student by ID, then by name) and counted, so the link can be fixed.
+import_worker_grades <- function(rows, course = gradebook_course(), policy = "final_score",
+                                 protected_items = character(0), excluded_items = character(0), only_key = "") {
+  course <- norm_key(course)
+  count <- c(synced = 0L, skipped = 0L, filtered = 0L, unmatched_key = 0L, unmatched_student = 0L,
+             other_course = 0L, by_name = 0L, unlinked = 0L)
+  if (!is.data.frame(rows) || !nrow(rows)) return(count)
+  key <- function(x) tolower(trimws(as.character(x %||% "")))
+  catalog <- manual_grade_catalog(course)
+  offerings <- tryCatch(db_query("SELECT offering_id, course FROM course_offerings;"), error = function(e) data.frame(offering_id = character(0), course = character(0)))
+  everyone <- tryCatch(db_query("SELECT user_id,display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;"), error = function(e) data.frame())
+  enrolled <- function(offering_id) tryCatch(db_query(
+    "SELECT u.user_id, u.display_name FROM enrollments e JOIN users u ON LOWER(u.user_id)=LOWER(e.user_id)
+     WHERE e.offering_id=? AND COALESCE(e.status,'active')='active';", list(offering_id)), error = function(e) data.frame())
+  for (i in seq_len(nrow(rows))) {
+    r <- rows[i, , drop = FALSE]
+    title <- as.character(r$assignmentTitle[1] %||% r$assignmentId[1] %||% "")
+    row_key <- worker_row_item_key(r)
+    if (nzchar(only_key) && !identical(row_key, only_key)) { count[["filtered"]] <- count[["filtered"]] + 1L; next }
+    offering <- key(if ("courseId" %in% names(r)) r$courseId[1] else "")
+    linked <- nzchar(offering) && offering %in% key(offerings$offering_id)
+    if (linked && !identical(offerings$course[key(offerings$offering_id) == offering][1], course)) {
+      count[["other_course"]] <- count[["other_course"]] + 1L; next
+    }
+    hit_item <- which(catalog$item_key == row_key)
+    if (!length(hit_item)) { count[["unmatched_key"]] <- count[["unmatched_key"]] + 1L; next }
+    item <- as.character(catalog$assignment[hit_item[1]])
+    if (gradebook_key_of(item) %in% excluded_items || row_key %in% excluded_items) { count[["skipped"]] <- count[["skipped"]] + 1L; next }
+    roster <- if (linked) enrolled(offering) else everyone
+    ids <- unique(c(key(r$externalId[1] %||% ""), key(if ("studentEmail" %in% names(r)) r$studentEmail[1] else "")))
+    ids <- ids[nzchar(ids)]
+    hit <- if (nrow(roster)) which(key(roster$user_id) %in% ids) else integer(0)
+    if (!length(hit) && nrow(roster)) {
+      name <- key(r$studentName[1] %||% "")
+      hit <- if (nzchar(name)) which(key(roster$display_name) == name) else integer(0)
+      # A name is only trusted when it picks out one student.
+      if (length(hit) != 1L) hit <- integer(0) else count[["by_name"]] <- count[["by_name"]] + 1L
+    }
+    if (!length(hit)) { count[["unmatched_student"]] <- count[["unmatched_student"]] + 1L; next }
+    uid <- roster$user_id[hit[1]]
+    submitted <- identical(as.character(r$status[1] %||% ""), "submitted") && isTRUE(nzchar(as.character(r$submittedAt[1] %||% "")))
+    scan_ok <- isTRUE(nzchar(as.character(r$scanVerifiedAt[1] %||% "")))
+    pct <- suppressWarnings(as.numeric(r$gradePct[1] %||% NA_real_))
+    if (identical(policy, "final_score") && (!submitted || !isTRUE(is.finite(pct)))) next
+    if (identical(policy, "split_half") && !scan_ok && (!submitted || !isTRUE(is.finite(pct)))) next
+    grade_pct <- if (identical(policy, "split_half")) {
+      if (isTRUE(submitted)) 100 else if (isTRUE(scan_ok)) 50 else 0
+    } else pct
+    protected <- db_query("SELECT 1 FROM assignment_grade_sync_override WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(uid, item))
+    existing <- db_query("SELECT 1 FROM student_grades WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=? LIMIT 1;", list(uid, item, course))
+    if (nrow(protected) || (gradebook_key_of(item) %in% protected_items && nrow(existing))) { count[["skipped"]] <- count[["skipped"]] + 1L; next }
+    upsert_student_grade(uid, item, suppressWarnings(as.numeric(r$score[1] %||% NA_real_)),
+                         suppressWarnings(as.numeric(r$maxPoints[1] %||% 100)), grade_pct, title, course = course)
+    if (!linked) count[["unlinked"]] <- count[["unlinked"]] + 1L
+    count[["synced"]] <- count[["synced"]] + 1L
+  }
+  count
 }
 
 # ── Offerings and enrollments ──────────────────────────────────────────────────
@@ -2694,13 +2798,16 @@ db_exec("CREATE TABLE IF NOT EXISTS enrollments(
   UNIQUE(offering_id, user_id)
 );")
 db_exec("CREATE INDEX IF NOT EXISTS idx_enrollments_user ON enrollments(user_id);")
-# The term new offerings are created in, e.g. 2026fa, 2027sp.
+# The term new offerings are created in, written year-season: 2026-fall,
+# 2027-spring.
 current_term <- function() {
-  term <- tolower(gsub("[^A-Za-z0-9]", "", as.character(raw_get_setting("current_term", "2026fa") %||% "")))
-  if (nzchar(term)) term else "2026fa"
+  term <- gsub("^-+|-+$", "", gsub("[^a-z0-9]+", "-", tolower(trimws(as.character(raw_get_setting("current_term", "2026-fall") %||% "")))))
+  if (nzchar(term)) term else "2026-fall"
 }
 # The offering of a course in a term, created if it does not exist. Its ID is
-# the course name without spaces or punctuation, then the term: econ342-2026fa.
+# the course name without spaces or punctuation, then the term:
+# econ342-2026-fall. This is the same ID the assignments Worker uses for the
+# course (its course-id), which is what links the two.
 offering_for <- function(course, term = current_term()) {
   course <- norm_key(course)
   if (!nzchar(course)) return(NA_character_)
@@ -2792,8 +2899,8 @@ ensure_course_gradebook <- function(course) {
       list(course, as.integer(r$id)))
     new_id <- as.integer(db_query("SELECT MAX(id) id FROM gradebook_categories WHERE course=?;", list(course))$id[1])
     db_exec(
-      "INSERT INTO gradebook_item_names(category_id,item_index,item_name,item_weight)
-       SELECT ?,item_index,item_name,item_weight FROM gradebook_item_names WHERE category_id=?;",
+      "INSERT INTO gradebook_item_names(category_id,item_index,item_name,item_weight,item_key)
+       SELECT ?,item_index,item_name,item_weight,item_key FROM gradebook_item_names WHERE category_id=?;",
       list(new_id, as.integer(r$id)))
   }
   nrow(shared)
@@ -15179,6 +15286,11 @@ server <- function(input, output, session) {
       exports = tagList(
         settings_section("exports"),
         settings_group("tools-app-name", "App name", settings_section("app_settings", want = "app-name")),
+        settings_group("tools-term", "Current term", hint = paste("Now:", current_term()),
+          tags$p(style = "color:#555;font-size:.85rem;",
+                 "A student new to a course is enrolled in that course's offering for this term. Change it before loading a new term's rosters. Students already enrolled in a course stay in the term they were enrolled in. The assignments site must use the same course ID, for example econ102-2027-spring."),
+          textInput("current_term_input", "Term (year-season, e.g. 2027-spring):", value = current_term(), width = "260px"),
+          actionButton("save_current_term_btn", "Save term", class = "btn btn-sm btn-primary")),
         settings_group("tools-other-apps", "Other apps", open = identical(requested, "sandbox_demo"),
                        settings_section("sandbox_demo"))),
       settings_section(page)))
@@ -16347,10 +16459,6 @@ server <- function(input, output, session) {
     if (!isTRUE(policy %in% unname(assignment_grade_policy_choices))) policy <- "final_score"
     if (!assignment_review_configured())
       return(list(ok=FALSE, message="Set ASSIGNMENT_ADMIN_TOKEN and install httr2 on the Shiny server."))
-    catalog <- tryCatch(manual_grade_catalog(), error=function(e)
-      stop("building Shiny gradebook catalog: ", conditionMessage(e)))
-    roster <- tryCatch(db_query("SELECT user_id,display_name FROM users WHERE COALESCE(is_admin,0)=0 AND COALESCE(active,1)=1 AND COALESCE(is_demo,0)=0;"), error=function(e)data.frame())
-    if (!nrow(roster)) return(list(ok=FALSE, message="No active students are available for matching."))
     key <- function(x) tolower(trimws(as.character(x %||% "")))
     assignment_key <- function(x) gsub("[^a-z0-9]", "", key(x))
     selected_key <- assignment_key(only_assignment)
@@ -16359,14 +16467,6 @@ server <- function(input, output, session) {
     protected_items <- assignment_key(strsplit(protected_raw %||% "", "[,;\\n]+")[[1]])
     excluded_raw <- as.character(get_setting("assignment_grade_excluded", ""))[1]
     excluded_items <- assignment_key(strsplit(excluded_raw %||% "", "[,;\\n]+")[[1]])
-    worker_assignment_key <- function(row) {
-      raw <- key(row$gradebookKey[1] %||% "")
-      title <- as.character(row$assignmentTitle[1] %||% "")
-      source <- if (nzchar(raw)) raw else title
-      hit <- regmatches(source, regexpr("(problem\\s*set|ps)\\s*[0-9]+", source, ignore.case=TRUE, perl=TRUE))
-      number <- regmatches(assignment_key(hit), regexpr("[0-9]+$", assignment_key(hit)))
-      if (length(number) && nzchar(number)) paste0("ps", number) else assignment_key(source)
-    }
     export <- tryCatch(assignment_review_gradebook_export(), error=function(e)e)
     if (inherits(export, "error")) return(list(ok=FALSE, message=conditionMessage(export)))
     rows <- export$rows %||% data.frame()
@@ -16377,63 +16477,31 @@ server <- function(input, output, session) {
       labels <- if (is.data.frame(summary) && nrow(summary)) paste(sprintf("%s=%s/%s", summary$id, summary$gradebookKey %||% "<missing>", summary$submissionRows %||% 0), collapse=", ") else "none"
       return(list(ok=TRUE, message=sprintf("Worker returned 0 grade rows across %d assignment%s. Keys/submissions: %s", n_assign, if(n_assign==1)"" else "s", labels), rows=0L))
     }
-    synced <- 0L; skipped <- 0L; filtered <- 0L; unmatched <- 0L; unmatched_key <- 0L; unmatched_student <- 0L
-    for (i in seq_len(nrow(rows))) {
-      r <- rows[i, , drop=FALSE]
-      aid <- as.character(r$assignmentId[1] %||% "")
-      title <- as.character(r$assignmentTitle[1] %||% aid)
-      worker_key <- worker_assignment_key(r)
-      if (nzchar(selected_key) && !identical(worker_key, selected_key)) { filtered <- filtered + 1L; next }
-
-      hit_item <- which(assignment_key(catalog$assignment) == worker_key)
-      item <- if (length(hit_item)) as.character(catalog$assignment[hit_item[1]]) else ""
-      if (!nzchar(item)) { unmatched <- unmatched + 1L; unmatched_key <- unmatched_key + 1L; next }
-
-      if (assignment_key(item) %in% excluded_items) { skipped <- skipped + 1L; next }
-      ext <- key(r$externalId[1] %||% "")
-      nm <- key(r$studentName[1] %||% "")
-      hit <- which(key(roster$user_id) == ext)
-      if (!length(hit) && isTRUE(nzchar(nm))) hit <- which(key(roster$display_name) == nm)
-      if (!length(hit)) { unmatched <- unmatched + 1L; unmatched_student <- unmatched_student + 1L; next }
-      submitted <- identical(as.character(r$status[1] %||% ""), "submitted") && isTRUE(nzchar(as.character(r$submittedAt[1] %||% "")))
-      scan_ok <- isTRUE(nzchar(as.character(r$scanVerifiedAt[1] %||% "")))
-      pct <- suppressWarnings(as.numeric(r$gradePct[1] %||% NA_real_))
-      if (identical(policy, "final_score") && (!submitted || !isTRUE(is.finite(pct)))) next
-      if (identical(policy, "split_half") && !scan_ok && (!submitted || !isTRUE(is.finite(pct)))) next
-      grade_pct <- if (identical(policy, "split_half")) {
-        if (isTRUE(submitted)) 100 else if (isTRUE(scan_ok)) 50 else 0
-      } else pct
-      protected <- db_query("SELECT 1 FROM assignment_grade_sync_override WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) LIMIT 1;", list(roster$user_id[hit[1]], item))
-      existing <- db_query("SELECT 1 FROM student_grades WHERE LOWER(user_id)=LOWER(?) AND LOWER(assignment_name)=LOWER(?) AND COALESCE(NULLIF(student_grades.course,''),(SELECT LOWER(TRIM(COALESCE(gu.course,''))) FROM users gu WHERE LOWER(gu.user_id)=LOWER(student_grades.user_id)),'')=? LIMIT 1;", list(roster$user_id[hit[1]], item, gradebook_course(roster$user_id[hit[1]])))
-      if (nrow(protected) || (assignment_key(item) %in% protected_items && nrow(existing))) { skipped <- skipped + 1L; next }
-      upsert_student_grade(roster$user_id[hit[1]], item, suppressWarnings(as.numeric(r$score[1] %||% NA_real_)), suppressWarnings(as.numeric(r$maxPoints[1] %||% 100)), grade_pct, title)
-      synced <- synced + 1L
-    }
-    list(ok=TRUE, message=sprintf("Imported %d grade row%s from Worker export (%d unmatched: %d assignment-key, %d student-identity; %d protected manual override%s).", synced, if(synced==1)"" else "s", unmatched, unmatched_key, unmatched_student, skipped, if(skipped==1)"" else "s"), rows=synced)
+    n <- import_worker_grades(rows, gradebook_course(), policy, protected_items, excluded_items, selected_key)
+    synced <- n[["synced"]]; skipped <- n[["skipped"]]
+    notes <- c(
+      if (n[["other_course"]]) sprintf("%d row%s belong to another course and were left for it", n[["other_course"]], if (n[["other_course"]] == 1L) "" else "s"),
+      if (n[["by_name"]]) sprintf("%d matched by name because the Worker's student ID is not the sign-in email", n[["by_name"]]),
+      if (n[["unlinked"]]) sprintf("%d came from a Worker course ID that is not one of this app's offerings and were matched the old way", n[["unlinked"]]))
+    list(ok=TRUE, message=paste0(sprintf("Imported %d grade row%s from Worker export (%d unmatched: %d assignment-key, %d student-identity; %d protected manual override%s).", synced, if(synced==1)"" else "s", n[["unmatched_key"]] + n[["unmatched_student"]], n[["unmatched_key"]], n[["unmatched_student"]], skipped, if(skipped==1)"" else "s"),
+                                 if (length(notes)) paste0(" Note: ", paste(notes, collapse = "; "), ".") else ""), rows=synced)
     }, error=function(e) {
       call_text <- tryCatch(paste(deparse(conditionCall(e)), collapse=""), error=function(x) "unknown")
       stop(sprintf("grade sync internal error: %s [call: %s]", conditionMessage(e), call_text), call.=FALSE)
     })
   }
-  manual_grade_catalog <- function() {
-    cats <- gradebook_categories_for()
-    inames <- tryCatch(db_query(
-      "SELECT * FROM gradebook_item_names ORDER BY category_id, item_index;"),
-      error = function(e) data.frame())
-    if (!nrow(cats)) return(data.frame(assignment = character(0), max_score = numeric(0)))
-    rows <- lapply(seq_len(nrow(cats)), function(i) {
-      category <- cats[i, ]
-      if (identical(category$source %||% "manual", "participation")) return(NULL)
-      specs <- gradebook_item_specs(category, inames)
-      if (!nrow(specs)) return(NULL)
-      data.frame(assignment = as.character(specs$item_name),
-                 max_score = rep(as.numeric(category$max_points %||% 100), nrow(specs)),
-                 stringsAsFactors = FALSE)
-    })
-    rows <- Filter(Negate(is.null), rows)
-    if (!length(rows)) return(data.frame(assignment = character(0), max_score = numeric(0)))
-    do.call(rbind, rows)
-  }
+  observeEvent(input$save_current_term_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    term <- tolower(trimws(input$current_term_input %||% ""))
+    if (!grepl("^[0-9]{4}-(fall|spring|summer|winter)$", term)) {
+      showNotification("Write the term as year-season, for example 2027-spring.", type = "error"); return()
+    }
+    raw_set_setting("current_term", term)
+    sync_enrollments()
+    rv$settings_ver <- (rv$settings_ver %||% 0L) + 1L
+    rv$jobs_ver <- rv$jobs_ver + 1L
+    showNotification(sprintf("Current term is %s.", term), type = "message")
+  }, ignoreNULL = TRUE)
 
   observeEvent(input$save_assignment_grade_policy_btn, {
     req(rv$is_admin)
@@ -17127,13 +17195,13 @@ server <- function(input, output, session) {
                                   list(cid)), error=function(e)data.frame())
     existing_names <- tryCatch(db_query("SELECT * FROM gradebook_item_names WHERE category_id=?;",
                                         list(cid)), error=function(e)data.frame())
-    old_name <- if (nrow(category)) {
-      specs <- gradebook_item_specs(category[1,], existing_names)
-      if (idx <= nrow(specs)) as.character(specs$item_name[idx]) else ""
-    } else ""
+    specs <- if (nrow(category)) gradebook_item_specs(category[1,], existing_names) else data.frame()
+    old_name <- if (nrow(category) && idx <= nrow(specs)) as.character(specs$item_name[idx]) else ""
+    # The item keeps the key it had, whatever it is now called.
+    kept_key <- if (nrow(category) && idx <= nrow(specs)) as.character(specs$item_key[idx]) else gradebook_key_of(nm)
     saved <- db_exec(
-      "INSERT OR REPLACE INTO gradebook_item_names(category_id,item_index,item_name,item_weight) VALUES(?,?,?,?);",
-      list(cid, idx, nm, if (!is.na(wt)) wt else NA_real_))
+      "INSERT OR REPLACE INTO gradebook_item_names(category_id,item_index,item_name,item_weight,item_key) VALUES(?,?,?,?,?);",
+      list(cid, idx, nm, if (!is.na(wt)) wt else NA_real_, kept_key))
     if (!identical(as.integer(saved), 1L)) {
       showNotification("Item settings could not be saved. Please try again.", type = "error")
       return()
