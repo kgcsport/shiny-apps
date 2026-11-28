@@ -1930,7 +1930,7 @@ raw_set_setting <- function(key, value) {
 raw_clear_setting <- function(key) db_exec("DELETE FROM labor_settings WHERE key=?;", list(key))
 # Bookkeeping that belongs to the app itself and never to a course or section.
 SETTING_APP_WIDE_ONLY <- c("active_round_id", "active_course", "active_section", "active_sections",
-                           "export_mask_salt", "lite_session_secret", "job_catalog_v2_migrated")
+                           "export_mask_salt", "lite_session_secret", "job_catalog_v2_migrated", "current_term")
 setting_is_qualified <- function(key) grepl("::|@course:|@section:", key)
 setting_level_key <- function(key, level, course = "", section = "") switch(level,
   section = paste0(key, "@section:", course, "/", section),
@@ -2668,6 +2668,87 @@ gradebook_item_specs <- function(cat_row, inames_df = data.frame()) {
     )
   }))
 }
+
+# ── Offerings and enrollments ──────────────────────────────────────────────────
+# An offering is one teaching of a course in one term. An enrollment is one
+# student in one offering: the course-and-student ID. See
+# ENROLLMENT_ID_DESIGN.md. These tables are kept up to date from the roster
+# at startup. Nothing else reads them yet.
+db_exec("CREATE TABLE IF NOT EXISTS course_offerings(
+  offering_id   TEXT PRIMARY KEY,
+  course        TEXT NOT NULL,
+  term          TEXT NOT NULL,
+  active        INTEGER DEFAULT 1,
+  worker_origin TEXT,
+  created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(course, term)
+);")
+db_exec("CREATE TABLE IF NOT EXISTS enrollments(
+  enrollment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  offering_id   TEXT NOT NULL,
+  user_id       TEXT NOT NULL COLLATE NOCASE,
+  section       TEXT,
+  status        TEXT DEFAULT 'active',
+  added_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+  dropped_at    TEXT,
+  UNIQUE(offering_id, user_id)
+);")
+db_exec("CREATE INDEX IF NOT EXISTS idx_enrollments_user ON enrollments(user_id);")
+# The term new offerings are created in, e.g. 2026fa, 2027sp.
+current_term <- function() {
+  term <- tolower(gsub("[^A-Za-z0-9]", "", as.character(raw_get_setting("current_term", "2026fa") %||% "")))
+  if (nzchar(term)) term else "2026fa"
+}
+# The offering of a course in a term, created if it does not exist. Its ID is
+# the course name without spaces or punctuation, then the term: econ342-2026fa.
+offering_for <- function(course, term = current_term()) {
+  course <- norm_key(course)
+  if (!nzchar(course)) return(NA_character_)
+  have <- db_query("SELECT offering_id FROM course_offerings WHERE course=? AND term=?;", list(course, term))$offering_id
+  if (length(have)) return(have[1])
+  base <- paste0(gsub("[^a-z0-9]", "", course), "-", term)
+  id <- base; n <- 1L
+  # Two course names that reduce to the same letters get different IDs.
+  while (nrow(db_query("SELECT 1 FROM course_offerings WHERE offering_id=?;", list(id)))) { n <- n + 1L; id <- paste0(base, "-", n) }
+  db_exec("INSERT INTO course_offerings(offering_id,course,term) VALUES(?,?,?);", list(id, course, term))
+  id
+}
+# Bring enrollments in line with the roster. A student already enrolled in any
+# offering of a course keeps that enrollment: its section and status are
+# updated, and it is never moved to another term. A student with no enrollment
+# in a course gets one in the current term's offering. Instructors and demo
+# accounts are not enrolled.
+sync_enrollments <- function(term = current_term()) {
+  roster <- tryCatch(db_query(
+    "SELECT u.user_id, LOWER(TRIM(m.course)) AS course, TRIM(COALESCE(m.section,'')) AS section,
+            COALESCE(u.active,1) AS active,
+            CASE WHEN LOWER(TRIM(COALESCE(u.course,'')))=LOWER(TRIM(m.course))
+                  AND TRIM(COALESCE(u.section,''))=TRIM(COALESCE(m.section,'')) THEN 0 ELSE 1 END AS not_home
+     FROM (SELECT user_id, course, section FROM user_environments
+           UNION SELECT user_id, course, section FROM users WHERE TRIM(COALESCE(course,''))<>'') m
+     JOIN users u ON LOWER(u.user_id)=LOWER(m.user_id)
+     WHERE COALESCE(u.is_admin,0)=0 AND COALESCE(u.is_demo,0)=0 AND TRIM(COALESCE(m.course,''))<>''
+     ORDER BY u.user_id, course, not_home, section;"), error = function(e) data.frame())
+  if (!nrow(roster)) return(invisible(0L))
+  # One row per student and course: the home section if the student has one there.
+  roster <- roster[!duplicated(paste(norm_key(roster$user_id), roster$course)), , drop = FALSE]
+  for (i in seq_len(nrow(roster))) {
+    r <- roster[i, ]
+    status <- if (as.integer(r$active) == 1L) "active" else "inactive"
+    held <- db_query(
+      "SELECT e.enrollment_id FROM enrollments e JOIN course_offerings o ON o.offering_id=e.offering_id
+       WHERE o.course=? AND e.user_id=? ORDER BY e.enrollment_id DESC LIMIT 1;", list(r$course, r$user_id))
+    if (nrow(held)) {
+      db_exec("UPDATE enrollments SET section=?, status=? WHERE enrollment_id=? AND (COALESCE(section,'')<>? OR COALESCE(status,'')<>?);",
+              list(r$section, status, as.integer(held$enrollment_id[1]), r$section, status))
+    } else {
+      db_exec("INSERT OR IGNORE INTO enrollments(offering_id,user_id,section,status) VALUES(?,?,?,?);",
+              list(offering_for(r$course, term), r$user_id, r$section, status))
+    }
+  }
+  invisible(nrow(roster))
+}
+tryCatch(sync_enrollments(), error = function(e) message("sync_enrollments: ", conditionMessage(e)))
 
 # ── One gradebook per course ───────────────────────────────────────────────────
 # Whose gradebook applies: the course of the session running the code, or,

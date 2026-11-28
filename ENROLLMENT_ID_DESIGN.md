@@ -126,6 +126,9 @@ database. None changes what a student in one course sees.
 5. **Terms.** Start each new term as a new offering instead of reusing the
    course name and archiving students.
 
+Phase 1 was built on 2026-11-28 (`course_offerings`, `enrollments`,
+`sync_enrollments()`, `tests/critical-enrollments.R`).
+
 Phases 1 and 2 are what a second course needs to use the sync. Phases 3 to 5
 only matter once a student is in two courses or a course runs a second term in
 the same database.
