@@ -592,6 +592,8 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Work Log
 
+- **2026-11-28** (Claude Code) — Merged the per-course gradebook, per-course grades and price-formula fix to `main` at Kyle's request, and drafted `ENROLLMENT_ID_DESIGN.md`. No code changed for the design.
+
 - **2026-11-27** (Claude Code) — Stored grades by course and student, scoped "Clear All" and assignment deletion to the course, and extended `tests/critical-gradebook-per-course.R`. Suites pass; unit tests fail on the same lines as before. Not staged or seen in a browser. Not on `main`: on branch `claude/friendly-hawking-74ud45`.
 
 - **2026-11-27** (Claude Code) — Built the per-course gradebook with its migration and `tests/critical-gradebook-per-course.R`, scoped item renames to the course, and added the questions' share of the exam to the price formula. The suites in `HANDOFF.md` plus the new one pass. Not staged; the Grades page was not looked at in a browser. Exam question funds by exam are still unbuilt.
@@ -1163,8 +1165,7 @@ k is capped at the number of bids; with no bids the post's default wage is used.
 
 ## Questions for Kyle
 
-- **Course-and-student records beyond grades (2026-11-27).** Kyle wants records keyed by course and student. Grades now are. Still keyed by student alone: the token balance and ledger, grade reweight requests, exam drops, and sync overrides. A student in two courses has one balance, and a reweight or exam drop bought in one course applies in the other if the category or item has the same name. Fixing that properly means one enrollment ID (course + student) used everywhere, which is its own project. Wanted before spring, or only if someone is actually in two courses?
-- **Gradebook sync for other courses (2026-11-27).** Kyle hopes to extend the Cloudflare sync to other courses with a more systematic ID. Today `scripts/sync-cloudflare-gradebook.R` reads one Worker, matches items by name across every course's gradebook, and files each grade under the student's home course. It needs a course per Worker (or per row) before a second course uses it.
+- **Enrollment IDs and the Cloudflare sync (2026-11-28).** Design drafted in `ENROLLMENT_ID_DESIGN.md`; five questions at its end (terms, one balance per course or one wallet, one Worker per course or one for all, whether the Worker's student ID is the sign-in email, and whether a second spring course will use the sync).
 - **Exam questions and sections (2026-11-26).** Students in different sections can share a revealed question. Either pool the fund across the course, or keep section pools and write a separate question set and exam for each section.
 - **Preview gain (2026-11-26).** How much better does a student do on an exam question for having seen it beforehand? Provisionally 20 points out of 100.
 
