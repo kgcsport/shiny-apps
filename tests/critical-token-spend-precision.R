@@ -19,7 +19,9 @@ bonus_text <- paste(readLines(bonus_path, warn=FALSE), collapse="\n")
 app_required <- c(
   "TOKEN_SPEND_STEP <- 0.01",
   "step=TOKEN_SPEND_STEP",
-  "requested <- suppressWarnings(round_token_spend(input$flex_contribution",
+  # The amount typed reaches the handler as requested_raw; a cent-sized
+  # contribution is exercised in critical-exam-question-funds.R.
+  "requested <- suppressWarnings(round_token_spend(requested_raw",
   "amount <- clamp_token_spend(requested, bal, remaining)",
   "fmt_token_amount(max(0, target-new_total))"
 )

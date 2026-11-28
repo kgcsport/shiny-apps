@@ -104,9 +104,9 @@ Kyle corrected these more than once. Do not drift from them.
 2. **The preregistration, rehearsal plan, and app defaults still say limit 10,
    threshold 30, rate 10.** They are stale. Update them together once item 1
    is settled.
-3. **Exam question pool:** across the course, or section pools with a separate
-   exam per section. Students in different sections can share a revealed
-   question, so section pools need section-specific exams.
+3. **Exam question pool:** across the course or by section is a per-course
+   switch. Questions are funded exam by exam and can be limited to one
+   section (built 2026-11-28). Which to use in spring is still Kyle's call.
 4. **How much a preview helps** on an exam question. Provisionally 20% of the
    question's credit. Question prices are proportional to it.
 5. **Reweighting in spring:** on or off, and flat or per-student pricing.

@@ -705,6 +705,12 @@ ensure_column("flex_questions", "topic TEXT")
 ensure_column("flex_questions", "draw_group TEXT")
 ensure_column("flex_questions", "draw_count INTEGER")
 ensure_column("flex_questions", "pool_size INTEGER")
+# Which exam a question is for, as the key of that exam's gradebook item in the
+# question's course, and the one section it is for (empty: every section).
+# exam_tag keeps the exam's name as typed; a question whose tag matches no
+# gradebook item has no key and is grouped by its tag.
+ensure_column("flex_questions", "exam_item_key TEXT")
+ensure_column("flex_questions", "section TEXT")
 db_exec("CREATE TABLE IF NOT EXISTS flex_question_contributions(
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   question_id    INTEGER NOT NULL,
@@ -2700,6 +2706,25 @@ manual_grade_catalog <- function(course = gradebook_course()) {
   if (!length(rows)) return(empty)
   do.call(rbind, rows)
 }
+# Tie each candidate question to its exam's gradebook item. A question whose
+# exam name matches an item in its course's gradebook gets that item's key;
+# one that matches nothing is left as it is. Keys already set are not touched,
+# so a renamed gradebook item keeps its questions.
+link_flex_question_exams <- function() {
+  open <- tryCatch(db_query(
+    "SELECT id, exam_tag, LOWER(TRIM(COALESCE(course,''))) AS course FROM flex_questions
+     WHERE TRIM(COALESCE(exam_item_key,''))='' AND TRIM(COALESCE(exam_tag,''))<>'' AND TRIM(COALESCE(course,''))<>'';"),
+    error = function(e) data.frame())
+  linked <- 0L
+  for (course in unique(open$course)) {
+    keys <- manual_grade_catalog(course)$item_key
+    rows <- open[open$course == course & gradebook_key_of(open$exam_tag) %in% keys, , drop = FALSE]
+    for (i in seq_len(nrow(rows)))
+      db_exec("UPDATE flex_questions SET exam_item_key=? WHERE id=?;", list(gradebook_key_of(rows$exam_tag[i]), as.integer(rows$id[i])))
+    linked <- linked + nrow(rows)
+  }
+  invisible(linked)
+}
 # The gradebook key a Worker row names: its gradebookKey, or failing that its
 # title. "Problem set 3: ..." and "PS 3" both mean ps3.
 worker_row_item_key <- function(row) {
@@ -2915,6 +2940,7 @@ migrate_gradebooks_per_course <- function() {
   invisible(length(unique(norm_key(courses))))
 }
 tryCatch(migrate_gradebooks_per_course(), error = function(e) message("migrate_gradebooks_per_course: ", conditionMessage(e)))
+tryCatch(link_flex_question_exams(), error = function(e) message("link_flex_question_exams: ", conditionMessage(e)))
 
 # Returns a named list suitable for selectInput grouped choices: list(CatName = c(item1, item2, ...))
 get_all_gradebook_items <- function() {
@@ -6180,45 +6206,131 @@ server <- function(input, output, session) {
     max(1L, nrow(scope_filter_rows(students)))
   }
 
-  flex_question_state <- function() {
-    key <- flex_fund_key()
+  # Every fund key this session's class can pay into: the pool's, and, when the
+  # pool is the whole course, each of its own sections' (for section-only questions).
+  flex_section_fund_key <- function(section) section_scope_key(scoped_course(), section)
+  flex_fund_keys <- function()
+    unique(c(flex_fund_key(), if (flex_pool_is_course()) vapply(scoped_sections(), flex_section_fund_key, character(1))))
+  # The price schedule for one exam: its own if the class has set one,
+  # otherwise the class's schedule.
+  flex_exam_schedule_key <- function(exam_key) paste0("flex_cost_schedule__", gradebook_key_of(exam_key))
+  flex_cost_schedule_for_exam <- function(exam_key) {
+    own <- trimws(as.character(get_scoped_setting(flex_exam_schedule_key(exam_key), "") %||% ""))
+    if (nzchar(own)) own else flex_cost_schedule_for_scope()
+  }
+  # Candidate questions this class can see, each with the exam it belongs to,
+  # the fund it is paid from, and that fund's state. A question for one
+  # section is seen only by that section and is always funded by it.
+  flex_question_rows <- function(active_only = TRUE) {
     course <- scoped_course()
     questions <- tryCatch(db_query(
-      "SELECT fq.id, fq.question_text, fq.order_index, fq.exam_tag, fq.course,
+      "SELECT fq.id, fq.question_text, fq.order_index, COALESCE(fq.active,1) AS active, fq.exam_tag, fq.course,
               fq.topic,fq.draw_group,fq.draw_count,fq.pool_size,
-              fqs.unlock_cost, fqs.unlocked_at,
-              COALESCE(SUM(fqc.amount),0) AS funded
+              TRIM(COALESCE(fq.exam_item_key,'')) AS exam_item_key, TRIM(COALESCE(fq.section,'')) AS section
        FROM flex_questions fq
-       LEFT JOIN flex_question_scope_state fqs
-         ON fqs.question_id=fq.id AND fqs.scope_key=?
-       LEFT JOIN flex_question_contributions fqc
-         ON fqc.question_id=fq.id AND fqc.scope_key=?
-       WHERE COALESCE(fq.active,1)=1
-         AND (?='' OR trim(COALESCE(fq.course,''))='' OR LOWER(fq.course)=LOWER(?))
-       GROUP BY fq.id
+       WHERE (?='' OR trim(COALESCE(fq.course,''))='' OR LOWER(fq.course)=LOWER(?))
        ORDER BY fq.order_index ASC, fq.id ASC;",
-      list(key, key, course, course)), error=function(e)data.frame())
-    if (!nrow(questions)) return(list(
-      questions=data.frame(), unlocked=data.frame(), next_question=data.frame(),
-      total=0L, unlocked_n=0L, class_size=max(1L, flex_roster_size()),
-      target=0, funded=0, remaining=0, scope_key=key))
-    unlocked_flag <- !is.na(questions$unlocked_at) & nzchar(as.character(questions$unlocked_at))
-    unlocked <- questions[unlocked_flag, , drop=FALSE]
-    locked <- questions[!unlocked_flag, , drop=FALSE]
-    next_q <- if (nrow(locked)) locked[1, , drop=FALSE] else data.frame()
-    class_size <- max(1L, flex_roster_size())
-    unlocked_n <- nrow(unlocked)
-    target <- 0
-    funded <- 0
-    if (nrow(next_q)) {
-      stored <- suppressWarnings(as.numeric(next_q$unlock_cost[1]))
-      target <- if (is.finite(stored) && stored > 0) stored else
-        question_cost_for_n(unlocked_n + 1L, flex_cost_schedule_for_scope(), class_size)
-      funded <- as.numeric(next_q$funded[1] %||% 0)
+      list(course, course)), error=function(e)data.frame())
+    if (nrow(questions) && isTRUE(active_only)) questions <- questions[as.integer(questions$active) == 1L, , drop=FALSE]
+    if (nrow(questions)) questions <- questions[!nzchar(questions$section) |
+                                                  norm_key(questions$section) %in% norm_key(scoped_sections()), , drop=FALSE]
+    if (!nrow(questions)) return(questions)
+    own_section <- nzchar(questions$section) & flex_pool_is_course()
+    questions$fund_key <- flex_fund_key()
+    questions$fund_key[own_section] <- vapply(questions$section[own_section], flex_section_fund_key, character(1))
+    pool_size <- max(1L, flex_roster_size())
+    questions$class_size <- pool_size
+    if (any(own_section)) {
+      roster <- tryCatch(db_query(
+        "SELECT course,section FROM users WHERE COALESCE(active,1)=1 AND COALESCE(is_admin,0)=0 AND COALESCE(is_demo,0)=0;"),
+        error=function(e)data.frame(course=character(0), section=character(0)))
+      roster <- roster[norm_key(roster$course) == norm_key(course), , drop=FALSE]
+      questions$class_size[own_section] <- vapply(questions$section[own_section], function(sec)
+        max(1L, sum(norm_key(roster$section) == norm_key(sec))), integer(1))
     }
-    list(questions=questions, unlocked=unlocked, next_question=next_q,
-         total=nrow(questions), unlocked_n=unlocked_n, class_size=class_size,
-         target=target, funded=funded, remaining=max(0,target-funded), scope_key=key)
+    keys <- unique(questions$fund_key)
+    marks <- paste(rep("?", length(keys)), collapse=",")
+    state <- tryCatch(db_query(sprintf(
+      "SELECT question_id, scope_key, unlock_cost, unlocked_at FROM flex_question_scope_state WHERE scope_key IN (%s);", marks),
+      as.list(keys)), error=function(e)data.frame())
+    paid <- tryCatch(db_query(sprintf(
+      "SELECT question_id, scope_key, COALESCE(SUM(amount),0) AS funded FROM flex_question_contributions
+       WHERE scope_key IN (%s) GROUP BY question_id, scope_key;", marks), as.list(keys)), error=function(e)data.frame())
+    at <- function(rows, column, missing) vapply(seq_len(nrow(questions)), function(i) {
+      hit <- if (nrow(rows)) rows[[column]][rows$question_id == questions$id[i] & rows$scope_key == questions$fund_key[i]] else NULL
+      if (length(hit)) hit[1] else missing
+    }, missing)
+    questions$unlock_cost <- at(state, "unlock_cost", NA_real_)
+    questions$unlocked_at <- at(state, "unlocked_at", NA_character_)
+    questions$funded <- at(paid, "funded", 0)
+    # The exam: the gradebook item its key names, or its tag as typed.
+    catalog <- tryCatch(manual_grade_catalog(), error=function(e) data.frame(assignment=character(0), item_key=character(0)))
+    tag <- trimws(as.character(ifelse(is.na(questions$exam_tag), "", questions$exam_tag)))
+    questions$exam_key <- ifelse(nzchar(questions$exam_item_key), questions$exam_item_key, paste0("tag:", tolower(tag)))
+    item_name <- catalog$assignment[match(questions$exam_item_key, catalog$item_key)]
+    questions$exam_label <- ifelse(nzchar(questions$exam_item_key) & !is.na(item_name), item_name,
+                                   ifelse(nzchar(tag), tag, "Candidate questions"))
+    questions
+  }
+
+  # The exams a question can be for: this course's gradebook items. A question
+  # whose exam was typed before and matches no item keeps that text as a choice.
+  flex_exam_choices <- function(keep_tag = "") {
+    catalog <- tryCatch(manual_grade_catalog(), error=function(e) data.frame(assignment=character(0), item_key=character(0)))
+    c("No exam" = "", stats::setNames(catalog$item_key, catalog$assignment),
+      if (nzchar(keep_tag)) stats::setNames(paste0("tag:", keep_tag), paste0(keep_tag, " (not in the gradebook)")))
+  }
+  # What is stored for a chosen exam: its name and its gradebook key.
+  flex_exam_fields <- function(choice) {
+    choice <- trimws(as.character(choice %||% ""))
+    if (!nzchar(choice)) return(list(tag = NA_character_, key = NA_character_))
+    if (startsWith(choice, "tag:")) return(list(tag = substring(choice, 5L), key = NA_character_))
+    catalog <- tryCatch(manual_grade_catalog(), error=function(e) data.frame(assignment=character(0), item_key=character(0)))
+    name <- catalog$assignment[match(choice, catalog$item_key)]
+    if (is.na(name)) list(tag = NA_character_, key = NA_character_) else list(tag = name, key = choice)
+  }
+  flex_section_choices <- function() c("Every section" = "", stats::setNames(scoped_sections(), scoped_sections()))
+
+  # One fund per exam. Each has its own next question, progress and price
+  # sequence. The fields outside `funds` describe the first fund that still
+  # has a question to reveal, with counts across every fund, for the places
+  # that show one line of status.
+  flex_question_state <- function() {
+    questions <- flex_question_rows()
+    empty <- list(questions=data.frame(), unlocked=data.frame(), next_question=data.frame(),
+                  total=0L, unlocked_n=0L, class_size=max(1L, flex_roster_size()),
+                  target=0, funded=0, remaining=0, scope_key=flex_fund_key(), funds=list())
+    if (!nrow(questions)) return(empty)
+    funds <- lapply(unique(questions$exam_key), function(exam) {
+      mine <- questions[questions$exam_key == exam, , drop=FALSE]
+      unlocked_flag <- !is.na(mine$unlocked_at) & nzchar(as.character(mine$unlocked_at))
+      unlocked <- mine[unlocked_flag, , drop=FALSE]
+      locked <- mine[!unlocked_flag, , drop=FALSE]
+      next_q <- if (nrow(locked)) locked[1, , drop=FALSE] else data.frame()
+      unlocked_n <- nrow(unlocked)
+      schedule <- flex_cost_schedule_for_exam(exam)
+      class_size <- if (nrow(next_q)) as.integer(next_q$class_size[1]) else as.integer(mine$class_size[1])
+      target <- 0; funded <- 0
+      if (nrow(next_q)) {
+        stored <- suppressWarnings(as.numeric(next_q$unlock_cost[1]))
+        target <- if (is.finite(stored) && stored > 0) stored else
+          question_cost_for_n(unlocked_n + 1L, schedule, class_size)
+        funded <- as.numeric(next_q$funded[1] %||% 0)
+      }
+      list(exam_key=exam, exam_label=mine$exam_label[1], schedule=schedule,
+           questions=mine, unlocked=unlocked, next_question=next_q,
+           total=nrow(mine), unlocked_n=unlocked_n, class_size=class_size,
+           target=target, funded=funded, remaining=max(0,target-funded),
+           scope_key=if (nrow(next_q)) next_q$fund_key[1] else mine$fund_key[1])
+    })
+    open <- Filter(function(fund) nrow(fund$next_question) > 0, funds)
+    lead <- if (length(open)) open[[1]] else funds[[1]]
+    all_unlocked <- do.call(rbind, lapply(funds, function(fund) fund$unlocked))
+    list(questions=questions, unlocked=all_unlocked,
+         next_question=if (length(open)) lead$next_question else data.frame(),
+         total=nrow(questions), unlocked_n=nrow(all_unlocked), class_size=lead$class_size,
+         target=lead$target, funded=lead$funded, remaining=lead$remaining, scope_key=lead$scope_key,
+         funds=funds)
   }
 
   flex_poll <- shared_db_poll(5000, session,
@@ -6229,11 +6341,16 @@ server <- function(input, output, session) {
         "SELECT COUNT(*) n, COALESCE(MAX(contributed_at),'') ts
          FROM flex_question_contributions;"), error=function(e)data.frame(n=0,ts=""))
       c2 <- tryCatch(db_query(
-        "SELECT COUNT(*) n, COALESCE(MAX(COALESCE(unlocked_at,created_at)),'') ts
+        "SELECT COUNT(*) n, COALESCE(MAX(COALESCE(unlocked_at,created_at)),'') ts,
+                COALESCE(GROUP_CONCAT(COALESCE(exam_item_key,'') || ':' || COALESCE(section,'')),'') AS exams
          FROM flex_questions WHERE COALESCE(active,1)=1;"),
-        error=function(e)data.frame(n=0,ts=""))
+        error=function(e)data.frame(n=0,ts="",exams=""))
+      exam_schedules <- tryCatch(db_query(
+        "SELECT COALESCE(GROUP_CONCAT(key || '=' || COALESCE(value,'')),'') v FROM labor_settings WHERE key LIKE 'flex_cost_schedule__%';")$v[1],
+        error=function(e) "")
       paste(c1$n[1] %||% 0, c1$ts[1] %||% "", c2$n[1] %||% 0,
-            c2$ts[1] %||% "", flex_cost_schedule_for_scope(), flex_fund_key(), sep="|")
+            c2$ts[1] %||% "", c2$exams[1] %||% "", exam_schedules %||% "",
+            flex_cost_schedule_for_scope(), flex_fund_key(), sep="|")
     },
     valueFunc = flex_question_state
   )
@@ -8013,83 +8130,96 @@ server <- function(input, output, session) {
     } else if (mode == "flex_question") {
       rv$flex_ver
       fq <- flex_poll()
-      pct <- if (fq$target > 0) min(100, 100 * fq$funded / fq$target) else 100
-      max_contribution <- clamp_token_spend(Inf, bal, fq$remaining)
-      typed <- suppressWarnings(round_token_spend(rv$flex_contrib_val %||% min(1, max_contribution)))
-      if (!is.finite(typed) || typed < TOKEN_SPEND_STEP) typed <- min(1, max_contribution)
-      contribution_value <- if (max_contribution >= TOKEN_SPEND_STEP) min(typed, max_contribution) else TOKEN_SPEND_STEP
+      funds <- fq$funds
+      # With one exam the page is as it has always been. With several, each
+      # exam has its own heading, price schedule, progress and contribute box.
+      # The first exam's box keeps the original input names.
+      several <- length(funds) > 1L
+      fund_block <- function(fund, first) {
+        suffix <- if (first) "" else paste0("__", gradebook_key_of(fund$exam_key))
+        pct <- if (fund$target > 0) min(100, 100 * fund$funded / fund$target) else 100
+        max_contribution <- clamp_token_spend(Inf, bal, fund$remaining)
+        typed <- suppressWarnings(round_token_spend((if (first) rv$flex_contrib_val else NULL) %||% min(1, max_contribution)))
+        if (!is.finite(typed) || typed < TOKEN_SPEND_STEP) typed <- min(1, max_contribution)
+        contribution_value <- if (max_contribution >= TOKEN_SPEND_STEP) min(typed, max_contribution) else TOKEN_SPEND_STEP
+        tagList(
+          if (several) tags$h6(style = "font-weight:700;margin-top:1rem;", fund$exam_label),
+          if (!flex_cost_schedule_hidden_for_scope()) {
+            costs <- vapply(seq_len(nrow(fund$questions)), function(i)
+              question_cost_for_n(i, fund$schedule, fund$class_size), numeric(1))
+            div(style="background:#f0f4f8;border-radius:5px;padding:.45rem .65rem;margin-bottom:.55rem;font-size:.82rem;",
+                tags$strong("Question price schedule: "),
+                paste(sprintf("Q%d: %g tokens", seq_along(costs), costs), collapse=" · "))
+          },
+          if (first) tags$p(style = "color:#555;font-size:.88rem;",
+                 "Contributions fund a public good: every unlocked candidate becomes visible to everyone in your pooled section scope."),
+          if (!nrow(fund$next_question)) {
+            tags$p(style = "color:#1a6e3c;font-weight:600;",
+                   sprintf("All %d candidate questions are public.", as.integer(fund$total)))
+          } else {
+            tagList(
+              {
+                next_q <- fund$next_question[1,]
+                draw_n <- as.integer(next_q$draw_count %||% NA_integer_)
+                pool_n <- as.integer(next_q$pool_size %||% NA_integer_)
+                chance <- if (is.finite(draw_n) && is.finite(pool_n) && pool_n > 0)
+                  sprintf("%d of %d drawn (%.0f%% chance)",draw_n,pool_n,100*draw_n/pool_n)
+                  else "draw probability not specified"
+                tags$p(style = "font-weight:600;margin-bottom:.35rem;",
+                       sprintf("Question #%d · Pool %s · %s: %s of %s tokens funded",
+                               as.integer(fund$unlocked_n + 1L),
+                               next_q$draw_group %||% "—",chance,
+                               fmt_token_amount(fund$funded),fmt_token_amount(fund$target)))
+              },
+              div(class = "progress", style = "height:18px;margin-bottom:.65rem;",
+                  div(class = "progress-bar", role = "progressbar",
+                      style = sprintf("width:%.1f%%;", pct),
+                      sprintf("%.0f%%", pct))),
+              tags$p(style = "color:#666;font-size:.82rem;",
+                     sprintf("Class size N = %d · %s tokens remain · your balance is %s.",
+                             as.integer(fund$class_size), fmt_token_amount(fund$remaining),
+                             fmt_token_amount(bal))),
+              if (max_contribution >= TOKEN_SPEND_STEP) tagList(
+                numericInput(paste0("flex_contribution", suffix), "Tokens to contribute:",
+                             value=contribution_value, min=TOKEN_SPEND_STEP,
+                             max=max_contribution, step=TOKEN_SPEND_STEP),
+                actionButton(paste0("submit_flex_contribution", suffix), "Contribute",
+                             class = "btn btn-warning", title = "Contribute tokens to this class reveal")
+              ) else {
+                tags$p(style = "color:#9a6b00;font-size:.85rem;",
+                       "You do not currently have spendable tokens for this contribution.")
+              }
+            )
+          },
+          if (nrow(fund$unlocked)) {
+            tagList(
+              tags$hr(),
+              tags$strong("Publicly unlocked candidate questions:"),
+              lapply(seq_len(nrow(fund$unlocked)), function(i) {
+                div(style = "margin-top:.5rem;padding:.5rem .7rem;background:#f8f8f8;border-radius:4px;",
+                    {
+                      draw_n <- as.integer(fund$unlocked$draw_count[i] %||% NA_integer_)
+                      pool_n <- as.integer(fund$unlocked$pool_size[i] %||% NA_integer_)
+                      chance <- if (is.finite(draw_n) && is.finite(pool_n) && pool_n > 0)
+                        sprintf("%.0f%%",100*draw_n/pool_n) else "chance unspecified"
+                      tags$small(style = "color:#888;",
+                        sprintf("Question #%d · %s · Pool %s · %s",
+                                i,fund$unlocked$topic[i] %||% "Topic unspecified",
+                                fund$unlocked$draw_group[i] %||% "—",chance))
+                    },
+                    tags$p(style = "margin:.2rem 0 0;", fund$unlocked$question_text[i]))
+              })
+            )
+          }
+        )
+      }
       div(class = "spend-form-box",
         tags$h6(style = "color:#951829;font-weight:700;", "📚 Candidate Question Fund"),
-        if (!flex_cost_schedule_hidden_for_scope()) {
-          sched <- flex_cost_schedule_for_scope()
-          costs <- vapply(seq_len(nrow(fq$questions)), function(i)
-            question_cost_for_n(i, sched, fq$class_size), numeric(1))
-          div(style="background:#f0f4f8;border-radius:5px;padding:.45rem .65rem;margin-bottom:.55rem;font-size:.82rem;",
-              tags$strong("Question price schedule: "),
-              paste(sprintf("Q%d: %g tokens", seq_along(costs), costs), collapse=" · "))
-        },
-        tags$p(style = "color:#555;font-size:.88rem;",
-               "Contributions fund a public good: every unlocked candidate becomes visible to everyone in your pooled section scope."),
-        if (fq$total == 0) {
-          tags$p(style = "color:#999;", "No candidate questions have been loaded yet.")
-        } else if (!nrow(fq$next_question)) {
-          tags$p(style = "color:#1a6e3c;font-weight:600;",
-                 sprintf("All %d candidate questions are public.", as.integer(fq$total)))
-        } else {
-          tagList(
-            {
-              next_q <- fq$next_question[1,]
-              draw_n <- as.integer(next_q$draw_count %||% NA_integer_)
-              pool_n <- as.integer(next_q$pool_size %||% NA_integer_)
-              chance <- if (is.finite(draw_n) && is.finite(pool_n) && pool_n > 0)
-                sprintf("%d of %d drawn (%.0f%% chance)",draw_n,pool_n,100*draw_n/pool_n)
-                else "draw probability not specified"
-              tags$p(style = "font-weight:600;margin-bottom:.35rem;",
-                     sprintf("Question #%d · Pool %s · %s: %s of %s tokens funded",
-                             as.integer(fq$unlocked_n + 1L),
-                             next_q$draw_group %||% "—",chance,
-                             fmt_token_amount(fq$funded),fmt_token_amount(fq$target)))
-            },
-            div(class = "progress", style = "height:18px;margin-bottom:.65rem;",
-                div(class = "progress-bar", role = "progressbar",
-                    style = sprintf("width:%.1f%%;", pct),
-                    sprintf("%.0f%%", pct))),
-            tags$p(style = "color:#666;font-size:.82rem;",
-                   sprintf("Class size N = %d · %s tokens remain · your balance is %s.",
-                           as.integer(fq$class_size), fmt_token_amount(fq$remaining),
-                           fmt_token_amount(bal))),
-            if (max_contribution >= TOKEN_SPEND_STEP) tagList(
-              numericInput("flex_contribution", "Tokens to contribute:",
-                           value=contribution_value, min=TOKEN_SPEND_STEP,
-                           max=max_contribution, step=TOKEN_SPEND_STEP),
-              actionButton("submit_flex_contribution", "Contribute",
-                           class = "btn btn-warning", title = "Contribute tokens to this class reveal")
-            ) else {
-              tags$p(style = "color:#9a6b00;font-size:.85rem;",
-                     "You do not currently have spendable tokens for this contribution.")
-            }
-          )
-        },
-        if (nrow(fq$unlocked)) {
-          tagList(
-            tags$hr(),
-            tags$strong("Publicly unlocked candidate questions:"),
-            lapply(seq_len(nrow(fq$unlocked)), function(i) {
-              div(style = "margin-top:.5rem;padding:.5rem .7rem;background:#f8f8f8;border-radius:4px;",
-                  {
-                    draw_n <- as.integer(fq$unlocked$draw_count[i] %||% NA_integer_)
-                    pool_n <- as.integer(fq$unlocked$pool_size[i] %||% NA_integer_)
-                    chance <- if (is.finite(draw_n) && is.finite(pool_n) && pool_n > 0)
-                      sprintf("%.0f%%",100*draw_n/pool_n) else "chance unspecified"
-                    tags$small(style = "color:#888;",
-                      sprintf("Question #%d · %s · Pool %s · %s",
-                              i,fq$unlocked$topic[i] %||% "Topic unspecified",
-                              fq$unlocked$draw_group[i] %||% "—",chance))
-                  },
-                  tags$p(style = "margin:.2rem 0 0;", fq$unlocked$question_text[i]))
-            })
-          )
-        }
+        if (!length(funds)) tagList(
+          tags$p(style = "color:#555;font-size:.88rem;",
+                 "Contributions fund a public good: every unlocked candidate becomes visible to everyone in your pooled section scope."),
+          tags$p(style = "color:#999;", "No candidate questions have been loaded yet."))
+        else lapply(seq_along(funds), function(i) fund_block(funds[[i]], i == 1L))
       )
     }
   })
@@ -8709,12 +8839,14 @@ server <- function(input, output, session) {
     rv$spend_mode <- NULL
   })
 
-  observeEvent(input$submit_flex_contribution, {
+  # Pay into one exam's fund. `exam_key` NULL means the first fund that still
+  # has a question to reveal, which is the only one when there is one exam.
+  contribute_to_question_fund <- function(exam_key = NULL, requested_raw = input$flex_contribution) {
     req(rv$authed, rv$user_id)
     if (rv$is_demo) {
       showNotification("Demo mode — contributions are not saved.", type = "warning"); return()
     }
-    requested <- suppressWarnings(round_token_spend(input$flex_contribution %||% 0))
+    requested <- suppressWarnings(round_token_spend(requested_raw %||% 0))
     if (!spending_enabled_for_scope()) { showNotification(spending_disabled_message, type = "warning"); return() }
     if (!spend_option_enabled("flex_question")) { showNotification(spend_option_disabled_message("flex_question"), type = "warning"); return() }
     if (!is.finite(requested) || requested < TOKEN_SPEND_STEP) {
@@ -8723,14 +8855,20 @@ server <- function(input, output, session) {
 
     # Re-read shared state at commit time so a stale browser cannot fund an
     # already-unlocked question.
-    fq <- flex_question_state()
-    if (!nrow(fq$next_question)) {
+    funds <- flex_question_state()$funds
+    chosen <- if (is.null(exam_key)) Filter(function(fund) nrow(fund$next_question) > 0, funds)
+              else Filter(function(fund) identical(fund$exam_key, exam_key), funds)
+    if (!length(chosen) || !nrow(chosen[[1]]$next_question)) {
       showNotification("All candidate questions are already unlocked.", type = "message"); return()
     }
+    fq <- chosen[[1]]
+    schedule <- fq$schedule
     qid <- as.integer(fq$next_question$id[1])
+    # The question's number within its own exam.
+    question_number <- fq$unlocked_n + 1L
     stored_cost <- suppressWarnings(as.numeric(fq$next_question$unlock_cost[1]))
     target <- if (is.finite(stored_cost) && stored_cost > 0) stored_cost else
-      question_cost_for_n(fq$unlocked_n + 1L, flex_cost_schedule_for_scope(), fq$class_size)
+      question_cost_for_n(question_number, schedule, fq$class_size)
     scope_key <- fq$scope_key
     if (!is.finite(stored_cost) || stored_cost <= 0)
       db_exec(
@@ -8767,7 +8905,7 @@ server <- function(input, output, session) {
     }
 
     lid <- token_debit(rv$user_id, rv$name, amount, "flex_question_contribution", qid,
-                       note=sprintf("Public candidate question #%d", fq$unlocked_n + 1L))
+                       note=sprintf("Public candidate question #%d", question_number))
     db_exec(
       "INSERT INTO flex_question_contributions(question_id,user_id,amount,ledger_id,scope_key)
        VALUES(?,?,?,?,?);",
@@ -8786,11 +8924,28 @@ server <- function(input, output, session) {
     rv$flex_ver <- rv$flex_ver + 1L
     showNotification(
       if (unlocked_now)
-        sprintf("You contributed %s tokens. Question #%d is now public!", fmt_token_amount(amount), fq$unlocked_n + 1L)
+        sprintf("You contributed %s tokens. Question #%d is now public!", fmt_token_amount(amount), question_number)
       else
         sprintf("You contributed %s tokens. %s remain.", fmt_token_amount(amount),
                 fmt_token_amount(max(0, target-new_total))),
       type = "message")
+  }
+  observeEvent(input$submit_flex_contribution, contribute_to_question_fund())
+  # Each further exam's Contribute button gets its own listener the first time
+  # that exam appears.
+  flex_fund_listeners <- character(0)
+  observe({
+    for (fund in flex_poll()$funds) {
+      exam <- fund$exam_key
+      id <- gradebook_key_of(exam)
+      if (id %in% flex_fund_listeners) next
+      flex_fund_listeners <<- c(flex_fund_listeners, id)
+      local({
+        exam_key <- exam; suffix <- paste0("__", id)
+        observeEvent(input[[paste0("submit_flex_contribution", suffix)]],
+                     contribute_to_question_fund(exam_key, input[[paste0("flex_contribution", suffix)]]), ignoreInit = TRUE)
+      })
+    }
   })
 
   collect_policy_rubric_form <- function() {
@@ -11768,10 +11923,27 @@ server <- function(input, output, session) {
     rv$flex_ver <- rv$flex_ver + 1L
   })
 
+  observeEvent(input$save_flex_exam_costs_btn, {
+    req(rv$is_admin, !rv$impersonating)
+    rows <- tryCatch(flex_question_rows(active_only = FALSE), error = function(e) data.frame())
+    exams <- unique(rows$exam_key)
+    typed <- lapply(exams, function(exam) trimws(as.character(input[[paste0("flex_cost_exam__", gradebook_key_of(exam))]] %||% "")))
+    for (i in seq_along(exams)) if (nzchar(typed[[i]])) {
+      parsed <- parse_flex_cost(typed[[i]])
+      ok <- if (identical(parsed$type, "table")) length(parsed$values) > 0
+            else !is.na(eval_flex_cost_expr(parsed$expr, 0, flex_roster_size()))
+      if (!isTRUE(ok)) { showNotification(sprintf("The schedule for %s could not be read. Nothing was saved.", rows$exam_label[rows$exam_key == exams[i]][1]), type = "error"); return() }
+    }
+    for (i in seq_along(exams)) set_scoped_setting(flex_exam_schedule_key(exams[i]), typed[[i]])
+    rv$flex_ver <- rv$flex_ver + 1L
+    showNotification("Exam price schedules saved.", type = "message")
+  }, ignoreNULL = TRUE)
+
   observeEvent(input$add_flex_question_btn, {
     req(rv$is_admin)
     txt  <- trimws(input$new_fq_text %||% "")
-    etag <- trimws(input$new_fq_exam %||% "")
+    exam <- flex_exam_fields(input$new_fq_exam)
+    section <- trimws(input$new_fq_section %||% "")
     topic <- trimws(input$new_fq_topic %||% "")
     draw_group <- trimws(input$new_fq_draw_group %||% "")
     draw_count <- suppressWarnings(as.integer(input$new_fq_draw_count %||% NA_integer_))
@@ -11787,9 +11959,9 @@ server <- function(input, output, session) {
         "SELECT COALESCE(MAX(order_index),0) n FROM flex_questions WHERE trim(COALESCE(course,''))='' OR LOWER(course)=LOWER(?);",
         list(scoped_course()))$n[1], error=function(e)0L)
     db_exec(
-      "INSERT INTO flex_questions(question_text,order_index,exam_tag,course,topic,draw_group,draw_count,pool_size) VALUES(?,?,?,?,?,?,?,?);",
+      "INSERT INTO flex_questions(question_text,order_index,exam_tag,exam_item_key,section,course,topic,draw_group,draw_count,pool_size) VALUES(?,?,?,?,?,?,?,?,?,?);",
       list(txt, as.integer(max_idx %||% 0L) + 1L,
-           if (nzchar(etag)) etag else NA_character_, scoped_course(),
+           exam$tag, exam$key, if (nzchar(section)) section else NA_character_, scoped_course(),
            if (nzchar(topic)) topic else NA_character_,
            if (nzchar(draw_group)) draw_group else NA_character_, draw_count, pool_size))
     rv$flex_ver <- rv$flex_ver + 1L
@@ -11846,7 +12018,14 @@ server <- function(input, output, session) {
     showModal(modalDialog(
       title = sprintf("Edit flex question #%d", qid),
       textAreaInput("edit_fq_text", "Question text:", value=row$question_text[1] %||% "", rows=4, width="100%"),
-      textInput("edit_fq_exam", "Exam (optional):", value=row$exam_tag[1] %||% ""),
+      {
+        key <- trimws(as.character(row$exam_item_key[1] %||% "")); tag <- trimws(as.character(row$exam_tag[1] %||% ""))
+        linked <- nzchar(key) && key %in% flex_exam_choices()
+        selectInput("edit_fq_exam", "Exam:", choices = flex_exam_choices(if (linked) "" else tag),
+                    selected = if (linked) key else if (nzchar(tag)) paste0("tag:", tag) else "")
+      },
+      selectInput("edit_fq_section", "For:", choices = flex_section_choices(),
+                  selected = trimws(as.character(row$section[1] %||% ""))),
       textInput("edit_fq_topic", "Topic (optional):", value=row$topic[1] %||% ""),
       textInput("edit_fq_draw_group", "Draw group (optional):", value=row$draw_group[1] %||% ""),
       fluidRow(
@@ -11871,9 +12050,11 @@ server <- function(input, output, session) {
       showNotification("Draw count and pool size must both be blank or satisfy 1 <= draw count <= pool size.", type="error")
       return()
     }
+    exam <- flex_exam_fields(input$edit_fq_exam)
+    section <- trimws(input$edit_fq_section %||% "")
     db_exec(
-      "UPDATE flex_questions SET question_text=?,exam_tag=?,topic=?,draw_group=?,draw_count=?,pool_size=? WHERE id=?;",
-      list(txt, trimws(input$edit_fq_exam %||% "") %||% NA_character_,
+      "UPDATE flex_questions SET question_text=?,exam_tag=?,exam_item_key=?,section=?,topic=?,draw_group=?,draw_count=?,pool_size=? WHERE id=?;",
+      list(txt, exam$tag, exam$key, if (nzchar(section)) section else NA_character_,
            trimws(input$edit_fq_topic %||% "") %||% NA_character_,
            trimws(input$edit_fq_draw_group %||% "") %||% NA_character_,
            draw_count, pool_size, qid))
@@ -11890,7 +12071,8 @@ server <- function(input, output, session) {
     batch_etag   <- trimws(input$upload_fq_exam %||% "")
     parsed <- tryCatch({
       if (ext == "csv") {
-        df  <- read.csv(f$datapath, stringsAsFactors = FALSE)
+        # Read as text so a section such as 01 is not turned into the number 1.
+        df  <- read.csv(f$datapath, stringsAsFactors = FALSE, colClasses = "character")
         col <- intersect(c("question_text","question","text"), names(df))
         if (!length(col)) stop("CSV must have a 'question_text' column.")
         etag_col <- intersect(c("exam_tag","exam"),names(df))
@@ -11901,14 +12083,16 @@ server <- function(input, output, session) {
           topics=field("topic",NA_character_),
           groups=field("draw_group",NA_character_),
           draw_counts=field("draw_count",NA_integer_),
-          pool_sizes=field("pool_size",NA_integer_)
+          pool_sizes=field("pool_size",NA_integer_),
+          sections=field("section",NA_character_)
         )
       } else {
         raw <- readLines(f$datapath,warn=FALSE)
         txts <- trimws(raw[nzchar(trimws(raw))])
         list(texts=txts,tags=rep(NA_character_,length(txts)),
              topics=rep(NA_character_,length(txts)),groups=rep(NA_character_,length(txts)),
-             draw_counts=rep(NA_integer_,length(txts)),pool_sizes=rep(NA_integer_,length(txts)))
+             draw_counts=rep(NA_integer_,length(txts)),pool_sizes=rep(NA_integer_,length(txts)),
+             sections=rep(NA_character_,length(txts)))
       }
     }, error = function(e) { showNotification(paste("Error:", e$message), type = "error"); NULL })
     if (is.null(parsed)) return()
@@ -11928,6 +12112,26 @@ server <- function(input, output, session) {
       return()
     }
     if (!length(texts)) { showNotification("No questions found in file.", type = "warning"); return() }
+    # Every exam named must be an item in this course's gradebook, and every
+    # section one of this class's. Nothing is saved from a file that fails.
+    clean <- function(x) { x <- trimws(as.character(x)); ifelse(is.na(x), "", x) }
+    exam_names <- clean(etags); exam_names[!nzchar(exam_names)] <- batch_etag
+    catalog <- tryCatch(manual_grade_catalog(), error=function(e) data.frame(assignment=character(0), item_key=character(0)))
+    exam_keys <- ifelse(nzchar(exam_names), gradebook_key_of(exam_names), "")
+    bad_exam <- which(nzchar(exam_names) & !exam_keys %in% catalog$item_key)
+    if (length(bad_exam)) {
+      showNotification(sprintf("Not uploaded. These rows name an exam that is not in this course's gradebook: %s. Gradebook items: %s.",
+                               paste(sprintf("row %d (%s)", bad_exam, exam_names[bad_exam]), collapse = ", "),
+                               paste(catalog$assignment, collapse = ", ")), type = "error", duration = NULL)
+      return()
+    }
+    sections <- clean(parsed$sections[keep])
+    bad_section <- which(nzchar(sections) & !norm_key(sections) %in% norm_key(scoped_sections()))
+    if (length(bad_section)) {
+      showNotification(sprintf("Not uploaded. These rows name a section that is not in the selected class: %s.",
+                               paste(sprintf("row %d (%s)", bad_section, sections[bad_section]), collapse = ", ")), type = "error", duration = NULL)
+      return()
+    }
     if (isTRUE(input$fq_replace_all)) db_exec(
       "UPDATE flex_questions SET active=0 WHERE trim(COALESCE(course,''))='' OR LOWER(course)=LOWER(?);",
       list(scoped_course()))
@@ -11936,14 +12140,14 @@ server <- function(input, output, session) {
       list(scoped_course()))$n[1], error=function(e)0L)
     base_idx <- as.integer(max_idx %||% 0L)
     for (i in seq_along(texts)) {
-      tag <- if (!is.na(etags[i]) && nzchar(trimws(etags[i]))) trimws(etags[i])
-             else if (nzchar(batch_etag)) batch_etag
-             else NA_character_
+      # Stored under the gradebook item's own name and key.
+      tag <- if (nzchar(exam_keys[i])) catalog$assignment[match(exam_keys[i], catalog$item_key)] else NA_character_
       db_exec(
         "INSERT INTO flex_questions(
-           question_text,order_index,exam_tag,course,topic,draw_group,draw_count,pool_size)
-         VALUES(?,?,?,?,?,?,?,?);",
-        list(texts[i],base_idx+i,tag,scoped_course(),
+           question_text,order_index,exam_tag,exam_item_key,section,course,topic,draw_group,draw_count,pool_size)
+         VALUES(?,?,?,?,?,?,?,?,?,?);",
+        list(texts[i],base_idx+i,tag,if (nzchar(exam_keys[i])) exam_keys[i] else NA_character_,
+             if (nzchar(sections[i])) sections[i] else NA_character_,scoped_course(),
              if(!is.na(topics[i]) && nzchar(trimws(topics[i]))) trimws(topics[i]) else NA_character_,
              if(!is.na(groups[i]) && nzchar(trimws(groups[i]))) trimws(groups[i]) else NA_character_,
              draw_counts[i],pool_sizes[i]))
@@ -14035,22 +14239,10 @@ server <- function(input, output, session) {
       ))
 
     } else if (act == "flex_questions") {
-      scope_key <- flex_fund_key()
       scope_course <- scoped_course()
-      fqs <- tryCatch(db_query(
-        "SELECT fq.id, fq.question_text, fq.order_index, COALESCE(fq.active,1) AS active, fq.exam_tag, fq.course,
-                fq.topic,fq.draw_group,fq.draw_count,fq.pool_size,
-                fqs.unlock_cost, fqs.unlocked_at, COALESCE(SUM(fqc.amount),0) AS funded
-         FROM flex_questions fq
-         LEFT JOIN flex_question_scope_state fqs
-           ON fqs.question_id=fq.id AND fqs.scope_key=?
-         LEFT JOIN flex_question_contributions fqc
-           ON fqc.question_id=fq.id AND fqc.scope_key=?
-         WHERE (?='' OR trim(COALESCE(fq.course,''))='' OR LOWER(fq.course)=LOWER(?))
-         GROUP BY fq.id
-         ORDER BY fq.order_index ASC, fq.id ASC;",
-        list(scope_key,scope_key,scope_course,scope_course)),
-        error = function(e) data.frame())
+      fqs <- tryCatch(flex_question_rows(active_only = FALSE), error = function(e) data.frame())
+      exams <- if (nrow(fqs)) unique(fqs[c("exam_key", "exam_label")]) else data.frame(exam_key=character(0), exam_label=character(0))
+      unlinked <- if (nrow(fqs)) unique(fqs$exam_label[startsWith(fqs$exam_key, "tag:") & fqs$exam_key != "tag:"]) else character(0)
       cur_schedule <- tryCatch(flex_cost_schedule_for_scope(),
                                error=function(e)"2,4,6,8,10")
       wrap_spending(tagList(
@@ -14093,6 +14285,20 @@ server <- function(input, output, session) {
           )
         },
         tags$hr(),
+
+        # Each exam is funded and priced on its own.
+        if (nrow(exams) > 0L) tagList(
+          tags$h6(style = "font-weight:700;margin-top:.75rem;", "Price schedule by exam"),
+          tags$p(style = "color:#555;font-size:.82rem;margin:.25rem 0 .4rem;",
+                 "Each exam has its own fund and its own count of revealed questions. Leave a box empty to use the schedule above for that exam. A price already started keeps the price it started with."),
+          lapply(seq_len(nrow(exams)), function(i)
+            textInput(paste0("flex_cost_exam__", gradebook_key_of(exams$exam_key[i])), exams$exam_label[i],
+                      value = trimws(as.character(get_scoped_setting(flex_exam_schedule_key(exams$exam_key[i]), "") %||% "")),
+                      width = "100%", placeholder = "Same as the schedule above")),
+          actionButton("save_flex_exam_costs_btn", "Save exam schedules", class = "btn btn-sm btn-primary")),
+        if (length(unlinked)) div(class = "alert alert-warning", style = "margin-top:.75rem;",
+          sprintf("These exam names are not items in this course's gradebook: %s. Their questions are still funded as before. Edit each question and choose its exam to link it.",
+                  paste(unlinked, collapse = ", "))),
 
         # Exam-tag batches use the same tag stored with each question.
         {
@@ -14146,7 +14352,8 @@ server <- function(input, output, session) {
                                   100*as.numeric(r$draw_count)/as.numeric(r$pool_size))
                         else "—"),
                 tags$td(style = "font-size:.82rem;color:#555;white-space:nowrap;",
-                        r$exam_tag %||% "—"),
+                        if (identical(r$exam_key, "tag:")) "—" else r$exam_label,
+                        if (nzchar(r$section %||% "")) tags$div(style = "color:#888;", paste("Section", r$section))),
                 tags$td(style = "font-size:.82rem;white-space:nowrap;",
                         if (!is.na(r$unlocked_at %||% NA)) "Public"
                         else if (as.numeric(r$funded %||% 0) > 0)
@@ -14179,7 +14386,8 @@ server <- function(input, output, session) {
                        "Add question manually"),
           div(style = "padding:.5rem 0;",
             textAreaInput("new_fq_text", "Question text:", rows = 3, width = "100%"),
-            textInput("new_fq_exam", "Exam (optional):", placeholder = "e.g. Midterm 1"),
+            selectInput("new_fq_exam", "Exam:", choices = flex_exam_choices()),
+            selectInput("new_fq_section", "For:", choices = flex_section_choices()),
             textInput("new_fq_topic", "Topic (optional):", placeholder = "e.g. tax incidence"),
             textInput("new_fq_draw_group", "Draw group (optional):", placeholder = "e.g. tax-policy"),
             fluidRow(
@@ -14196,7 +14404,7 @@ server <- function(input, output, session) {
         tags$hr(),
         tags$h6(style = "font-weight:700;", "Upload Questions"),
         tags$p(style = "color:#555;font-size:.85rem;",
-               "Upload a plain-text file (one question per non-empty line) or a CSV with question_text plus optional exam_tag, topic, draw_group, draw_count, and pool_size columns."),
+               "Upload a plain-text file (one question per non-empty line) or a CSV with question_text plus optional exam, section, topic, draw_group, draw_count, and pool_size columns. An exam must be the name of an item in this course's gradebook; a section, if given, limits the question to that section."),
         fileInput("upload_flex_questions", NULL,
                   accept = c(".txt", ".md", ".csv", ".yaml", ".yml"),
                   buttonLabel = "Browse…", placeholder = "No file chosen"),
@@ -15777,18 +15985,21 @@ server <- function(input, output, session) {
   )
   output$dl_flex_purchases <- downloadHandler(
     filename = function() paste0("flex_question_contributions_", Sys.Date(), ".csv"),
-    content  = function(file) write_export_csv(tryCatch(db_query(
+    content  = function(file) write_export_csv(tryCatch(db_query(sprintf(
       "SELECT fqc.id, fqc.scope_key, u.display_name AS student, fqc.user_id,
               u.course,u.section,fq.order_index AS question_num,fq.question_text,
               fqc.amount AS tokens_contributed,fqc.contributed_at,
-              fqs.unlock_cost,fqs.unlocked_at
+              fqs.unlock_cost,fqs.unlocked_at,
+              COALESCE(fq.exam_tag,'') AS exam, COALESCE(fq.exam_item_key,'') AS exam_item_key,
+              COALESCE(fq.section,'') AS question_section
        FROM flex_question_contributions fqc
        LEFT JOIN users u ON u.user_id=fqc.user_id
        LEFT JOIN flex_questions fq ON fq.id=fqc.question_id
        LEFT JOIN flex_question_scope_state fqs
          ON fqs.question_id=fqc.question_id AND fqs.scope_key=fqc.scope_key
-       WHERE fqc.scope_key=?
-       ORDER BY fqc.contributed_at DESC;",list(flex_fund_key())), error=function(e)data.frame()),
+       WHERE fqc.scope_key IN (%s)
+       ORDER BY fqc.contributed_at DESC;", paste(rep("?", length(flex_fund_keys())), collapse=",")),
+      as.list(flex_fund_keys())), error=function(e)data.frame()),
       file, row.names = FALSE)
   )
   output$dl_app_bids <- downloadHandler(
