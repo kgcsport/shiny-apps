@@ -118,18 +118,33 @@ Phases 1 and 2 are what a second course needs to use the sync. Phases 3 to 5
 only matter once a student is in two courses or a course runs a second term in
 the same database.
 
-## Open questions for Kyle
+## Decisions (Kyle, 2026-11-28)
 
-1. **Terms.** Should spring's ECON 342 be a new offering, separate from fall's,
-   with fall's grades and tokens kept under the fall offering? (I recommend yes.)
-2. **Tokens.** One balance per course, or one wallet a student carries across
-   courses? Per course is cleaner for the experiment: points earned in one
-   section's economy cannot be spent in another's.
-3. **Workers.** One Worker per course, or one Worker for all courses that
-   labels each row with its offering?
-4. **The Worker's student ID.** Is `externalId` always the sign-in email? If
-   students sign in to the Worker with a different address, enrollment needs a
-   second, verified ID.
-5. **Timing.** Will a spring course other than ECON 342 use the sync? If yes,
-   phases 1 and 2 are needed before the feature freeze. If no, all of this can
-   wait until after spring's freeze lifts.
+1. **Terms:** each term's teaching of a course is its own offering. ECON 342
+   is not taught in spring; its fall records stay under the fall offering.
+2. **Tokens:** one balance per course.
+3. **Workers:** open. The app side does not depend on the answer: each
+   offering stores the address of the Worker it syncs with, and two offerings
+   may store the same address if one Worker serves both.
+4. **Student ID:** the Worker's student ID is the sign-in email from now on.
+   The display-name fallback can be removed.
+5. **Timing:** ECON 102 will use the sync in spring, and maybe one other
+   course. Phases 1 and 2 are therefore needed before the feature freeze.
+
+## Order of work
+
+Exam question funds are keyed by offering and by the exam's item key, so they
+are built after phases 1 and 2, not before, to avoid building them on names
+and redoing them.
+
+1. Phase 1: offerings and enrollments tables, filled from today's records
+   (everything existing is fall 2026).
+2. Phase 2: item keys and the sync. Needs the Worker's code.
+3. Exam question funds by exam.
+4. Phase 3 and tokens per course (phase 4), before two courses share a student.
+
+## Still needed from Kyle
+
+- The repository that holds the Worker's code, so the sync contract can be
+  checked against what the Worker sends.
+- One Worker per course or one for all (question 3 above).
